@@ -87,6 +87,33 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
+def content_to_text(content: Any) -> str:
+    """Extract text from a chat message content value."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def last_user_task(messages: list | None) -> str | None:
+    """Return the latest user message text from a chat transcript."""
+    for msg in reversed(messages or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            text = content_to_text(msg.get("content"))
+            if text:
+                return text
+    return None
+
+
 def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Check if an MCP tool comes from a server with parallel tool calls enabled.
 

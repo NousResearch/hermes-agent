@@ -2426,12 +2426,31 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                user_task=None,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
             )
             assert result == "result"
+
+    def test_invoke_tool_passes_last_user_task_to_registry_tools(self, agent):
+        messages = [
+            {"role": "user", "content": "older request"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "what is logged today?"},
+        ]
+
+        with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
+            result = agent._invoke_tool(
+                "web_search",
+                {"q": "test"},
+                "task-1",
+                messages=messages,
+            )
+
+        assert result == "result"
+        assert mock_hfc.call_args.kwargs["user_task"] == "what is logged today?"
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

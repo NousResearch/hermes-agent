@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.tool_dispatch_helpers import _trajectory_normalize_msg, last_user_task, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
@@ -1690,6 +1690,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
+            user_task=last_user_task(messages),
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
             enabled_toolsets=getattr(agent, "enabled_toolsets", None),

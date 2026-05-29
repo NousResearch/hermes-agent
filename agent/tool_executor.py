@@ -34,6 +34,7 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
+    last_user_task,
     make_tool_result_message,
 )
 from tools.terminal_tool import (
@@ -836,6 +837,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
+                    user_task=last_user_task(messages),
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
@@ -858,6 +860,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
+                    user_task=last_user_task(messages),
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),

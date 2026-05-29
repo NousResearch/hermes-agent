@@ -1132,6 +1132,15 @@ class WeComAdapter(BasePlatformAdapter):
 
         if not local_path.is_absolute():
             local_path = (Path.cwd() / local_path).resolve()
+        else:
+            local_path = local_path.resolve()
+
+        # Security: enforce root-directory containment to prevent path traversal
+        # via file:// URLs (e.g. file:///etc/passwd) or symlink tricks
+        try:
+            local_path.relative_to(Path.home())
+        except ValueError:
+            raise ValueError(f"Access denied: path escapes allowed sandbox: {local_path}")
 
         if not local_path.exists() or not local_path.is_file():
             raise FileNotFoundError(f"Media file not found: {local_path}")

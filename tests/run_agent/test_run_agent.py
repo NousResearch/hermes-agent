@@ -3132,7 +3132,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_emit_status", side_effect=_capture_status),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("image")
 
@@ -3169,7 +3169,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_emit_status", side_effect=_capture_status),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("image")
 
@@ -3214,7 +3214,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_emit_status", side_effect=_capture_status),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("help me")
 
@@ -3241,7 +3241,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_emit_status", side_effect=_capture_status),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("search for something")
 
@@ -3712,6 +3712,39 @@ class TestRunConversation:
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
 
+    def test_empty_response_emits_status_for_gateway(self, agent):
+        """_buffer_status is called during empty retries so gateway users see feedback."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        # 4 empty: 1 original + 3 retries, all empty, no fallback
+        agent.client.chat.completions.create.side_effect = [
+            empty_resp, empty_resp, empty_resp, empty_resp,
+        ]
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("answer me")
+
+        # #34452: explanation replaces the bare "(empty)" sentinel, but the
+        # status emissions during retries are unchanged.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
+        # Should have emitted retry statuses (3 retries) + final failure
+        retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
+        assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"
+        failure_msgs = [m for m in status_messages if "no content" in m.lower() or "no fallback" in m.lower()]
+        assert len(failure_msgs) >= 1, f"Expected at least 1 failure status, got: {status_messages}"
 
     def test_empty_response_retry_backoff_interrupted(self, agent, monkeypatch):
         """If an interrupt is requested during the empty response retry wait, we abort."""
@@ -3844,7 +3877,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_emit_status", side_effect=_capture_status),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("ask me")
         # Should recover partial streamed content, not fall through to (empty)

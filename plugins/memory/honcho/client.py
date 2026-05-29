@@ -105,6 +105,68 @@ def _resolve_bool(*vals, default: bool) -> bool:
     return default
 
 
+
+
+def _to_camel_case(key: str) -> str:
+    parts = key.split("_")
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+
+
+def _lookup_config_value(obj: dict, key: str) -> Any:
+    """Look up snake_case or camelCase config keys in a dict."""
+    if not isinstance(obj, dict):
+        return None
+    if key in obj:
+        return obj.get(key)
+    camel_key = _to_camel_case(key)
+    if camel_key in obj:
+        return obj.get(camel_key)
+    return None
+
+
+def _parse_base_context_config(host_obj: dict, root_obj: dict) -> dict[str, bool]:
+    """Resolve base-context injection booleans.
+
+    Supports both JSON-style camelCase (``baseContext`` /
+    ``includeObservations``) and config.yaml-style snake_case
+    (``base_context`` / ``include_observations``). Host-level blocks
+    override root values per leaf key so profiles can tweak one field
+    without copying the whole object.
+    """
+    root = _lookup_config_value(root_obj, "base_context")
+    host = _lookup_config_value(host_obj, "base_context")
+    root = root if isinstance(root, dict) else {}
+    host = host if isinstance(host, dict) else {}
+
+    def section(obj: dict, key: str) -> dict:
+        value = _lookup_config_value(obj, key)
+        return value if isinstance(value, dict) else {}
+
+    root_user = section(root, "user_representation")
+    host_user = section(host, "user_representation")
+    root_ai = section(root, "ai_representation")
+    host_ai = section(host, "ai_representation")
+
+    def resolve_leaf(host_section: dict, root_section: dict, key: str) -> bool:
+        return _resolve_bool(
+            _lookup_config_value(host_section, key),
+            _lookup_config_value(root_section, key),
+            default=True,
+        )
+
+    return {
+        "base_context_include_session_summary": _resolve_bool(
+            _lookup_config_value(host, "include_session_summary"),
+            _lookup_config_value(root, "include_session_summary"),
+            default=True,
+        ),
+        "base_context_user_include_observations": resolve_leaf(host_user, root_user, "include_observations"),
+        "base_context_user_include_peer_card": resolve_leaf(host_user, root_user, "include_peer_card"),
+        "base_context_ai_include_observations": resolve_leaf(host_ai, root_ai, "include_observations"),
+        "base_context_ai_include_peer_card": resolve_leaf(host_ai, root_ai, "include_peer_card"),
+    }
+
+
 def _parse_context_tokens(host_val, root_val) -> int | None:
     """Parse contextTokens: host wins, then root, then None (uncapped)."""
     for val in (host_val, root_val):
@@ -348,6 +410,14 @@ class HonchoClientConfig:
     # message, producing more relevant context at the cost of slightly
     # higher first-turn latency.
     prefetch_generic_context: bool = True
+    # Base-context injection controls. Defaults preserve historical behavior:
+    # include session summary when available, user/AI working representations
+    # (observations), and user/AI peer cards.
+    base_context_include_session_summary: bool = True
+    base_context_user_include_observations: bool = True
+    base_context_user_include_peer_card: bool = True
+    base_context_ai_include_observations: bool = True
+    base_context_ai_include_peer_card: bool = True
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -588,6 +658,7 @@ class HonchoClientConfig:
                 raw.get("prefetchGenericContext"),
                 default=True,
             ),
+            **_parse_base_context_config(host_block, raw),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users
             # aren't silently switched to full bidirectional observation.
@@ -825,8 +896,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     if _is_local:
         # Check if the host block has its own apiKey (explicit local auth)
         _raw = config.raw or {}
-        _host_block = (_raw.get("hosts") or {}).get(config.host, {})
-        _host_has_key = bool(_host_block.get("apiKey"))
+        _host_block = (_root_config.get("hosts") or {}).get(config.host, {})
+        _host_has_key = bool(_host_config.get("apiKey"))
         effective_api_key = config.api_key if _host_has_key else "local"
     else:
         effective_api_key = config.api_key

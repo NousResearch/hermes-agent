@@ -1401,6 +1401,14 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> SendResult:
         del metadata
 
+        # SSRF protection: validate URL before passing to _send_media_source
+        if self._looks_like_url(image_url):
+            from tools.url_safety import is_safe_url
+
+            if not is_safe_url(image_url):
+                logger.warning("[%s] Blocked unsafe image URL (SSRF): %s", self.name, image_url[:80])
+                return SendResult(success=False, error=f"Blocked unsafe URL (SSRF protection): {image_url[:80]}")
+
         result = await self._send_media_source(
             chat_id=chat_id,
             media_source=image_url,

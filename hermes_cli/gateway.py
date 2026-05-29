@@ -3118,9 +3118,14 @@ def launchd_restart():
         if pid is not None and _ensure_launchd_service_loaded():
             print(f"⏳ Launchd service restarting gracefully (PID {pid})...")
             if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
-                print("✓ Service restart requested")
-                return
-            print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+                # On this macOS/launchd combination, KeepAlive can leave the
+                # job loaded but not running after the gateway exits with
+                # EX_TEMPFAIL (75). Do not return after the graceful drain;
+                # explicitly kickstart the loaded job so restart is
+                # deterministic instead of relying on launchd's semaphore.
+                print("↻ Graceful drain complete; kickstarting launchd job")
+            else:
+                print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
         elif pid is not None:
             try:
                 terminate_pid(pid, force=False)

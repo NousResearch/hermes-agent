@@ -344,6 +344,8 @@ def test_launchd_restart_bootstraps_unloaded_job_before_self_signal(monkeypatch,
     assert calls[0][0] == "run"
     assert calls[0][1][:2] == ["launchctl", "bootstrap"]
     assert calls[1] == ("sigusr1_restart", 4242, 35.0)
+    assert calls[2][0] == "run"
+    assert calls[2][1] == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
 
 
 def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):

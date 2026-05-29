@@ -213,6 +213,21 @@ async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_event_source_user_name_is_sanitized_for_agent_context(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="hello from channel")
+    message.author.display_name = "Sis 💜"
+    message.author.name = "sis"
+
+    await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_name == "Sis"
+
+
+@pytest.mark.asyncio
 async def test_discord_free_response_in_threads(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
@@ -661,8 +676,33 @@ async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chron
 
     assert result == (
         "[Recent channel messages]\n"
-        "[Gemini [bot]] latest bot note\n"
+        "[Gemini_bot] latest bot note\n"
         "[Alice] latest human note"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_sanitizes_non_ascii_sender_names(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    other_bot = SimpleNamespace(id=55, display_name="Ghost 👻", name="ghost", bot=True)
+    human = SimpleNamespace(id=56, display_name="Sis 💜", name="sis", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="latest human note", msg_id=3),
+            make_history_message(author=other_bot, content="latest bot note", msg_id=2),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert result == (
+        "[Recent channel messages]\n"
+        "[Ghost_bot] latest bot note\n"
+        "[Sis] latest human note"
     )
 
 
@@ -757,7 +797,7 @@ async def test_fetch_channel_context_cache_uses_latest_window_when_after_set(ada
 
     result = await adapter._fetch_channel_context(channel, before=trigger)
 
-    assert "[Codex [bot]] final analysis" in result
+    assert "[Codex_bot] final analysis" in result
     assert "[Alice] latest follow-up" in result
     assert "old tool trace 1" not in result
     assert "old tool trace 2" not in result
@@ -925,5 +965,4 @@ async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
 
     adapter._auto_create_thread.assert_awaited_once()
     adapter._fetch_channel_context.assert_not_awaited()
-
 

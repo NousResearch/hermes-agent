@@ -105,6 +105,33 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _sanitize_context_sender_name(
+    display_name: Any,
+    *,
+    fallback_name: Any = None,
+    fallback: str = "user",
+    is_bot: bool = False,
+) -> str:
+    """Return a Codex-safe sender label for Discord context prefixes.
+
+    OpenAI's Responses API validates ``name`` fields against
+    ``^[a-zA-Z0-9_-]+$``. Shared-session sender prefixes such as
+    ``[Sis 💜]`` can be promoted into structured participant names later in
+    the pipeline, so Discord display names must be normalized before they
+    reach agent context.
+    """
+    for raw in (display_name, fallback_name):
+        if raw is None:
+            continue
+        cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw)).strip("_")
+        if cleaned:
+            label = cleaned[:64]
+            if is_bot and not label.endswith("_bot"):
+                label = f"{label[:60]}_bot"
+            return label
+    return "bot" if is_bot and fallback == "user" else fallback
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -3492,7 +3519,10 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
+            user_name=_sanitize_context_sender_name(
+                getattr(interaction.user, "display_name", None),
+                fallback_name=getattr(interaction.user, "name", None),
+            ),
             thread_id=thread_id,
             chat_topic=chat_topic,
         )
@@ -3574,7 +3604,10 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name=chat_name,
             chat_type="thread",
             user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
+            user_name=_sanitize_context_sender_name(
+                getattr(interaction.user, "display_name", None),
+                fallback_name=getattr(interaction.user, "name", None),
+            ),
             thread_id=thread_id,
             chat_topic=chat_topic,
         )
@@ -3825,9 +3858,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not content:
                     continue
 
-                name = msg.author.display_name
-                if getattr(msg.author, "bot", False):
-                    name = f"{name} [bot]"
+                name = _sanitize_context_sender_name(
+                    getattr(msg.author, "display_name", None),
+                    fallback_name=getattr(msg.author, "name", None),
+                    is_bot=getattr(msg.author, "bot", False),
+                )
                 collected.append(f"[{name}] {content}")
 
             if not collected:
@@ -4661,7 +4696,11 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(message.author.id),
-            user_name=message.author.display_name,
+            user_name=_sanitize_context_sender_name(
+                getattr(message.author, "display_name", None),
+                fallback_name=getattr(message.author, "name", None),
+                is_bot=getattr(message.author, "bot", False),
+            ),
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),

@@ -188,7 +188,7 @@ def copilot_device_code_login(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # SSRF: add IP block check
             device_data = json.loads(resp.read().decode())
     except Exception as exc:
         logger.error("Failed to initiate device authorization: %s", exc)

@@ -131,8 +131,13 @@ class TestRefreshTokenCookieDeprecation:
 
 
 class TestApi401Envelope:
+    # NOTE: probe a gated route (``/api/sessions``) here rather than
+    # ``/api/status`` — status is in the shared ``PUBLIC_API_PATHS``
+    # allowlist (portal liveness probe) so it would 200 even without a
+    # cookie and never exercise the 401-envelope code path.
+
     def test_no_cookie_returns_unauthenticated_envelope(self, gated_app):
-        r = gated_app.get("/api/status")
+        r = gated_app.get("/api/sessions")
         assert r.status_code == 401
         body = r.json()
         assert body["error"] == "unauthenticated"
@@ -141,7 +146,7 @@ class TestApi401Envelope:
 
     def test_invalid_cookie_returns_session_expired_envelope(self, gated_app):
         gated_app.cookies.set(SESSION_AT_COOKIE, "garbage")
-        r = gated_app.get("/api/status")
+        r = gated_app.get("/api/sessions")
         assert r.status_code == 401
         body = r.json()
         assert body["error"] == "session_expired"
@@ -151,7 +156,7 @@ class TestApi401Envelope:
         """Dead-cookie cleanup — Phase 6 requirement so the browser
         doesn't keep replaying the stale token on every request."""
         gated_app.cookies.set(SESSION_AT_COOKIE, "garbage")
-        r = gated_app.get("/api/status")
+        r = gated_app.get("/api/sessions")
         set_cookies = r.headers.get_list("set-cookie")
         assert any(
             c.startswith(f"{SESSION_AT_COOKIE}=") and "Max-Age=0" in c

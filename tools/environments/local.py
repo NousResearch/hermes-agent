@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def _msys_to_windows_path(cwd: str) -> str:
     """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
-    ``subprocess.Popen(..., cwd=...)`` can find it.
+    ``subprocess.Popen(..., cwd=...)`` can find it.  # PATH: add realpath validation
 
     No-ops on non-Windows hosts or for paths that aren't in MSYS form.
     Returns the input unchanged when no translation applies. This is

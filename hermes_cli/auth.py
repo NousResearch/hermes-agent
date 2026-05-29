@@ -4869,6 +4869,19 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
         "expires_at": state.get("expires_at"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    payload = json.dumps(shared, indent=2, sort_keys=True).encode("utf-8")
+    # Encrypt at rest when credential encryption is enabled (no-op otherwise),
+    # mirroring auth.json (_save_auth_store). The shared store holds a live
+    # Nous refresh_token, so it must seal under the same DEK as every other
+    # credential file rather than sitting in cleartext. When encryption is OFF
+    # (the default) encrypt_if_enabled returns the bytes unchanged, so the
+    # on-disk form is byte-for-byte identical to the prior behavior.
+    try:
+        from hermes_crypto import encrypt_if_enabled
+
+        payload = encrypt_if_enabled(payload)
+    except ImportError:
+        pass
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
@@ -4885,8 +4898,8 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
                 stat.S_IRUSR | stat.S_IWUSR,
             )
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(json.dumps(shared, indent=2, sort_keys=True))
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(payload)
                     fh.flush()
                     os.fsync(fh.fileno())
                 os.replace(tmp, path)
@@ -4920,9 +4933,29 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text())
+        blob = path.read_bytes()
+        # Transparently decrypt when the store was sealed at rest (mirrors
+        # auth.json / _load_auth_store). Detection is driven by the envelope
+        # itself, so a plaintext store written while encryption was OFF reads
+        # back unchanged — decrypt_if_encrypted is a no-op on non-envelope
+        # bytes. Fail-open: a locked keystore / wrong key raises, which we
+        # treat as "unreadable -> fall through to device-code" rather than
+        # breaking the host (the per-profile auth.json remains the source of
+        # truth).
+        try:
+            from hermes_crypto import decrypt_if_encrypted, is_encrypted
+        except ImportError:
+            is_encrypted = None  # type: ignore[assignment]
+        if is_encrypted is not None and is_encrypted(blob):
+            blob = decrypt_if_encrypted(blob)
+        payload = json.loads(blob.decode("utf-8"))
     except (OSError, ValueError) as exc:
         logger.debug("Shared Nous auth store at %s is unreadable: %s", path, exc)
+        return None
+    except Exception as exc:
+        # Crypto errors (locked keystore, wrong/rotated key) must not crash
+        # the convenience import path. Treat as no shared credentials.
+        logger.debug("Shared Nous auth store at %s could not be decrypted: %s", path, exc)
         return None
     if not isinstance(payload, dict):
         return None

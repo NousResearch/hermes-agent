@@ -296,6 +296,26 @@ class FileTarget:
             return self.path.name
 
 
+def _shared_nous_store_path() -> Path:
+    """Resolve the cross-profile shared Nous OAuth store path.
+
+    Mirrors ``hermes_cli.auth._nous_shared_store_path`` without importing it
+    (auth.py imports ``hermes_crypto``, so importing it back here would risk a
+    circular import). The store lives at
+    ``${HERMES_SHARED_AUTH_DIR}/nous_auth.json`` when that env var is set, else
+    ``<hermes-root>/shared/nous_auth.json`` — OUTSIDE any named profile's
+    HERMES_HOME so every profile under the same root shares one file. Keep this
+    in sync with the canonical resolver in ``hermes_cli.auth``.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    filename = "nous_auth.json"
+    override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
+    if override:
+        return Path(override).expanduser() / filename
+    return get_default_hermes_root() / "shared" / filename
+
+
 def credential_targets() -> List[FileTarget]:
     """Return the credential files the layer encrypts.
 
@@ -308,6 +328,11 @@ def credential_targets() -> List[FileTarget]:
         FileTarget(home / "auth.json", kind="credential"),
         FileTarget(home / ".anthropic_oauth.json", kind="credential"),
         FileTarget(home / "auth" / "google_oauth.json", kind="credential"),
+        # Cross-profile shared Nous OAuth store. Holds a live refresh_token,
+        # so it must seal under the DEK like every other credential file
+        # instead of sitting in cleartext (blocker #4). Lives outside the
+        # profile HERMES_HOME, hence resolved separately.
+        FileTarget(_shared_nous_store_path(), kind="credential"),
     ]
     mcp_dir = home / "mcp-tokens"
     if mcp_dir.is_dir():

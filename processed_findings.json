@@ -106,5 +106,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34886",
     "pr_number": 34886,
     "run_id": "20260529_222349"
+  },
+  "SSRF-runtime_provider.py-169": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34887",
+    "pr_number": 34887,
+    "run_id": "20260529_222349"
   }
 }

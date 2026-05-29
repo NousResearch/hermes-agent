@@ -290,7 +290,7 @@ def _cmd_test(args):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # SSRF: add IP block check
             body = resp.read().decode()
             print(f"  Response ({resp.status}): {body}")
     except Exception as e:

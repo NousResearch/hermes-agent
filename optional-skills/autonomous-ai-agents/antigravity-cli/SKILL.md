@@ -7,8 +7,8 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Antigravity, CLI, Productivity, Auth, Plugins, Sandbox]
-    related_skills: []
+    tags: [Coding-Agent, Antigravity, CLI, Auth, Plugins, Sandbox]
+    related_skills: [grok, codex, claude-code, hermes-agent]
 ---
 
 # Antigravity CLI (`agy`)

@@ -176,6 +176,90 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+# ---------------------------------------------------------------------------
+# Runtime-activity → board-heartbeat bridge (#31752)
+# ---------------------------------------------------------------------------
+# When the agent ticks ``_touch_activity`` during normal work (between
+# tool calls, mid-stream chunks, etc.), we want the kanban board's
+# ``last_heartbeat_at`` columns to reflect that liveness so the dispatcher
+# watchdog (which reads ``tasks.last_heartbeat_at``, not the agent's
+# in-process timestamp) doesn't reclaim an actively-running worker as
+# stale. The model is not required to call the explicit ``kanban_heartbeat``
+# tool for this to work — that tool stays available for workers that want
+# to attach a note or pre-emptively extend a claim across a known-long op.
+#
+# Constraints:
+#   - Best-effort: never raise. The agent loop must not care if the bridge
+#     fails (board missing, DB locked, etc.).
+#   - Rate-limited to one DB write per 60s per-process; runtime activity
+#     can tick on every chunk/tool result and we don't need that resolution.
+#   - No-op outside dispatcher-spawned worker context (no ``HERMES_KANBAN_TASK``).
+#   - No durable note on these auto-heartbeats; that's reserved for the
+#     explicit tool which carries a model-supplied note.
+
+_AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
+_auto_heartbeat_last_attempt: float = 0.0
+
+
+def heartbeat_current_worker_from_env() -> bool:
+    """Best-effort: extend the kanban claim + bump board heartbeat for the
+    current dispatcher-spawned worker, using identity from env vars.
+
+    Returns True if a write was attempted (whether or not it succeeded);
+    False if the call was skipped (not a kanban worker, rate-limited, or
+    swallowed exception). The boolean is informational — callers should
+    not branch on it.
+
+    Identity comes from:
+      * ``HERMES_KANBAN_TASK`` — task id (required; absence means no-op)
+      * ``HERMES_KANBAN_RUN_ID`` — pins the run row so we don't heartbeat
+        a stale run that may have already been reclaimed
+      * ``HERMES_KANBAN_CLAIM_LOCK`` — claim lock for ``heartbeat_claim``;
+        falls back to the default ``_claimer_id()`` for locally-driven
+        workers that never went through the dispatcher path
+
+    Rate-limited via the module-level ``_auto_heartbeat_last_attempt``
+    timestamp (monotonic clock); not thread-safe in the strict sense, but
+    the worst case is one extra DB write per race, which is harmless.
+    """
+    global _auto_heartbeat_last_attempt
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid:
+        return False
+    import time as _time
+    now = _time.monotonic()
+    if (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        return False
+    _auto_heartbeat_last_attempt = now
+    try:
+        kb, conn = _connect()
+        try:
+            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+            try:
+                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
+            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+            run_id: Optional[int]
+            try:
+                run_id = int(run_id_raw) if run_id_raw else None
+            except (TypeError, ValueError):
+                run_id = None
+            try:
+                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        logger.debug("auto-heartbeat: bridge failed", exc_info=True)
+        return False
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 

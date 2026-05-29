@@ -1,8 +1,8 @@
 ---
 name: grok
-description: "Delegate coding to xAI's Grok Build CLI (features, refactors, PR reviews). Headless one-shots and interactive sessions. Auth via SuperGrok/X Premium+ login."
-version: 1.0.0
-author: Hermes Agent
+description: "Delegate coding to xAI Grok Build CLI (features, PRs)."
+version: 0.1.0
+author: Matt Maximo (MattMaximo), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:

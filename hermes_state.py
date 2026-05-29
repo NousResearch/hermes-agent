@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -281,10 +281,18 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS compression_locks (
+    session_id TEXT PRIMARY KEY,
+    holder TEXT NOT NULL,
+    acquired_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
 
 FTS_SQL = """
@@ -790,6 +798,133 @@ class SessionDB:
                 (session_id,),
             )
         self._execute_write(_do)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Compression locks
+    # ──────────────────────────────────────────────────────────────────────
+    # Atomic per-session locks that prevent two compression paths from
+    # racing on the same session_id and producing orphan child sessions.
+    #
+    # The race: ``conversation_compression.py`` rotates ``agent.session_id``
+    # as a side effect of a successful compression (end old session, create
+    # new). That mutation is local to the AIAgent instance — but ``state.db``
+    # is shared across all instances. Two AIAgents that share the same
+    # ``session_id`` at the moment they both decide to compress (most
+    # commonly the parent turn's agent + a background-review fork started
+    # right after the turn ended) each end the parent and create their own
+    # NEW session, parented to the same old id. The gateway SessionEntry
+    # only catches one rotation; the other child silently accumulates
+    # writes — Damien's "parent → two orphan children" repro shape.
+    #
+    # The lock is keyed by ``session_id`` and is held for the duration of
+    # the compress() call plus the rotation. ``holder`` identifies the
+    # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
+    # via ``expires_at`` if the holder process crashed without releasing.
+    def try_acquire_compression_lock(
+        self,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Try to atomically acquire the compression lock for ``session_id``.
+
+        Returns ``True`` on success (caller now owns the lock and must
+        release via :meth:`release_compression_lock`).  Returns ``False``
+        if another holder already owns a non-expired lock — the caller
+        MUST NOT proceed with compression in that case (its rotation would
+        race against the holder's, splitting the session lineage).
+
+        Expired locks (``expires_at < now``) are reclaimed transparently:
+        the stale row is deleted and the new holder acquires it. This
+        prevents a crashed compressor from permanently blocking the
+        session.
+
+        Implementation: single-transaction DELETE-expired + INSERT-or-IGNORE,
+        followed by a SELECT to confirm we got the row. SQLite serialises
+        writes, so the whole sequence is atomic against other writers.
+        """
+        if not session_id:
+            return False
+        now = time.time()
+        expires_at = now + ttl_seconds
+
+        def _do(conn):
+            # First: reclaim any expired lock for this session_id.
+            conn.execute(
+                "DELETE FROM compression_locks "
+                "WHERE session_id = ? AND expires_at < ?",
+                (session_id, now),
+            )
+            # Then: try to insert. INSERT OR IGNORE returns no rowcount
+            # difference — verify ownership via SELECT.
+            conn.execute(
+                "INSERT OR IGNORE INTO compression_locks "
+                "(session_id, holder, acquired_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (session_id, holder, now, expires_at),
+            )
+            row = conn.execute(
+                "SELECT holder FROM compression_locks WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return row is not None and (
+                row["holder"] if isinstance(row, sqlite3.Row) else row[0]
+            ) == holder
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "try_acquire_compression_lock(%s) failed: %s",
+                session_id, exc,
+            )
+            # Fail open: returning False makes the caller skip compression,
+            # which is the safe behaviour when the lock subsystem is broken.
+            return False
+
+    def release_compression_lock(self, session_id: str, holder: str) -> None:
+        """Release the compression lock for ``session_id`` iff we own it.
+
+        Idempotent: no-op when the lock has already expired and been
+        reclaimed by a different holder, or when no lock exists. The
+        ``holder`` check prevents a late-returning compressor from
+        clobbering a fresh lock held by someone else.
+        """
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM compression_locks "
+                "WHERE session_id = ? AND holder = ?",
+                (session_id, holder),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "release_compression_lock(%s) failed: %s",
+                session_id, exc,
+            )
+
+    def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
+        """Return the current (non-expired) holder for ``session_id``, or None.
+
+        Diagnostic helper — not used by the locking protocol itself.
+        """
+        if not session_id:
+            return None
+        now = time.time()
+        row = self._conn.execute(
+            "SELECT holder FROM compression_locks "
+            "WHERE session_id = ? AND expires_at >= ?",
+            (session_id, now),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["holder"] if isinstance(row, sqlite3.Row) else row[0]
+
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""

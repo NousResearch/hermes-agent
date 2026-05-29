@@ -349,6 +349,58 @@ def test_launchd_restart_bootstraps_unloaded_job_before_self_signal(monkeypatch,
     assert calls[2][1] == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
 
 
+def test_launchd_restart_forces_kickstart_when_graceful_drain_times_out(monkeypatch, tmp_path):
+    plist_path = tmp_path / "ai.hermes.gateway.plist"
+    plist_path.write_text("<plist></plist>", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(gateway, "refresh_launchd_plist_if_needed", lambda: False)
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(gateway, "_probe_launchd_service_running", lambda: True)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(gateway, "_get_restart_drain_timeout", lambda: 30.0)
+    monkeypatch.setattr(
+        gateway,
+        "_graceful_restart_via_sigusr1",
+        lambda pid, timeout: calls.append(("sigusr1_restart", pid, timeout)) or False,
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append(("run", cmd, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    gateway.launchd_restart()
+
+    assert calls[0] == ("sigusr1_restart", 4242, 35.0)
+    assert calls[1][0] == "run"
+    assert calls[1][1] == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
+
+
+def test_launchd_restart_unloaded_job_bootstraps_then_force_kickstarts(monkeypatch, tmp_path):
+    plist_path = tmp_path / "ai.hermes.gateway.plist"
+    plist_path.write_text("<plist></plist>", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+
+    def fake_run(cmd, **kwargs):
+        calls.append(("run", cmd, kwargs))
+        if cmd == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"] and len(calls) == 1:
+            raise gateway.subprocess.CalledProcessError(3, cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    gateway.launchd_restart()
+
+    assert calls[0][1] == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
+    assert calls[1][1][:2] == ["launchctl", "bootstrap"]
+    assert calls[2][1] == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
+
+
 def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
     """If the Windows backend cannot launch, keep the existing fallback."""
     import hermes_cli.gateway_windows as gateway_windows

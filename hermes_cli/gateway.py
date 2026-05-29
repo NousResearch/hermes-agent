@@ -3073,6 +3073,11 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _launchd_kickstart(target: str, *, timeout: int = 90) -> None:
+    """Force launchd to start/restart a loaded service target."""
+    subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=timeout)
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -3101,7 +3106,7 @@ def launchd_restart():
                 exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
                 if not exited:
                     print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        _launchd_kickstart(target)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
@@ -3110,7 +3115,7 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        _launchd_kickstart(target, timeout=30)
         print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):

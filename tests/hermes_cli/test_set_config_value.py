@@ -471,3 +471,25 @@ class TestValidateConfigKey:
         if expected_in_suggestion is not None:
             assert suggestion is not None and expected_in_suggestion in suggestion, \
                 f"Expected suggestion to contain {expected_in_suggestion!r}, got {suggestion!r}"
+
+    @pytest.mark.parametrize("key", [
+        "_test.shim_marker",
+        "_internal",
+        "_test.nested.deep.marker",
+        "_x",
+    ])
+    def test_underscore_prefixed_keys_are_accepted(self, key):
+        """Underscore-prefixed top-level keys are internal/test markers and
+        bypass schema validation. The Docker privilege-drop shim test writes
+        ``_test.shim_marker`` to probe config.yaml ownership; that must not
+        be rejected. (Regression: #34250 schema validation broke this.)"""
+        from hermes_cli.config import _validate_config_key
+        is_known, _ = _validate_config_key(key)
+        assert is_known, f"Expected underscore-prefixed {key!r} to be accepted"
+
+    def test_underscore_only_first_segment_escapes(self):
+        """The underscore escape only applies to the FIRST segment. A real
+        typo in a sub-key (e.g. agent._max_turns) is still caught."""
+        from hermes_cli.config import _validate_config_key
+        is_known, suggestion = _validate_config_key("agent._max_turns")
+        assert not is_known, "Sub-key typo under a known top-level key must still be flagged"

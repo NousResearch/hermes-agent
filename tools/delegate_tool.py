@@ -2938,10 +2938,10 @@ def _load_delegation_config_for_tier(full_cfg: Optional[dict], tier: Optional[st
 def _load_config(tier: Optional[str] = None) -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
-    Returns the ``delegation`` block plus optional sibling routing blocks so the
-    delegate tool can keep its existing callers while still selecting
-    ``delegation_small`` / ``delegation_large`` before normal credential
-    resolution.
+    Returns the effective ``delegation`` config for the requested tier. When
+    ``tier`` matches a nested ``delegation.tiers.<name>`` override, that tier
+    block is merged onto the base ``delegation`` config before normal
+    credential resolution.
     """
 
     try:

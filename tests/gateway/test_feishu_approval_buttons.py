@@ -638,6 +638,41 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    def test_approval_allowed_when_no_admins_configured(self, _patch_callback_card_types):
+        """When no admins or allowed users are configured, anyone can approve.
+
+        Regression test: _handle_approval_card_action previously used
+        _allow_group_message() which blocks everyone when the allowlist is
+        empty.  It should use _is_interactive_operator_authorized() which
+        allows everyone when no admins are configured (open policy).
+        """
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        # No _admins, no _allowed_group_users — open policy
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._approval_state[7] = {
+            "session_key": "sess-7",
+            "message_id": "msg-7",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 7},
+            open_id="ou_anyone",
+        )
+        adapter._sender_name_cache["ou_anyone"] = ("Anyone", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Approved once" in card["header"]["title"]["content"]
+
     def test_returns_card_for_update_prompt_yes(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()

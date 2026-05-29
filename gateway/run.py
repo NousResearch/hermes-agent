@@ -831,6 +831,8 @@ if _config_path.exists():
                 "docker_env": "TERMINAL_DOCKER_ENV",
                 "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
                 "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+                "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+                "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
@@ -932,9 +934,14 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
-        # Gateway settings (media delivery allowlist + recency trust)
+        # Gateway settings (media delivery allowlist + recency trust + strict mode)
         _gateway_cfg = _cfg.get("gateway", {})
         if isinstance(_gateway_cfg, dict):
+            _strict = _gateway_cfg.get("strict")
+            if _strict is not None:
+                os.environ["HERMES_MEDIA_DELIVERY_STRICT"] = (
+                    "1" if _strict else "0"
+                )
             _allow_dirs = _gateway_cfg.get("media_delivery_allow_dirs")
             if _allow_dirs:
                 if isinstance(_allow_dirs, str):
@@ -5413,6 +5420,49 @@ class GatewayRunner:
             )
             stale_timeout_seconds = 0
 
+        # Read kanban.default_assignee — fallback profile for tasks
+        # created without an explicit assignee (e.g. via the dashboard).
+        # When set, the dispatcher applies it to unassigned ready tasks
+        # instead of skipping them indefinitely (#27145). Empty string
+        # (the schema default) means "no fallback, keep skipping" —
+        # backward-compatible with existing installs.
+        default_assignee = (kanban_cfg.get("default_assignee") or "").strip() or None
+        if default_assignee:
+            logger.info(
+                "kanban dispatcher: default_assignee=%r (unassigned ready tasks "
+                "will route to this profile)",
+                default_assignee,
+            )
+
+        # Read kanban.max_in_progress_per_profile — per-profile concurrency
+        # cap (#21582). When set, no single profile gets more than N
+        # workers running at once, even if the global max_in_progress
+        # would allow it. Prevents one profile's local model / API quota
+        # / browser pool from being overwhelmed by a fan-out.
+        raw_per_profile = kanban_cfg.get("max_in_progress_per_profile", None)
+        max_in_progress_per_profile = None
+        if raw_per_profile is not None:
+            try:
+                max_in_progress_per_profile = int(raw_per_profile)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.max_in_progress_per_profile=%r; ignoring",
+                    raw_per_profile,
+                )
+                max_in_progress_per_profile = None
+            else:
+                if max_in_progress_per_profile < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.max_in_progress_per_profile=%r is below 1; ignoring",
+                        raw_per_profile,
+                    )
+                    max_in_progress_per_profile = None
+                else:
+                    logger.info(
+                        "kanban dispatcher: max_in_progress_per_profile=%d",
+                        max_in_progress_per_profile,
+                    )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -5504,6 +5554,8 @@ class GatewayRunner:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
+                    default_assignee=default_assignee,
+                    max_in_progress_per_profile=max_in_progress_per_profile,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -10241,8 +10293,16 @@ class GatewayRunner:
 
         raw_args = event.get_command_args().strip()
 
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        # Parse --provider, --global, and --refresh flags
+        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+
+        # --refresh: bust the disk cache so the picker shows live data.
+        if force_refresh:
+            try:
+                from hermes_cli.models import clear_provider_models_cache
+                clear_provider_models_cache()
+            except Exception:
+                pass
 
         # Read current model/provider from config
         current_model = ""

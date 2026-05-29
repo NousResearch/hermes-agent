@@ -145,15 +145,44 @@ class TestGatewayQuickCommands:
         event.source.platform.value = "telegram"
         event.source.chat_type = "dm"
         event.source.chat_id = "123"
+        # Attributes checked for truthiness inside _handle_message —
+        # MagicMock auto-creates them as truthy, which derails the flow.
+        event.internal = False
+        event.observe_only = False
+        event.media_urls = None
+        event.media_types = None
+        event.message_id = None
+        event.channel_prompt = None
         return event
 
     @staticmethod
     def _init_runner(runner):
-        """Set attributes accessed by _handle_message before the quick-command branch."""
+        """Set attributes accessed by _handle_message before the quick-command branch.
+
+        _handle_message traverses ~900 lines of interceptors (hooks, auth,
+        update prompts, clarify, approval, slash access control, staleness
+        eviction, etc.) before reaching the quick-command dispatch.  Each
+        interceptor may touch runner attributes initialised in __init__.
+        We set the minimum needed so the fast-path reaches the quick-command
+        block without crashing.
+        """
         runner.session_store = MagicMock()
+        # session_store._generate_session_key must return a real string so
+        # _session_key_for_source doesn't fall through to build_session_key
+        # (which needs config fields we haven't set).
+        runner.session_store._generate_session_key = MagicMock(return_value="test_session")
         runner._running_agents = {}
+        runner._running_agents_ts = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)
+        runner._update_prompt_pending = {}
+        runner._session_sources = {}
+        runner._session_model_overrides = {}
+        runner._session_reasoning_overrides = {}
+        runner._pending_approvals = {}
+        runner._draining = False
+        runner.adapters = {}
+        runner.pairing_store = MagicMock()
 
     @pytest.mark.asyncio
     async def test_exec_command_returns_output(self):

@@ -700,12 +700,20 @@ class _CodexCompletionsAdapter:
             # xAI's Responses endpoint rejects ``pattern`` and ``format`` JSON Schema
             # keywords (HTTP 400). Strip them here to match the parity guarantee that
             # chat_completion_helpers.py provides for the main-agent xAI path.
+            #
+            # Deep-copy before sanitizing — ``list(tools)`` is only a shallow
+            # copy of the outer list, but the sanitizers mutate the inner
+            # parameter dicts in place.  Without a deep copy the caller's
+            # tool registry permanently loses its slash-containing enum
+            # constraints after the first auxiliary xAI call.  See #27907.
             try:
+                import copy as _copy
                 from tools.schema_sanitizer import (
                     strip_pattern_and_format,
                     strip_slash_enum,
                 )
-                tools, _ = strip_pattern_and_format(list(tools))
+                tools = _copy.deepcopy(list(tools))
+                tools, _ = strip_pattern_and_format(tools)
                 tools, _ = strip_slash_enum(tools)
             except Exception as exc:
                 logger.warning(
@@ -1235,8 +1243,23 @@ def _read_nous_auth() -> Optional[dict]:
 
 
 def _nous_api_key(provider: dict) -> str:
-    """Extract the Nous runtime credential from the compatibility field."""
-    return provider.get("agent_key") or provider.get("access_token", "")
+    """Extract a usable Nous inference JWT from stored auth state."""
+    from hermes_cli.auth import _nous_invoke_jwt_is_usable
+
+    for token_key, expiry_key in (
+        ("agent_key", "agent_key_expires_at"),
+        ("access_token", "expires_at"),
+    ):
+        token = provider.get(token_key)
+        if not isinstance(token, str) or not token.strip():
+            continue
+        if _nous_invoke_jwt_is_usable(
+            token,
+            scope=provider.get("scope"),
+            expires_at=provider.get(expiry_key),
+        ):
+            return token
+    return ""
 
 
 def _nous_base_url() -> str:
@@ -1248,25 +1271,16 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     """Return fresh Nous runtime credentials when available.
 
     This mirrors the main agent's 401 recovery path and keeps auxiliary
-    clients aligned with the singleton auth store + JWT/mint flow instead of
+    clients aligned with the singleton auth store + JWT refresh flow instead of
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
     """
     try:
-        from hermes_cli.auth import (
-            NOUS_INFERENCE_AUTH_MODE_AUTO,
-            NOUS_INFERENCE_AUTH_MODE_LEGACY,
-            resolve_nous_runtime_credentials,
-        )
+        from hermes_cli.auth import resolve_nous_runtime_credentials
 
         creds = resolve_nous_runtime_credentials(
-            min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
             timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-            inference_auth_mode=(
-                NOUS_INFERENCE_AUTH_MODE_LEGACY
-                if force_refresh
-                else NOUS_INFERENCE_AUTH_MODE_AUTO
-            ),
+            force_refresh=force_refresh,
         )
     except Exception as exc:
         logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
@@ -1550,13 +1564,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     if runtime is None and nous:
-        # Runtime credential mint failed but stored Nous auth is still present.
-        # Falls back to the raw stored token below; surface a debug line so
-        # operators investigating expired/invalid sessions have a breadcrumb,
-        # without blocking the fallback path the rest of this function relies on.
         logger.debug(
-            "Auxiliary Nous: runtime credential mint failed; falling back to "
-            "stored auth.json token."
+            "Auxiliary Nous: runtime JWT refresh failed; checking stored "
+            "auth.json token."
         )
     global auxiliary_is_nous
     auxiliary_is_nous = True
@@ -1594,6 +1604,13 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         api_key, base_url = runtime
     else:
         api_key = _nous_api_key(nous or {})
+        if not api_key:
+            logger.warning(
+                "Auxiliary Nous client unavailable: no usable inference JWT found "
+                "(run: hermes auth add nous)."
+            )
+            _mark_provider_unhealthy("nous", ttl=60)
+            return None, None
         base_url = str((nous or {}).get("inference_base_url") or _nous_base_url()).rstrip("/")
     return (
         OpenAI(
@@ -2357,7 +2374,16 @@ def _is_auth_error(exc: Exception) -> bool:
     if status == 401:
         return True
     err_lower = str(exc).lower()
-    return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
+    if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
+        return True
+    # xAI returns HTTP 403 with "unauthenticated:bad-credentials" when an OAuth2
+    # access token has expired or is invalid — semantically a 401 auth failure,
+    # even though the status code is 403 (PermissionDenied).
+    if status == 403 and "bad-credentials" in err_lower:
+        return True
+    if "unauthenticated" in err_lower and "bad-credentials" in err_lower:
+        return True
+    return False
 
 
 def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
@@ -2510,6 +2536,8 @@ def _recoverable_pool_provider(
         return "copilot"
     if base_url_host_matches(base, "api.kimi.com"):
         return "kimi-coding"
+    if base_url_host_matches(base, "api.x.ai"):
+        return "xai-oauth"
     # For api_key providers not in the hardcoded list (e.g. opencode-go), match
     # the client base URL against all registered api_key providers so that
     # credential-pool rotation works for any provider the user configured.
@@ -2706,15 +2734,11 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
         if normalized == "nous":
-            from hermes_cli.auth import (
-                NOUS_INFERENCE_AUTH_MODE_LEGACY,
-                resolve_nous_runtime_credentials,
-            )
+            from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+                force_refresh=True,
             )
             if not str(creds.get("api_key", "") or "").strip():
                 return False
@@ -2728,6 +2752,24 @@ def _refresh_provider_credentials(provider: str) -> bool:
             if not str(token or "").strip():
                 token = resolve_anthropic_token()
             if not str(token or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+        if normalized == "xai-oauth":
+            # Preference: pool-level refresh (uses refresh_token from pool entry),
+            # then fall back to singleton auth-store resolver.
+            pool = load_pool(normalized)
+            if pool and pool.has_credentials():
+                # Ensure a current entry is selected before trying to refresh.
+                pool.select()
+                refreshed = pool.try_refresh_current()
+                if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
+                    _evict_cached_clients(normalized)
+                    return True
+            from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+            creds = resolve_xai_oauth_runtime_credentials(force_refresh=True)
+            if not str(creds.get("api_key", "") or "").strip():
                 return False
             _evict_cached_clients(normalized)
             return True

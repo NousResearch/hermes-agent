@@ -59,19 +59,11 @@ def loopback_client():
     web_server.app.state.auth_required = prev_required
 
 
-def _login(client: TestClient) -> None:
-    """Drive the stub OAuth round trip so the gated client is authed."""
-    r1 = client.get("/auth/login?provider=stub", follow_redirects=False)
-    assert r1.status_code == 302
-    state = r1.headers["location"].split("state=")[1]
-    r2 = client.get(
-        f"/auth/callback?code=stub_code&state={state}", follow_redirects=False
-    )
-    assert r2.status_code == 302
-
-
 def test_status_reports_auth_required_in_gated_mode(gated_client):
-    _login(gated_client)
+    # No ``_login()`` call — ``/api/status`` is in the shared
+    # ``PUBLIC_API_PATHS`` allowlist precisely so external probes (and
+    # the SPA's pre-login bootstrap) can read the gate's shape without
+    # a cookie. Hit it cold.
     r = gated_client.get("/api/status")
     assert r.status_code == 200
     body = r.json()

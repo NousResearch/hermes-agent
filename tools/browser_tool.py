@@ -55,7 +55,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import shutil
 import sys
@@ -63,7 +62,7 @@ import tempfile
 import threading
 import time
 import requests
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
@@ -1579,7 +1578,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -3045,17 +3044,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
-    Take a screenshot of the current page and analyze it with vision AI.
+    Take a screenshot of the current page for visual inspection.
 
-    This tool captures what's visually displayed in the browser and sends it
-    to Gemini for analysis. Useful for understanding visual content that the
-    text-based snapshot may not capture (CAPTCHAs, verification challenges,
-    images, complex layouts, etc.).
+    Captures what's visually displayed in the browser. When the active model
+    supports native vision, the screenshot is attached directly to the
+    conversation so the model can inspect it on the next turn; otherwise Hermes
+    falls back to the auxiliary vision model and returns a text analysis. Useful
+    for visual content the text-based snapshot may not capture (CAPTCHAs,
+    verification challenges, images, complex layouts, etc.).
 
-    The screenshot is saved persistently and its file path is returned alongside
-    the analysis, so it can be shared with users via MEDIA:<path> in the response.
+    The screenshot is saved persistently and its file path is returned so it
+    can be shared with users via MEDIA:<path> in the response.
 
     Args:
         question: What you want to know about the page visually
@@ -3063,7 +3064,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         task_id: Task identifier for session isolation
 
     Returns:
-        JSON string with vision analysis results and screenshot_path
+        A JSON string with vision analysis results and screenshot_path, or a
+        multimodal tool-result envelope carrying the screenshot and metadata.
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
@@ -3187,6 +3189,34 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_bytes = screenshot_path.read_bytes()
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
+
+        # Fast path: when native image routing is in effect for the active main
+        # model, attach the screenshot directly instead of describing it through
+        # an auxiliary vision LLM. The model inspects the pixels on its next
+        # turn — no aux call, no information loss. Consistent with vision_analyze.
+        from tools.vision_tools import (
+            _build_native_vision_tool_result,
+            _should_use_native_vision_fast_path,
+        )
+
+        if _should_use_native_vision_fast_path():
+            native_result = _build_native_vision_tool_result(
+                image_url=str(screenshot_path),
+                question=question,
+                image_data_url=data_url,
+                image_size_bytes=len(_screenshot_bytes),
+            )
+            meta = native_result.setdefault("meta", {})
+            meta["screenshot_path"] = str(screenshot_path)
+            if _lp_fallback_warning:
+                meta["fallback_warning"] = _lp_fallback_warning
+            if annotate and result.get("data", {}).get("annotations"):
+                meta["annotations"] = result["data"]["annotations"]
+            native_result["text_summary"] = (
+                f"{native_result.get('text_summary', '')} "
+                f"Screenshot path: {screenshot_path}"
+            ).strip()
+            return native_result
 
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"

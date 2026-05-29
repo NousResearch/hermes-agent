@@ -74,10 +74,15 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 
 try:
-    from hermes_cli.pt_input_extras import install_shift_enter_alias, install_ctrl_enter_alias
+    from hermes_cli.pt_input_extras import (
+        install_ctrl_enter_alias,
+        install_ignored_terminal_sequences,
+        install_shift_enter_alias,
+    )
     install_shift_enter_alias()
     install_ctrl_enter_alias()
-    del install_shift_enter_alias, install_ctrl_enter_alias
+    install_ignored_terminal_sequences()
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading
@@ -168,7 +173,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, is_truthy_value
+from utils import base_url_host_matches
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -382,6 +387,10 @@ def load_cli_config() -> Dict[str, Any]:
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
             "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
+            "camofox": {
+                "rewrite_loopback_urls": False,
+                "loopback_host_alias": "host.docker.internal",
+            },
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
@@ -576,6 +585,8 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_env": "TERMINAL_DOCKER_ENV",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         # Persistent shell (non-local backends)
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
@@ -2475,8 +2486,9 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 def _preserve_ctrl_enter_newline() -> bool:
     """Detect environments where Ctrl+Enter must produce a newline, not submit.
 
-    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
-    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
+    Windows Terminal, WSL, SSH sessions, Ghostty, and some modern terminals
+    deliver Ctrl+Enter/Ctrl+J as bare LF (c-j). On those terminals c-j must
+    NOT be bound to submit;
     binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
     submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
     some thin PTYs without SSH) still need c-j bound to submit, so we keep
@@ -2489,6 +2501,12 @@ def _preserve_ctrl_enter_newline() -> bool:
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return True
     if os.environ.get("WT_SESSION"):
+        return True
+    if os.environ.get("GHOSTTY_RESOURCES_DIR") or os.environ.get("GHOSTTY_BIN_DIR"):
+        return True
+    if os.environ.get("TERM", "").lower() == "xterm-ghostty":
+        return True
+    if os.environ.get("TERM_PROGRAM", "").lower() == "ghostty":
         return True
     if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
         return True
@@ -2510,7 +2528,7 @@ def _bind_prompt_submit_keys(kb, handler) -> None:
     some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
     instead of CR — without this, Enter appears dead on those terminals.
 
-    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
+    Exception: on Windows, WSL, SSH sessions, Windows Terminal, and Ghostty,
     c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
     plain Enter / c-m). We leave c-j unbound there so the c-j newline
     handler registered separately can fire — giving the user an
@@ -3230,6 +3248,12 @@ class HermesCLI:
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
+        # Armed when a bare `/resume` prints the recent-sessions list so the
+        # very next bare numeric input (e.g. `3`) resolves to that session.
+        # Holds the exact list used for index resolution; one-shot (cleared on
+        # the next submitted input, whether it's the selection or anything
+        # else). See #34584.
+        self._pending_resume_sessions = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -3747,7 +3771,7 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
-            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            yolo_active = self._is_session_yolo_active()
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
@@ -3808,7 +3832,7 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
-            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            yolo_active = self._is_session_yolo_active()
 
             if width < 52:
                 frags = [
@@ -6675,9 +6699,20 @@ class HermesCLI:
         if not target:
             _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
+                # Arm a one-shot pending-resume selection so the user can type
+                # just the number (`3`) on the next line instead of having to
+                # retype `/resume 3`. The list here must match the one shown by
+                # _show_recent_sessions and used for index resolution below —
+                # all three go through _list_recent_sessions(limit=10). See
+                # #34584.
+                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
                 return
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
             return
+
+        # Any explicit /resume <target> supersedes a previously-armed bare
+        # numbered prompt.
+        self._pending_resume_sessions = None
 
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -6791,6 +6826,44 @@ class HermesCLI:
             self._display_resumed_history()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+
+    def _consume_pending_resume_selection(self, text: str) -> bool:
+        """Resolve a bare numeric reply that follows a bare ``/resume`` prompt.
+
+        After ``/resume`` (no args) prints the recent-sessions list it arms
+        ``self._pending_resume_sessions``. The next submitted input is given
+        one chance to be a bare session number (``3``); if so we resume that
+        session here. Anything else (another command, free text, blank) simply
+        disarms the prompt and is handled normally by the caller.
+
+        Returns True if the input was consumed as a resume selection (caller
+        must not treat it as chat); False otherwise. The pending state is
+        always one-shot: it is cleared on the first submitted input regardless
+        of outcome. See #34584.
+        """
+        pending = self._pending_resume_sessions
+        if not pending:
+            return False
+        # One-shot: disarm now so a non-matching input can't leave the prompt
+        # armed and hijack a later number the user meant as chat.
+        self._pending_resume_sessions = None
+
+        if not isinstance(text, str):
+            return False
+        stripped = text.strip()
+        # Only a pure number selects; let "/resume 3", titles, or any other
+        # text fall through to normal handling.
+        if not stripped.isdigit():
+            return False
+
+        index = int(stripped)
+        if index < 1 or index > len(pending):
+            _cprint(f"  Resume index {index} is out of range.")
+            _cprint("  Use /resume with no arguments to see available sessions.")
+            return True
+
+        self._handle_resume_command(f"/resume {index}")
+        return True
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -6907,6 +6980,7 @@ class HermesCLI:
             pass
 
         # Switch to the new session
+        self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id = new_session_id
         self.session_start = now
         self._pending_title = None
@@ -7586,8 +7660,19 @@ class HermesCLI:
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        # Parse --provider, --global, and --refresh flags
+        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+
+        # --refresh: wipe the on-disk picker cache before building the
+        # provider list. Forces a live re-fetch of every authed provider's
+        # /v1/models endpoint on this open.
+        if force_refresh:
+            try:
+                from hermes_cli.models import clear_provider_models_cache
+                clear_provider_models_cache()
+                _cprint("  Cleared model picker cache. Refreshing...")
+            except Exception:
+                pass
 
         # Single inventory context — replaces the inline config-slice the
         # dashboard / TUI used to duplicate. Overlay live session state
@@ -7626,6 +7711,7 @@ class HermesCLI:
                 _cprint("")
                 _cprint("  /model <name>                        switch model")
                 _cprint("  /model --provider <slug>             switch provider")
+                _cprint("  /model --refresh                     re-fetch live model lists")
                 return
 
             self._open_model_picker(
@@ -8302,7 +8388,14 @@ class HermesCLI:
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
-        
+
+        # A bare `/resume` prompt is one-shot: any command other than the
+        # resume/sessions handlers (which manage the pending state themselves)
+        # disarms it so a later number isn't swallowed as a stale selection.
+        # See #34584.
+        if canonical not in {"resume", "sessions"}:
+            self._pending_resume_sessions = None
+
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
             # session's transcripts + SQLite history. Ported from
@@ -9607,20 +9700,92 @@ class HermesCLI:
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 
-    def _toggle_yolo(self):
-        """Toggle YOLO mode — skip all dangerous command approval prompts."""
-        import os
-        from hermes_cli.colors import Colors as _Colors
+    def _transfer_session_yolo(self, old_session_id: str, new_session_id: str) -> None:
+        """Move YOLO bypass state from an old session key to a new one.
 
-        current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
-        if current:
-            os.environ.pop("HERMES_YOLO_MODE", None)
+        Called whenever ``self.session_id`` is reassigned mid-run — ``/branch``
+        forks into a new session, and auto-compression rotates the agent's
+        session id into a fresh continuation session. Without this transfer
+        the user's ``/yolo ON`` toggle would silently revert on the very next
+        turn (the same UX failure mode that motivated this entire fix), since
+        ``_session_yolo`` is keyed by session id.
+
+        Mirrors ``tui_gateway/server.py`` (~line 1297-1305) which performs the
+        same transfer for the TUI's session-rename path. No-op when YOLO
+        wasn't enabled or when the ids match.
+        """
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return
+        try:
+            from tools.approval import (
+                disable_session_yolo,
+                enable_session_yolo,
+                is_session_yolo_enabled,
+            )
+        except Exception:
+            return
+        if is_session_yolo_enabled(old_session_id):
+            enable_session_yolo(new_session_id)
+            disable_session_yolo(old_session_id)
+
+    def _is_session_yolo_active(self) -> bool:
+        """Whether YOLO bypass is currently enabled for this CLI session.
+
+        Reads from ``tools.approval._session_yolo`` (the same set that
+        ``enable_session_yolo`` / ``disable_session_yolo`` write to) so the
+        status bar reflects the actual bypass state instead of a stale env
+        var. Also honors the process-start ``--yolo`` flag, which freezes
+        ``HERMES_YOLO_MODE`` into ``_YOLO_MODE_FROZEN`` before tool imports
+        happen.
+        """
+        try:
+            from tools.approval import (
+                _YOLO_MODE_FROZEN,
+                is_session_yolo_enabled,
+            )
+        except Exception:
+            return False
+        if _YOLO_MODE_FROZEN:
+            return True
+        # Use ``getattr`` so test fixtures that build a CLI via ``__new__``
+        # (skipping ``__init__``) don't trip an AttributeError here; the
+        # status-bar builders swallow exceptions silently but lose every
+        # field after the failure.
+        session_key = getattr(self, "session_id", None) or "default"
+        return is_session_yolo_enabled(session_key)
+
+    def _toggle_yolo(self):
+        """Toggle YOLO mode — skip all dangerous command approval prompts.
+
+        Per-session toggle that mirrors the gateway and TUI ``/yolo`` handlers
+        (see ``gateway/run.py:_handle_yolo_command`` and
+        ``tui_gateway/server.py`` key=="yolo"). We deliberately do NOT mutate
+        ``HERMES_YOLO_MODE`` here — that env var is read once at module import
+        time into ``tools.approval._YOLO_MODE_FROZEN`` to keep prompt-injected
+        skills from flipping the bypass mid-session, so setting it after CLI
+        startup is a silent no-op. Routing through ``enable_session_yolo`` /
+        ``disable_session_yolo`` gives the same auditable, per-session bypass
+        the other surfaces have. ``run_conversation`` binds
+        ``self.session_id`` as the active approval session key via
+        ``set_current_session_key`` so the bypass takes effect on the very
+        next dangerous command in this run.
+        """
+        from hermes_cli.colors import Colors as _Colors
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            is_session_yolo_enabled,
+        )
+
+        session_key = self.session_id or "default"
+        if is_session_yolo_enabled(session_key):
+            disable_session_yolo(session_key)
             _cprint(
                 f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
                 " — dangerous commands will require approval."
             )
         else:
-            os.environ["HERMES_YOLO_MODE"] = "1"
+            enable_session_yolo(session_key)
             _cprint(
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
@@ -11757,6 +11922,23 @@ class HermesCLI:
                     set_secret_capture_callback(self._secret_capture_callback)
                 except Exception:
                     pass
+                # Bind this turn's approval session key into the contextvar so
+                # ``tools.approval.is_current_session_yolo_enabled()`` resolves
+                # against the same key that ``/yolo`` toggles under (see
+                # ``_toggle_yolo`` → ``enable_session_yolo(self.session_id)``).
+                # Mirrors ``tui_gateway/server.py`` and ``gateway/run.py`` which
+                # bind the same contextvar before invoking the agent.
+                try:
+                    from tools.approval import (
+                        reset_current_session_key,
+                        set_current_session_key,
+                    )
+                    _approval_session_token = set_current_session_key(
+                        self.session_id or "default"
+                    )
+                except Exception:
+                    reset_current_session_key = None  # type: ignore[assignment]
+                    _approval_session_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
                 # Prepend pending model switch note so the model knows about the switch
                 _msn = getattr(self, '_pending_model_switch_note', None)
@@ -11798,6 +11980,15 @@ class HermesCLI:
                         set_secret_capture_callback(None)
                     except Exception:
                         pass
+                    # Release the per-turn approval session key. ``_session_yolo``
+                    # state itself is preserved across turns (so /yolo persists
+                    # for the whole CLI run); we just unbind the contextvar so a
+                    # reused thread doesn't see stale identity on its next run.
+                    if _approval_session_token is not None and reset_current_session_key is not None:
+                        try:
+                            reset_current_session_key(_approval_session_token)
+                        except Exception:
+                            pass
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP
@@ -11928,6 +12119,7 @@ class HermesCLI:
                 and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id
             ):
+                self._transfer_session_yolo(self.session_id, self.agent.session_id)
                 self.session_id = self.agent.session_id
                 self._pending_title = None
 
@@ -12592,7 +12784,21 @@ class HermesCLI:
         
         # Key bindings for the input area
         kb = KeyBindings()
-        
+
+        from prompt_toolkit.keys import Keys as _IgnoreKeys
+
+        @kb.add(_IgnoreKeys.Ignore, eager=True)
+        def handle_ignored_terminal_sequence(event):
+            """Consume parser-level ignored terminal sequences before self-insert.
+
+            install_ignored_terminal_sequences() in hermes_cli.pt_input_extras
+            registers focus reports (CSI I / CSI O) as Keys.Ignore at the
+            VT100 parser level. Without this no-op binding the default
+            self-insert path would still fire and the bytes would land in
+            the buffer.
+            """
+            return None
+
         def handle_enter(event):
             """Handle Enter key - submit input.
             
@@ -13835,7 +14041,12 @@ class HermesCLI:
             reserved_below = 6
 
             available = max(0, term_rows - reserved_below)
-            mandatory_full = chrome_full + len(choice_wrapped) + len(other_wrapped)
+            # The compact decision must reserve room for at least one question
+            # row on top of the choices, otherwise full chrome (3 blank
+            # separators) gets kept when there is no room for it and the panel
+            # overflows the viewport — HSplit then clips the panel's tail,
+            # silently dropping the choices (the reported bug).
+            mandatory_full = chrome_full + 1 + len(choice_wrapped) + len(other_wrapped)
 
             use_compact_chrome = mandatory_full > available
             chrome_rows = chrome_tight if use_compact_chrome else chrome_full
@@ -13843,9 +14054,24 @@ class HermesCLI:
             max_question_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(other_wrapped))
             max_question_rows = min(max_question_rows, 12)  # soft cap on huge terminals
 
+            # When the choices alone (plus compact chrome) already exceed the
+            # viewport, drop the question entirely — the choices are the only
+            # thing the user must see to make a selection. Without this the
+            # question would still claim its 1-row floor above and push the
+            # tail of the choices off-screen (HSplit clips the overflow).
+            choices_overflow = chrome_rows + len(choice_wrapped) + len(other_wrapped) >= available
+            if choices_overflow:
+                max_question_rows = 0
+
             question_wrapped = _wrap_panel_text(question, inner_text_width)
-            if len(question_wrapped) > max_question_rows:
-                keep = max(1, max_question_rows - 1)
+            if max_question_rows <= 0:
+                question_wrapped = []
+            elif len(question_wrapped) > max_question_rows:
+                # The truncation marker is itself a row, so it must count
+                # against the budget. With a 1-row budget there is no room for
+                # both a question line and the marker — show the marker alone
+                # so the rendered question never exceeds max_question_rows.
+                keep = max(0, max_question_rows - 1)
                 question_wrapped = question_wrapped[:keep] + ["… (question truncated)"]
 
             lines = []
@@ -14378,6 +14604,17 @@ class HermesCLI:
                                 f"[User attached file: {_drop_path}]"
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
+
+                    # A bare number right after a bare `/resume` prompt selects
+                    # that session (see #34584). Checked before chat routing so
+                    # the digit isn't sent to the agent as a message.
+                    if (
+                        not _file_drop
+                        and self._pending_resume_sessions
+                        and isinstance(user_input, str)
+                        and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
 
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")
@@ -14968,6 +15205,39 @@ def main(
                     time.sleep(_grace)
         except Exception:
             pass  # never block signal handling
+        # Kanban worker exit path (#28181): SIGTERM hits a dispatcher-spawned
+        # worker that's likely in a non-daemon thread waiting on a child
+        # subprocess in _wait_for_process. Raising KeyboardInterrupt only
+        # unwinds the main thread; the worker thread keeps running, the
+        # process gets reparented to init, and the dispatcher's _pid_alive
+        # check returns True forever — task stuck in 'running' indefinitely.
+        # Skip the controlled-unwind dance and call os._exit(0) so the kernel
+        # reclaims the PID immediately and detect_crashed_workers can reclaim
+        # the stale claim on the next tick. Flush logging + stdout/stderr
+        # first so the final debug trace isn't lost; SIGALRM deadman guards
+        # the flush against any rare blocking-I/O case (the reporter measured
+        # flush in <1ms; the alarm is a failsafe, not the common path).
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            try:
+                import signal as _sig_mod
+                if hasattr(_sig_mod, "SIGALRM"):
+                    # Cancel any pre-existing alarm to avoid colliding with
+                    # caller-installed timers.
+                    _sig_mod.signal(_sig_mod.SIGALRM, lambda *_: os._exit(0))
+                    _sig_mod.alarm(2)
+            except Exception:
+                pass
+            try:
+                import logging as _lg
+                _lg.shutdown()
+            except Exception:
+                pass
+            for _stream in (sys.stdout, sys.stderr):
+                try:
+                    _stream.flush()
+                except Exception:
+                    pass
+            os._exit(0)
         raise KeyboardInterrupt()
     try:
         import signal as _signal
@@ -14980,13 +15250,50 @@ def main(
     # Handle single query mode
     if query or image:
         query, single_query_images = _collect_query_images(query, image)
+        # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
+        # the actual task description lives in the task body. Mirror the
+        # gateway/CLI behaviour for inbound images by scanning the body for
+        # local image paths and http(s) image URLs and attaching them to the
+        # worker's first turn. Without this, users who paste a screenshot
+        # path or URL into a kanban task body never get it routed to the
+        # model's vision input.
+        single_query_image_urls: list[str] = []
+        _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if _kanban_task_id:
+            try:
+                from hermes_cli import kanban_db as _kb
+                from agent.image_routing import extract_image_refs as _extract_refs
+
+                _conn = _kb.connect()
+                try:
+                    _task = _kb.get_task(_conn, _kanban_task_id)
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
+                _body = getattr(_task, "body", "") if _task is not None else ""
+                if _body:
+                    _kb_paths, _kb_urls = _extract_refs(_body)
+                    if _kb_paths:
+                        # Dedupe against any --image the user already passed.
+                        _seen = {str(p) for p in single_query_images}
+                        for _p in _kb_paths:
+                            if _p not in _seen:
+                                _seen.add(_p)
+                                single_query_images.append(Path(_p))
+                    if _kb_urls:
+                        single_query_image_urls.extend(_kb_urls)
+            except Exception as _exc:
+                # Best-effort enrichment; never block worker startup on it.
+                logger.debug("kanban image-ref extraction failed: %s", _exc)
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
                 effective_query: Any = query
-                if single_query_images:
+                if single_query_images or single_query_image_urls:
                     # Honour the same image-routing decision used by the
                     # interactive path. With a vision-capable model (incl.
                     # custom-provider models declared via
@@ -15015,19 +15322,26 @@ def main(
                             _parts, _skipped = _build_parts(
                                 query if isinstance(query, str) else "",
                                 [str(p) for p in single_query_images],
+                                image_urls=list(single_query_image_urls) or None,
                             )
                             if any(p.get("type") == "image_url" for p in _parts):
                                 effective_query = _parts
                             else:
                                 # All images unreadable — text fallback.
+                                # ``_preprocess_images_with_vision`` only knows
+                                # about local files; URLs would be lost there,
+                                # so keep the original query text intact when
+                                # only URLs were supplied.
+                                if single_query_images:
+                                    effective_query = cli._preprocess_images_with_vision(
+                                        query, single_query_images, announce=False,
+                                    )
+                        except Exception:
+                            if single_query_images:
                                 effective_query = cli._preprocess_images_with_vision(
                                     query, single_query_images, announce=False,
                                 )
-                        except Exception:
-                            effective_query = cli._preprocess_images_with_vision(
-                                query, single_query_images, announce=False,
-                            )
-                    else:
+                    elif single_query_images:
                         effective_query = cli._preprocess_images_with_vision(
                             query,
                             single_query_images,

@@ -97,15 +97,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (see comment at top of [project.dependencies]). When bumping, update
     # both this map AND the corresponding extra in pyproject.toml.
     #
-    # NOTE: tts.mistral / stt.mistral entries are intentionally absent —
-    # the `mistralai` PyPI project is quarantined as of 2026-05-12 (Mini
-    # Shai-Hulud worm). Re-add when PyPI restores a clean release; see
-    # comment in pyproject.toml above the (removed) `mistral` extra for
-    # the full restoration checklist.
+    # mistralai pin tracks the `mistral` extra in pyproject.toml. PyPI
+    # quarantined the project 2026-05-12 (malicious 2.4.6, Mini Shai-Hulud);
+    # 2.4.6 was removed and clean releases resumed (2.4.7, 2.4.8). Voxtral
+    # STT + TTS share the same SDK.
+    "tts.mistral": ("mistralai==2.4.8",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
+    "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",

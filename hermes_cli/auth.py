@@ -9,14 +9,11 @@ Architecture:
 - ProviderConfig registry defines known OAuth providers
 - Auth store (auth.json) holds per-provider credential state
 - resolve_provider() picks the active provider via priority chain
-- resolve_*_runtime_credentials() handles token refresh and key minting
+- resolve_*_runtime_credentials() handles token refresh and runtime keys
 - logout_command() is the CLI entry point for clearing auth
 
 Nous authentication paths:
 - Invoke JWT (preferred): use a scoped access_token directly for inference.
-- Legacy session key (fallback): mint an opaque 24h key when JWT auth is
-  unavailable, or when HERMES_AGENT_USE_LEGACY_SESSION_KEYS is set for
-  debugging or rollback.
 """
 
 from __future__ import annotations
@@ -45,7 +42,6 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
-import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
@@ -74,23 +70,10 @@ AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
-NOUS_LEGACY_AGENT_KEY_SCOPE = "inference:mint_agent_key"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
-DEFAULT_NOUS_SCOPE = f"{NOUS_INFERENCE_INVOKE_SCOPE} {NOUS_LEGACY_AGENT_KEY_SCOPE}"
-NOUS_LEGACY_SESSION_KEYS_ENV = "HERMES_AGENT_USE_LEGACY_SESSION_KEYS"
+DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
 NOUS_DEVICE_CODE_SOURCE = "device_code"
-NOUS_INFERENCE_AUTH_MODE_AUTO = "auto"
-NOUS_INFERENCE_AUTH_MODE_FRESH = "fresh"
-NOUS_INFERENCE_AUTH_MODE_LEGACY = "legacy"
-NOUS_INFERENCE_AUTH_MODES = frozenset({
-    NOUS_INFERENCE_AUTH_MODE_AUTO,
-    NOUS_INFERENCE_AUTH_MODE_FRESH,
-    NOUS_INFERENCE_AUTH_MODE_LEGACY,
-})
 NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
-NOUS_AUTH_PATH_LEGACY_SESSION_KEY_CACHE = "legacy_session_key_cache"
-NOUS_AUTH_PATH_LEGACY_SESSION_KEY_MINT = "legacy_session_key_mint"
-DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
@@ -1654,12 +1637,11 @@ def _optional_base_url(value: Any) -> Optional[str]:
     return cleaned if cleaned else None
 
 
-# Allowlist of hosts the Nous Portal proxy is willing to forward minted
-# bearer tokens to. The bearer is a long-lived agent_key minted by
-# portal.nousresearch.com — sending it anywhere else would leak it.
+# Allowlist of hosts the Nous Portal proxy is willing to forward inference
+# JWTs to. Sending a bearer anywhere else would leak it.
 #
 # This is consulted only for URLs coming from the NETWORK side (Portal
-# refresh / agent-key-mint responses). User-controlled env-var overrides
+# refresh responses). User-controlled env-var overrides
 # (NOUS_INFERENCE_BASE_URL) bypass validation — that's the documented
 # dev/staging escape hatch and the env source is already trusted (the
 # user set it themselves).
@@ -1677,10 +1659,10 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
     unexpected host — letting the caller fall back to the configured
     default rather than persist or forward a poisoned value.
 
-    Defense-in-depth: a compromised refresh / mint response from the
-    Portal API (MITM, malicious response injection) could otherwise
-    redirect every subsequent proxy request — bearing the user's
-    legitimately-minted agent_key — to an attacker-controlled endpoint.
+    Defense-in-depth: a compromised refresh response from the Portal API
+    (MITM, malicious response injection) could otherwise redirect every
+    subsequent proxy request — bearing the user's inference JWT — to an
+    attacker-controlled endpoint.
     Validating scheme + host at the source closes that loop before the
     poisoned URL ever lands in ``auth.json``.
 
@@ -1744,25 +1726,6 @@ def _scope_values(raw_scope: Any) -> set[str]:
     return scopes
 
 
-def _nous_legacy_session_keys_forced() -> bool:
-    return is_truthy_value(os.getenv(NOUS_LEGACY_SESSION_KEYS_ENV), default=False)
-
-
-def _nous_scope_has_invoke(raw_scope: Any) -> bool:
-    return NOUS_INFERENCE_INVOKE_SCOPE in _scope_values(raw_scope)
-
-
-def _normalize_nous_inference_auth_mode(inference_auth_mode: Optional[str]) -> str:
-    mode = str(inference_auth_mode or NOUS_INFERENCE_AUTH_MODE_AUTO).strip().lower()
-    if mode not in NOUS_INFERENCE_AUTH_MODES:
-        allowed = ", ".join(sorted(NOUS_INFERENCE_AUTH_MODES))
-        raise ValueError(
-            "Invalid Nous inference auth mode "
-            f"{inference_auth_mode!r}; expected one of: {allowed}"
-        )
-    return mode
-
-
 def _nous_invoke_jwt_status(
     token: Any,
     *,
@@ -1810,58 +1773,25 @@ def _nous_invoke_jwt_is_usable(
     )
 
 
-def _nous_legacy_session_key_reason(
-    token: Any,
-    *,
-    scope: Any = None,
-    expires_at: Any = None,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
-) -> str:
-    if inference_auth_mode == NOUS_INFERENCE_AUTH_MODE_LEGACY:
-        return "forced_legacy_session_key"
-    if _nous_legacy_session_keys_forced():
-        return "forced_legacy_session_keys"
-    return (
-        _nous_invoke_jwt_status(token, scope=scope, expires_at=expires_at)
-        or "invoke_jwt_unavailable"
-    )
-
-
-def _choose_nous_inference_auth_path(
+def _assert_nous_inference_jwt_usable(
     state: Dict[str, Any],
     *,
     access_token: Any = None,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
-) -> Tuple[str, Optional[str]]:
-    inference_auth_mode = _normalize_nous_inference_auth_mode(inference_auth_mode)
+) -> None:
     token = state.get("access_token") if access_token is None else access_token
-    if (
-        not _nous_legacy_session_keys_forced()
-        and inference_auth_mode != NOUS_INFERENCE_AUTH_MODE_LEGACY
-        and _nous_invoke_jwt_is_usable(
-            token,
-            scope=state.get("scope"),
-            expires_at=state.get("expires_at"),
-        )
-    ):
-        return NOUS_AUTH_PATH_INVOKE_JWT, None
-    if (
-        inference_auth_mode == NOUS_INFERENCE_AUTH_MODE_AUTO
-        and _agent_key_is_usable(
-            state,
-            max(60, int(min_key_ttl_seconds)),
-        )
-    ):
-        return NOUS_AUTH_PATH_LEGACY_SESSION_KEY_CACHE, None
-    return (
-        NOUS_AUTH_PATH_LEGACY_SESSION_KEY_MINT,
-        _nous_legacy_session_key_reason(
-            token,
-            scope=state.get("scope"),
-            expires_at=state.get("expires_at"),
-            inference_auth_mode=inference_auth_mode,
-        ),
+    reason = _nous_invoke_jwt_status(
+        token,
+        scope=state.get("scope"),
+        expires_at=state.get("expires_at"),
+    )
+    if reason is None:
+        return
+    raise AuthError(
+        "Nous Portal access token is not a usable inference JWT "
+        f"({reason}). Re-authenticate with: hermes auth add nous",
+        provider="nous",
+        code=reason,
+        relogin_required=True,
     )
 
 
@@ -1874,24 +1804,6 @@ def _log_nous_invoke_jwt_selected(
     _oauth_trace(
         "nous_invoke_jwt_selected",
         sequence_id=sequence_id,
-        access_token_fp=_token_fingerprint(access_token),
-    )
-
-
-def _log_nous_legacy_session_key_selected(
-    reason: str,
-    *,
-    access_token: Any,
-    sequence_id: Optional[str] = None,
-) -> None:
-    logger.info(
-        "Nous inference auth: using legacy session key path (%s)",
-        reason,
-    )
-    _oauth_trace(
-        "nous_legacy_session_key_selected",
-        sequence_id=sequence_id,
-        reason=reason,
         access_token_fp=_token_fingerprint(access_token),
     )
 
@@ -3034,7 +2946,7 @@ def login_spotify_command(args) -> None:
 
     _print_loopback_ssh_hint(redirect_uri, docs_url=SPOTIFY_DOCS_URL)
 
-    if open_browser and not _is_remote_session():
+    if open_browser and not _is_remote_session() and _can_open_graphical_browser():
         try:
             opened = webbrowser.open(authorize_url)
         except Exception:
@@ -3113,6 +3025,83 @@ def _is_remote_session() -> bool:
         if os.getenv(var):
             return True
     return False
+
+
+# Console/text-mode browsers that ``webbrowser`` will happily launch INSIDE
+# the terminal.  Opening one of these is worse than not opening anything —
+# it hijacks the user's TTY with an unusable text browser (the xAI OAuth
+# "Account Management" page rendered in w3m, reported May 2026) instead of
+# letting them copy the URL to a real browser.  When the resolved browser is
+# one of these we refuse to auto-open and fall back to the print-the-URL /
+# manual-paste path, same as a remote session.
+_CONSOLE_BROWSER_NAMES: FrozenSet[str] = frozenset(
+    {
+        "w3m",
+        "lynx",
+        "links",
+        "links2",
+        "elinks",
+        "www-browser",
+        "browsh",  # TUI browser — still hijacks the terminal
+    }
+)
+
+
+def _can_open_graphical_browser() -> bool:
+    """Return True only when a *graphical* browser is likely to open.
+
+    ``webbrowser.open()`` resolves to whatever the platform offers, and on a
+    headless / CLI-only Linux box with no GUI browser installed that is often
+    a text-mode browser (w3m/lynx/links) which launches inside the terminal
+    and takes over the user's session.  This guard distinguishes "a real
+    windowed browser will pop up" from "a console browser will hijack the
+    TTY", so callers can fall back to printing the URL instead.
+
+    Heuristics:
+      * Respect ``$BROWSER`` — if it names a known console browser, refuse.
+      * On Linux, require a display server (``$DISPLAY`` / ``$WAYLAND_DISPLAY``)
+        unless ``$BROWSER`` points at something graphical; no display server
+        almost always means no GUI browser.
+      * Ask ``webbrowser.get()`` what it resolved to and refuse when the
+        underlying command is a known console browser.
+      * macOS and Windows always have a usable default GUI browser.
+    """
+    import webbrowser as _webbrowser
+
+    def _names_console_browser(value: str) -> bool:
+        token = value.strip().split()[0] if value.strip() else ""
+        base = os.path.basename(token).lower()
+        return base in _CONSOLE_BROWSER_NAMES
+
+    browser_env = os.environ.get("BROWSER", "")
+    if browser_env and _names_console_browser(browser_env):
+        return False
+
+    if sys.platform.startswith("linux"):
+        has_display = bool(
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        )
+        # An explicit graphical $BROWSER can work without $DISPLAY in odd
+        # setups, but a console $BROWSER already returned False above, so the
+        # only way to reach here with a $BROWSER set is a graphical one.
+        if not has_display and not browser_env:
+            return False
+
+    try:
+        controller = _webbrowser.get()
+    except Exception:
+        # No browser resolvable at all → definitely don't auto-open.
+        return False
+
+    candidate = (
+        getattr(controller, "name", "")
+        or getattr(controller, "basename", "")
+        or ""
+    )
+    if candidate and _names_console_browser(candidate):
+        return False
+
+    return True
 
 
 def _parse_pasted_callback(raw: str) -> dict:
@@ -4228,85 +4217,6 @@ def _request_device_code(
     return data
 
 
-def _is_nous_invoke_scope_refusal(exc: Exception) -> bool:
-    if not isinstance(exc, httpx.HTTPStatusError):
-        return False
-    response = exc.response
-    if response.status_code not in {400, 401, 403}:
-        return False
-    try:
-        payload = response.json()
-    except Exception:
-        payload = {}
-    text = " ".join(
-        str(value)
-        for value in (
-            payload.get("error") if isinstance(payload, dict) else None,
-            payload.get("error_description") if isinstance(payload, dict) else None,
-            response.text,
-        )
-        if value
-    ).lower()
-    if not text:
-        return False
-    return (
-        "invalid_scope" in text
-        or "unsupported_scope" in text
-        or "scope" in text and NOUS_INFERENCE_INVOKE_SCOPE in text
-    )
-
-
-def _nous_device_scope_with_env_override(
-    requested_scope: Optional[str],
-    *,
-    default_scope: str = DEFAULT_NOUS_SCOPE,
-) -> Tuple[str, bool]:
-    explicit_scope = requested_scope is not None
-    scope = requested_scope or default_scope
-    if _nous_legacy_session_keys_forced():
-        scope = NOUS_LEGACY_AGENT_KEY_SCOPE
-    return scope, explicit_scope
-
-
-def _request_nous_device_code_with_scope_fallback(
-    *,
-    client: httpx.Client,
-    portal_base_url: str,
-    client_id: str,
-    scope: str,
-    allow_legacy_fallback: bool,
-) -> Tuple[Dict[str, Any], str]:
-    try:
-        return (
-            _request_device_code(
-                client=client,
-                portal_base_url=portal_base_url,
-                client_id=client_id,
-                scope=scope,
-            ),
-            scope,
-        )
-    except Exception as exc:
-        if (
-            allow_legacy_fallback
-            and _nous_scope_has_invoke(scope)
-            and _is_nous_invoke_scope_refusal(exc)
-        ):
-            logger.info("Nous inference auth: NAS refused invoke scope, retrying legacy scope")
-            _oauth_trace("nous_device_code_invoke_scope_refused")
-            retry_scope = NOUS_LEGACY_AGENT_KEY_SCOPE
-            return (
-                _request_device_code(
-                    client=client,
-                    portal_base_url=portal_base_url,
-                    client_id=client_id,
-                    scope=retry_scope,
-                ),
-                retry_scope,
-            )
-        raise
-
-
 def _poll_for_token(
     client: httpx.Client,
     portal_base_url: str,
@@ -4357,7 +4267,7 @@ def _poll_for_token(
 
 
 # =============================================================================
-# Nous Portal — token refresh, agent key minting, model discovery
+# Nous Portal — token refresh and model discovery
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -4436,9 +4346,9 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     to be held, acquire ``_auth_store_lock`` FIRST. All runtime refresh
     paths follow this order. The one exception is
     ``_try_import_shared_nous_state``, which holds this lock alone for
-    the entire refresh+mint cycle so concurrent imports on sibling
-    profiles can't race on the single-use shared refresh token; that
-    helper must NOT be called with ``_auth_store_lock`` already held.
+    the entire refresh cycle so concurrent imports on sibling profiles
+    can't race on the single-use shared refresh token; that helper must
+    NOT be called with ``_auth_store_lock`` already held.
     """
     try:
         lock_path = _nous_shared_store_path().with_suffix(".lock")
@@ -4498,9 +4408,8 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     is a convenience layer; the per-profile auth.json remains the source
     of truth.
 
-    We deliberately omit the runtime ``agent_key`` compatibility field
-    (either an invoke JWT or legacy opaque session key) — only OAuth tokens
-    are cross-profile useful.
+    We deliberately omit the runtime ``agent_key`` compatibility field;
+    the OAuth tokens are the cross-profile source of truth.
     """
     refresh_token = state.get("refresh_token")
     access_token = state.get("access_token")
@@ -4722,13 +4631,12 @@ def _quarantine_nous_pool_entries(
 def _try_import_shared_nous_state(
     *,
     timeout_seconds: float = 15.0,
-    min_key_ttl_seconds: int = 5 * 60,
 ) -> Optional[Dict[str, Any]]:
     """Attempt to rehydrate Nous OAuth state from the shared store.
 
-    Reads the shared file (if present), runs a forced refresh+mint using
-    the stored refresh_token to produce a fresh access_token + agent_key
-    scoped to this profile, and returns the full auth_state dict ready
+    Reads the shared file (if present), runs a forced refresh using the
+    stored refresh_token to produce a fresh inference JWT scoped to this
+    profile, and returns the full auth_state dict ready
     for ``persist_nous_credentials()``.
 
     Returns ``None`` when no shared state is available or the rehydrate
@@ -4744,7 +4652,7 @@ def _try_import_shared_nous_state(
 
             # Build a full state dict so refresh_nous_oauth_from_state has every
             # field it needs. force_refresh=True gets us a fresh access_token
-            # for this profile; fresh auth mode avoids stale cached legacy keys.
+            # for this profile.
             state: Dict[str, Any] = {
                 "access_token": shared.get("access_token"),
                 "refresh_token": shared.get("refresh_token"),
@@ -4765,10 +4673,8 @@ def _try_import_shared_nous_state(
 
             refreshed = refresh_nous_oauth_from_state(
                 state,
-                min_key_ttl_seconds=min_key_ttl_seconds,
                 timeout_seconds=timeout_seconds,
                 force_refresh=True,
-                inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
                 on_state_update=_persist_shared_refresh,
             )
             _write_shared_nous_state(refreshed)
@@ -4851,39 +4757,6 @@ def _refresh_access_token(
     raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
 
 
-def _mint_agent_key(
-    *,
-    client: httpx.Client,
-    portal_base_url: str,
-    access_token: str,
-    min_ttl_seconds: int,
-) -> Dict[str, Any]:
-    """Mint (or reuse) a short-lived inference API key."""
-    response = client.post(
-        f"{portal_base_url}/api/oauth/agent-key",
-        headers={"Authorization": f"Bearer {access_token}"},
-        json={"min_ttl_seconds": max(60, int(min_ttl_seconds))},
-    )
-
-    if response.status_code == 200:
-        payload = response.json()
-        if "api_key" not in payload:
-            raise AuthError("Mint response missing api_key",
-                            provider="nous", code="server_error")
-        return payload
-
-    try:
-        error_payload = response.json()
-    except Exception as exc:
-        raise AuthError("Agent key mint request failed",
-                        provider="nous", code="server_error") from exc
-
-    code = str(error_payload.get("error", "server_error"))
-    description = str(error_payload.get("error_description") or "Agent key mint request failed")
-    relogin = code in {"invalid_token", "invalid_grant"}
-    raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
-
-
 def fetch_nous_models(
     *,
     inference_base_url: str,
@@ -4945,15 +4818,12 @@ def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
     key = state.get("agent_key")
     if not isinstance(key, str) or not key.strip():
         return False
-    if _decode_jwt_claims(key):
-        if _nous_legacy_session_keys_forced():
-            return False
-        return _nous_invoke_jwt_is_usable(
-            key,
-            scope=state.get("scope"),
-            expires_at=state.get("agent_key_expires_at"),
-        )
-    return not _is_expiring(state.get("agent_key_expires_at"), min_ttl_seconds)
+    return _nous_invoke_jwt_is_usable(
+        key,
+        scope=state.get("scope"),
+        expires_at=state.get("agent_key_expires_at"),
+        min_ttl_seconds=max(0, int(min_ttl_seconds)),
+    )
 
 
 def resolve_nous_access_token(
@@ -5074,21 +4944,18 @@ def refresh_nous_oauth_pure(
     expires_at: Optional[str] = None,
     agent_key: Optional[str] = None,
     agent_key_expires_at: Optional[str] = None,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     timeout_seconds: float = 15.0,
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     force_refresh: bool = False,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
     on_state_update: Optional[Callable[[Dict[str, Any], str], None]] = None,
 ) -> Dict[str, Any]:
     """Refresh Nous OAuth state without mutating auth.json directly.
 
-    ``on_state_update`` is called after a successful access-token refresh and
-    before any subsequent agent-key mint. Callers that own persistent state can
-    use it to save the newly rotated refresh token before later work can fail.
+    ``on_state_update`` is called after a successful access-token refresh.
+    Callers that own persistent state can use it to save the newly rotated
+    refresh token before later validation can fail.
     """
-    inference_auth_mode = _normalize_nous_inference_auth_mode(inference_auth_mode)
     state: Dict[str, Any] = {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -5110,33 +4977,38 @@ def refresh_nous_oauth_pure(
     timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
 
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
-        min_agent_key_ttl = max(60, int(min_key_ttl_seconds))
-        legacy_session_keys = _nous_legacy_session_keys_forced()
-        current_invoke_jwt_usable = (
-            not legacy_session_keys
-            and _nous_invoke_jwt_is_usable(
-                state.get("access_token"),
-                scope=state.get("scope"),
-                expires_at=state.get("expires_at"),
-            )
+        current_invoke_jwt_status = _nous_invoke_jwt_status(
+            state.get("access_token"),
+            scope=state.get("scope"),
+            expires_at=state.get("expires_at"),
         )
-        if (
-            force_refresh
-            or (
-                _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
-                and not current_invoke_jwt_usable
-            )
-        ):
+        if force_refresh or current_invoke_jwt_status is not None:
+            refresh_token_value = state.get("refresh_token")
+            if not isinstance(refresh_token_value, str) or not refresh_token_value:
+                if current_invoke_jwt_status is not None:
+                    raise AuthError(
+                        "Nous Portal access token is not a usable inference JWT "
+                        f"({current_invoke_jwt_status}) and no refresh token is available. "
+                        "Re-authenticate with: hermes auth add nous",
+                        provider="nous",
+                        code=current_invoke_jwt_status,
+                        relogin_required=True,
+                    )
+                raise AuthError(
+                    "No refresh token is available for Nous Portal.",
+                    provider="nous",
+                    relogin_required=True,
+                )
             refreshed = _refresh_access_token(
                 client=client,
                 portal_base_url=state["portal_base_url"],
                 client_id=state["client_id"],
-                refresh_token=state["refresh_token"],
+                refresh_token=refresh_token_value,
             )
             now = datetime.now(timezone.utc)
             access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
             state["access_token"] = refreshed["access_token"]
-            state["refresh_token"] = refreshed.get("refresh_token") or state["refresh_token"]
+            state["refresh_token"] = refreshed.get("refresh_token") or refresh_token_value
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
             refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
@@ -5150,34 +5022,8 @@ def refresh_nous_oauth_pure(
             if on_state_update is not None:
                 on_state_update(dict(state), "post_refresh_access_token")
 
-        selected_auth_path, fallback_reason = _choose_nous_inference_auth_path(
-            state,
-            min_key_ttl_seconds=min_agent_key_ttl,
-            inference_auth_mode=inference_auth_mode,
-        )
-        if selected_auth_path == NOUS_AUTH_PATH_INVOKE_JWT:
-            _select_nous_invoke_jwt(state)
-        elif selected_auth_path == NOUS_AUTH_PATH_LEGACY_SESSION_KEY_MINT:
-            _log_nous_legacy_session_key_selected(
-                fallback_reason or "legacy_session_key_required",
-                access_token=state.get("access_token"),
-            )
-            mint_payload = _mint_agent_key(
-                client=client,
-                portal_base_url=state["portal_base_url"],
-                access_token=state["access_token"],
-                min_ttl_seconds=min_key_ttl_seconds,
-            )
-            now = datetime.now(timezone.utc)
-            state["agent_key"] = mint_payload.get("api_key")
-            state["agent_key_id"] = mint_payload.get("key_id")
-            state["agent_key_expires_at"] = mint_payload.get("expires_at")
-            state["agent_key_expires_in"] = mint_payload.get("expires_in")
-            state["agent_key_reused"] = bool(mint_payload.get("reused", False))
-            state["agent_key_obtained_at"] = now.isoformat()
-            minted_url = _validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))
-            if minted_url:
-                state["inference_base_url"] = minted_url
+        _assert_nous_inference_jwt_usable(state)
+        _select_nous_invoke_jwt(state)
 
     return state
 
@@ -5185,10 +5031,8 @@ def refresh_nous_oauth_pure(
 def refresh_nous_oauth_from_state(
     state: Dict[str, Any],
     *,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     timeout_seconds: float = 15.0,
     force_refresh: bool = False,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
     on_state_update: Optional[Callable[[Dict[str, Any], str], None]] = None,
 ) -> Dict[str, Any]:
     """Refresh Nous OAuth from a state dict. Thin wrapper around refresh_nous_oauth_pure."""
@@ -5205,12 +5049,10 @@ def refresh_nous_oauth_from_state(
         expires_at=state.get("expires_at"),
         agent_key=state.get("agent_key"),
         agent_key_expires_at=state.get("agent_key_expires_at"),
-        min_key_ttl_seconds=min_key_ttl_seconds,
         timeout_seconds=timeout_seconds,
         insecure=tls.get("insecure"),
         ca_bundle=tls.get("ca_bundle"),
         force_refresh=force_refresh,
-        inference_auth_mode=inference_auth_mode,
         on_state_update=on_state_update,
     )
 
@@ -5220,7 +5062,7 @@ def persist_nous_credentials(
     *,
     label: Optional[str] = None,
 ):
-    """Persist minted Nous OAuth credentials as the singleton provider state
+    """Persist Nous OAuth credentials as the singleton provider state
     and ensure the credential pool is in sync.
 
     Nous credentials are read at runtime from two independent locations:
@@ -5231,7 +5073,7 @@ def persist_nous_credentials(
     - ``credential_pool.nous``: used by the runtime ``pool.select()`` path.
 
     Historically ``hermes auth add nous`` wrote a ``manual:device_code`` pool
-    entry only, skipping ``providers.nous``.  When the 24h agent_key TTL
+    entry only, skipping ``providers.nous``. When the runtime credential
     expired, the recovery path read the empty singleton state and raised
     ``AuthError`` silently (``logger.debug`` at INFO level).
 
@@ -5286,24 +5128,20 @@ def _sync_nous_pool_from_auth_store() -> None:
 
 def resolve_nous_runtime_credentials(
     *,
-    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
     timeout_seconds: float = 15.0,
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
-    inference_auth_mode: str = NOUS_INFERENCE_AUTH_MODE_AUTO,
+    force_refresh: bool = False,
 ) -> Dict[str, Any]:
     """
     Resolve Nous inference credentials for runtime use.
 
-    Ensures access_token is valid (refreshes if needed) and a short-lived
-    inference key is present with minimum TTL (mints/reuses as needed).
-    Concurrent processes coordinate through the auth store file lock.
+    Ensures access_token is a valid inference-scoped JWT, refreshing it when
+    needed. Concurrent processes coordinate through the auth store file lock.
 
     Returns dict with: provider, base_url, api_key, key_id, expires_at,
-    expires_in, source ("invoke_jwt", "cache", or "portal"), and auth_path.
+    expires_in, source ("invoke_jwt"), and auth_path.
     """
-    inference_auth_mode = _normalize_nous_inference_auth_mode(inference_auth_mode)
-    min_key_ttl_seconds = max(60, int(min_key_ttl_seconds))
     sequence_id = uuid.uuid4().hex[:12]
 
     with _auth_store_lock():
@@ -5375,8 +5213,6 @@ def resolve_nous_runtime_credentials(
         _oauth_trace(
             "nous_runtime_credentials_start",
             sequence_id=sequence_id,
-            inference_auth_mode=inference_auth_mode,
-            min_key_ttl_seconds=min_key_ttl_seconds,
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
 
@@ -5388,43 +5224,40 @@ def resolve_nous_runtime_credentials(
                 raise AuthError("No access token found for Nous Portal login.",
                                 provider="nous", relogin_required=True)
 
-            # Step 1: refresh access token if expiring. If the access token
-            # is already a valid invoke JWT, trust its own exp claim even when
-            # older auth.json metadata has a stale/missing expires_at.
-            current_invoke_jwt_usable = (
-                not _nous_legacy_session_keys_forced()
-                and _nous_invoke_jwt_is_usable(
-                    access_token,
-                    scope=state.get("scope"),
-                    expires_at=state.get("expires_at"),
-                )
+            invoke_jwt_status = _nous_invoke_jwt_status(
+                access_token,
+                scope=state.get("scope"),
+                expires_at=state.get("expires_at"),
             )
-            if (
-                _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
-                and not current_invoke_jwt_usable
-            ):
+            if force_refresh or invoke_jwt_status is not None:
                 with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
                     if _merge_shared_nous_oauth_state(state):
                         access_token = state.get("access_token")
                         refresh_token = state.get("refresh_token")
-                        _persist_state("post_shared_merge_access_expiring")
-
-                    if (
-                        _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
-                        and not _nous_invoke_jwt_is_usable(
+                        invoke_jwt_status = _nous_invoke_jwt_status(
                             access_token,
                             scope=state.get("scope"),
                             expires_at=state.get("expires_at"),
                         )
-                    ):
-                        if not isinstance(refresh_token, str) or not refresh_token:
-                            raise AuthError("Session expired and no refresh token is available.",
-                                            provider="nous", relogin_required=True)
+                        _persist_state("post_shared_merge_access_unusable")
 
+                    if force_refresh or invoke_jwt_status is not None:
+                        if not isinstance(refresh_token, str) or not refresh_token:
+                            reason = invoke_jwt_status or "force_refresh"
+                            raise AuthError(
+                                "Nous Portal access token is not a usable inference JWT "
+                                f"({reason}) and no refresh token is available. "
+                                "Re-authenticate with: hermes auth add nous",
+                                provider="nous",
+                                code=reason,
+                                relogin_required=True,
+                            )
+
+                        refresh_reason = "force_refresh" if force_refresh else (invoke_jwt_status or "access_unusable")
                         _oauth_trace(
                             "refresh_start",
                             sequence_id=sequence_id,
-                            reason="access_expiring",
+                            reason=refresh_reason,
                             refresh_token_fp=_token_fingerprint(refresh_token),
                         )
                         try:
@@ -5466,166 +5299,24 @@ def resolve_nous_runtime_credentials(
                         _oauth_trace(
                             "refresh_success",
                             sequence_id=sequence_id,
-                            reason="access_expiring",
+                            reason=refresh_reason,
                             previous_refresh_token_fp=_token_fingerprint(previous_refresh_token),
                             new_refresh_token_fp=_token_fingerprint(refresh_token),
                         )
-                        # Persist immediately so downstream mint failures cannot drop rotated refresh tokens.
-                        _persist_state("post_refresh_access_expiring")
+                        # Persist immediately so validation failures cannot drop rotated refresh tokens.
+                        _persist_state("post_refresh_access_token")
 
-            # Step 2: resolve the compatibility ``agent_key`` field. Preferred
-            # path stores the NAS invoke JWT there; legacy path mints/reuses
-            # the opaque session key.
-            used_cached_key = False
-            mint_payload: Optional[Dict[str, Any]] = None
-            selected_auth_path, fallback_reason = _choose_nous_inference_auth_path(
+            _assert_nous_inference_jwt_usable(
                 state,
                 access_token=access_token,
-                min_key_ttl_seconds=min_key_ttl_seconds,
-                inference_auth_mode=inference_auth_mode,
+            )
+            _select_nous_invoke_jwt(
+                state,
+                access_token=access_token,
+                sequence_id=sequence_id,
             )
 
-            if selected_auth_path == NOUS_AUTH_PATH_INVOKE_JWT:
-                _select_nous_invoke_jwt(
-                    state,
-                    access_token=access_token,
-                    sequence_id=sequence_id,
-                )
-            elif selected_auth_path == NOUS_AUTH_PATH_LEGACY_SESSION_KEY_CACHE:
-                used_cached_key = True
-                logger.info("Nous inference auth: using cached agent_key")
-                _oauth_trace("agent_key_reuse", sequence_id=sequence_id)
-            else:
-                _log_nous_legacy_session_key_selected(
-                    fallback_reason or "legacy_session_key_required",
-                    access_token=access_token,
-                    sequence_id=sequence_id,
-                )
-                try:
-                    _oauth_trace(
-                        "mint_start",
-                        sequence_id=sequence_id,
-                        access_token_fp=_token_fingerprint(access_token),
-                    )
-                    mint_payload = _mint_agent_key(
-                        client=client, portal_base_url=portal_base_url,
-                        access_token=access_token, min_ttl_seconds=min_key_ttl_seconds,
-                    )
-                except AuthError as exc:
-                    _oauth_trace(
-                        "mint_error",
-                        sequence_id=sequence_id,
-                        code=exc.code,
-                    )
-                    # Retry path: access token may be stale server-side despite local checks
-                    latest_refresh_token = state.get("refresh_token")
-                    if (
-                        exc.code in {"invalid_token", "invalid_grant"}
-                        and isinstance(latest_refresh_token, str)
-                        and latest_refresh_token
-                    ):
-                        with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
-                            if _merge_shared_nous_oauth_state(state):
-                                access_token = state.get("access_token")
-                                latest_refresh_token = state.get("refresh_token")
-                                _persist_state("post_shared_merge_mint_retry")
-                            else:
-                                _oauth_trace(
-                                    "refresh_start",
-                                    sequence_id=sequence_id,
-                                    reason="mint_retry_after_invalid_token",
-                                    refresh_token_fp=_token_fingerprint(latest_refresh_token),
-                                )
-                                try:
-                                    refreshed = _refresh_access_token(
-                                        client=client, portal_base_url=portal_base_url,
-                                        client_id=client_id, refresh_token=latest_refresh_token,
-                                    )
-                                except AuthError as exc:
-                                    if _is_terminal_nous_refresh_error(exc):
-                                        _quarantine_nous_oauth_state(
-                                            state,
-                                            exc,
-                                            reason="runtime_mint_retry_refresh_failure",
-                                        )
-                                        _quarantine_nous_pool_entries(
-                                            auth_store,
-                                            exc,
-                                            reason="runtime_mint_retry_refresh_failure",
-                                        )
-                                        _persist_state("terminal_runtime_mint_retry_refresh_failure")
-                                    raise
-                                now = datetime.now(timezone.utc)
-                                access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
-                                state["access_token"] = refreshed["access_token"]
-                                state["refresh_token"] = refreshed.get("refresh_token") or latest_refresh_token
-                                state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
-                                state["scope"] = refreshed.get("scope") or state.get("scope")
-                                refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-                                if refreshed_url:
-                                    inference_base_url = refreshed_url
-                                state["obtained_at"] = now.isoformat()
-                                state["expires_in"] = access_ttl
-                                state["expires_at"] = datetime.fromtimestamp(
-                                    now.timestamp() + access_ttl, tz=timezone.utc
-                                ).isoformat()
-                                access_token = state["access_token"]
-                                refresh_token = state["refresh_token"]
-                                _oauth_trace(
-                                    "refresh_success",
-                                    sequence_id=sequence_id,
-                                    reason="mint_retry_after_invalid_token",
-                                    previous_refresh_token_fp=_token_fingerprint(latest_refresh_token),
-                                    new_refresh_token_fp=_token_fingerprint(refresh_token),
-                                )
-                                # Persist retry refresh immediately for crash safety and cross-process visibility.
-                                _persist_state("post_refresh_mint_retry")
-
-                        retry_inference_auth_mode = (
-                            NOUS_INFERENCE_AUTH_MODE_LEGACY
-                            if inference_auth_mode == NOUS_INFERENCE_AUTH_MODE_LEGACY
-                            else NOUS_INFERENCE_AUTH_MODE_FRESH
-                        )
-                        retry_auth_path, _ = _choose_nous_inference_auth_path(
-                            state,
-                            access_token=access_token,
-                            min_key_ttl_seconds=min_key_ttl_seconds,
-                            inference_auth_mode=retry_inference_auth_mode,
-                        )
-                        if retry_auth_path == NOUS_AUTH_PATH_INVOKE_JWT:
-                            mint_payload = None
-                            selected_auth_path = NOUS_AUTH_PATH_INVOKE_JWT
-                            _select_nous_invoke_jwt(
-                                state,
-                                access_token=access_token,
-                                sequence_id=sequence_id,
-                            )
-                        else:
-                            mint_payload = _mint_agent_key(
-                                client=client, portal_base_url=portal_base_url,
-                                access_token=access_token, min_ttl_seconds=min_key_ttl_seconds,
-                            )
-                    else:
-                        raise
-
-            if mint_payload is not None:
-                now = datetime.now(timezone.utc)
-                state["agent_key"] = mint_payload.get("api_key")
-                state["agent_key_id"] = mint_payload.get("key_id")
-                state["agent_key_expires_at"] = mint_payload.get("expires_at")
-                state["agent_key_expires_in"] = mint_payload.get("expires_in")
-                state["agent_key_reused"] = bool(mint_payload.get("reused", False))
-                state["agent_key_obtained_at"] = now.isoformat()
-                minted_url = _validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))
-                if minted_url:
-                    inference_base_url = minted_url
-                _oauth_trace(
-                    "mint_success",
-                    sequence_id=sequence_id,
-                    reused=bool(mint_payload.get("reused", False)),
-                )
-
-            # Persist routing and TLS metadata for non-interactive refresh/mint
+            # Persist routing and TLS metadata for non-interactive refresh.
             state["portal_base_url"] = portal_base_url
             state["inference_base_url"] = inference_base_url
             state["client_id"] = client_id
@@ -5659,12 +5350,8 @@ def resolve_nous_runtime_credentials(
         "key_id": state.get("agent_key_id"),
         "expires_at": expires_at,
         "expires_in": expires_in,
-        "source": (
-            NOUS_AUTH_PATH_INVOKE_JWT
-            if selected_auth_path == NOUS_AUTH_PATH_INVOKE_JWT
-            else ("cache" if used_cached_key else "portal")
-        ),
-        "auth_path": selected_auth_path,
+        "source": NOUS_AUTH_PATH_INVOKE_JWT,
+        "auth_path": NOUS_AUTH_PATH_INVOKE_JWT,
     }
 
 
@@ -5689,8 +5376,7 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
     """Best-effort status from the credential pool.
 
     This is a fallback only. The auth-store provider state is the runtime source
-    of truth because it is what ``resolve_nous_runtime_credentials()`` refreshes
-    and mints against.
+    of truth because it is what ``resolve_nous_runtime_credentials()`` refreshes.
     """
     try:
         from agent.credential_pool import load_pool
@@ -5710,7 +5396,7 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
             return (agent_exp, access_exp, -priority)
 
         entry = max(entries, key=_entry_sort_key)
-        runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+        runtime_key = getattr(entry, "runtime_api_key", None)
         if not runtime_key:
             return _empty_nous_auth_status()
         access_token = getattr(entry, "access_token", None)
@@ -5782,7 +5468,7 @@ def get_nous_auth_status() -> Dict[str, Any]:
     """Status snapshot for Nous auth.
 
     Prefer the auth-store provider state, because that is the live source of
-    truth for refresh + mint operations. When provider state exists, validate it
+    truth for refresh operations. When provider state exists, validate it
     by resolving runtime credentials so revoked refresh sessions do not show up
     as a healthy login. If provider state is absent, fall back to the credential
     pool for the just-logged-in / not-yet-promoted case.
@@ -5829,7 +5515,7 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
             "source": "auth_store",
         }
         try:
-            creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
+            creds = resolve_nous_runtime_credentials()
             refreshed_state = get_provider_auth_state("nous") or state
             base_status.update(
                 {
@@ -6917,7 +6603,7 @@ def _xai_oauth_loopback_login(
 
             _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
 
-            if open_browser and not _is_remote_session():
+            if open_browser and not _is_remote_session() and _can_open_graphical_browser():
                 try:
                     opened = webbrowser.open(authorize_url)
                 except Exception:
@@ -7359,7 +7045,7 @@ def _minimax_oauth_login(
         print("To continue:")
         print(f"  1. Open: {verification_url}")
         print(f"  2. If prompted, enter code: {user_code}")
-        if open_browser:
+        if open_browser and _can_open_graphical_browser():
             if webbrowser.open(verification_url):
                 print("  (Opened browser for verification)")
             else:
@@ -7627,7 +7313,6 @@ def _nous_device_code_login(
     timeout_seconds: float = 15.0,
     insecure: bool = False,
     ca_bundle: Optional[str] = None,
-    min_key_ttl_seconds: int = 5 * 60,
 ) -> Dict[str, Any]:
     """Run the Nous device-code flow and return full OAuth state without persisting."""
     pconfig = PROVIDER_REGISTRY["nous"]
@@ -7643,10 +7328,7 @@ def _nous_device_code_login(
         or pconfig.inference_base_url
     ).rstrip("/")
     client_id = client_id or pconfig.client_id
-    scope, explicit_scope = _nous_device_scope_with_env_override(
-        scope,
-        default_scope=pconfig.scope,
-    )
+    scope = scope or pconfig.scope
     timeout = httpx.Timeout(timeout_seconds)
     verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
 
@@ -7661,12 +7343,11 @@ def _nous_device_code_login(
         print(f"TLS verification: custom CA bundle ({ca_bundle})")
 
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
-        device_data, scope = _request_nous_device_code_with_scope_fallback(
+        device_data = _request_device_code(
             client=client,
             portal_base_url=portal_base_url,
             client_id=client_id,
             scope=scope,
-            allow_legacy_fallback=not explicit_scope,
         )
 
         verification_url = str(device_data["verification_uri_complete"])
@@ -7733,10 +7414,8 @@ def _nous_device_code_login(
     try:
         return refresh_nous_oauth_from_state(
             auth_state,
-            min_key_ttl_seconds=min_key_ttl_seconds,
             timeout_seconds=timeout_seconds,
             force_refresh=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
         )
     except AuthError as exc:
         if exc.code == "subscription_required":
@@ -7788,7 +7467,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 print("Rehydrating Nous session from shared credentials...")
                 auth_state = _try_import_shared_nous_state(
                     timeout_seconds=timeout_seconds,
-                    min_key_ttl_seconds=5 * 60,
                 )
                 if auth_state is None:
                     print("Could not refresh shared credentials — falling back to device-code login.")
@@ -7803,7 +7481,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 timeout_seconds=timeout_seconds,
                 insecure=insecure,
                 ca_bundle=ca_bundle,
-                min_key_ttl_seconds=5 * 60,
             )
 
         inference_base_url = auth_state["inference_base_url"]

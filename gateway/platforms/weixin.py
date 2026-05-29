@@ -658,52 +658,6 @@ def _split_table_row(line: str) -> List[str]:
     return [cell.strip() for cell in row.split("|")]
 
 
-def _rewrite_headers_for_weixin(line: str) -> str:
-    match = _HEADER_RE.match(line)
-    if not match:
-        return line.rstrip()
-    level = len(match.group(1))
-    title = match.group(2).strip()
-    if level == 1:
-        return f"【{title}】"
-    return f"**{title}**"
-
-
-def _rewrite_table_block_for_weixin(lines: List[str]) -> str:
-    if len(lines) < 2:
-        return "\n".join(lines)
-    headers = _split_table_row(lines[0])
-    body_rows = [_split_table_row(line) for line in lines[2:] if line.strip()]
-    if not headers or not body_rows:
-        return "\n".join(lines)
-
-    formatted_rows: List[str] = []
-    for row in body_rows:
-        pairs = []
-        for idx, header in enumerate(headers):
-            if idx >= len(row):
-                break
-            label = header or f"Column {idx + 1}"
-            value = row[idx].strip()
-            if value:
-                pairs.append((label, value))
-        if not pairs:
-            continue
-        if len(pairs) == 1:
-            label, value = pairs[0]
-            formatted_rows.append(f"- {label}: {value}")
-            continue
-        if len(pairs) == 2:
-            label, value = pairs[0]
-            other_label, other_value = pairs[1]
-            formatted_rows.append(f"- {label}: {value}")
-            formatted_rows.append(f"  {other_label}: {other_value}")
-            continue
-        summary = " | ".join(f"{label}: {value}" for label, value in pairs)
-        formatted_rows.append(f"- {summary}")
-    return "\n".join(formatted_rows) if formatted_rows else "\n".join(lines)
-
-
 def _normalize_markdown_blocks(content: str) -> str:
     lines = content.splitlines()
     result: List[str] = []
@@ -1442,6 +1396,11 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         await self.handle_message(event)
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Weixin gates DM/group access at intake via dm_policy/group_policy."""
+        return True
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":

@@ -299,3 +299,51 @@ def test_execute_code_entry_blocks_before_spawn_when_guard_denies(monkeypatch, t
     assert result["status"] == "error"
     assert "BLOCKED" in result["error"]
     assert not marker.exists()  # guard denied before the child was spawned
+
+
+# ---------------------------------------------------------------------------
+# 6. Env-scrub diagnosability mitigation (#27303 follow-up)
+# ---------------------------------------------------------------------------
+
+def test_env_scrub_logs_dropped_hermes_vars(caplog):
+    """Dropping a non-allowlisted, non-secret HERMES_* var must be diagnosable:
+    the scrub emits a one-shot debug log naming the dropped vars and pointing at
+    the env_passthrough opt-in, so the silent behavior change (#27303) doesn't
+    leave users guessing why a sandbox script sees an unset HERMES_* var."""
+    import logging
+
+    from tools.code_execution_tool import _scrub_child_env
+
+    env = {
+        "HERMES_HOME": "/h",          # allowlisted → kept, not logged
+        "HERMES_BASE_URL": "https://x",   # dropped → logged
+        "HERMES_KANBAN_DB": "postgres://u:p@h/db",  # dropped → logged
+        "HERMES_API_KEY": "sk",       # secret → dropped silently (not logged)
+        "PATH": "/usr/bin",           # safe prefix → kept
+    }
+    with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
+        out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
+
+    assert "HERMES_HOME" in out and "PATH" in out
+    assert "HERMES_BASE_URL" not in out and "HERMES_KANBAN_DB" not in out
+
+    msgs = "\n".join(r.getMessage() for r in caplog.records)
+    assert "HERMES_BASE_URL" in msgs and "HERMES_KANBAN_DB" in msgs
+    assert "env_passthrough" in msgs
+    # Secret vars are dropped but must NOT be named in the diagnostic log.
+    assert "HERMES_API_KEY" not in msgs
+
+
+def test_env_scrub_no_log_when_nothing_dropped(caplog):
+    """No diagnostic noise when there are no dropped HERMES_* vars."""
+    import logging
+
+    from tools.code_execution_tool import _scrub_child_env
+
+    with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
+        _scrub_child_env(
+            {"HERMES_HOME": "/h", "PATH": "/usr/bin"},
+            is_passthrough=lambda _: False,
+            is_windows=False,
+        )
+    assert "dropped" not in "\n".join(r.getMessage() for r in caplog.records)

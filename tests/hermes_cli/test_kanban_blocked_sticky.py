@@ -200,6 +200,125 @@ def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -
 # ---------------------------------------------------------------------------
 
 
+def test_dispatch_repairs_legacy_ready_task_with_sticky_block(kanban_home: Path) -> None:
+    """If an older dispatcher already promoted a review-required block
+    back to ``ready``, the next dispatcher tick must repair the task to
+    ``blocked`` instead of leaving it ready-but-respawn-guarded."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="already corrupted review task")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        kb.block_task(
+            conn,
+            tid,
+            reason="review-required: review the branch",
+            expected_run_id=task.current_run_id,
+        )
+
+        # Reproduce the live corrupt state: a sticky block event exists,
+        # but a buggy promotion flipped the task back to ready afterward.
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'promoted', NULL, ?)",
+            (tid, int(time.time())),
+        )
+        conn.commit()
+        ready_task = kb.get_task(conn, tid)
+        assert ready_task is not None
+        assert ready_task.status == "ready"
+        assert kb._has_sticky_block(conn, tid)
+
+        promoted = kb.recompute_ready(conn)
+
+        assert promoted == 0
+        repaired = kb.get_task(conn, tid)
+        assert repaired is not None
+        assert repaired.status == "blocked"
+
+
+def test_claim_refuses_ready_task_with_sticky_block(kanban_home: Path) -> None:
+    """The ready->running claim boundary is the final defensive gate:
+    review-required sticky blocks are blockers for this task, not new work."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="sticky ready must not claim")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        kb.block_task(
+            conn,
+            tid,
+            reason="review-required: needs approval",
+            expected_run_id=task.current_run_id,
+        )
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        conn.commit()
+
+        claimed = kb.claim_task(conn, tid)
+
+        assert claimed is None
+        repaired = kb.get_task(conn, tid)
+        assert repaired is not None
+        assert repaired.status == "blocked"
+
+
+def test_recompute_repairs_corrupted_sticky_todo_before_promotion(kanban_home: Path) -> None:
+    """A sticky block that somehow landed in ``todo`` must be repaired
+    before parent-completion promotion can make it runnable again."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        initial = kb.get_task(conn, child)
+        assert initial is not None
+        assert initial.status == "todo"
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'blocked', ?, ?)",
+            (child, '{"reason":"review-required: todo repair"}', int(time.time())),
+        )
+        conn.commit()
+
+        kb.complete_task(conn, parent, result="parent ok")
+        assert kb.recompute_ready(conn) == 0
+
+        repaired = kb.get_task(conn, child)
+        assert repaired is not None
+        assert repaired.status == "blocked"
+
+
+def test_claim_repairs_sticky_ready_before_parent_demote(kanban_home: Path) -> None:
+    """A sticky-ready child with unfinished parents must be restored to
+    blocked, not demoted to ``todo`` and later promoted when parents finish."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+
+        # Reproduce a corrupt intermediate state that should never become
+        # runnable: the child has a sticky review block event but status was
+        # incorrectly moved to ready while its parent is still open.
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'blocked', ?, ?)",
+            (child, '{"reason":"review-required: parent-gated review"}', int(time.time())),
+        )
+        conn.commit()
+
+        claimed = kb.claim_task(conn, child)
+
+        assert claimed is None
+        repaired = kb.get_task(conn, child)
+        assert repaired is not None
+        assert repaired.status == "blocked"
+
+        kb.complete_task(conn, parent, result="parent ok")
+        assert kb.recompute_ready(conn) == 0
+        final = kb.get_task(conn, child)
+        assert final is not None
+        assert final.status == "blocked"
+
+
 def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
     """Reproduces the exact #28712 loop and asserts the dispatcher
     leaves the task blocked instead of cycling.

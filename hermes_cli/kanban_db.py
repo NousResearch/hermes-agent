@@ -2457,6 +2457,33 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+def _restore_sticky_block(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+) -> bool:
+    """Repair runnable/pending tasks that still carry an explicit sticky block.
+
+    Older dispatchers could promote a review-required / operator block
+    back to ``ready``.  A later claim could also demote that corrupted
+    ``ready`` row with unfinished parents to ``todo``.  The event stream
+    still records that the most recent explicit block/unblock transition
+    is ``blocked``; use that durable signal to put the task back in
+    ``blocked`` before it can be promoted, claimed, or respawn-guarded as
+    if it were runnable work.
+    """
+    cur = conn.execute(
+        "UPDATE tasks SET status = 'blocked' "
+        "WHERE id = ? AND status IN ('ready', 'todo')",
+        (task_id,),
+    )
+    if cur.rowcount != 1:
+        return False
+    _append_event(conn, task_id, "blocked_restored", {"reason": reason})
+    return True
+
+
 def recompute_ready(conn: sqlite3.Connection) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
@@ -2467,25 +2494,42 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
     blocked purely by a parent dependency unblocks itself when the
     parent completes), *except* when the most recent block event was a
     worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).  Without that guard, a
-    ``review-required`` handoff would auto-respawn, the fresh worker
-    would find nothing to do, exit cleanly, get recorded as a protocol
-    violation, and the cycle would repeat indefinitely.
+    explicit ``kanban_unblock`` (#28712).  If an older dispatcher
+    already promoted a sticky block back to ``ready``, the next tick
+    repairs it to ``blocked`` before it can be respawn-guarded or
+    claimed as runnable work.
     """
     promoted = 0
     with write_txn(conn):
-        todo_rows = conn.execute(
-            "SELECT id, status FROM tasks WHERE status IN ('todo', 'blocked')"
+        candidate_rows = conn.execute(
+            "SELECT id, status FROM tasks WHERE status IN ('ready', 'todo', 'blocked')"
         ).fetchall()
-        for row in todo_rows:
+        sticky_ids: set[str] = set()
+        for row in candidate_rows:
             task_id = row["id"]
             cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+            if _has_sticky_block(conn, task_id):
+                sticky_ids.add(task_id)
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
                 # legitimate exit (it emits ``"unblocked"`` which flips
-                # this predicate back).
-                continue
+                # this predicate back).  If older/racy code already moved
+                # the sticky task into a runnable/pending column, repair it
+                # before continuing.
+                if cur_status in ("ready", "todo"):
+                    _restore_sticky_block(
+                        conn,
+                        task_id,
+                        reason="sticky_block_recompute_repair",
+                    )
+
+        todo_rows = [
+            row for row in candidate_rows
+            if row["status"] in ("todo", "blocked") and row["id"] not in sticky_ids
+        ]
+        for row in todo_rows:
+            task_id = row["id"]
+            cur_status = row["status"]
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -2533,6 +2577,22 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        # Review-required/operator blocks are branch-local blockers for
+        # this task.  If a previous dispatcher already corrupted one back
+        # to ready, repair it here as the final ready->running guard before
+        # any parent-dependency demotion can move it to a promotable ``todo``.
+        if _has_sticky_block(conn, task_id):
+            if _restore_sticky_block(
+                conn,
+                task_id,
+                reason="sticky_block_claim_rejected",
+            ):
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {"reason": "sticky_block"},
+                )
+            return None
+
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -2558,6 +2618,7 @@ def claim_task(
                 {"reason": "parents_not_done"},
             )
             return None
+
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant

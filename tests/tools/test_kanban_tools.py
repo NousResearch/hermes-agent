@@ -61,6 +61,28 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
 
+def test_kanban_handoff_quality_templates_in_tool_schemas():
+    """Tool descriptions should reinforce completion/block handoff shape."""
+    from tools import kanban_tools as kt
+
+    complete_schema = json.dumps(kt.KANBAN_COMPLETE_SCHEMA)
+    block_schema = json.dumps(kt.KANBAN_BLOCK_SCHEMA)
+
+    handoff_tokens = [
+        "outcome",
+        "files_changed",
+        "tests_run",
+        "evidence",
+        "risks",
+        "follow_ups",
+    ]
+    for token in handoff_tokens:
+        assert token in complete_schema
+    assert "exact blocker" in block_schema
+    assert "steps" in block_schema
+    assert "input needed" in block_schema
+
+
 def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_path):
     """Dispatcher-spawned workers must get lifecycle tools even when the
     assignee profile restricts enabled toolsets and does not list kanban.
@@ -1142,6 +1164,12 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    # Handoff quality template signals
+    assert "files_changed" in prompt
+    assert "tests_run" in prompt
+    assert "evidence" in prompt
+    assert "exact blocker" in prompt
+    assert "specific input needed" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 
@@ -1338,7 +1366,11 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     try:
         run1 = kb.latest_run(conn, worker_env)
         kb._set_worker_pid(conn, worker_env, 98765)
-        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+        # Backdate the synthetic worker past the launch grace period so this
+        # test exercises stale-run rejection rather than fresh-spawn crash
+        # suppression, even if the grace env var default changes.
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (0, worker_env))
+        conn.commit()
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [worker_env]
 

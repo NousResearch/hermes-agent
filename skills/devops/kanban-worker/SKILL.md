@@ -32,16 +32,29 @@ If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading
 
 ## Good summary + metadata shapes
 
-The `kanban_complete(summary=..., metadata=...)` handoff is how downstream workers read what you did. Patterns that work:
+The `kanban_complete(summary=..., metadata=...)` handoff is how downstream workers read what you did. The low-risk enforcement layer is prompt/tool-schema guidance first; hard API validation can come later after existing workers have adapted.
+
+Minimum metadata keys for terminal completions:
+- `outcome`: concise result/state
+- `files_changed`: paths or empty list (`changed_files` is still accepted as legacy)
+- `tests_run`: commands/counts/results, or empty list if not applicable
+- `evidence`: concrete proof (commands, artifact paths, source URLs, screenshots)
+- `risks`: known gaps/regressions/uncertainties, or empty list
+- `follow_ups`: next work that should become separate cards, or empty list
+
+Patterns that work:
 
 **Coding task:**
 ```python
 kanban_complete(
     summary="shipped rate limiter — token bucket, keys on user_id with IP fallback, 14 tests pass",
     metadata={
-        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
-        "tests_run": 14,
-        "tests_passed": 14,
+        "outcome": "rate limiter shipped",
+        "files_changed": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "tests_run": ["pytest tests/test_rate_limiter.py -q (14 passed)"],
+        "evidence": ["14/14 targeted tests pass"],
+        "risks": [],
+        "follow_ups": [],
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
     },
 )
@@ -56,11 +69,13 @@ import json
 
 kanban_comment(
     body="review-required handoff:\n" + json.dumps({
-        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
-        "tests_run": 14,
-        "tests_passed": 14,
+        "outcome": "rate limiter shipped; needs human review before merge",
+        "files_changed": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "tests_run": ["pytest tests/test_rate_limiter.py -q (14 passed)"],
+        "evidence": ["14/14 targeted tests pass", "diff_path: /path/to/worktree"],
+        "risks": ["user_id/IP fallback choice may affect anonymous endpoints"],
+        "follow_ups": [],
         "diff_path": "/path/to/worktree",  # or PR url if pushed
-        "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
     }, indent=2),
 )
 kanban_block(
@@ -75,6 +90,12 @@ Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-li
 kanban_complete(
     summary="3 competing libraries reviewed; vLLM wins on throughput, SGLang on latency, Tensorrt-LLM on memory efficiency",
     metadata={
+        "outcome": "recommend vLLM",
+        "files_changed": [],
+        "tests_run": [],
+        "evidence": ["12 sources reviewed", "benchmarks normalized against vLLM=1.0"],
+        "risks": ["public benchmarks may not match local workload"],
+        "follow_ups": [],
         "sources_read": 12,
         "recommendation": "vLLM",
         "benchmarks": {"vllm": 1.0, "sglang": 0.87, "trtllm": 0.72},
@@ -87,6 +108,12 @@ kanban_complete(
 kanban_complete(
     summary="reviewed PR #123; 2 blocking issues found (SQL injection in /search, missing CSRF on /settings)",
     metadata={
+        "outcome": "review failed with 2 blocking issues",
+        "files_changed": [],
+        "tests_run": [],
+        "evidence": ["manual diff review of api/search.py and api/settings.py"],
+        "risks": ["SQL injection in /search", "missing CSRF on /settings"],
+        "follow_ups": ["create remediation cards for both findings"],
         "pr_number": 123,
         "findings": [
             {"severity": "critical", "file": "api/search.py", "line": 42, "issue": "raw SQL concat"},
@@ -136,7 +163,7 @@ kanban_comment(
     task_id=os.environ["HERMES_KANBAN_TASK"],
     body="Full context: I have user IPs from Cloudflare headers but some users are behind NATs with thousands of peers. Keying on IP alone causes false positives.",
 )
-kanban_block(reason="Rate limit key choice: IP (simple, NAT-unsafe) or user_id (requires auth, skips anonymous endpoints)?")
+kanban_block(reason="Rate limit key choice blocked: tried Cloudflare IP headers and auth user_id; need human decision between IP (simple, NAT-unsafe) and user_id (requires auth, skips anonymous endpoints).")
 ```
 
 The block message is what appears in the dashboard / gateway notifier. The comment is the deeper context a human reads when they open the task.

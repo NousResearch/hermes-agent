@@ -871,8 +871,10 @@ KANBAN_COMPLETE_SCHEMA = {
         "Mark your current task done with a structured handoff for "
         "downstream workers and humans. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
-        "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
+        "machine-readable facts in ``metadata``. Expected keys are "
+        "``outcome``, ``files_changed`` (or legacy ``changed_files``), "
+        "``tests_run``, ``evidence``, ``risks``, and ``follow_ups``; "
+        "use empty lists/strings when a key is not applicable. At least one of "
         "``summary`` or ``result`` is required. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
@@ -903,8 +905,10 @@ KANBAN_COMPLETE_SCHEMA = {
                 "type": "object",
                 "description": (
                     "Free-form dict of structured facts about this "
-                    "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
+                    "attempt. Preferred shape: {\"outcome\": \"...\", "
+                    "\"files_changed\": [...], \"tests_run\": [...], "
+                    "\"evidence\": [...], \"risks\": [...], "
+                    "\"follow_ups\": [...]}. Surfaced to downstream "
                     "workers alongside ``summary``."
                 ),
             },
@@ -965,7 +969,9 @@ KANBAN_BLOCK_SCHEMA = {
         "to proceed. ``reason`` will be shown to the human on the "
         "board and included in context when someone unblocks you. "
         "Use for genuine blockers only — don't block on things you can "
-        "resolve yourself."
+        "resolve yourself. For high-quality blocker handoffs, include "
+        "the exact blocker, steps tried, and specific input needed; put "
+        "longer context/evidence/risks in a prior ``kanban_comment``."
     ),
     "parameters": {
         "type": "object",
@@ -978,8 +984,10 @@ KANBAN_BLOCK_SCHEMA = {
                 "type": "string",
                 "description": (
                     "What you need answered, in one or two sentences. "
-                    "Don't paste the whole conversation; the human has "
-                    "the board and can ask follow-ups via comments."
+                    "Name the exact blocker, the steps already tried, "
+                    "and the input needed to proceed. Don't paste the "
+                    "whole conversation; the human has the board and "
+                    "can ask follow-ups via comments."
                 ),
             },
             "board": _board_schema_prop(),

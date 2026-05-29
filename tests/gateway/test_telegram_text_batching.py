@@ -76,6 +76,27 @@ class TestTextBatching:
         adapter._enqueue_text_event.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_verify_code_command_bypasses_telegram_allowed_user_gate(self, monkeypatch):
+        import gateway.platforms.telegram as telegram_platform
+
+        adapter = _make_adapter()
+        adapter._should_process_message = MagicMock(return_value=False)
+        adapter._build_message_event = MagicMock()
+        redeem = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(telegram_platform, "redeem_verify_code", redeem, raising=False)
+
+        await adapter._handle_command(_make_update("/verify 123456"), MagicMock())
+
+        redeem.assert_awaited_once_with(platform="telegram", code="123456", user_id="42")
+        adapter._bot.send_message.assert_awaited_once_with(
+            chat_id=12345,
+            text="✅ 已將你加為 owner，現在可以開始對話",
+        )
+        adapter._should_process_message.assert_not_called()
+        adapter._build_message_event.assert_not_called()
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_non_verify_text_keeps_existing_telegram_flow(self, monkeypatch):
         import gateway.platforms.telegram as telegram_platform
 

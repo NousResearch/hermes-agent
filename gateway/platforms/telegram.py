@@ -5181,6 +5181,27 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _try_handle_verify(self, msg: Message) -> bool:
+        if not msg or not msg.text:
+            return False
+        verify_cmd = parse_verify_command(msg.text)
+        if not verify_cmd:
+            return False
+        from_user = getattr(msg, "from_user", None)
+        user_id = getattr(from_user, "id", None)
+        if user_id is None:
+            return False
+        result = await redeem_verify_code(
+            platform="telegram",
+            code=verify_cmd["code"],
+            user_id=str(user_id),
+        )
+        await self._bot.send_message(
+            chat_id=msg.chat_id,
+            text=verify_ack_text(result),
+        )
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -5191,17 +5212,7 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
-        verify_cmd = parse_verify_command(msg.text)
-        if verify_cmd:
-            result = await redeem_verify_code(
-                platform="telegram",
-                code=verify_cmd["code"],
-                user_id=str(msg.from_user.id),
-            )
-            await self._bot.send_message(
-                chat_id=msg.chat_id,
-                text=verify_ack_text(result),
-            )
+        if await self._try_handle_verify(msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -5218,6 +5229,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming command messages."""
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
+            return
+        if await self._try_handle_verify(msg):
             return
         if not self._should_process_message(msg, is_command=True):
             return

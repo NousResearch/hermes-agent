@@ -206,7 +206,7 @@ class TestFallbackChain:
 
         def fake_fetch(url, timeout):
             calls.append(url)
-            if "hermes-agent.nousresearch.com" in url:
+            if url == self.PRIMARY:
                 return None  # simulate Vercel 403
             return _valid_manifest()
 
@@ -245,7 +245,7 @@ class TestFallbackChain:
 
         def fake_fetch(url, timeout):
             calls.append(url)
-            if "hermes-agent.nousresearch.com" in url:
+            if url == self.PRIMARY:
                 return None
             return manifest
 
@@ -253,7 +253,7 @@ class TestFallbackChain:
             result = model_catalog.get_catalog(force_refresh=True)
 
         assert result == manifest
-        assert any("raw.githubusercontent.com" in c for c in calls)
+        assert self.FALLBACK in calls
 
 
 class TestCuratedAccessors:

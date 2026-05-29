@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -686,6 +687,309 @@ async def get_status():
         "auth_required": auth_required,
         "auth_providers": auth_providers,
     }
+
+
+# ---------------------------------------------------------------------------
+# Read-only Mission Control actions.
+#
+# This is intentionally separate from the legacy mutating Status-page actions
+# below. The registry contains only approved read-only checks; unknown action
+# ids 404, command-backed checks use fixed argv lists, and user input is never
+# interpolated into a shell command.
+# ---------------------------------------------------------------------------
+
+_READONLY_ACTIONS: Dict[str, Dict[str, Any]] = {
+    "data-refresh-read": {
+        "label": "Refresh dashboard-readable data",
+        "description": "Reload read-only config/status/plugin summaries without mutating disk state.",
+    },
+    "backup-status-check": {
+        "label": "Backup status check",
+        "description": "Inspect backup candidates with a fixed read-only Python probe.",
+    },
+    "latest-cron-output": {
+        "label": "Latest cron output",
+        "description": "Read the latest saved cron output for an allowlisted cron job id.",
+    },
+    "hermes-health-check": {
+        "label": "Hermes health check",
+        "description": "Return the same non-sensitive health fields as /api/status.",
+    },
+    "route-plugin-health": {
+        "label": "Route/plugin health",
+        "description": "Inspect mounted dashboard routes and plugin discovery state.",
+    },
+}
+
+_READONLY_COMMAND_TIMEOUT_SECONDS = 10
+_READONLY_OUTPUT_LIMIT_CHARS = 12000
+_READONLY_SUMMARY_LIMIT_CHARS = 500
+
+
+class ReadOnlyActionRequest(BaseModel):
+    job_id: Optional[str] = None
+    profile: Optional[str] = None
+    lines: int = 200
+    include_raw: bool = True
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _summarize_output(text: str) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) > _READONLY_SUMMARY_LIMIT_CHARS:
+        return cleaned[: _READONLY_SUMMARY_LIMIT_CHARS - 3] + "..."
+    return cleaned
+
+
+def _readonly_response(
+    action_id: str,
+    status: str,
+    output: str = "",
+    *,
+    error: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    include_raw: bool = True,
+) -> Dict[str, Any]:
+    output_text = str(output or "")
+    if len(output_text) > _READONLY_OUTPUT_LIMIT_CHARS:
+        output_text = output_text[:_READONLY_OUTPUT_LIMIT_CHARS] + "\n[... output truncated ...]"
+    return {
+        "action_id": action_id,
+        "status": status,
+        "timestamp": _utc_timestamp(),
+        "output_summary": _summarize_output(output_text),
+        "raw_output": output_text if include_raw else "",
+        "error": error,
+        "metadata": metadata or {},
+    }
+
+
+def _readonly_backup_status_command() -> List[str]:
+    code = (
+        "import json; "
+        "from pathlib import Path; "
+        "from hermes_cli.config import get_hermes_home; "
+        "home=get_hermes_home(); candidates=[]; "
+        "candidates.extend((home/'backups').glob('*.zip') if (home/'backups').exists() else []); "
+        "candidates.extend(Path.home().glob('hermes-backup-*.zip')); "
+        "items=[{'path': str(p), 'size': p.stat().st_size, 'mtime': p.stat().st_mtime} for p in candidates if p.is_file()]; "
+        "latest=max(items, key=lambda x: x['mtime']) if items else None; "
+        "print(json.dumps({'candidate_count': len(items), 'latest': latest}, sort_keys=True))"
+    )
+    return [sys.executable, "-c", code]
+
+
+def _run_readonly_command(action_id: str, command: List[str], timeout: int) -> Dict[str, Any]:
+    if action_id != "backup-status-check" or command != _readonly_backup_status_command():
+        raise ValueError(f"Command is not allowlisted for read-only action: {action_id}")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(PROJECT_ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, "HERMES_NONINTERACTIVE": "1"},
+            shell=False,
+            check=False,
+        )
+        return {
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "timed_out": False,
+        }
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        return {
+            "returncode": None,
+            "stdout": stdout,
+            "stderr": stderr or f"timeout after {timeout}s",
+            "timed_out": True,
+        }
+
+
+def _readonly_cron_output_root(profile: Optional[str]) -> Path:
+    _profile_name, home = _cron_profile_home(profile or "default")
+    return home / "cron" / "output"
+
+
+def _validate_cron_job_id(job_id: str) -> str:
+    text = str(job_id or "").strip()
+    if not text or text in {".", ".."} or "/" in text or "\\" in text:
+        raise ValueError(f"Invalid cron job id: {job_id!r}")
+    candidate = Path(text)
+    if candidate.is_absolute() or candidate.drive:
+        raise ValueError(f"Invalid cron job id: {job_id!r}")
+    return text
+
+
+def _latest_cron_output(action_id: str, body: ReadOnlyActionRequest) -> Dict[str, Any]:
+    job_id = _validate_cron_job_id(body.job_id or "")
+    lines = min(max(int(body.lines or 200), 1), 2000)
+    output_root = _readonly_cron_output_root(body.profile).resolve()
+    output_dir = _readonly_cron_output_root(body.profile) / job_id
+    try:
+        output_dir_resolved = output_dir.resolve()
+        output_dir_resolved.relative_to(output_root)
+    except ValueError as exc:
+        raise ValueError(f"Invalid cron job id: {job_id!r}") from exc
+    files = sorted(output_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True) if output_dir.is_dir() else []
+    if not files:
+        return _readonly_response(
+            action_id,
+            "ok",
+            "No saved cron output found.",
+            metadata={"job_id": job_id, "profile": body.profile or "default", "found": False},
+            include_raw=body.include_raw,
+        )
+    latest = files[0]
+    try:
+        latest_resolved = latest.resolve()
+        latest_resolved.relative_to(output_dir_resolved)
+    except ValueError as exc:
+        raise ValueError(f"Invalid cron output path for job id: {job_id!r}") from exc
+    text = latest_resolved.read_text(encoding="utf-8", errors="replace")
+    tail = "\n".join(text.splitlines()[-lines:])
+    return _readonly_response(
+        action_id,
+        "ok",
+        tail,
+        metadata={
+            "job_id": job_id,
+            "profile": body.profile or "default",
+            "path": str(latest),
+            "found": True,
+            "lines": lines,
+        },
+        include_raw=body.include_raw,
+    )
+
+
+async def _run_readonly_action(action_id: str, body: ReadOnlyActionRequest) -> Dict[str, Any]:
+    if action_id not in _READONLY_ACTIONS:
+        raise HTTPException(status_code=404, detail=f"Unknown read-only action: {action_id}")
+
+    if action_id == "hermes-health-check":
+        result = get_status()
+        if asyncio.iscoroutine(result):
+            result = await result
+        return _readonly_response(
+            action_id,
+            "ok",
+            json.dumps(result, sort_keys=True, default=str),
+            metadata={"source": "/api/status"},
+            include_raw=body.include_raw,
+        )
+
+    if action_id == "data-refresh-read":
+        result = get_status()
+        if asyncio.iscoroutine(result):
+            result = await result
+        plugins = _get_dashboard_plugins(force_rescan=True)
+        payload = {
+            "status": result,
+            "plugin_count": len(plugins),
+            "config_path": str(get_config_path()),
+            "env_path": str(get_env_path()),
+        }
+        return _readonly_response(
+            action_id,
+            "ok",
+            json.dumps(payload, sort_keys=True, default=str),
+            metadata={"plugin_count": len(plugins)},
+            include_raw=body.include_raw,
+        )
+
+    if action_id == "route-plugin-health":
+        routes = sorted({getattr(route, "path", "") for route in app.routes if getattr(route, "path", "")})
+        plugins = _get_dashboard_plugins()
+        payload = {
+            "route_count": len(routes),
+            "routes": routes,
+            "plugin_count": len(plugins),
+            "plugins": [
+                {k: v for k, v in plugin.items() if not k.startswith("_")}
+                for plugin in plugins
+            ],
+        }
+        return _readonly_response(
+            action_id,
+            "ok",
+            json.dumps(payload, sort_keys=True, default=str),
+            metadata={"route_count": len(routes), "plugin_count": len(plugins)},
+            include_raw=body.include_raw,
+        )
+
+    if action_id == "latest-cron-output":
+        try:
+            return _latest_cron_output(action_id, body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            return _readonly_response(
+                action_id,
+                "error",
+                "",
+                error={"type": type(exc).__name__, "message": str(exc)},
+                include_raw=body.include_raw,
+            )
+
+    if action_id == "backup-status-check":
+        command = _readonly_backup_status_command()
+        result = _run_readonly_command(action_id, command, _READONLY_COMMAND_TIMEOUT_SECONDS)
+        output = result.get("stdout") or ""
+        stderr = result.get("stderr") or ""
+        timed_out = bool(result.get("timed_out"))
+        returncode = result.get("returncode")
+        status = "timeout" if timed_out else ("ok" if returncode == 0 else "error")
+        error = None
+        if status != "ok":
+            error = {
+                "type": "Timeout" if timed_out else "CommandFailed",
+                "message": stderr or f"read-only command exited with {returncode}",
+                "returncode": returncode,
+            }
+        return _readonly_response(
+            action_id,
+            status,
+            output,
+            error=error,
+            metadata={"returncode": returncode, "stderr": stderr, "timeout_seconds": _READONLY_COMMAND_TIMEOUT_SECONDS},
+            include_raw=body.include_raw,
+        )
+
+    raise HTTPException(status_code=404, detail=f"Unknown read-only action: {action_id}")
+
+
+@app.get("/api/actions/read-only")
+async def list_readonly_actions():
+    return {
+        "actions": [
+            {"id": action_id, **details}
+            for action_id, details in _READONLY_ACTIONS.items()
+        ]
+    }
+
+
+@app.post("/api/actions/read-only/{action_id}/run")
+async def run_readonly_action(action_id: str, body: ReadOnlyActionRequest = ReadOnlyActionRequest()):
+    return await _run_readonly_action(action_id, body)
+
+
+@app.post("/api/actions/{unsafe_action:path}/run")
+async def reject_non_readonly_action(unsafe_action: str):
+    raise HTTPException(status_code=404, detail=f"Unknown read-only action: {unsafe_action}")
 
 
 # ---------------------------------------------------------------------------

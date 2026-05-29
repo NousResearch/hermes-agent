@@ -121,6 +121,169 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def _assert_readonly_action_response(self, data, action_id):
+        assert data["action_id"] == action_id
+        assert data["status"] in {"ok", "error", "timeout"}
+        assert "timestamp" in data
+        assert "output_summary" in data
+        assert "raw_output" in data
+        assert "error" in data
+
+    def test_readonly_action_list_exposes_only_approved_actions(self):
+        resp = self.client.get("/api/actions/read-only")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = {item["id"] for item in data["actions"]}
+        assert ids == {
+            "data-refresh-read",
+            "backup-status-check",
+            "latest-cron-output",
+            "hermes-health-check",
+            "route-plugin-health",
+        }
+        forbidden_words = {"restart", "update", "deploy", "delete", "write", "install", "enable", "disable"}
+        assert all(not (forbidden_words & set(action_id.split("-"))) for action_id in ids)
+
+    def test_readonly_actions_can_be_invoked_end_to_end(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        cron_output = tmp_path / "cron" / "output" / "daily-backup"
+        cron_output.mkdir(parents=True)
+        (cron_output / "2026-05-28_03-00-00.md").write_text("old output", encoding="utf-8")
+        (cron_output / "2026-05-29_03-00-00.md").write_text("latest backup output\nline 2", encoding="utf-8")
+
+        monkeypatch.setattr(web_server, "get_status", lambda: {"version": "test", "gateway_running": True})
+        monkeypatch.setattr(web_server, "_get_dashboard_plugins", lambda force_rescan=False: [{"name": "demo", "_dir": str(tmp_path)}])
+        monkeypatch.setattr(web_server, "_run_readonly_command", lambda action_id, command, timeout: {
+            "returncode": 0,
+            "stdout": f"{action_id} ok",
+            "stderr": "",
+            "timed_out": False,
+        })
+        monkeypatch.setattr(web_server, "_readonly_cron_output_root", lambda profile: cron_output.parent)
+
+        for action_id in [
+            "data-refresh-read",
+            "backup-status-check",
+            "latest-cron-output",
+            "hermes-health-check",
+            "route-plugin-health",
+        ]:
+            body = {"job_id": "daily-backup"} if action_id == "latest-cron-output" else {}
+            resp = self.client.post(f"/api/actions/read-only/{action_id}/run", json=body)
+            assert resp.status_code == 200
+            data = resp.json()
+            self._assert_readonly_action_response(data, action_id)
+            assert data["status"] == "ok"
+
+        cron_data = self.client.post(
+            "/api/actions/read-only/latest-cron-output/run",
+            json={"job_id": "daily-backup", "lines": 1},
+        ).json()
+        assert cron_data["raw_output"] == "line 2"
+        assert cron_data["metadata"]["job_id"] == "daily-backup"
+
+    def test_readonly_action_accepts_bodyless_post(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "get_status", lambda: {"version": "test"})
+
+        resp = self.client.post("/api/actions/read-only/hermes-health-check/run")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action_id"] == "hermes-health-check"
+        assert data["status"] == "ok"
+
+    def test_readonly_action_rejects_unknown_or_unsafe_action_ids(self):
+        for action_id in ["gateway-restart", "hermes-update", "..%2F..%2Fstatus", "delete-session"]:
+            resp = self.client.post(f"/api/actions/read-only/{action_id}/run", json={})
+            assert resp.status_code == 404
+
+    def test_readonly_action_reports_command_timeout(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_run_readonly_command", lambda action_id, command, timeout: {
+            "returncode": None,
+            "stdout": "partial stdout",
+            "stderr": "timeout after 1s",
+            "timed_out": True,
+        })
+
+        resp = self.client.post("/api/actions/read-only/backup-status-check/run", json={})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action_id"] == "backup-status-check"
+        assert data["status"] == "timeout"
+        assert "timeout" in data["error"]["message"]
+        assert data["raw_output"] == "partial stdout"
+
+    def test_readonly_command_rejects_non_allowlisted_commands(self):
+        import pytest
+        import hermes_cli.web_server as web_server
+
+        with pytest.raises(ValueError, match="not allowlisted"):
+            web_server._run_readonly_command("gateway-restart", ["hermes", "gateway", "restart"], 1)
+
+    def test_readonly_command_uses_no_shell(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        calls = {}
+
+        class Completed:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        def fake_run(command, **kwargs):
+            calls["command"] = command
+            calls.update(kwargs)
+            return Completed()
+
+        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+        result = web_server._run_readonly_command(
+            "backup-status-check",
+            web_server._readonly_backup_status_command(),
+            3,
+        )
+
+        assert result["returncode"] == 0
+        assert calls["shell"] is False
+        assert calls["stdin"] == web_server.subprocess.DEVNULL
+        assert calls["command"] == web_server._readonly_backup_status_command()
+
+    def test_readonly_latest_cron_output_rejects_path_traversal(self):
+        resp = self.client.post(
+            "/api/actions/read-only/latest-cron-output/run",
+            json={"job_id": "../escape"},
+        )
+
+        assert resp.status_code == 400
+        assert "Invalid cron job id" in resp.json()["detail"]
+
+    def test_readonly_latest_cron_output_rejects_symlink_escape(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        root = tmp_path / "cron" / "output"
+        job_dir = root / "daily-backup"
+        job_dir.mkdir(parents=True)
+        outside = tmp_path / "outside.md"
+        outside.write_text("secret", encoding="utf-8")
+        symlink = job_dir / "2026-05-29_03-00-00.md"
+        symlink.symlink_to(outside)
+        monkeypatch.setattr(web_server, "_readonly_cron_output_root", lambda profile: root)
+
+        resp = self.client.post(
+            "/api/actions/read-only/latest-cron-output/run",
+            json={"job_id": "daily-backup"},
+        )
+
+        assert resp.status_code == 400
+        assert "Invalid cron output path" in resp.json()["detail"]
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

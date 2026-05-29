@@ -290,7 +290,7 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
 
     # Stage 3: network fetch.
     try:
-        response = requests.get(MODELS_DEV_URL, timeout=15)
+        response = requests.get(MODELS_DEV_URL, timeout=15)  # SSRF: add IP block check
         response.raise_for_status()
         data = response.json()
         if isinstance(data, dict) and data:

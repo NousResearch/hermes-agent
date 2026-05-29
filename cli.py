@@ -2542,6 +2542,87 @@ def _detect_file_drop(user_input: str) -> "dict | None":
     }
 
 
+def _detect_inline_image_paths(user_input: str) -> "dict | None":
+    """Detect image file paths *anywhere* in *user_input*, not just leading.
+
+    ``_detect_file_drop`` only recognises a path when it is the first token
+    (drag-and-drop / paste gesture). This helper covers the natural-language
+    case the user actually types, e.g.::
+
+        look at screenshot.png and tell me what's wrong
+        compare ~/a.png and "/tmp/My Shot.png"
+        whats in /tmp/diagram.jpg ?
+
+    It scans whitespace-delimited tokens (plus quoted spans) for ones that
+    end in a known image extension and resolve to a real image file. Matched
+    path tokens are removed from the text so the agent receives a clean
+    prompt alongside the attached images.
+
+    Returns a dict on match::
+
+        {
+            "images": [Path, ...],   # resolved, de-duplicated image paths
+            "remainder": str,        # input text with path tokens removed
+        }
+
+    Returns ``None`` when no inline image path is found. Conservative by
+    design: only tokens whose suffix is in ``_IMAGE_EXTENSIONS`` *and* that
+    resolve to an existing file are matched, so ordinary prose, URLs, and
+    non-image paths are left untouched.
+    """
+    if not isinstance(user_input, str):
+        return None
+
+    stripped = user_input.strip()
+    if not stripped:
+        return None
+
+    # Never reinterpret slash commands as image carriers.
+    if _looks_like_slash_command(stripped):
+        return None
+
+    # Tokenise while keeping quoted spans intact. Quotes commonly wrap paths
+    # that contain spaces (e.g. macOS screenshots).
+    token_re = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+    images: list[Path] = []
+    seen: set[str] = set()
+    kept_tokens: list[str] = []
+
+    for match in token_re.finditer(stripped):
+        token = match.group(0)
+        # Strip trailing sentence punctuation that often follows a path in
+        # natural language ("what is in foo.png?" / "see a.png,").
+        core = token
+        trailing = ""
+        if core and core[-1] not in {'"', "'"}:
+            while core and core[-1] in {".", ",", "?", "!", ";", ":", ")"}:
+                trailing = core[-1] + trailing
+                core = core[:-1]
+
+        unquoted = core
+        if len(unquoted) >= 2 and unquoted[0] in {'"', "'"} and unquoted[-1] == unquoted[0]:
+            unquoted = unquoted[1:-1]
+        suffix = os.path.splitext(unquoted)[1].lower()
+
+        if suffix in _IMAGE_EXTENSIONS:
+            resolved = _resolve_attachment_path(core)
+            if resolved is not None and str(resolved) not in seen:
+                seen.add(str(resolved))
+                images.append(resolved)
+                # Drop the path token from the prompt; preserve trailing
+                # punctuation so the remaining sentence still reads naturally.
+                if trailing:
+                    kept_tokens.append(trailing)
+                continue
+        kept_tokens.append(token)
+
+    if not images:
+        return None
+
+    remainder = re.sub(r"\s+", " ", " ".join(kept_tokens)).strip()
+    return {"images": images, "remainder": remainder}
+
+
 def _format_image_attachment_badges(attached_images: list[Path], image_counter: int, width: int | None = None) -> str:
     """Format the attached-image badge row for the interactive CLI.
 
@@ -13020,7 +13101,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             user_input = _seed
                         else:
                             continue
-                    
+
+                    # Auto-detect image paths typed anywhere in the input
+                    # (not just a leading drag/paste handled by _file_drop
+                    # above). Lets users write naturally, e.g.
+                    #   "look at screenshot.png and tell me what's wrong"
+                    # The matched path tokens are attached as images and
+                    # stripped from the prompt. Skipped for slash commands
+                    # and when a leading file-drop already matched.
+                    if (
+                        not _file_drop
+                        and isinstance(user_input, str)
+                        and not _looks_like_slash_command(user_input)
+                    ):
+                        _inline = _detect_inline_image_paths(user_input)
+                        if _inline:
+                            _inline_imgs = _inline["images"]
+                            submit_images.extend(_inline_imgs)
+                            for _img in _inline_imgs:
+                                _cprint(f"  📎 Auto-attached image: {_img.name}")
+                            user_input = _inline["remainder"] or (
+                                f"[User attached image: {_inline_imgs[0].name}]"
+                                if len(_inline_imgs) == 1
+                                else f"[User attached {len(_inline_imgs)} images]"
+                            )
+
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []

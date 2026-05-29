@@ -7,16 +7,20 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 import urllib.request
 import urllib.error
 import time
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
+from urllib.parse import urlparse
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.provider_resolution import _alias_table as _provider_alias_table
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -1035,84 +1039,37 @@ def group_providers(slugs):
     return rows
 
 
-_PROVIDER_ALIASES = {
-    "glm": "zai",
-    "z-ai": "zai",
-    "z.ai": "zai",
-    "zhipu": "zai",
-    "github": "copilot",
-    "github-copilot": "copilot",
-    "github-models": "copilot",
-    "github-model": "copilot",
-    "github-copilot-acp": "copilot-acp",
-    "copilot-acp-agent": "copilot-acp",
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "google-ai-studio": "gemini",
-    "kimi": "kimi-coding",
-    "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn",
-    "moonshot-cn": "kimi-coding-cn",
-    "step": "stepfun",
-    "stepfun-coding-plan": "stepfun",
-    "arcee-ai": "arcee",
-    "arceeai": "arcee",
-    "gmi-cloud": "gmi",
-    "gmicloud": "gmi",
-    "minimax-china": "minimax-cn",
-    "minimax_cn": "minimax-cn",
-    "minimax-portal": "minimax-oauth",
-    "minimax-global": "minimax-oauth",
-    "minimax_oauth": "minimax-oauth",
-    "claude": "anthropic",
-    "claude-code": "anthropic",
-    "deep-seek": "deepseek",
-    "opencode": "opencode-zen",
-    "zen": "opencode-zen",
-    "go": "opencode-go",
-    "opencode-go-sub": "opencode-go",
-    "kilo": "kilocode",
-    "kilo-code": "kilocode",
-    "kilo-gateway": "kilocode",
-    "dashscope": "alibaba",
-    "aliyun": "alibaba",
+# Picker-specific provider aliases (cpf-zkw.21). These map to a model *catalog*
+# and either don't exist in the runtime resolver's table or intentionally
+# diverge from it; they are kept explicit (and override the unified table) so
+# they survive even if the provider registry is unavailable at import. Every
+# OTHER alias is sourced from ``provider_resolution`` so the model picker can
+# never drift from runtime provider resolution (the #12146 class of bug — this
+# was the 4th, last divergent alias surface).
+#   * ``qwen`` is the one genuine divergence: the picker shows the Alibaba/Qwen
+#     model catalog, whereas the runtime canon for bare ``qwen`` is the OAuth
+#     portal provider (``qwen-oauth``).
+#   * the rest agree with the registry-extended table but are pinned here so a
+#     registry-import fallback can't drop them.
+_PICKER_PROVIDER_ALIASES = {
     "qwen": "alibaba",
+    "aliyun": "alibaba",
     "alibaba-cloud": "alibaba",
-    "qwen-portal": "qwen-oauth",
-    "gemini-cli": "google-gemini-cli",
-    "gemini-oauth": "google-gemini-cli",
-    "hf": "huggingface",
-    "hugging-face": "huggingface",
-    "huggingface-hub": "huggingface",
-    "novita-ai": "novita",
-    "novitaai": "novita",
-    "mimo": "xiaomi",
-    "xiaomi-mimo": "xiaomi",
-    "tencent": "tencent-tokenhub",
-    "tokenhub": "tencent-tokenhub",
-    "tencent-cloud": "tencent-tokenhub",
-    "tencentmaas": "tencent-tokenhub",
-    "aws": "bedrock",
-    "aws-bedrock": "bedrock",
-    "amazon-bedrock": "bedrock",
-    "amazon": "bedrock",
-    "grok": "xai",
-    "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth",
-    "x-ai-oauth": "xai-oauth",
-    "xai-grok-oauth": "xai-oauth",
-    "x-ai": "xai",
-    "x.ai": "xai",
+    "dashscope": "alibaba",
+    "deep-seek": "deepseek",
     "nim": "nvidia",
     "nvidia-nim": "nvidia",
     "build-nvidia": "nvidia",
     "nemotron": "nvidia",
-    "lmstudio": "lmstudio",
-    "lm-studio": "lmstudio",
-    "lm_studio": "lmstudio",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
-    "ollama_cloud": "ollama-cloud",
+    "novita-ai": "novita",
+    "novitaai": "novita",
 }
+
+# The single source of truth (canonicalize_provider's table) overlaid with the
+# picker-specific overrides above (overrides win, e.g. qwen→alibaba). Built once
+# at import; _alias_table() falls back to the static table if the plugin
+# registry isn't importable, and the pinned overrides cover the rest.
+_PROVIDER_ALIASES = {**_provider_alias_table(), **_PICKER_PROVIDER_ALIASES}
 
 
 def get_default_model_for_provider(provider: str) -> str:
@@ -3107,6 +3064,186 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+# ---------------------------------------------------------------------------
+# Endpoint-probe failure classification (#3263)
+# ---------------------------------------------------------------------------
+#
+# The interactive custom-provider flow probes the ``/models`` endpoint to
+# catch typos and unreachable URLs at config-authoring time. The probe used to
+# swallow every error (``except Exception: continue``) and fall back to a
+# single generic "could not verify, saving anyway" message — so a wrong key, a
+# typo'd host, and a not-yet-started local server were indistinguishable and
+# all silently saved. We now classify the failure so the caller can react
+# proportionally (and so non-interactive callers can fail closed).
+#
+# IMPORTANT: this probing is reachable ONLY from interactive config-authoring
+# handlers. The runtime resolver and everything it transitively calls performs
+# zero network I/O (locked by test_no_socket_during_resolve). Do not call
+# probe_api_models from the resolver layer.
+
+# error_class taxonomy (see the table in decide_probe_action):
+#   ""/"no_catalog" → reachable, treat as success (save quietly)
+#   "auth"          → 401/403: reachable, bad/missing key
+#   "server_error"  → 5xx: real endpoint, briefly down
+#   "http_error"    → other 4xx: reachable but unexpected
+#   "local_refused" → connection refused on a local/loopback host
+#   "remote_unreachable" → connection refused/reset on a remote host
+#   "dns"           → name resolution failed (likely a typo'd host)
+#   "timeout"       → request timed out
+#   "unknown"       → anything else
+_PROBE_OK_CLASSES = frozenset({"", "no_catalog"})
+# Transient / expected-while-setting-up — soft confirm, default Yes.
+_PROBE_SOFT_CLASSES = frozenset({"local_refused", "timeout", "server_error"})
+# Everything else ("auth", "dns", "remote_unreachable", "http_error",
+# "unknown") is treated as a likely misconfiguration — warn, default No.
+
+
+def _probe_host_is_local(base_url: str) -> bool:
+    """True when base_url points at a loopback / private-LAN / .local host.
+
+    A connection-refused against such a host usually just means the local
+    model server (Ollama, vLLM, llama.cpp) hasn't been started yet — a soft,
+    recoverable condition — whereas the same error against a public host is a
+    likely typo.
+    """
+    host = (urlparse(base_url).hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "0.0.0.0"} or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        return False
+
+
+def classify_probe_error(exc: BaseException, base_url: str) -> tuple[str, str]:
+    """Map a probe exception to ``(error_class, error_detail)``.
+
+    ``error_detail`` is a short human-readable string (e.g. ``"HTTP 401"`` or
+    ``"connection refused"``) suitable for surfacing in a warning.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code
+        if code == 404:
+            return "no_catalog", "HTTP 404 (no /models route)"
+        if code in (401, 403):
+            return "auth", f"HTTP {code} (unauthorized)"
+        if 500 <= code < 600:
+            return "server_error", f"HTTP {code}"
+        return "http_error", f"HTTP {code}"
+
+    # urllib wraps socket-level failures in URLError(reason=...).
+    reason: Any = getattr(exc, "reason", exc)
+
+    if isinstance(reason, (socket.timeout, TimeoutError)) or isinstance(
+        exc, (socket.timeout, TimeoutError)
+    ):
+        return "timeout", "request timed out"
+    if isinstance(reason, socket.gaierror) or isinstance(exc, socket.gaierror):
+        return "dns", "DNS resolution failed"
+    if isinstance(reason, ConnectionRefusedError) or isinstance(
+        exc, ConnectionRefusedError
+    ):
+        if _probe_host_is_local(base_url):
+            return "local_refused", "connection refused (local server not running?)"
+        return "remote_unreachable", "connection refused"
+    if isinstance(reason, (ConnectionResetError, ConnectionError)) or isinstance(
+        exc, (ConnectionResetError, ConnectionError)
+    ):
+        if _probe_host_is_local(base_url):
+            return "local_refused", "connection error (local server not running?)"
+        return "remote_unreachable", "connection error"
+
+    detail = str(reason) or exc.__class__.__name__
+    return "unknown", detail
+
+
+class ProbeDecision(NamedTuple):
+    """The outcome of weighing a probe result for the config-authoring flow."""
+
+    save: bool            # persist the config without further prompting?
+    action: str           # "save" | "soft_confirm" | "reenter_key" | "reprompt_url" | "abort"
+    confirm_default: bool  # for soft_confirm: True → default Yes, False → default No
+    message: str          # human-facing explanation of the probe outcome
+    exit_nonzero: bool     # non-interactive callers should exit non-zero
+
+
+def decide_probe_action(
+    error_class: Optional[str],
+    *,
+    interactive: bool,
+    skip_validation: bool,
+    detail: str = "",
+) -> ProbeDecision:
+    """Decide what to do about a probe result, classified by failure class.
+
+    The probe outcome NEVER alters the persisted bytes — only whether we reach
+    the save step and how the user is prompted. ``--skip-validation`` is the
+    ``git commit --no-verify`` escape hatch: always save, no prompt. In
+    non-interactive mode we never prompt — OK classes save, everything else
+    fails closed (non-zero exit) unless ``skip_validation``.
+
+    | class | meaning | interactive | default |
+    |---|---|---|---|
+    | no_catalog (404) | reachable, no catalog route | save quietly | save |
+    | auth (401/403) | reachable, bad/missing key | warn, offer re-enter key | No |
+    | local_refused | local server not started | soft confirm | Yes |
+    | dns / remote_unreachable | likely typo | warn, re-prompt URL | No |
+    | timeout / server_error (5xx) | endpoint briefly down | soft confirm | Yes |
+    """
+    ec = (error_class or "").strip()
+    suffix = f" ({detail})" if detail else ""
+
+    if skip_validation:
+        return ProbeDecision(True, "save", True, "Endpoint validation skipped (--skip-validation).", False)
+
+    if ec in _PROBE_OK_CLASSES:
+        msg = "Endpoint reachable (no /models catalog)." if ec == "no_catalog" else "Endpoint verified."
+        return ProbeDecision(True, "save", True, msg, False)
+
+    is_soft = ec in _PROBE_SOFT_CLASSES
+
+    if not interactive:
+        # Never prompt. Fail closed for any non-OK class.
+        return ProbeDecision(
+            False, "abort", False,
+            f"Endpoint validation failed: {ec}{suffix}. "
+            "Re-run interactively or pass --skip-validation to save anyway.",
+            True,
+        )
+
+    if is_soft:
+        if ec == "local_refused":
+            msg = f"Could not reach the endpoint{suffix}. If your local server isn't started yet that's expected."
+        elif ec == "timeout":
+            msg = f"Endpoint did not respond in time{suffix}. It may be a real endpoint that's briefly slow."
+        else:  # server_error
+            msg = f"Endpoint returned a server error{suffix}. It may be briefly down."
+        return ProbeDecision(False, "soft_confirm", True, msg, False)
+
+    # Block classes — likely a misconfiguration; default No.
+    if ec == "auth":
+        return ProbeDecision(
+            False, "reenter_key", False,
+            f"Endpoint rejected the API key{suffix}. The URL is reachable but the key looks wrong.",
+            False,
+        )
+    if ec in {"dns", "remote_unreachable"}:
+        return ProbeDecision(
+            False, "reprompt_url", False,
+            f"Could not reach the endpoint{suffix}. Double-check the base URL for typos.",
+            False,
+        )
+    # http_error / unknown — surface and confirm, default No.
+    return ProbeDecision(
+        False, "soft_confirm", False,
+        f"Could not verify the endpoint{suffix}.",
+        False,
+    )
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -3159,6 +3296,7 @@ def probe_api_models(
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
+    errors: list[tuple[str, BaseException]] = []
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
@@ -3172,9 +3310,21 @@ def probe_api_models(
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
                     "used_fallback": is_fallback,
+                    "error_class": None,
+                    "error_detail": None,
                 }
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — classified below, not swallowed
+            errors.append((candidate_base, exc))
             continue
+
+    # Every candidate failed. Classify the failure (#3263) instead of
+    # swallowing it. Prefer an HTTPError (the server is reachable) over a
+    # connection-level error, and favour the entered URL over the /v1 variant.
+    error_class, error_detail = "unknown", ""
+    if errors:
+        http_errs = [(b, e) for b, e in errors if isinstance(e, urllib.error.HTTPError)]
+        chosen_base, chosen_exc = http_errs[0] if http_errs else errors[0]
+        error_class, error_detail = classify_probe_error(chosen_exc, chosen_base)
 
     return {
         "models": None,
@@ -3182,6 +3332,8 @@ def probe_api_models(
         "resolved_base_url": normalized,
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,
+        "error_class": error_class,
+        "error_detail": error_detail,
     }
 
 

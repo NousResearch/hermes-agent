@@ -2524,7 +2524,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
-        _model_flow_custom(config)
+        _model_flow_custom(config, args=args)
     elif (
         selected_provider.startswith("custom:")
         or selected_provider in _custom_provider_map
@@ -2573,27 +2573,31 @@ def select_provider_and_model(args=None):
     } or _is_profile_api_key_provider(selected_provider):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
-    # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
+    # ── Post-switch check: warn about a stale OPENAI_BASE_URL ─────────
     # When the user switches to a named provider (anything except "custom"),
-    # a leftover OPENAI_BASE_URL in ~/.hermes/.env can poison auxiliary
-    # clients that use provider:auto. Clear it proactively.  (#5161)
+    # a leftover OPENAI_BASE_URL in ~/.hermes/.env is ignored — config.yaml's
+    # model.base_url is the sole source (#4165). Surface a migration hint
+    # instead of silently mutating the user's .env.  (#5161 / cpf-zkw.5)
     if selected_provider not in {
         "custom",
         "cancel",
         "remove-custom",
     } and not selected_provider.startswith("custom:"):
-        _clear_stale_openai_base_url()
+        _warn_stale_openai_base_url()
 
 
-def _clear_stale_openai_base_url():
-    """Remove OPENAI_BASE_URL from ~/.hermes/.env if the active provider is not 'custom'.
+def _warn_stale_openai_base_url():
+    """Warn (without mutating .env) about a stale OPENAI_BASE_URL after a switch.
 
-    After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
-    clients (compression, vision, delegation) with provider:auto to route
-    requests to the old custom endpoint instead of the newly selected
-    provider.  See issue #5161.
+    Originally (#5161) this DELETED OPENAI_BASE_URL from ~/.hermes/.env when the
+    active provider was not 'custom', because auxiliary clients with
+    provider:auto consulted the env var. Per #4165 / cpf-zkw.5 config.yaml's
+    ``model.base_url`` is the sole base_url source: OPENAI_BASE_URL is left
+    un-consulted but **untouched** — Hermes no longer silently rewrites the
+    user's .env. We surface a migration hint on the switch instead so the user
+    can remove it themselves if it's truly stale.
     """
-    from hermes_cli.config import get_env_value, save_env_value, load_config
+    from hermes_cli.config import get_env_value, load_config
 
     cfg = load_config()
     model_cfg = cfg.get("model", {})
@@ -2607,11 +2611,11 @@ def _clear_stale_openai_base_url():
 
     stale_url = get_env_value("OPENAI_BASE_URL")
     if stale_url:
-        save_env_value("OPENAI_BASE_URL", "")
+        shown = f"{stale_url[:40]}..." if len(stale_url) > 40 else stale_url
         print(
-            f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url[:40]}...)"
-            if len(stale_url) > 40
-            else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})"
+            f"⚠ OPENAI_BASE_URL is set in ~/.hermes/.env ({shown}) but the active "
+            f"provider is '{provider}'. It is ignored — config.yaml's model.base_url "
+            "is the sole source. Remove it from ~/.hermes/.env if you no longer need it."
         )
 
 
@@ -3668,18 +3672,31 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
         print("No change.")
 
 
-def _model_flow_custom(config):
+def _model_flow_custom(config, args=None):
     """Custom endpoint: collect URL, API key, and model name.
 
     Automatically saves the endpoint to ``custom_providers`` in config.yaml
     so it appears in the provider menu on subsequent runs.
+
+    The endpoint is probed for typos/reachability and the failure is
+    classified (#3263): a 404 saves quietly, a bad key warns and offers a
+    re-enter, a typo'd URL re-prompts, a not-yet-started local server soft
+    confirms. ``args.skip_validation`` skips probing entirely; non-interactive
+    callers fail closed rather than prompt.
     """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, load_config, save_config
     from hermes_cli.secret_prompt import masked_secret_prompt
 
-    current_url = get_env_value("OPENAI_BASE_URL") or ""
-    current_key = get_env_value("OPENAI_API_KEY") or ""
+    # Config-first prefill: config.yaml's model.base_url is the canonical
+    # source (#4165 / Task 5). Only fall back to the OPENAI_BASE_URL /
+    # OPENAI_API_KEY env vars when config has none, so re-running shows what's
+    # actually in effect rather than a stale env value.
+    _model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+    current_url = (str(_model_cfg.get("base_url") or "").strip()
+                   or get_env_value("OPENAI_BASE_URL") or "")
+    current_key = (str(_model_cfg.get("api_key") or "").strip()
+                   or get_env_value("OPENAI_API_KEY") or "")
 
     print("Custom OpenAI-compatible endpoint configuration:")
     if current_url:
@@ -3721,8 +3738,8 @@ def _model_flow_custom(config):
     )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
-        print(f"  Hint: Did you mean to add /v1 at the end?")
-        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print("  Hint: Did you mean to add /v1 at the end?")
+        print("  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
         print(f"  e.g. {effective_url.rstrip('/')}/v1")
         try:
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
@@ -3735,35 +3752,95 @@ def _model_flow_custom(config):
             print(f"  Updated URL: {effective_url}")
         print()
 
-    from hermes_cli.models import probe_api_models
+    from hermes_cli.models import probe_api_models, decide_probe_action
 
-    probe = probe_api_models(effective_key, effective_url)
-    if probe.get("used_fallback") and probe.get("resolved_base_url"):
-        print(
-            f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
-            f"not the exact URL you entered. Saving the working base URL instead."
-        )
-        effective_url = probe["resolved_base_url"]
-        if base_url:
-            base_url = effective_url
-    elif probe.get("models") is not None:
-        print(
-            f"Verified endpoint via {probe.get('probed_url')} "
-            f"({len(probe.get('models') or [])} model(s) visible)"
-        )
+    skip_validation = bool(getattr(args, "skip_validation", False))
+    interactive = sys.stdin.isatty()
+
+    probe: dict = {"models": None}
+    if skip_validation:
+        print("  Skipping endpoint validation (--skip-validation); saving as entered.")
     else:
-        print(
-            f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
-            f"Hermes will still save it."
-        )
-        if probe.get("suggested_base_url"):
-            suggested = probe["suggested_base_url"]
-            if suggested.endswith("/v1"):
+        # Probe → classify → react proportionally (#3263). Re-prompting for a
+        # bad key / typo'd URL loops back and re-probes; the probe outcome
+        # never alters the persisted bytes, only whether we reach the save.
+        while True:
+            probe = probe_api_models(effective_key, effective_url)
+
+            # A reachable /v1 variant means the entered base was missing (or
+            # had a spurious) /v1 — adopt the working URL.
+            if probe.get("used_fallback") and probe.get("resolved_base_url"):
                 print(
-                    f"  If this server expects /v1 in the path, try base URL: {suggested}"
+                    f"Note: endpoint verification worked at {probe['resolved_base_url']}/models, "
+                    f"not the exact URL you entered. Saving the working base URL instead."
                 )
-            else:
-                print(f"  If /v1 should not be in the base URL, try: {suggested}")
+                effective_url = probe["resolved_base_url"]
+                if base_url:
+                    base_url = effective_url
+
+            if probe.get("models") is not None:
+                print(
+                    f"Verified endpoint via {probe.get('probed_url')} "
+                    f"({len(probe.get('models') or [])} model(s) visible)"
+                )
+
+            decision = decide_probe_action(
+                probe.get("error_class"),
+                interactive=interactive,
+                skip_validation=False,
+                detail=probe.get("error_detail") or "",
+            )
+
+            if decision.action == "save":
+                if probe.get("models") is None and decision.message:
+                    print(f"  {decision.message}")
+                break
+
+            if decision.action == "abort":
+                # Non-interactive: fail closed with the real error + non-zero exit.
+                sys.stderr.write(f"{decision.message}\n")
+                raise SystemExit(1)
+
+            print(f"Warning: {decision.message}")
+            if probe.get("suggested_base_url"):
+                suggested = probe["suggested_base_url"]
+                if suggested.endswith("/v1"):
+                    print(f"  If this server expects /v1 in the path, try base URL: {suggested}")
+                else:
+                    print(f"  If /v1 should not be in the base URL, try: {suggested}")
+
+            try:
+                if decision.action == "reenter_key":
+                    again = input("  Re-enter API key now? [y/N]: ").strip().lower()
+                    if again in {"y", "yes"}:
+                        new_key = masked_secret_prompt("  API key: ").strip()
+                        if new_key:
+                            effective_key = new_key
+                            api_key = new_key
+                        continue  # re-probe with the new key
+                elif decision.action == "reprompt_url":
+                    again = input("  Re-enter base URL now? [y/N]: ").strip().lower()
+                    if again in {"y", "yes"}:
+                        new_url = input("  API base URL: ").strip()
+                        if new_url.startswith(("http://", "https://")):
+                            effective_url = new_url
+                            base_url = new_url
+                            continue  # re-probe with the new URL
+                        print("  Invalid URL — keeping previous.")
+
+                # soft_confirm, or a declined re-enter/re-prompt: save-anyway
+                # prompt with the class-appropriate default.
+                prompt = "  Save anyway? [Y/n]: " if decision.confirm_default else "  Save anyway? [y/N]: "
+                ans = input(prompt).strip().lower()
+                proceed = (ans in {"", "y", "yes"}) if decision.confirm_default else (ans in {"y", "yes"})
+            except (KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+
+            if proceed:
+                break
+            print("Cancelled.")
+            return
 
     # Prompt for API compatibility mode explicitly so codex-compatible custom
     # providers don't silently fall back to chat_completions.
@@ -11518,6 +11595,15 @@ def main():
         "--refresh",
         action="store_true",
         help="Wipe the model picker disk cache and re-fetch every provider's live /v1/models list.",
+    )
+    model_parser.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help=(
+            "Skip probing a custom endpoint's /models route before saving "
+            "(the `git commit --no-verify` escape hatch). Saves the endpoint "
+            "exactly as entered without reachability/typo checks."
+        ),
     )
     model_parser.add_argument(
         "--portal-url",

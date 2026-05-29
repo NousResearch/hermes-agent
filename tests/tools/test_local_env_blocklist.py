@@ -93,6 +93,26 @@ class TestProviderEnvBlocklist:
         for var in registry_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_aws_sdk_provider_vars_are_stripped(self):
+        """AWS SDK credential-chain vars must not leak to subprocesses."""
+        aws_vars = {
+            "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+            "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "AWS_SESSION_TOKEN": "session-token",
+            "AWS_PROFILE": "production",
+            "AWS_SHARED_CREDENTIALS_FILE": "/home/user/.aws/credentials",
+            "AWS_CONFIG_FILE": "/home/user/.aws/config",
+            "AWS_WEB_IDENTITY_TOKEN_FILE": "/var/run/secrets/token",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/123",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://169.254.170.2/v2/credentials/123",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN": "container-token",
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-bearer",
+        }
+        result_env = _run_with_env(extra_os_env=aws_vars)
+
+        for var in aws_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
     def test_non_registry_provider_vars_are_stripped(self):
         """Extra provider vars not in PROVIDER_REGISTRY must also be blocked."""
         extra_provider_vars = {
@@ -212,6 +232,28 @@ class TestBlocklistCoverage:
                     f"Registry base_url_env_var {pconfig.base_url_env_var} "
                     f"(provider={pconfig.id}) missing from blocklist"
                 )
+
+    def test_aws_sdk_provider_vars_are_in_blocklist(self):
+        """auth_type='aws_sdk' providers rely on credential-chain vars, not API keys."""
+        aws_vars = {
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_SECURITY_TOKEN",
+            "AWS_PROFILE",
+            "AWS_DEFAULT_PROFILE",
+            "AWS_SHARED_CREDENTIALS_FILE",
+            "AWS_CONFIG_FILE",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_ROLE_ARN",
+            "AWS_ROLE_SESSION_NAME",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        }
+        assert aws_vars.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_extra_auth_vars_covered(self):
         """Non-registry auth vars (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)

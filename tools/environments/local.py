@@ -193,8 +193,9 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # Credential-shaped env-var suffixes — a defense-in-depth sweep that strips
 # secrets the explicit blocklist above does not enumerate (a brand-new
 # provider, or the operator's own ``*_API_KEY`` placed in ~/.hermes/.env).
-# This mirrors the "strip by default" posture of a real sandbox; opt out with
-# ``security.credential_broker.scrub_subprocess_env: false``.
+# This sweep is OPT-IN and off by default; enable it with
+# ``security.credential_broker.scrub_subprocess_env: true`` to mirror a real
+# sandbox's strip-by-default posture.
 _CREDENTIAL_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY")
 
 # Always stripped from every subprocess, regardless of config or passthrough —
@@ -203,7 +204,7 @@ _ALWAYS_STRIP_ENV = frozenset({"HERMES_ENCRYPTION_PASSPHRASE"})
 
 
 def _shape_scrub_enabled() -> bool:
-    """Whether the credential-shape sweep is on (config; defaults to true)."""
+    """Whether the credential-shape sweep is on (config; opt-in, defaults to false)."""
     try:
         from hermes_cli.config import cfg_get, load_config
         from utils import is_truthy_value
@@ -214,11 +215,15 @@ def _shape_scrub_enabled() -> bool:
                 "security",
                 "credential_broker",
                 "scrub_subprocess_env",
-                default=True,
+                default=False,
             )
         )
     except Exception:
-        return True
+        # This sweep is a hardening add-on, not a baseline protection: the
+        # always-on provider blocklist and unconditional passphrase strip are
+        # independent of it. On a config-read error, fail open w.r.t. this
+        # opt-in feature (off) rather than silently enabling an aggressive sweep.
+        return False
 
 
 def _should_strip_env_key(key: str, is_passthrough) -> bool:

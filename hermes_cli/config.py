@@ -2140,15 +2140,17 @@ DEFAULT_CONFIG = {
             },
         },
         # Keep credentials out of broad process state (inspired by NVIDIA
-        # OpenShell). `scrub_subprocess_env` extends the existing provider
-        # blocklist with a credential-shape sweep (`*_API_KEY`, `*_TOKEN`,
-        # ...) so secrets the blocklist doesn't enumerate are also stripped
-        # from terminal/code-exec subprocesses. `enabled` turns on the egress
-        # broker: the real LLM API key is held in memory and injected only at
-        # the HTTP layer, never placed on the SDK client or in os.environ.
+        # OpenShell). `scrub_subprocess_env` (opt-in, off by default) adds a
+        # credential-shape sweep (`*_API_KEY`, `*_TOKEN`, ...) on top of the
+        # always-on provider blocklist; enable it to also strip secrets the
+        # blocklist doesn't enumerate from terminal/code-exec subprocesses. The
+        # explicit provider blocklist and the unconditional encryption-passphrase
+        # strip remain always-on regardless of this flag. `enabled` turns on the
+        # egress broker: the real LLM API key is held in memory and injected only
+        # at the HTTP layer, never placed on the SDK client or in os.environ.
         "credential_broker": {
             "enabled": False,
-            "scrub_subprocess_env": True,
+            "scrub_subprocess_env": False,
         },
     },
 

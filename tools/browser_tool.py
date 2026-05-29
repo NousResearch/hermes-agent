@@ -148,7 +148,7 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
                 if os.path.isdir(bin_dir):
                     dirs.append(bin_dir)
     except OSError:
-        pass
+        logger.debug("homebrew node scan skipped (dir missing or unreadable)")
     return tuple(dirs)
 
 
@@ -933,7 +933,7 @@ def _run_chrome_fallback_command(
                 try:
                     os.unlink(pth)
                 except OSError:
-                    pass
+                    logger.debug("failed to remove Chrome fallback temp file %s", pth)
         return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
 
     try:
@@ -951,7 +951,7 @@ def _run_chrome_fallback_command(
         try:
             _run_tmp("close", [])
         except Exception:
-            pass
+            logger.debug("Chrome fallback session teardown failed", exc_info=True)
         # Clean up socket directory
         import shutil as _shutil
         _shutil.rmtree(task_socket_dir, ignore_errors=True)
@@ -1028,7 +1028,7 @@ def _url_is_private(url: str) -> bool:
                 or ip in ipaddress.ip_network("100.64.0.0/10")
             )
         except ValueError:
-            pass
+            logger.debug("ignoring non-IP hostname %s for private-IP check", hostname)
         # Hostname — must resolve to confirm it's private (bare "localhost"
         # resolves to 127.0.0.1 via /etc/hosts).  Short-circuit on obvious
         # names to avoid a DNS hop.
@@ -1393,7 +1393,7 @@ def _reap_orphaned_browser_sessions():
                         daemon_pid, session_name)
             reaped += 1
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("orphan browser daemon PID %d reap failed (already gone)", daemon_pid)
 
         # Clean up the socket directory
         shutil.rmtree(socket_dir, ignore_errors=True)
@@ -1840,7 +1840,7 @@ def _find_agent_browser() -> str:
                 _agent_browser_resolved = True
                 return recheck
     except Exception:
-        pass
+        logger.debug("agent-browser resolution failed, will raise FileNotFoundError", exc_info=True)
 
     _agent_browser_resolved = True
     raise FileNotFoundError(
@@ -2035,7 +2035,7 @@ def _run_browser_command(
                                 "injecting --no-sandbox"
                             )
                 except OSError:
-                    pass
+                    logger.debug("AppArmor userns check file read failed (no restriction detected)")
             if _needs_sandbox_bypass:
                 browser_env["AGENT_BROWSER_ARGS"] = (
                     "--no-sandbox,--disable-dev-shm-usage"
@@ -2101,7 +2101,7 @@ def _run_browser_command(
                 try:
                     os.unlink(p)
                 except OSError:
-                    pass
+                    logger.debug("failed to remove browser command temp file %s", p)
 
             # Log stderr for diagnostics — use warning level on failure so it's visible
             if stderr and stderr.strip():
@@ -2858,7 +2858,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 err,
             )
     except ImportError:
-        pass
+        logger.debug("browser_supervisor not available, falling back to subprocess")
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
 
@@ -2915,7 +2915,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
             try:
                 parsed = json.loads(raw_result)
             except (json.JSONDecodeError, ValueError):
-                pass
+                logger.debug("camofox eval result not valid JSON, keeping as string")
 
         return json.dumps({
             "success": True,
@@ -3217,7 +3217,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
         except Exception:
-            pass
+            logger.debug("failed to parse vision config timeout/temperature, using defaults")
 
         call_kwargs = {
             "task": "vision",
@@ -3467,7 +3467,7 @@ def cleanup_all_browsers() -> None:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         SUPERVISOR_REGISTRY.stop_all()
     except Exception:
-        pass
+        logger.debug("CDP supervisor stop_all() during shutdown failed", exc_info=True)
 
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved

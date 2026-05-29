@@ -165,7 +165,7 @@ def _write_stderr_log_header(server_name: str) -> None:
         fh.write(f"\n===== [{ts}] starting MCP server '{server_name}' =====\n")
         fh.flush()
     except Exception:
-        pass
+        logger.debug("Failed to write MCP server startup marker to stderr log")
 
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
@@ -1330,7 +1330,7 @@ class MCPServerTask:
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
-                        pass
+                        logger.debug("MCP task cancelled during cleanup")
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -1816,7 +1816,7 @@ class MCPServerTask:
                 try:
                     await self._task
                 except asyncio.CancelledError:
-                    pass
+                    logger.debug("MCP client task cancelled during shutdown")
         if self._pending_refresh_tasks:
             for task in list(self._pending_refresh_tasks):
                 task.cancel()
@@ -1911,23 +1911,23 @@ def _get_auth_error_types() -> tuple:
         from mcp.client.auth import OAuthFlowError, OAuthTokenError
         types.extend([OAuthFlowError, OAuthTokenError])
     except ImportError:
-        pass
+        logger.debug("OAuthFlowError/OAuthTokenError not available in this MCP SDK version")
     try:
         # Older MCP SDK variants exported this
         from mcp.client.auth import UnauthorizedError  # type: ignore
         types.append(UnauthorizedError)
     except ImportError:
-        pass
+        logger.debug("UnauthorizedError not available in this MCP SDK version")
     try:
         from tools.mcp_oauth import OAuthNonInteractiveError
         types.append(OAuthNonInteractiveError)
     except ImportError:
-        pass
+        logger.debug("OAuthNonInteractiveError not available")
     try:
         import httpx
         types.append(httpx.HTTPStatusError)
     except ImportError:
-        pass
+        logger.debug("httpx not available for HTTPStatusError auth type")
     _AUTH_ERROR_TYPES = tuple(types)
     return _AUTH_ERROR_TYPES
 
@@ -1947,7 +1947,7 @@ def _is_auth_error(exc: BaseException) -> bool:
         if isinstance(exc, httpx.HTTPStatusError):
             return getattr(exc.response, "status_code", None) == 401
     except ImportError:
-        pass
+        logger.debug("httpx not available for 401 check")
     return True
 
 
@@ -2239,14 +2239,14 @@ def _snapshot_child_pids() -> set:
         with open(children_path, encoding="utf-8") as f:
             return {int(p) for p in f.read().split() if p.strip()}
     except (FileNotFoundError, OSError, ValueError):
-        pass
+        logger.debug("Failed to read /proc children file for process tree")
 
     # Fallback: psutil
     try:
         import psutil
         return {c.pid for c in psutil.Process(my_pid).children()}
     except Exception:
-        pass
+        logger.debug("psutil process tree lookup failed", exc_info=True)
 
     return set()
 
@@ -2383,7 +2383,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:
-            pass
+            logger.debug("Failed to load .env for MCP server config", exc_info=True)
         return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
@@ -3666,7 +3666,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             os.kill(pid, _signal.SIGTERM)
             logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("Orphan MCP process %d already gone during SIGTERM", pid)
 
     # Phase 2: Wait for graceful exit
     time.sleep(2)
@@ -3686,7 +3686,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
                 pid, server_name,
             )
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("Orphan MCP process %d already gone during SIGKILL", pid)
 
 
 def _stop_mcp_loop():
@@ -3704,7 +3704,7 @@ def _stop_mcp_loop():
         try:
             loop.close()
         except Exception:
-            pass
+            logger.debug("Failed to close MCP event loop during cleanup", exc_info=True)
         # After closing the loop, any stdio subprocesses that survived the
         # graceful shutdown are now orphaned — include active PIDs too
         # since the loop is gone and no session can still be in flight.

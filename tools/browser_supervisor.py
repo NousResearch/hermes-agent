@@ -365,7 +365,7 @@ class CDPSupervisor:
                     try:
                         await ws.close()
                     except Exception:
-                        pass
+                        logger.debug("CDP supervisor %s: failed to close WebSocket during cleanup", self.task_id, exc_info=True)
 
             try:
                 from agent.async_utils import safe_schedule_threadsafe
@@ -374,9 +374,9 @@ class CDPSupervisor:
                     try:
                         fut.result(timeout=2.0)
                     except Exception:
-                        pass
+                        logger.debug("CDP supervisor %s: failed to get close_ws future result", self.task_id, exc_info=True)
             except RuntimeError:
-                pass  # loop already shutting down
+                logger.debug("CDP supervisor %s: event loop already shutting down during cleanup", self.task_id)  # loop already shutting down
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         with self._state_lock:
@@ -573,11 +573,11 @@ class CDPSupervisor:
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
-                pass
+                logger.debug("CDP supervisor %s: failed to gather pending tasks during cleanup", self.task_id, exc_info=True)
             try:
                 loop.close()
             except Exception:
-                pass
+                logger.debug("CDP supervisor %s: failed to close event loop during cleanup", self.task_id, exc_info=True)
             with self._state_lock:
                 self._active = False
 
@@ -655,7 +655,7 @@ class CDPSupervisor:
                     try:
                         await reader_task
                     except (asyncio.CancelledError, Exception):
-                        pass
+                        logger.debug("CDP supervisor %s: reader_task cancel during cleanup", self.task_id)
                 for handle in list(self._dialog_watchdogs.values()):
                     handle.cancel()
                 self._dialog_watchdogs.clear()
@@ -665,7 +665,7 @@ class CDPSupervisor:
                     try:
                         await ws.close()
                     except Exception:
-                        pass
+                        logger.debug("CDP supervisor %s: failed to close WebSocket during disconnect", self.task_id, exc_info=True)
 
             if self._stop_requested:
                 return
@@ -762,7 +762,7 @@ class CDPSupervisor:
                 timeout=3.0,
             )
         except Exception:
-            pass
+            logger.debug("CDP supervisor %s: failed to inject dialog bridge script via Runtime.evaluate", self.task_id, exc_info=True)
 
     async def _cdp(
         self,
@@ -1051,7 +1051,7 @@ class CDPSupervisor:
                     session_id=session_id, timeout=3.0,
                 )
             except Exception:
-                pass
+                logger.debug("CDP supervisor %s: failed to continue intercepted Fetch request %s", self.task_id, request_id, exc_info=True)
             return
 
         # Parse query string for dialog metadata. Use urllib to be robust.

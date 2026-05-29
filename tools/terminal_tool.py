@@ -1200,7 +1200,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
-                pass
+                logger.debug("Modal ephemeral_disk introspection failed")
 
         modal_state = _get_modal_backend_state(cc.get("modal_mode"))
 
@@ -1286,7 +1286,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             if process_registry.has_active_processes(task_id):
                 _last_activity[task_id] = current_time  # Keep sandbox alive
     except ImportError:
-        pass
+        logger.debug("process_registry not available, skipping activity refresh")
 
     # Phase 1: collect stale entries and remove them from tracking dicts while
     # holding the lock.  Do NOT call env.cleanup() inside the lock -- Modal and
@@ -1316,7 +1316,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             from tools.file_tools import clear_file_ops_cache
             clear_file_ops_cache(task_id)
         except ImportError:
-            pass
+            logger.debug("file_tools.clear_file_ops_cache not available, skipping")
 
         try:
             if hasattr(env, 'cleanup'):
@@ -1464,7 +1464,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
         from tools.file_tools import clear_file_ops_cache
         clear_file_ops_cache(task_id)
     except ImportError:
-        pass
+        logger.debug("file_tools.clear_file_ops_cache not available, skipping")
 
     if env is None:
         return
@@ -2265,7 +2265,7 @@ def terminal_tool(
                         output = hook_result
                         break
             except Exception:
-                pass
+                logger.debug("transform_terminal_output hook failed", exc_info=True)
             
             # Truncate output if too long, keeping both head and tail
             from tools.tool_output_limits import get_max_bytes

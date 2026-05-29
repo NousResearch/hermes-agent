@@ -297,8 +297,8 @@ def _looks_like_error_output(content: str) -> bool:
                 status = str(parsed.get("status") or "").strip().lower()
                 if status in {"error", "failed", "failure", "timeout"}:
                     return True
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            logger.debug("Failed to parse JSON content for error status check")
 
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return (
@@ -387,7 +387,7 @@ def _get_child_timeout() -> float:
         try:
             return max(30.0, float(env_val))
         except (TypeError, ValueError):
-            pass
+            logger.debug("Invalid DELEGATION_CHILD_TIMEOUT_SECONDS value: %s", env_val)
     return float(DEFAULT_CHILD_TIMEOUT)
 
 
@@ -1257,7 +1257,7 @@ def _dump_subagent_timeout_diagnostic(
             try:
                 _w(f"  loaded tools:      {sorted(tool_names)}")
             except Exception:
-                pass
+                logger.debug("Failed to sort/format tool names for debug output")
         _w("")
 
         _w("## Prompt / schema sizes")
@@ -1429,11 +1429,11 @@ def _run_single_child(
                             f"(iteration {child_iter}/{child_max})"
                         )
             except Exception:
-                pass
+                logger.debug("Failed to build heartbeat description", exc_info=True)
             try:
                 touch(desc)
             except Exception:
-                pass
+                logger.debug("Failed to touch heartbeat file %s", desc)
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 
@@ -1520,7 +1520,7 @@ def _run_single_child(
                 elif hasattr(child, "_interrupt_requested"):
                     child._interrupt_requested = True
             except Exception:
-                pass
+                logger.debug("Failed to interrupt child subagent", exc_info=True)
 
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
@@ -1540,7 +1540,7 @@ def _run_single_child(
                 _summary = child.get_activity_summary()
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
             except Exception:
-                pass
+                logger.debug("Failed to get child activity summary", exc_info=True)
             if is_timeout and child_api_calls == 0:
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
@@ -1571,7 +1571,7 @@ def _run_single_child(
                         summary="",
                     )
                 except Exception:
-                    pass
+                    logger.debug("Failed to fire child_progress_cb completion hook", exc_info=True)
 
             if is_timeout:
                 if child_api_calls == 0:
@@ -1805,7 +1805,7 @@ def _run_single_child(
             try:
                 complete_kwargs["cost_usd"] = float(_cost_usd)
             except (TypeError, ValueError):
-                pass
+                logger.debug("Invalid cost_usd value: %s", _cost_usd)
 
         if child_progress_cb:
             try:
@@ -2235,7 +2235,7 @@ def delegate_task(
                     ),
                 )
             except Exception:
-                pass
+                logger.debug("Failed to fire subagent_stop hook for child", exc_info=True)
 
     # Fire subagent_stop hooks once per child, serialised on the parent thread.
     # This keeps Python-plugin and shell-hook callbacks off of the worker threads
@@ -2261,7 +2261,7 @@ def delegate_task(
             if child_cost:
                 _children_cost_total += float(child_cost)
         except (TypeError, ValueError):
-            pass
+            logger.debug("Invalid child cost value: %s", child_cost)
         if _invoke_hook is None:
             continue
         try:
@@ -2471,7 +2471,7 @@ def _load_config() -> dict:
         if cfg:
             return cfg
     except Exception:
-        pass
+        logger.debug("Failed to load delegation config from CLI_CONFIG", exc_info=True)
     try:
         from hermes_cli.config import load_config
 

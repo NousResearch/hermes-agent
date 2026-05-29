@@ -1919,24 +1919,29 @@ delegation:
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
 
-delegation_small:                           # Optional route used by delegate_task(tier="small")
-  # model: "google/gemini-3-flash-preview"
-  # provider: "openrouter"
-  # base_url: "http://localhost:1234/v1"
-  # api_key: "local-key"
-  # api_mode: ""
+  tiers:
+    small:                                  # Optional override used by delegate_task(tier="small")
+      # model: "google/gemini-3-flash-preview"
+      # provider: "openrouter"
+      # base_url: "http://localhost:1234/v1"
+      # api_key: "local-key"
+      # api_mode: ""
 
-delegation_large:                           # Optional route used by delegate_task(tier="large")
-  # model: "anthropic/claude-opus-4-1"
-  # provider: "anthropic"
-  # base_url: ""
-  # api_key: ""
-  # api_mode: ""
+    medium:                                 # Optional override used by delegate_task(tier="medium")
+      # model: "anthropic/claude-sonnet-4"
+      # provider: "openrouter"
+
+    large:                                  # Optional override used by delegate_task(tier="large")
+      # model: "anthropic/claude-opus-4-1"
+      # provider: "anthropic"
+      # base_url: ""
+      # api_key: ""
+      # api_mode: ""
 ```
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
-**Tier routing:** `delegate_task` accepts an optional top-level `tier` of `small`, `medium`, or `large`. Omitted or blank behaves like `medium`. `small` prefers `delegation_small` when that block is configured, `large` prefers `delegation_large`, and both fall back to `delegation` before inheriting the parent model/provider path. The tier is top-level only — batch mode applies one tier to the whole call, and `tasks[]` does not support per-task tier overrides.
+**Tier routing:** `delegate_task` accepts an optional top-level `tier` of `small`, `medium`, or `large`. Omitted or blank behaves like `medium`. When configured, `delegation.tiers.small`, `delegation.tiers.medium`, and `delegation.tiers.large` override their respective tiers by merging onto the base `delegation` config. If the requested tier has no nested override, Hermes falls back to the base `delegation` config before inheriting the parent model/provider path. The tier is top-level only — batch mode applies one tier to the whole call, and `tasks[]` does not support per-task tier overrides.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 
@@ -1944,7 +1949,7 @@ delegation_large:                           # Optional route used by delegate_ta
 
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
-**Precedence:** requested `delegation_small` / `delegation_large` (when configured) → `delegation.base_url` / `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
+**Precedence:** when a requested tier has a matching nested override under `delegation.tiers`, Hermes first merges that tier override onto the base `delegation` config. If no matching tier override is configured, Hermes uses the base `delegation` config. If delegation routing is still effectively unconfigured, subagents inherit the parent model/provider path.
 
 **Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (clamped to 1-3). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
 

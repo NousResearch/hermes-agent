@@ -19,7 +19,7 @@ delegate_task(
 )
 ```
 
-Top-level `tier` is optional and bounded to `small`, `medium`, or `large`. Omitted or blank behaves like `medium`. `small` prefers `delegation_small` when configured, `large` prefers `delegation_large`, and both fall back to `delegation` before inheriting the parent model/provider path.
+Top-level `tier` is optional and bounded to `small`, `medium`, or `large`. Omitted or blank behaves like `medium`. When configured, `delegation.tiers.small`, `delegation.tiers.medium`, and `delegation.tiers.large` override their respective tiers by merging onto the base `delegation` config. If the requested tier has no nested override, Hermes falls back to the base `delegation` config before inheriting the parent model/provider path.
 
 ## Parallel Batch
 

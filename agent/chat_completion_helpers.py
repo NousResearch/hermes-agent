@@ -189,7 +189,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
             agent._close_request_openai_client(request_client, reason=reason)
 
     def _call():
+        provider_gateway_started_at = time.monotonic()
         try:
+            # ── [SUNTIKAN PROVIDER GATEWAY QUOTA CHECK] ──
+            try:
+                from provider_gateway.runtime import get_quota_manager
+                quota = get_quota_manager(agent)
+                quota.check_quota(agent)
+            except Exception as quota_exc:
+                from provider_gateway.quota_manager import QuotaExceededError
+                if isinstance(quota_exc, QuotaExceededError):
+                    raise quota_exc
+                logger.debug("Provider gateway quota check failed: %s", quota_exc)
+
             if agent.api_mode == "codex_responses":
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -228,14 +240,102 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     raise
                 result["response"] = normalize_converse_response(raw_response)
             else:
-                request_client = _set_request_client(
-                    agent._create_request_openai_client(
-                        reason="chat_completion_request",
-                        api_kwargs=api_kwargs,
+                # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE PREFLIGHT] ──
+                goto_api_call = True
+                try:
+                    from provider_gateway.runtime import get_semantic_cache
+                    cache = get_semantic_cache(agent)
+                    cached_resp = cache.get_cached_response(agent, api_kwargs.get("messages", []))
+                    if cached_resp is not None:
+                        result["response"] = cached_resp
+                        goto_api_call = False
+                except Exception as cache_exc:
+                    logger.debug("Provider gateway cache lookup failed: %s", cache_exc)
+
+                if goto_api_call:
+                    # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS PREFLIGHT] ──
+                    sanitizer = None
+                    original_messages = None
+                    try:
+                        from provider_gateway.runtime import _get_gateway_config, get_guardrails
+                        gw_config = _get_gateway_config(agent)
+                        if gw_config.enabled and gw_config.guardrails_enabled:
+                            sanitizer = get_guardrails(agent)
+                    except Exception as pii_init_exc:
+                        logger.debug("Failed to initialize guardrails: %s", pii_init_exc)
+
+                    if sanitizer is not None and "messages" in api_kwargs:
+                        try:
+                            import copy
+                            original_messages = api_kwargs["messages"]
+                            sanitized_messages = copy.deepcopy(original_messages)
+                            for msg in sanitized_messages:
+                                if "content" in msg and isinstance(msg["content"], str):
+                                    msg["content"] = sanitizer.sanitize_prompt(msg["content"])
+                            api_kwargs["messages"] = sanitized_messages
+                        except Exception as pii_san_exc:
+                            logger.debug("Failed to sanitize prompt: %s", pii_san_exc)
+
+                    request_client = _set_request_client(
+                        agent._create_request_openai_client(
+                            reason="chat_completion_request",
+                            api_kwargs=api_kwargs,
+                        )
                     )
-                )
-                result["response"] = request_client.chat.completions.create(**api_kwargs)
+                    result["response"] = request_client.chat.completions.create(**api_kwargs)
+
+                    # Restore original messages inside api_kwargs to avoid leaking redacted text back to the agent state
+                    if original_messages is not None:
+                        api_kwargs["messages"] = original_messages
+
+                    # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS POSTFLIGHT] ──
+                    if sanitizer is not None and result["response"] is not None:
+                        try:
+                            for choice in getattr(result["response"], "choices", []) or []:
+                                msg = getattr(choice, "message", None)
+                                if msg is not None and getattr(msg, "content", None) is not None:
+                                    msg.content = sanitizer.restore_response(msg.content)
+                        except Exception as pii_rest_exc:
+                            logger.debug("Failed to restore response content: %s", pii_rest_exc)
+
+                    try:
+                        from provider_gateway.runtime import record_provider_response_usage
+
+                        record_provider_response_usage(
+                            agent,
+                            result["response"],
+                            latency_seconds=time.monotonic() - provider_gateway_started_at,
+                        )
+                    except Exception as gateway_exc:
+                        logger.debug(
+                            "Provider gateway response tracking failed: %s",
+                            gateway_exc,
+                        )
+
+                    # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE STORE] ──
+                    try:
+                        from provider_gateway.runtime import get_semantic_cache
+                        cache = get_semantic_cache(agent)
+                        content = getattr(result["response"].choices[0].message, "content", None)
+                        if content:
+                            cache.set_cached_response(agent, api_kwargs.get("messages", []), content)
+                    except Exception as cache_store_exc:
+                        logger.debug("Provider gateway cache store failed: %s", cache_store_exc)
         except Exception as e:
+            if agent.api_mode == "chat_completions":
+                try:
+                    from provider_gateway.runtime import record_provider_error_usage
+
+                    record_provider_error_usage(
+                        agent,
+                        e,
+                        latency_seconds=time.monotonic() - provider_gateway_started_at,
+                    )
+                except Exception as gateway_exc:
+                    logger.debug(
+                        "Provider gateway error tracking failed: %s",
+                        gateway_exc,
+                    )
             result["error"] = e
         finally:
             _close_request_client_once("request_complete")
@@ -1023,11 +1123,61 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
-    if agent._fallback_index >= len(agent._fallback_chain):
-        return False
+    # ── [SUNTIKAN PROVIDER GATEWAY DYNAMIC ROUTING] ──
+    goto_fallback_logic = False
+    try:
+        from provider_gateway.config import load_gateway_config, GatewayConfig
+        from provider_gateway.policy import build_gateway_policy, should_consider_gateway_fallback
+        from provider_gateway.runtime import get_provider_router
 
-    fb = agent._fallback_chain[agent._fallback_index]
-    agent._fallback_index += 1
+        gw_config = getattr(agent, "_provider_gateway_config", None)
+        if gw_config is None:
+            gw_config = load_gateway_config()
+            setattr(agent, "_provider_gateway_config", gw_config)
+
+        if gw_config.enabled and should_consider_gateway_fallback(reason):
+            policy = build_gateway_policy(agent, gw_config)
+            # Filter out primary since it has just failed
+            candidates_to_route = [c for c in policy.candidates if c.source != "primary"]
+
+            router = get_provider_router(agent)
+            current_prov = (getattr(agent, "provider", "") or "").strip().lower()
+            current_mod = (getattr(agent, "model", "") or "").strip()
+
+            selected_route = router.select_route(
+                candidates_to_route,
+                strategy=gw_config.routing_strategy,
+                current_provider=current_prov,
+                current_model=current_mod,
+            )
+
+            if selected_route is not None:
+                fb = {
+                    "provider": selected_route.provider,
+                    "model": selected_route.model,
+                    "base_url": selected_route.base_url,
+                    "api_key": selected_route.api_key,
+                    "key_env": selected_route.key_env,
+                }
+                # Align fallback index if the chosen candidate exists in the fallback chain
+                for idx, entry in enumerate(agent._fallback_chain):
+                    if (
+                        isinstance(entry, dict)
+                        and (entry.get("provider") or "").strip().lower() == selected_route.provider.lower()
+                        and (entry.get("model") or "").strip() == selected_route.model
+                    ):
+                        agent._fallback_index = idx + 1
+                        break
+                goto_fallback_logic = True
+    except Exception as exc:
+        logger.debug("Provider gateway dynamic routing failed, falling back to linear: %s", exc)
+
+    if not goto_fallback_logic:
+        if agent._fallback_index >= len(agent._fallback_chain):
+            return False
+
+        fb = agent._fallback_chain[agent._fallback_index]
+        agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
@@ -1531,6 +1681,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 
+    # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE PREFLIGHT] ──
+    try:
+        from provider_gateway.runtime import get_semantic_cache
+        cache = get_semantic_cache(agent)
+        cached_resp = cache.get_cached_response(agent, api_kwargs.get("messages", []))
+        if cached_resp is not None:
+            if on_first_delta:
+                try:
+                    on_first_delta()
+                except Exception:
+                    pass
+            content = getattr(cached_resp.choices[0].message, "content", None)
+            if content:
+                try:
+                    agent._fire_stream_delta(content)
+                except Exception:
+                    pass
+            return cached_resp
+    except Exception as cache_exc:
+        logger.debug("Provider gateway streaming cache lookup failed: %s", cache_exc)
+
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch
         # in _interruptible_api_call already calls it; we just need to
@@ -1657,6 +1828,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
     last_chunk_time = {"t": time.time()}
+    api_start_time = time.time()
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -1707,6 +1879,33 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pool=_conn_cap,
             ),
         }
+
+        # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS PREFLIGHT] ──
+        sanitizer = None
+        deanonimizer = None
+        original_messages = None
+        try:
+            from provider_gateway.runtime import _get_gateway_config, get_guardrails
+            gw_config = _get_gateway_config(agent)
+            if gw_config.enabled and gw_config.guardrails_enabled:
+                sanitizer = get_guardrails(agent)
+                if sanitizer is not None:
+                    deanonimizer = sanitizer.get_deanonimizer()
+        except Exception as pii_init_exc:
+            logger.debug("Failed to initialize guardrails: %s", pii_init_exc)
+
+        if sanitizer is not None and "messages" in stream_kwargs:
+            try:
+                import copy
+                original_messages = stream_kwargs["messages"]
+                sanitized_messages = copy.deepcopy(original_messages)
+                for msg in sanitized_messages:
+                    if "content" in msg and isinstance(msg["content"], str):
+                        msg["content"] = sanitizer.sanitize_prompt(msg["content"])
+                stream_kwargs["messages"] = sanitized_messages
+            except Exception as pii_san_exc:
+                logger.debug("Failed to sanitize streaming prompt: %s", pii_san_exc)
+
         request_client = _set_request_client(
             agent._create_request_openai_client(
                 reason="chat_completion_stream_request",
@@ -1723,6 +1922,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+
+        # Restore original messages to prevent redacted strings from leaking back to agent state
+        if original_messages is not None:
+            stream_kwargs["messages"] = original_messages
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
@@ -1796,10 +1999,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
-                content_parts.append(delta.content)
+                raw_content = delta.content
+                if deanonimizer is not None:
+                    try:
+                        processed_content = deanonimizer.process_chunk(raw_content)
+                    except Exception as pii_rest_exc:
+                        logger.debug("Failed to de-anonymize chunk: %s", pii_rest_exc)
+                        processed_content = raw_content
+                else:
+                    processed_content = raw_content
+
+                content_parts.append(processed_content)
                 if not tool_calls_acc:
                     _fire_first_delta()
-                    agent._fire_stream_delta(delta.content)
+                    agent._fire_stream_delta(processed_content)
                     deltas_were_sent["yes"] = True
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside
@@ -1814,8 +2027,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        agent.stream_delta_callback(processed_content)
+                        agent._record_streamed_assistant_text(processed_content)
                     except Exception:
                         pass
 
@@ -1891,6 +2104,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Usage in the final chunk
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+
+        # ── [SUNTIKAN PROVIDER GATEWAY PII GUARDRAILS FLUSH] ──
+        if deanonimizer is not None:
+            try:
+                flush_content = deanonimizer.flush()
+                if flush_content:
+                    content_parts.append(flush_content)
+                    if not tool_calls_acc:
+                        _fire_first_delta()
+                        agent._fire_stream_delta(flush_content)
+                    elif agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(flush_content)
+                            agent._record_streamed_assistant_text(flush_content)
+                        except Exception:
+                            pass
+            except Exception as pii_flush_exc:
+                logger.debug("Failed to flush de-anonymizer: %s", pii_flush_exc)
 
         # Build mock response matching non-streaming shape
         full_content = "".join(content_parts) or None
@@ -2037,6 +2268,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     def _call():
         import httpx as _httpx
+
+        # ── [SUNTIKAN PROVIDER GATEWAY QUOTA CHECK] ──
+        try:
+            from provider_gateway.runtime import get_quota_manager
+            quota = get_quota_manager(agent)
+            quota.check_quota(agent)
+        except Exception as quota_exc:
+            from provider_gateway.quota_manager import QuotaExceededError
+            if isinstance(quota_exc, QuotaExceededError):
+                result["error"] = quota_exc
+                return
+            logger.debug("Provider gateway quota check failed: %s", quota_exc)
 
         _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", 2))
 
@@ -2434,7 +2677,61 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
             )
+        # ── [SUNTIKAN PROVIDER GATEWAY STREAMING ERROR TRACKING] ──
+        if not deltas_were_sent["yes"]:
+            try:
+                from provider_gateway.runtime import record_provider_error_usage
+                record_provider_error_usage(
+                    agent,
+                    result["error"],
+                    latency_seconds=time.time() - api_start_time,
+                )
+            except Exception as gateway_exc:
+                logger.debug(
+                    "Provider gateway streaming error tracking failed: %s",
+                    gateway_exc,
+                )
         raise result["error"]
+
+    # ── [SUNTIKAN PROVIDER GATEWAY STREAMING RESPONSE TRACKING] ──
+    if result["response"] is not None:
+        try:
+            from provider_gateway.runtime import record_provider_response_usage
+            record_provider_response_usage(
+                agent,
+                result["response"],
+                latency_seconds=time.time() - api_start_time,
+            )
+        except Exception as gateway_exc:
+            logger.debug(
+                "Provider gateway streaming response tracking failed: %s",
+                gateway_exc,
+            )
+
+        # ── [SUNTIKAN PROVIDER GATEWAY SEMANTIC CACHE STORE] ──
+        try:
+            from provider_gateway.runtime import get_semantic_cache
+            cache = get_semantic_cache(agent)
+            content = None
+            if agent.api_mode == "anthropic_messages":
+                msg_obj = result["response"]
+                if hasattr(msg_obj, "content"):
+                    if isinstance(msg_obj.content, list):
+                        parts = []
+                        for block in msg_obj.content:
+                            if hasattr(block, "text"):
+                                parts.append(block.text)
+                        content = "".join(parts)
+                    elif isinstance(msg_obj.content, str):
+                        content = msg_obj.content
+            else:
+                content = getattr(result["response"].choices[0].message, "content", None)
+            
+            if content:
+                cache.set_cached_response(agent, api_kwargs.get("messages", []), content)
+        except Exception as cache_store_exc:
+            logger.debug("Provider gateway streaming cache store failed: %s", cache_store_exc)
+
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────

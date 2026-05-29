@@ -117,6 +117,7 @@ sms = ["aiohttp==3.13.3"]
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0"]
 acp = ["agent-client-protocol==0.9.0"]
+gateway = ["litellm>=1.40.0"]
 # mistral: extra REMOVED 2026-05-12 — `mistralai` PyPI project quarantined
 # after malicious 2.4.6 release (Mini Shai-Hulud worm). Every version of
 # `mistralai` returns 404 on PyPI right now, so any pin we'd write is
@@ -237,7 +238,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "provider_gateway", "provider_gateway.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -130,6 +130,22 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# Provider Gateway (optional, default OFF)
+# =============================================================================
+# Foundation for future multi-provider routing, usage tracking, and cost
+# tracking across providers. Leaving this disabled preserves the current Hermes
+# provider behavior.
+#
+# provider_gateway:
+#   enabled: false
+#   backend: native              # native | litellm
+#   track_usage: true
+#   track_cost: true
+#   routing:
+#     strategy: round-robin      # round-robin | lowest-cost | lowest-latency
+#     fallback_models: []
+
+# =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)
 # =============================================================================
 # Cache identical API responses at the OpenRouter edge for free instant replays.

@@ -1,0 +1,204 @@
+manifest_version: "1.0"
+name: "Hermes Browser Bridge"
+display_name: "Browser Automation (User's Session)"
+description: "Connect Hermes Agent to an already-authenticated Chrome browser session via MCP. Execute browser interactions (click, type, navigate, screenshot) on the user's real browser with maintained login state, utilizing human fingerprint for natural automation."
+version: "0.4.0"
+author: "Fajar Kurnia"
+license: "MIT"
+
+repository:
+  url: "https://github.com/fajarkurnia0388/hermes-browser-bridge"
+  branch: "main"
+
+source:
+  type: "github"
+  url: "https://github.com/fajarkurnia0388/hermes-browser-bridge"
+
+transport:
+  type: "stdio"
+  command: "node"
+  args:
+    - "${HERMES_BROWSER_BRIDGE_PATH}/bridge/index.js"
+  env:
+    BRIDGE_PORT: "${BRIDGE_PORT:=8787}"
+
+install:
+  bootstrap:
+    - type: "shell"
+      command: "cd ${HERMES_BROWSER_BRIDGE_PATH} && npm install"
+      description: "Install dependencies"
+
+post_install:
+  - type: "info"
+    message: |
+      Hermes Browser Bridge installed successfully!
+      
+      Next steps:
+      1. Open chrome://extensions/ in your browser
+      2. Enable 'Developer mode' (toggle in top-right corner)
+      3. Click 'Load unpacked'
+      4. Select the 'extension/' folder from this package
+      5. Bridge will auto-connect at ws://127.0.0.1:8787
+      
+      For WSL2 + Windows: If using WSL2 for Hermes, ensure Chrome is running on Windows.
+      Add networkingMode=mirrored to ~/.wslconfig if connection issues occur.
+
+tools:
+  - name: "browser_snapshot"
+    description: "Capture accessibility tree and screenshot of the active browser tab"
+    inputs:
+      type: "object"
+      properties: {}
+  
+  - name: "browser_click"
+    description: "Click an interactive element identified by ref ID from the last snapshot"
+    inputs:
+      type: "object"
+      properties:
+        ref:
+          type: "string"
+          description: "Element reference ID (e.g., 'e5')"
+      required: ["ref"]
+  
+  - name: "browser_type"
+    description: "Type text into an input element by ref ID"
+    inputs:
+      type: "object"
+      properties:
+        ref:
+          type: "string"
+          description: "Input element reference ID"
+        text:
+          type: "string"
+          description: "Text to type (replaces existing content)"
+      required: ["ref", "text"]
+  
+  - name: "browser_navigate"
+    description: "Navigate to a URL and capture the resulting snapshot"
+    inputs:
+      type: "object"
+      properties:
+        url:
+          type: "string"
+          description: "Target URL"
+      required: ["url"]
+  
+  - name: "browser_press_key"
+    description: "Press a keyboard key with optional modifiers"
+    inputs:
+      type: "object"
+      properties:
+        key:
+          type: "string"
+          description: "Key name (Enter, Tab, Escape, ArrowUp/Down/Left/Right, etc.)"
+        modifiers:
+          type: "array"
+          items:
+            type: "string"
+            enum: ["ctrl", "shift", "alt", "meta"]
+          description: "Modifier keys (Ctrl+Shift+key, etc.)"
+      required: ["key"]
+  
+  - name: "browser_screenshot"
+    description: "Take a screenshot of the current page"
+    inputs:
+      type: "object"
+      properties: {}
+  
+  - name: "browser_scroll"
+    description: "Scroll the page up or down"
+    inputs:
+      type: "object"
+      properties:
+        direction:
+          type: "string"
+          enum: ["up", "down"]
+          description: "Scroll direction"
+        amount:
+          type: "number"
+          description: "Distance in pixels (default 400)"
+  
+  - name: "browser_find_element"
+    description: "Search for an element in the last snapshot by text or role"
+    inputs:
+      type: "object"
+      properties:
+        text:
+          type: "string"
+          description: "Text to search (case-insensitive, partial match)"
+        role:
+          type: "string"
+          description: "Element role (button, link, textbox, etc.)"
+  
+  - name: "browser_tabs"
+    description: "List all open tabs in the current browser window"
+    inputs:
+      type: "object"
+      properties: {}
+  
+  - name: "browser_switch_tab"
+    description: "Switch to a specific tab by ID"
+    inputs:
+      type: "object"
+      properties:
+        tabId:
+          type: "number"
+          description: "Target tab ID"
+      required: ["tabId"]
+  
+  - name: "browser_execute_script"
+    description: "Execute custom JavaScript in the page context"
+    inputs:
+      type: "object"
+      properties:
+        script:
+          type: "string"
+          description: "JavaScript code to execute"
+      required: ["script"]
+  
+  - name: "browser_wait"
+    description: "Wait for page to finish loading"
+    inputs:
+      type: "object"
+      properties:
+        timeout_ms:
+          type: "number"
+          description: "Timeout in milliseconds (default 5000)"
+  
+  - name: "browser_wait_for_selector"
+    description: "Wait for an element matching CSS selector to appear"
+    inputs:
+      type: "object"
+      properties:
+        selector:
+          type: "string"
+          description: "CSS selector to wait for"
+        timeout_ms:
+          type: "number"
+          description: "Timeout in milliseconds (default 10000)"
+      required: ["selector"]
+
+configuration:
+  required_env:
+    - name: "HERMES_BROWSER_BRIDGE_PATH"
+      description: "Absolute path to the Hermes Browser Bridge installation directory"
+      example: "/home/user/.hermes/optional-mcps/hermes-browser-bridge"
+
+requirements:
+  - name: "Node.js"
+    version: "18+"
+    description: "JavaScript runtime"
+  
+  - name: "Google Chrome / Chromium / Edge"
+    version: "116+"
+    description: "Browser engine with Chrome DevTools Protocol support"
+
+security:
+  - "Bridge listens only on 127.0.0.1 (localhost) — no network exposure"
+  - "Chrome DevTools attach/detach is per-operation (no persistent session)"
+  - "Screenshots transmitted via WebSocket, not stored to disk"
+  - "For production use, add token authentication to WebSocket connections"
+
+documentation:
+  readme: "https://github.com/fajarkurnia0388/hermes-browser-bridge/blob/main/README.md"
+  repository: "https://github.com/fajarkurnia0388/hermes-browser-bridge"

@@ -10146,6 +10146,20 @@ class HermesCLI:
             for line in account_lines:
                 print(line)
 
+        try:
+            from provider_gateway.status import (
+                build_gateway_status,
+                format_gateway_status_lines,
+            )
+
+            gateway_lines = format_gateway_status_lines(build_gateway_status(agent))
+        except Exception:
+            gateway_lines = []
+        if gateway_lines:
+            print()
+            for line in gateway_lines:
+                print(f"  {line}")
+
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):

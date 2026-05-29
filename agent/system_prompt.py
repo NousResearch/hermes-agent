@@ -301,7 +301,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
 
-    if agent._memory_store:
+    _external_memory_authoritative = False
+    if agent._memory_manager:
+        try:
+            _external_memory_authoritative = agent._memory_manager.has_authoritative_provider()
+        except Exception:
+            _external_memory_authoritative = False
+
+    if agent._memory_store and not _external_memory_authoritative:
         if agent._memory_enabled:
             mem_block = agent._memory_store.format_for_system_prompt("memory")
             if mem_block:

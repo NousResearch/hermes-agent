@@ -56,6 +56,7 @@ AUTHOR_MAP = {
     "Pluviobyte@users.noreply.github.com": "Pluviobyte",
     "sanghyuk_seo@nexcubecorp.com": "sanghyuk-seo-nexcube",
     "subrtt@gmail.com": "Brixyy",
+    "totalsolutionspm@gmail.com": "Totalsolutionsync",
     "wangpuv@hotmail.com": "wangpuv",
     "202622897+ticketclosed-wontfix@users.noreply.github.com": "ticketclosed-wontfix",
     "wuxuebin1993@gmail.com": "victorGPT",

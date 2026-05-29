@@ -1,6 +1,7 @@
 """Tests for the todo tool module."""
 
 import json
+from types import SimpleNamespace
 
 from tools.todo_tool import TodoStore, todo_tool
 
@@ -117,3 +118,51 @@ class TestTodoToolFunction:
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
         assert "error" in result
+
+
+def test_agent_loop_observer_can_annotate_todo_result():
+    from agent.agent_loop_observer import append_observer_metadata, notify_agent_loop_tool
+
+    class Manager:
+        def on_tool_observed(self, tool_name, args, result, metadata=None):
+            assert tool_name == "todo"
+            assert args == {"merge": True}
+            assert metadata["session_id"] == "sess-1"
+            return [{"provider": "test", "todo_mirror": "synced"}]
+
+    agent = SimpleNamespace(
+        _memory_manager=Manager(),
+        session_id="sess-1",
+        _parent_session_id="",
+        platform="cli",
+    )
+    result = json.dumps({"todos": []})
+
+    annotations = notify_agent_loop_tool(agent, "todo", {"merge": True}, result, task_id="task-1")
+    annotated = json.loads(append_observer_metadata(result, annotations))
+
+    assert annotated["observer_metadata"] == [{"provider": "test", "todo_mirror": "synced"}]
+
+
+def test_agent_loop_observer_covers_memory_delegate_and_session_search():
+    from agent.agent_loop_observer import notify_agent_loop_tool
+
+    seen = []
+
+    class Manager:
+        def on_tool_observed(self, tool_name, args, result, metadata=None):
+            seen.append((tool_name, args, result, metadata["session_id"]))
+            return []
+
+    agent = SimpleNamespace(
+        _memory_manager=Manager(),
+        session_id="sess-1",
+        _parent_session_id="parent-1",
+        platform="cli",
+    )
+
+    for tool_name in ("memory", "delegate_task", "session_search"):
+        notify_agent_loop_tool(agent, tool_name, {"q": tool_name}, "ok", task_id="task-1")
+
+    assert [item[0] for item in seen] == ["memory", "delegate_task", "session_search"]
+    assert all(item[3] == "sess-1" for item in seen)

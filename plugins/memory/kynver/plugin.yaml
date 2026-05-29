@@ -1,0 +1,4 @@
+name: kynver
+version: 1.0.0
+description: Kynver AgentOS memory, tasks, skills, and audit provider.
+kind: exclusive

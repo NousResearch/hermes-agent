@@ -108,10 +108,12 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
     if schtasks is None:
         return (1, "", "schtasks.exe not found on PATH")
     try:
+        _oem_cp = ctypes.windll.kernel32.GetOEMCP()
         proc = subprocess.run(
             [schtasks, *args],
             capture_output=True,
             text=True,
+            encoding=f"cp{_oem_cp}",
             timeout=_SCHTASKS_TIMEOUT_S,
             # CREATE_NO_WINDOW avoids a flashing console window when the CLI
             # is itself hosted in a TUI. See tools/browser_tool.py for the

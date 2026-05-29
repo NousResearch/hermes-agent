@@ -59,3 +59,53 @@ def test_docker_detected_via_dockerenv(tmp_path):
 def test_recommended_update_command_docker():
     from hermes_cli.config import recommended_update_command_for_method
     assert "docker pull" in recommended_update_command_for_method("docker")
+
+
+def test_banner_warns_on_pip_install(tmp_path):
+    """The welcome banner surfaces a warning when the install method is pip."""
+    import io
+    from rich.console import Console
+    from hermes_cli import banner
+
+    hh = tmp_path / ".hermes"
+    hh.mkdir()
+    (hh / ".install_method").write_text("pip\n")
+
+    with patch("hermes_cli.config.get_hermes_home", return_value=hh), \
+         patch("hermes_constants.get_hermes_home", return_value=hh):
+        buf = io.StringIO()
+        # Wide console so the warning isn't wrapped across lines in the panel.
+        console = Console(file=buf, width=400, force_terminal=False, color_system=None)
+        banner.build_welcome_banner(
+            console, model="m", cwd="/tmp",
+            tools=[{"function": {"name": "terminal"}}],
+            enabled_toolsets=["terminal"],
+        )
+        out = buf.getvalue()
+
+    assert "officially" in out
+    assert "instability" in out
+
+
+def test_banner_no_pip_warning_on_git_install(tmp_path):
+    """Git installs must not show the pip-install warning."""
+    import io
+    from rich.console import Console
+    from hermes_cli import banner
+
+    hh = tmp_path / ".hermes"
+    hh.mkdir()
+    (hh / ".install_method").write_text("git\n")
+
+    with patch("hermes_cli.config.get_hermes_home", return_value=hh), \
+         patch("hermes_constants.get_hermes_home", return_value=hh):
+        buf = io.StringIO()
+        console = Console(file=buf, width=400, force_terminal=False, color_system=None)
+        banner.build_welcome_banner(
+            console, model="m", cwd="/tmp",
+            tools=[{"function": {"name": "terminal"}}],
+            enabled_toolsets=["terminal"],
+        )
+        out = buf.getvalue()
+
+    assert "officially" not in out

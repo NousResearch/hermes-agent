@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-28T17:19:08Z",
+  "updated_at": "2026-05-29T06:55:44Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -97,7 +97,7 @@
           "description": ""
         },
         {
-          "id": "stepfun/step-3.5-flash",
+          "id": "stepfun/step-3.7-flash",
           "description": ""
         },
         {
@@ -210,7 +210,7 @@
           "id": "qwen/qwen3.6-35b-a3b"
         },
         {
-          "id": "stepfun/step-3.5-flash"
+          "id": "stepfun/step-3.7-flash"
         },
         {
           "id": "minimax/minimax-m2.7"

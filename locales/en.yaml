@@ -270,7 +270,7 @@ gateway:
     title:                 "**Title:** {title}"
     created:               "**Created:** {timestamp}"
     last_activity:         "**Last Activity:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Session usage (cumulative):** {tokens}"
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"
     state_no:              "No"

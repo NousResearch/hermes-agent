@@ -663,10 +663,11 @@ class HonchoClientConfig:
           1. Manual directory override from sessions map
           2. Hermes session title (from /title command)
           3. Gateway session key (stable per-chat identifier from gateway platforms)
-          4. per-session strategy — Hermes session_id ({timestamp}_{hex})
-          5. per-repo strategy — git repo root directory name
-          6. per-directory strategy — directory basename
-          7. global strategy — workspace name
+          4. HONCHO_SESSION env var (launch-time operator pin, below gateway for daemon safety)
+          5. per-session strategy — Hermes session_id ({timestamp}_{hex})
+          6. per-repo strategy — git repo root directory name
+          7. per-directory strategy — directory basename
+          8. global strategy — workspace name
         """
         import re
 
@@ -695,6 +696,17 @@ class HonchoClientConfig:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
             if sanitized:
                 return self._enforce_session_id_limit(sanitized, gateway_session_key)
+
+        # HONCHO_SESSION env var: launch-time operator pin. Sits BELOW
+        # gateway_session_key so a process-wide env on the daemon does not
+        # collapse multi-chat isolation. For non-gateway launches (CLI/REPL),
+        # this is the primary launch-time session pin.
+        env_session = os.environ.get("HONCHO_SESSION", "")
+        sanitized_env = re.sub(r'[^a-zA-Z0-9_-]+', '-', env_session).strip('-')
+        if sanitized_env:
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{sanitized_env}"
+            return sanitized_env
 
         # per-session: inherit Hermes session_id (new Honcho session each run)
         if self.session_strategy == "per-session" and session_id:

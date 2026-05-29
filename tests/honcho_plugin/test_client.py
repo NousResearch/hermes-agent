@@ -890,3 +890,74 @@ class TestDialecticDepthParsing:
         }))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.dialectic_depth_levels == ["low", "high"]
+
+
+class TestResolveSessionNameEnvVar:
+    """Tests for HONCHO_SESSION env var pin in resolve_session_name.
+
+    Priority: below gateway_session_key (so daemon multi-chat isolation
+    survives a process-wide env), above session_strategy. Critical safety
+    invariant: the gateway-wins case in test_gateway_wins_over_env_var.
+    """
+
+    def test_env_var_returns_value_no_peer_prefix(self):
+        config = HonchoClientConfig(session_strategy="per-directory", peer_name="op", session_peer_prefix=False)
+        with patch.dict(os.environ, {"HONCHO_SESSION": "foo"}, clear=False):
+            assert config.resolve_session_name(cwd="/tmp/x") == "foo"
+
+    def test_env_var_with_peer_prefix(self):
+        config = HonchoClientConfig(session_strategy="per-directory", peer_name="op", session_peer_prefix=True)
+        with patch.dict(os.environ, {"HONCHO_SESSION": "foo"}, clear=False):
+            assert config.resolve_session_name(cwd="/tmp/x") == "op-foo"
+
+    def test_gateway_wins_over_env_var(self):
+        """DAEMON-SAFETY INVARIANT — do not let this test regress.
+
+        If env var beats gateway_session_key, a process-wide HONCHO_SESSION on
+        the systemd unit collapses all gateway chats into one Honcho session.
+        """
+        config = HonchoClientConfig(session_strategy="per-directory", peer_name="op", session_peer_prefix=False)
+        with patch.dict(os.environ, {"HONCHO_SESSION": "from-env"}, clear=False):
+            result = config.resolve_session_name(
+                cwd="/tmp/x",
+                gateway_session_key="agent:main:telegram:dm:42",
+            )
+        assert result == "agent-main-telegram-dm-42"
+
+    def test_title_wins_over_env_var(self):
+        config = HonchoClientConfig(session_strategy="per-directory", peer_name="op", session_peer_prefix=True)
+        with patch.dict(os.environ, {"HONCHO_SESSION": "from-env"}, clear=False):
+            result = config.resolve_session_name(cwd="/tmp/x", session_title="from-title")
+        assert result == "op-from-title"
+
+    def test_env_var_sanitization_preserves_casing(self):
+        config = HonchoClientConfig(session_strategy="per-directory", peer_name="op", session_peer_prefix=False)
+        with patch.dict(os.environ, {"HONCHO_SESSION": "Foo.Bar!"}, clear=False):
+            assert config.resolve_session_name(cwd="/tmp/x") == "Foo-Bar"
+
+    def test_env_var_sanitizes_to_empty_falls_through(self):
+        config = HonchoClientConfig(session_strategy="per-directory", peer_name="op", session_peer_prefix=False)
+        with patch.dict(os.environ, {"HONCHO_SESSION": "---"}, clear=False):
+            result = config.resolve_session_name(cwd="/tmp/myproj")
+        assert result == "myproj"  # per-directory basename fallback
+
+    def test_env_var_unset_preserves_existing_behavior(self, monkeypatch):
+        """Env-unset path stays compatible with existing per-directory strategy.
+        Use monkeypatch.delenv (not patch.dict(clear=True)) so PATH/HOME and
+        other unrelated env stays intact — important if any callee shells out."""
+        config = HonchoClientConfig(session_strategy="per-directory", peer_name="op", session_peer_prefix=False)
+        monkeypatch.delenv("HONCHO_SESSION", raising=False)
+        result = config.resolve_session_name(cwd="/tmp/myproj")
+        assert result == "myproj"
+
+    def test_manual_sessions_map_wins_over_env_var(self):
+        """Manual override at line 549 is the FIRST check; env var is below
+        gateway_session_key. Manual map should still win."""
+        config = HonchoClientConfig(
+            session_strategy="per-directory",
+            peer_name="op",
+            session_peer_prefix=False,
+            sessions={"/tmp/x": "from-manual-map"},
+        )
+        with patch.dict(os.environ, {"HONCHO_SESSION": "from-env"}, clear=False):
+            assert config.resolve_session_name(cwd="/tmp/x") == "from-manual-map"

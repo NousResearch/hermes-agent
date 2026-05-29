@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -373,7 +374,18 @@ class HonchoMemoryProvider(MemoryProvider):
             or session_id
             or "hermes-default"
         )
-        logger.debug("Honcho session key resolved: %s", self._session_key)
+        # Distinguish env-var-derived sessions for operator debugging.
+        # Reconstruct the env-derived value and compare to the resolved key —
+        # `sessions[cwd]` (manual map, line 548) wins silently and would
+        # otherwise produce a misleading "via env var" line.
+        env_raw = os.environ.get("HONCHO_SESSION", "")
+        env_sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', env_raw).strip('-')
+        prefix = f"{cfg.peer_name}-" if cfg.session_peer_prefix and cfg.peer_name else ""
+        env_resolved = f"{prefix}{env_sanitized}" if env_sanitized else None
+        if env_resolved and self._session_key == env_resolved:
+            logger.debug("Honcho session resolved via HONCHO_SESSION env var: %s", self._session_key)
+        else:
+            logger.debug("Honcho session key resolved: %s", self._session_key)
 
         # Create session eagerly
         session = self._manager.get_or_create(self._session_key)

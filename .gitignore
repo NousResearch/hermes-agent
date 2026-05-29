@@ -75,3 +75,4 @@ hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*.playwright-mcp/
 .playwright-mcp/
+.understand-anything/

@@ -3757,6 +3757,7 @@ def _run_managed_preflight(
     # to the requested agent_id; the parent's current TaskCard may be routed
     # to a different owner than this delegate_task call.
     parent_task_card = getattr(parent_agent, "_current_task_card", None)
+    created_minimal_task_card = False
     if parent_task_card is not None:
         task_card = TaskCard.from_dict(parent_task_card.to_dict())
         if hasattr(parent_task_card, "action_type"):
@@ -3777,7 +3778,8 @@ def _run_managed_preflight(
         if task_id:
             task_card.task_id = task_id
         task_card.execution_plan = ExecutionPlan(mode="single_agent", agents=[agent_id])
-    if not hasattr(task_card, "risk_level"):
+        created_minimal_task_card = True
+    if created_minimal_task_card or not hasattr(task_card, "risk_level"):
         agent_spec = registry.get(agent_id)
         ordered_risks = (RiskLevel.R0, RiskLevel.R1, RiskLevel.R2, RiskLevel.R3, RiskLevel.R4)
         fallback_risk = next(

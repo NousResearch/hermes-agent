@@ -29,7 +29,7 @@ agents:
     permission: ask
     can_delegate: false
     capabilities: [code_edit, test_run, refactor]
-    risk_allowed: [R0, R1, R2, R3]
+    risk_allowed: [R1, R2, R3]
   - agent_id: deepseek-tui
     name: DeepSeek 低成本快工
     role: fast_worker
@@ -161,6 +161,29 @@ def test_managed_gateway_preflight_runs_before_legacy_child_execution(tmp_path, 
     child = mock_run.call_args.args[2]
     assert isinstance(child, ExternalCliChild)
     assert child.command == ["claude"]
+
+
+def test_managed_gateway_preflight_uses_agent_minimum_risk_without_parent_task_card(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
+    _write_managed_agents_yaml(tmp_path)
+    _write_models_yaml(tmp_path)
+    parent = _make_parent()
+    parent._current_task_card = None
+
+    with patch("tools.delegate_tool._run_single_child") as mock_run:
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        result = json.loads(delegate_task(goal="implement feature", agent_id="claude", parent_agent=parent))
+
+    assert result["results"][0]["status"] == "completed"
+    assert mock_run.called
 
 
 def test_managed_gateway_accepts_agent_alias_before_legacy_child_execution(tmp_path, monkeypatch):

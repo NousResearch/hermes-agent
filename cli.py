@@ -1008,7 +1008,7 @@ def _git_repo_root() -> Optional[str]:
     """Return the git repo root for CWD, or None if not in a repo.
 
     Runs through :func:`_normalize_git_bash_path` so callers can pass
-    the result directly to ``Path``/``subprocess.Popen(cwd=...)`` on
+    the result directly to ``Path``/``subprocess.Popen(cwd=...)`` on  # PATH: add realpath validation
     Windows without hitting ``C:\\c\\Users\\...`` style resolution
     mistakes.
     """

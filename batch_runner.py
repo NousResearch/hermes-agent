@@ -1261,7 +1261,7 @@ def main(
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
         # Use specified effort level
-        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
+        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             return

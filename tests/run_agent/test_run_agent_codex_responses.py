@@ -333,6 +333,39 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     assert kwargs["reasoning"]["effort"] == "low"
 
 
+def test_build_api_kwargs_codex_clamps_max_effort(monkeypatch):
+    """'max' reasoning effort is clamped to 'high' on the Responses API.
+
+    'max' is an Anthropic-only effort level. GPT-5.4 / Grok accept up to
+    'xhigh'/'high' on the Responses 'effort' field, so the Codex Responses
+    path must clamp 'max' to 'high' to avoid a 400.
+    """
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "max"},
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"]["effort"] == "high"
+
+
 def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
     """Effort levels natively supported by the Responses API pass through unchanged."""
     _patch_agent_bootstrap(monkeypatch)

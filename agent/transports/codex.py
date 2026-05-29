@@ -124,7 +124,13 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
+        # ``minimal`` → ``low`` (codex/Responses has no minimal tier).
+        # ``max`` → ``high``: the Anthropic-only ``max`` effort level is invalid
+        # on the OpenAI Responses / Grok ``effort`` field (accepts up to ``high``)
+        # and would 400. Clamp here, mirroring the xhigh→high normalization in
+        # run_agent.py. Runs before the provider branch so it covers both the
+        # Grok and the regular Responses paths.
+        _effort_clamp = {"minimal": "low", "max": "high"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)

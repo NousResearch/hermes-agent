@@ -8457,6 +8457,15 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
 
+        The guard is suppressed (returns ``None``) when any of the
+        following resume signals post-date the PR comment:
+        ``rejected`` event, run with ``outcome='rejected'``,
+        ``unblocked`` event, ``merge_requested`` event (prior merge
+        worker died before finishing — must respawn to complete the
+        merge), ``reclaimed`` event, or run with
+        ``outcome='reclaimed'`` (prior run did not complete its
+        intent).
+
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
     reset the task to ``ready`` only after verifying the lock is
@@ -8559,9 +8568,36 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             "WHERE task_id = ? AND kind = 'unblocked'",
             (task_id,),
         ).fetchone()
+        # merge_requested: the prior worker was asked to merge but died
+        # (gateway restart, reclaim, crash) before completing. The
+        # dispatcher must be allowed to respawn to finish the merge.
+        merge_event = conn.execute(
+            "SELECT MAX(created_at) AS ts FROM task_events "
+            "WHERE task_id = ? AND kind = 'merge_requested'",
+            (task_id,),
+        ).fetchone()
+        # reclaimed event / run: explicit signal that the prior run did
+        # not complete its intent — respawn is correct.
+        reclaimed_event = conn.execute(
+            "SELECT MAX(created_at) AS ts FROM task_events "
+            "WHERE task_id = ? AND kind = 'reclaimed'",
+            (task_id,),
+        ).fetchone()
+        reclaimed_run = conn.execute(
+            "SELECT MAX(ended_at) AS ts FROM task_runs "
+            "WHERE task_id = ? AND outcome = 'reclaimed'",
+            (task_id,),
+        ).fetchone()
         candidates = [
             int(r["ts"])
-            for r in (reject_event, reject_run, unblock_event)
+            for r in (
+                reject_event,
+                reject_run,
+                unblock_event,
+                merge_event,
+                reclaimed_event,
+                reclaimed_run,
+            )
             if r is not None and r["ts"] is not None
         ]
         latest_resume_ts = max(candidates) if candidates else None

@@ -5575,8 +5575,154 @@ def test_respawn_guard_active_pr_uses_rejected_run_outcome(kanban_home):
 
 
 # ---------------------------------------------------------------------------
-# detect_stuck_workers
+# check_respawn_guard — active_pr suppressed on merge_requested / reclaimed
+# (Bug: tasks stuck forever after external merge when merge worker dies)
 # ---------------------------------------------------------------------------
+
+
+def test_respawn_guard_active_pr_suppressed_on_merge_requested_event(
+    kanban_home,
+):
+    """A merge_requested event post-dating the PR-URL comment suppresses
+    the active_pr guard so the dispatcher can respawn the merge worker."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merge-req-resume", assignee="alice")
+        now = int(time.time())
+        # PR URL comment first, merge_requested event later.
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/11', ?)",
+            (t, now - 60),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'merge_requested', NULL, ?)",
+            (t, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert (
+        reason is None
+    ), f"expected guard suppressed (merge_requested > pr_ts), got {reason!r}"
+
+
+def test_respawn_guard_active_pr_still_fires_when_pr_postdates_merge_requested(
+    kanban_home,
+):
+    """If the PR-URL comment is newer than the merge_requested event,
+    the guard still fires — a fresh PR was opened after the merge
+    attempt, don't spawn again."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-after-merge-req", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'merge_requested', NULL, ?)",
+            (t, now - 120),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/12', ?)",
+            (t, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
+def test_respawn_guard_active_pr_suppressed_on_reclaimed_event(
+    kanban_home,
+):
+    """A reclaimed event post-dating the PR-URL comment suppresses
+    the active_pr guard — the prior run was killed before finishing."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reclaimed-resume", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/13', ?)",
+            (t, now - 60),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'reclaimed', NULL, ?)",
+            (t, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert (
+        reason is None
+    ), f"expected guard suppressed (reclaimed event > pr_ts), got {reason!r}"
+
+
+def test_respawn_guard_active_pr_suppressed_on_reclaimed_run_outcome(
+    kanban_home,
+):
+    """A task_runs row with outcome='reclaimed' post-dating the PR-URL
+    comment suppresses the active_pr guard — dispatcher must be allowed
+    to respawn after a mid-run kill (gateway restart, etc.)."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reclaimed-run-resume", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/14', ?)",
+            (t, now - 60),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, "
+            "started_at, ended_at) "
+            "VALUES (?, 'reclaimed', 'reclaimed', ?, ?)",
+            (t, now - 45, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert (
+        reason is None
+    ), f"expected guard suppressed (reclaimed run > pr_ts), got {reason!r}"
+
+
+def test_respawn_guard_exact_scenario_merge_worker_dies_pr_externally_merged(
+    kanban_home,
+):
+    """Regression for the 2026-05-29 incident: PR comment → merge_requested
+    → merge worker reclaimed (gateway restart) → guard blocks forever.
+
+    Timeline: PR comment at T-90, merge_requested event at T-60,
+    reclaimed run ended at T-30. Guard must return None."""
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="merge-die-stuck-regression", assignee="alice"
+        )
+        now = int(time.time())
+        # Step 1: worker opens PR and leaves comment
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR https://github.com/sahilm-ti/hermes-agent/pull/99 opened', ?)",
+            (t, now - 90),
+        )
+        # Step 2: human approves → merge_requested event
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'merge_requested', NULL, ?)",
+            (t, now - 60),
+        )
+        # Step 3: merge worker is killed mid-run → reclaimed run
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, "
+            "started_at, ended_at) "
+            "VALUES (?, 'reclaimed', 'reclaimed', ?, ?)",
+            (t, now - 55, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None, (
+        f"expected guard suppressed after merge_requested+reclaimed, got {reason!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# detect_stuck_workers
 
 
 def test_detect_stuck_workers_kills_and_requeues(kanban_home, monkeypatch):

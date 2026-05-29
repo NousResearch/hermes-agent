@@ -253,6 +253,20 @@ _MCP_MESSAGE_HANDLER_SUPPORTED = _check_message_handler_support()
 if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
     logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")
 
+
+def _missing_mcp_sdk_message(server_name: str | None = None) -> str:
+    """Return a consistent install hint when the optional MCP SDK is absent."""
+    target = f"MCP server '{server_name}'" if server_name else "MCP support"
+    return (
+        f"{target} requires the 'mcp' Python SDK, but it is not installed. "
+        "If you installed Hermes with pipx, run:\n"
+        "  pipx inject hermes-agent mcp\n"
+        "Otherwise install with:\n"
+        "  pip install 'hermes-agent[mcp]'\n"
+        "or (full install):\n"
+        "  pip install 'hermes-agent[all]'"
+    )
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -1340,13 +1354,7 @@ class MCPServerTask:
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
         if not _MCP_AVAILABLE:
-            raise ImportError(
-                f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                "it is not installed. Install with:\n"
-                "  pip install 'hermes-agent[mcp]'\n"
-                "or (full install):\n"
-                "  pip install 'hermes-agent[all]'"
-            )
+            raise ImportError(_missing_mcp_sdk_message(self.name))
 
         command = config.get("command")
         args = config.get("args", [])

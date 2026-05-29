@@ -26,6 +26,7 @@ def _reset_signal_scheduler():
     _reset_scheduler()
 
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
@@ -2381,6 +2382,75 @@ class TestSendViaAdapterStandaloneFallback:
         assert recorded["chat_id"] == "room/123"
         assert recorded["message"] == "hello cron"
         assert recorded["pconfig"] is pconfig
+
+    @pytest.mark.asyncio
+    async def test_live_adapter_sends_media_files_after_text(self, monkeypatch, tmp_path):
+        """Live gateway adapter path must upload attachments, not only mirror text."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.config import Platform
+
+        media_file = tmp_path / "learning.md"
+        media_file.write_text("# Learning\n", encoding="utf-8")
+
+        adapter = SimpleNamespace(
+            send=AsyncMock(return_value=SendResult(success=True, message_id="text-1")),
+            send_image_file=AsyncMock(),
+            send_video=AsyncMock(),
+            send_voice=AsyncMock(),
+            send_audio=AsyncMock(),
+            send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc-1")),
+        )
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: adapter})
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        result = await _send_via_adapter(
+            Platform.TELEGRAM,
+            SimpleNamespace(extra={}),
+            "12345",
+            "Fallback ZIP containing the MD file:",
+            media_files=[(str(media_file), False)],
+        )
+
+        assert result == {"success": True, "message_id": "doc-1"}
+        adapter.send.assert_awaited_once()
+        adapter.send_document.assert_awaited_once_with(
+            chat_id="12345",
+            file_path=str(media_file),
+            metadata=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_adapter_reports_media_warning_when_upload_fails(self, monkeypatch, tmp_path):
+        """A text success must not hide a failed attachment upload."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.config import Platform
+
+        media_file = tmp_path / "learning.md"
+        media_file.write_text("# Learning\n", encoding="utf-8")
+
+        adapter = SimpleNamespace(
+            send=AsyncMock(return_value=SendResult(success=True, message_id="text-1")),
+            send_image_file=AsyncMock(),
+            send_video=AsyncMock(),
+            send_voice=AsyncMock(),
+            send_audio=AsyncMock(),
+            send_document=AsyncMock(return_value=SendResult(success=False, error="upload failed")),
+        )
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: adapter})
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        result = await _send_via_adapter(
+            Platform.TELEGRAM,
+            SimpleNamespace(extra={}),
+            "12345",
+            "Here is the file",
+            media_files=[(str(media_file), False)],
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "text-1"
+        assert "warnings" in result
+        assert any("upload failed" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_kwargs_forwarded(self, monkeypatch):

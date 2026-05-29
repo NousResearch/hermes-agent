@@ -870,6 +870,14 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if plat == Platform.TELEGRAM:
+                    for _net_key in (
+                        "network_retry_max",
+                        "network_retry_base_delay",
+                        "network_retry_max_delay",
+                    ):
+                        if _net_key in platform_cfg:
+                            bridged[_net_key] = platform_cfg[_net_key]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

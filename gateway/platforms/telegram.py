@@ -441,6 +441,25 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        # Network-error reconnect ladder tuning (config-overridable). A local
+        # DNS/connectivity blip makes getUpdates fail repeatedly; we back off
+        # and retry up to _network_retry_max times before escalating to a
+        # retryable-fatal error. Raised from the old hardcoded 10/60s so a
+        # transient ISP/router DNS outage doesn't push toward a gateway
+        # restart. See _handle_polling_network_error.
+        _extra = getattr(self.config, "extra", None) or {}
+        try:
+            self._network_retry_max = int(_extra.get("network_retry_max", 20))
+        except (TypeError, ValueError):
+            self._network_retry_max = 20
+        try:
+            self._network_retry_base_delay = int(_extra.get("network_retry_base_delay", 5))
+        except (TypeError, ValueError):
+            self._network_retry_base_delay = 5
+        try:
+            self._network_retry_max_delay = int(_extra.get("network_retry_max_delay", 120))
+        except (TypeError, ValueError):
+            self._network_retry_max_delay = 120
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
         # _handle_polling_network_error sets this; _verify_polling_after_reconnect
@@ -918,9 +937,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if self.has_fatal_error:
             return
 
-        MAX_NETWORK_RETRIES = 10
-        BASE_DELAY = 5
-        MAX_DELAY = 60
+        MAX_NETWORK_RETRIES = self._network_retry_max
+        BASE_DELAY = self._network_retry_base_delay
+        MAX_DELAY = self._network_retry_max_delay
 
         self._polling_network_error_count += 1
         self._send_path_degraded = True

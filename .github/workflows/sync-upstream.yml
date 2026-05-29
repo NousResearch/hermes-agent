@@ -18,21 +18,22 @@ name: Sync upstream
 #   feature/end-turn-tool-contract-upstream → #20713 terminal plugin tools can
 #   close a turn without triggering the empty-after-tools nudge path.
 #
-#   fix/launcher-symlink-clobber-upstream → #20747 install.sh launcher write
-#   must not clobber venv/bin/hermes when ~/.local/bin/hermes is symlinked.
-#
-#   fix/diagnostic-status-leak-and-end-turn-nudge → open; diagnostic status
-#   leak fix + end-turn nudge path correction.
+#   fix/diagnostic-status-leak-and-end-turn-nudge → #24853 diagnostic status
+#   leak fix (open).
 #
 #   fix/queued-followup-media-delivery-upstream → #25119 preserve MEDIA-backed
 #   attachments when a queued follow-up arrives mid-reply.
+#
+#   #20747 launcher symlink clobber (was fix/launcher-symlink-clobber-upstream)
+#   closed without merge — core fix landed upstream as c75e1a03f (Closes #21454).
+#   Dropped from FEATURE_BRANCHES 2026-05-29.
 #
 #   #25183 queued follow-up transcript history (was fix/queued-followup-history-
 #   persistence-upstream) merged upstream on NousResearch/hermes-agent:main as
 #   commits 9a815b6c8 and cc64a04f6 — dropped from FEATURE_BRANCHES.
 #
 # Drop a branch from FEATURE_BRANCHES (and delete it from the fork) once
-# its upstream PR merges — the cherry-pick becomes a no-op.
+# its upstream PR merges or the change is otherwise absorbed upstream.
 #
 # Runs daily at 03:00 UTC and on manual dispatch. See FORK.md for the
 # maintenance model and recovery procedure.
@@ -77,12 +78,10 @@ env:
   #   Listing the tip cherry-picks all three in one range.
   # - feature/whatsapp-inbound-text-batch is independent (PR #17165); listed
   #   second so it cherry-picks after the busy-path stack.
-  # - fix/launcher-symlink-clobber-upstream is independent (PR #20747);
-  #   listed before fix/diagnostic-status-leak-and-end-turn-nudge.
-  # - fix/diagnostic-status-leak-and-end-turn-nudge is independent (open).
+  # - fix/diagnostic-status-leak-and-end-turn-nudge is independent (PR #24853).
   # - fix/queued-followup-media-delivery-upstream is independent (PR #25119);
   #   listed last.
-  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream feature/whatsapp-inbound-text-batch fix/auxiliary-opencode-strip-trailing-v1 feature/end-turn-tool-contract-upstream fix/launcher-symlink-clobber-upstream fix/diagnostic-status-leak-and-end-turn-nudge fix/queued-followup-media-delivery-upstream"
+  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream feature/whatsapp-inbound-text-batch fix/auxiliary-opencode-strip-trailing-v1 feature/end-turn-tool-contract-upstream fix/diagnostic-status-leak-and-end-turn-nudge fix/queued-followup-media-delivery-upstream"
   PLUGIN_REPO: pebble-tech/hermes-plugin-gateway-policy
 
 jobs:

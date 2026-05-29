@@ -1795,14 +1795,19 @@ def _get_auth_error_types() -> tuple:
     except ImportError:
         pass
     try:
+        from mcp.client.auth.exceptions import OAuthRegistrationError
+        types.append(OAuthRegistrationError)
+    except ImportError:
+        pass
+    try:
         # Older MCP SDK variants exported this
         from mcp.client.auth import UnauthorizedError  # type: ignore
         types.append(UnauthorizedError)
     except ImportError:
         pass
     try:
-        from tools.mcp_oauth import OAuthNonInteractiveError
-        types.append(OAuthNonInteractiveError)
+        from tools.mcp_oauth import McpOAuthConfigError, OAuthNonInteractiveError
+        types.extend([OAuthNonInteractiveError, McpOAuthConfigError])
     except ImportError:
         pass
     try:
@@ -1931,12 +1936,32 @@ def _handle_auth_error_and_retry(
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
+    reauth_hint = (
+        f"Run `hermes mcp login {server_name}` (or delete the tokens "
+        f"file under ~/.hermes/mcp-tokens/ and restart)."
+    )
+    try:
+        from tools.mcp_oauth import is_google_drive_mcp_url, McpOAuthConfigError
+        with _lock:
+            srv = _servers.get(server_name)
+        server_url = (srv._config.get("url") or "") if srv else ""
+        if isinstance(exc, McpOAuthConfigError) or (
+            is_google_drive_mcp_url(server_url)
+            and "Registration failed" in str(exc)
+        ):
+            reauth_hint = (
+                "Add oauth.client_id and oauth.client_secret from a Google Cloud "
+                "Desktop OAuth client, then run "
+                f"`hermes mcp login {server_name}`. See "
+                "https://developers.google.com/workspace/drive/api/guides/configure-mcp-server"
+            )
+    except ImportError:
+        pass
     return json.dumps({
         "error": (
             f"MCP server '{server_name}' requires re-authentication. "
-            f"Run `hermes mcp login {server_name}` (or delete the tokens "
-            f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
-            f"this tool — ask the user to re-authenticate."
+            f"{reauth_hint} Do NOT retry this tool — ask the user to "
+            f"re-authenticate."
         ),
         "needs_reauth": True,
         "server": server_name,

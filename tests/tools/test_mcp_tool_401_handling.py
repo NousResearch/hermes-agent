@@ -23,6 +23,15 @@ def test_is_auth_error_detects_oauth_flow_error():
     assert _is_auth_error(OAuthFlowError("expired")) is True
 
 
+def test_is_auth_error_detects_oauth_registration_error():
+    from tools.mcp_tool import _is_auth_error
+    try:
+        from mcp.client.auth.exceptions import OAuthRegistrationError
+    except ImportError:
+        pytest.skip("OAuthRegistrationError not in this MCP SDK version")
+    assert _is_auth_error(OAuthRegistrationError("Registration failed: 400")) is True
+
+
 def test_is_auth_error_detects_oauth_non_interactive():
     from tools.mcp_tool import _is_auth_error
     from tools.mcp_oauth import OAuthNonInteractiveError

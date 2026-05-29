@@ -205,6 +205,116 @@ def _probe_single_server(
     return tools_found
 
 
+_OAUTH_PROBE_TOOL_NAMES = (
+    "list_recent_files",
+    "search_files",
+    "get_file_metadata",
+)
+
+
+def _pick_oauth_probe_tool(tool_names: List[str]) -> str:
+    """Pick a lightweight tool to force the OAuth flow during ``mcp login``."""
+    for preferred in _OAUTH_PROBE_TOOL_NAMES:
+        if preferred in tool_names:
+            return preferred
+    skip = frozenset({
+        "list_prompts", "get_prompt", "list_resources", "read_resource",
+    })
+    for name in tool_names:
+        if name not in skip:
+            return name
+    return tool_names[0]
+
+
+def _authenticate_mcp_server(
+    name: str,
+    config: dict,
+    connect_timeout: float = 300,
+) -> None:
+    """Connect and invoke one tool so OAuth runs before the session ends.
+
+    Tool listing alone does not authenticate (e.g. Google Drive MCP exposes
+    tools without a token). This call must succeed for ``mcp login`` to
+    report success.
+    """
+    from tools.mcp_tool import (
+        _ensure_mcp_loop,
+        _run_on_mcp_loop,
+        _stop_mcp_loop,
+        _connect_server,
+    )
+
+    _ensure_mcp_loop()
+
+    async def _auth():
+        server = await asyncio.wait_for(
+            _connect_server(name, config), timeout=connect_timeout,
+        )
+        try:
+            tool_names = [t.name for t in server._tools]
+            if not tool_names:
+                raise RuntimeError("server reported no tools")
+            probe_tool = _pick_oauth_probe_tool(tool_names)
+            async with server._rpc_lock:
+                await server.session.call_tool(probe_tool, arguments={})
+        finally:
+            await server.shutdown()
+
+    try:
+        _run_on_mcp_loop(_auth(), timeout=connect_timeout + 30)
+    except BaseException as exc:
+        raise _unwrap_exception_group(exc) from None
+    finally:
+        _stop_mcp_loop()
+
+
+def _prompt_google_drive_oauth(server_config: dict, url: str) -> bool:
+    """Collect Google Drive MCP OAuth credentials into ``server_config``."""
+    from tools.mcp_oauth import (
+        McpOAuthConfigError,
+        default_oauth_config_for_url,
+        is_google_drive_mcp_url,
+    )
+
+    if not is_google_drive_mcp_url(url):
+        return True
+
+    print()
+    _info(
+        "Google Drive MCP requires your own OAuth client (Desktop app) from "
+        "Google Cloud Console — dynamic registration is not supported."
+    )
+    _info("See: https://developers.google.com/workspace/drive/api/guides/configure-mcp-server")
+
+    oauth_cfg = dict(server_config.get("oauth") or {})
+    oauth_cfg.update(default_oauth_config_for_url(url))
+
+    client_id = oauth_cfg.get("client_id") or _prompt("OAuth client ID")
+    if not client_id:
+        _error("OAuth client ID is required for Google Drive MCP.")
+        return False
+    oauth_cfg["client_id"] = client_id.strip()
+
+    client_secret = oauth_cfg.get("client_secret")
+    if not client_secret:
+        client_secret = _prompt("OAuth client secret", password=True)
+    if not client_secret:
+        _error("OAuth client secret is required for Google Drive MCP.")
+        return False
+    oauth_cfg["client_secret"] = client_secret.strip()
+
+    server_config["auth"] = "oauth"
+    server_config["oauth"] = oauth_cfg
+
+    try:
+        from tools.mcp_oauth import validate_oauth_config
+        validate_oauth_config(name, url, oauth_cfg)
+    except McpOAuthConfigError as exc:
+        _error(str(exc))
+        return False
+    return True
+
+
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -284,54 +394,81 @@ def cmd_mcp_add(args):
 
     # ── Authentication ────────────────────────────────────────────────
 
-    if url and auth_type == "oauth":
-        print()
-        _info(f"Starting OAuth flow for '{name}'...")
-        oauth_ok = False
-        try:
-            from tools.mcp_oauth_manager import get_manager
-            oauth_auth = get_manager().get_or_build_provider(name, url, None)
-            if oauth_auth:
-                server_config["auth"] = "oauth"
-                _success("OAuth configured (tokens will be acquired on first connection)")
-                oauth_ok=True
-            else:
-                _warning("OAuth setup failed — MCP SDK auth module not available")
-        except Exception as exc:
-            _warning(f"OAuth error: {exc}")
+    if url:
+        from tools.mcp_oauth import is_google_drive_mcp_url
 
-        if not oauth_ok:
-            _info("This server may not support OAuth.")
-            if _confirm("Continue without authentication?", default=True):
-                # Don't store auth: oauth — server doesn't support it
-                pass
+        use_oauth = auth_type == "oauth" or is_google_drive_mcp_url(url)
+
+        if use_oauth:
+            if is_google_drive_mcp_url(url):
+                if not _prompt_google_drive_oauth(server_config, url):
+                    _info("Cancelled.")
+                    return
+            else:
+                server_config["auth"] = "oauth"
+
+            print()
+            _info(f"Starting OAuth flow for '{name}'...")
+            oauth_ok = False
+            try:
+                from tools.mcp_oauth_manager import get_manager
+                oauth_auth = get_manager().get_or_build_provider(
+                    name, url, server_config.get("oauth"),
+                )
+                oauth_ok = oauth_auth is not None
+                if not oauth_ok:
+                    _warning("OAuth setup failed — MCP SDK auth module not available")
+            except Exception as exc:
+                _warning(f"OAuth error: {exc}")
+
+            if oauth_ok:
+                try:
+                    _authenticate_mcp_server(name, server_config)
+                    from tools.mcp_oauth import HermesTokenStorage
+                    if HermesTokenStorage(name).has_cached_tokens():
+                        _success("OAuth complete — tokens saved")
+                    else:
+                        _warning(
+                            "Connected but no OAuth tokens were saved. Run "
+                            f"`hermes mcp login {name}` after fixing credentials."
+                        )
+                except Exception as exc:
+                    _warning(f"OAuth authorization did not complete: {exc}")
+            elif not is_google_drive_mcp_url(url):
+                _info("This server may not support OAuth.")
+                if _confirm("Continue without authentication?", default=True):
+                    server_config.pop("auth", None)
+                    server_config.pop("oauth", None)
+                else:
+                    _info("Cancelled.")
+                    return
             else:
                 _info("Cancelled.")
                 return
 
-    elif url:
-        # Prompt for API key / Bearer token for HTTP servers
-        print()
-        _info(f"Connecting to {url}")
-        needs_auth = _confirm("Does this server require authentication?", default=True)
-        if needs_auth:
-            if auth_type == "header" or not auth_type:
-                env_key = _env_key_for_server(name)
-                existing_key = get_env_value(env_key)
-                if existing_key:
-                    _success(f"{env_key}: already configured")
-                    api_key = existing_key
-                else:
-                    api_key = _prompt("API key / Bearer token", password=True)
-                    if api_key:
-                        save_env_value(env_key, api_key)
-                        _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
+        else:
+            # Prompt for API key / Bearer token for HTTP servers
+            print()
+            _info(f"Connecting to {url}")
+            needs_auth = _confirm("Does this server require authentication?", default=True)
+            if needs_auth:
+                if auth_type == "header" or not auth_type:
+                    env_key = _env_key_for_server(name)
+                    existing_key = get_env_value(env_key)
+                    if existing_key:
+                        _success(f"{env_key}: already configured")
+                        api_key = existing_key
+                    else:
+                        api_key = _prompt("API key / Bearer token", password=True)
+                        if api_key:
+                            save_env_value(env_key, api_key)
+                            _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
 
-                # Set header with env var interpolation
-                if api_key or existing_key:
-                    server_config["headers"] = {
-                        "Authorization": f"Bearer ${{{env_key}}}"
-                    }
+                    # Set header with env var interpolation
+                    if api_key or existing_key:
+                        server_config["headers"] = {
+                            "Authorization": f"Bearer ${{{env_key}}}"
+                        }
 
     # ── Discovery: connect and list tools ─────────────────────────────
 
@@ -616,7 +753,15 @@ def cmd_mcp_login(args):
         _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
         return
 
-    # Wipe both disk and in-memory cache so the next probe forces a fresh
+    oauth_cfg = server_config.get("oauth")
+    try:
+        from tools.mcp_oauth import validate_oauth_config
+        validate_oauth_config(name, url, oauth_cfg)
+    except Exception as exc:
+        _error(str(exc))
+        return
+
+    # Wipe both disk and in-memory cache so the next login forces a fresh
     # OAuth flow.
     try:
         from tools.mcp_oauth_manager import get_manager
@@ -628,7 +773,20 @@ def cmd_mcp_login(args):
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
-    # Probe triggers the OAuth flow (browser redirect + callback capture).
+    try:
+        _authenticate_mcp_server(name, server_config)
+    except Exception as exc:
+        _error(f"Authentication failed: {exc}")
+        return
+
+    from tools.mcp_oauth import HermesTokenStorage
+    if not HermesTokenStorage(name).has_cached_tokens():
+        _error(
+            "OAuth flow finished but no tokens were saved. Check "
+            "oauth.client_id / oauth.client_secret in config.yaml."
+        )
+        return
+
     try:
         tools = _probe_single_server(name, server_config)
         if tools:
@@ -636,7 +794,7 @@ def cmd_mcp_login(args):
         else:
             _success("Authenticated (server reported no tools)")
     except Exception as exc:
-        _error(f"Authentication failed: {exc}")
+        _warning(f"Tokens saved but tool discovery failed: {exc}")
 
 
 # ─── hermes mcp configure ────────────────────────────────────────────────────

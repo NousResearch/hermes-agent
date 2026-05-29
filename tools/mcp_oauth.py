@@ -85,6 +85,67 @@ class OAuthNonInteractiveError(RuntimeError):
     """Raised when OAuth requires browser interaction in a non-interactive env."""
 
 
+class McpOAuthConfigError(ValueError):
+    """OAuth config is incomplete or invalid for the target MCP server."""
+
+
+# Google's hosted Drive MCP rejects dynamic client registration (DCR).
+_GOOGLE_DRIVE_MCP_HOST = "drivemcp.googleapis.com"
+_GOOGLE_DRIVE_MCP_SCOPES = (
+    "https://www.googleapis.com/auth/drive.readonly "
+    "https://www.googleapis.com/auth/drive.file"
+)
+_GOOGLE_DRIVE_MCP_DOCS = (
+    "https://developers.google.com/workspace/drive/api/guides/configure-mcp-server"
+)
+
+
+def is_google_drive_mcp_url(server_url: str) -> bool:
+    """Return True if ``server_url`` points at Google's hosted Drive MCP."""
+    try:
+        host = urlparse(server_url).netloc.lower()
+    except (ValueError, AttributeError):
+        return False
+    return host == _GOOGLE_DRIVE_MCP_HOST or host.endswith("." + _GOOGLE_DRIVE_MCP_HOST)
+
+
+def default_oauth_config_for_url(server_url: str) -> dict[str, Any]:
+    """Return suggested ``oauth:`` block fields for known hosted MCP servers."""
+    if is_google_drive_mcp_url(server_url):
+        return {"scope": _GOOGLE_DRIVE_MCP_SCOPES}
+    return {}
+
+
+def validate_oauth_config(
+    server_name: str,
+    server_url: str,
+    oauth_config: dict | None,
+) -> None:
+    """Raise :class:`McpOAuthConfigError` when required OAuth fields are missing.
+
+    Google's Drive MCP does not support dynamic client registration. Hermes
+    must have a pre-registered ``client_id`` (and usually ``client_secret``)
+    before the browser authorization flow can start.
+    """
+    if not is_google_drive_mcp_url(server_url):
+        return
+
+    cfg = oauth_config or {}
+    if cfg.get("client_id"):
+        return
+
+    client_info = _read_json(HermesTokenStorage(server_name)._client_info_path())
+    if client_info and client_info.get("client_id"):
+        return
+
+    raise McpOAuthConfigError(
+        "Google Drive MCP requires oauth.client_id and oauth.client_secret from a "
+        "Google Cloud OAuth client (Desktop app). Dynamic client registration is "
+        "not supported by drivemcp.googleapis.com. See "
+        f"{_GOOGLE_DRIVE_MCP_DOCS}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Module-level state
 # ---------------------------------------------------------------------------
@@ -749,6 +810,8 @@ def build_oauth_auth(
             server_name,
         )
         return None
+
+    validate_oauth_config(server_name, server_url, oauth_config)
 
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
     storage = HermesTokenStorage(server_name)

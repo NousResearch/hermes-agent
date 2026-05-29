@@ -420,6 +420,10 @@ class MCPOAuthManager:
         if not _OAUTH_AVAILABLE:
             return None
 
+        from tools.mcp_oauth import validate_oauth_config
+
+        validate_oauth_config(server_name, entry.server_url, entry.oauth_config)
+
         cfg = dict(entry.oauth_config or {})
         storage = HermesTokenStorage(server_name)
 

@@ -14,9 +14,13 @@ import asyncio
 
 from tools.mcp_oauth import (
     HermesTokenStorage,
+    McpOAuthConfigError,
     OAuthNonInteractiveError,
     build_oauth_auth,
+    default_oauth_config_for_url,
+    is_google_drive_mcp_url,
     remove_oauth_tokens,
+    validate_oauth_config,
     _find_free_port,
     _can_open_browser,
     _is_interactive,
@@ -829,3 +833,31 @@ class TestWaitForCallbackSkipIntegration:
                 asyncio.run(_wait_for_callback())
         err = capsys.readouterr().err
         assert "skip" in err.lower()
+
+
+class TestGoogleDriveMcpOAuth:
+    def test_is_google_drive_mcp_url(self):
+        assert is_google_drive_mcp_url("https://drivemcp.googleapis.com/mcp/v1")
+        assert not is_google_drive_mcp_url("https://mcp.linear.app/mcp")
+
+    def test_default_oauth_config_includes_drive_scopes(self):
+        cfg = default_oauth_config_for_url("https://drivemcp.googleapis.com/mcp/v1")
+        assert "drive.readonly" in cfg["scope"]
+        assert "drive.file" in cfg["scope"]
+
+    def test_validate_requires_client_id_for_google_drive(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with pytest.raises(McpOAuthConfigError, match="client_id"):
+            validate_oauth_config(
+                "drive",
+                "https://drivemcp.googleapis.com/mcp/v1",
+                None,
+            )
+
+    def test_validate_passes_with_client_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        validate_oauth_config(
+            "drive",
+            "https://drivemcp.googleapis.com/mcp/v1",
+            {"client_id": "abc", "client_secret": "secret"},
+        )

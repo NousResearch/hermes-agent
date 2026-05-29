@@ -600,3 +600,15 @@ class TestMcpLogin:
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
 
+    def test_login_rejects_google_drive_without_client_id(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "drive": {
+                "url": "https://drivemcp.googleapis.com/mcp/v1",
+                "auth": "oauth",
+            },
+        })
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="drive"))
+        out = capsys.readouterr().out
+        assert "client_id" in out
+

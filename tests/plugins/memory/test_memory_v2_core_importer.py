@@ -64,3 +64,75 @@ def test_import_core_memory_is_idempotent_for_same_context_files(tmp_path):
     assert first["records_written"] == second["records_written"] == 2
     assert len(store.list_core_memory_records(category="user")) == 2
     assert len(store.list_source_refs()) == 1
+
+
+
+def test_import_core_memory_prunes_to_budget_by_score_and_reports_archive_only(tmp_path):
+    profile = tmp_path / "testing_profile"
+    profile.mkdir()
+    (profile / "USER.md").write_text(
+        "§".join(
+            [
+                "Dylan prefers direct grounded answers.",
+                "Dylan wants memory robust, low-compute, source-grounded, gated, and spec/eval-first.",
+                "Dylan wants full voice-to-voice mode in chat.",
+                "Temporary note about yesterday's lunch should not be prompt-core.",
+                "Random low-signal detail with no stable preference.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (profile / "TOOLS.md").write_text(
+        "\n".join(
+            [
+                "- ffmpeg is installed user-local at `~/.local/bin/ffmpeg`.",
+                "- #general: 1474927302512087112",
+                "- Backing files live under `~/.local/opt/ffmpeg-static/current`.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = import_core_memory_from_context_files(
+        target_hermes_home=profile,
+        source_hermes_home=profile,
+        core_budget=3,
+        archive_pruned=True,
+    )
+    store = MemoryV2Store(profile / "memory_v2")
+    records = store.list_core_memory_records()
+    statements = [record.statement for record in records]
+
+    assert report["records_seen"] == 8
+    assert report["records_written"] == 3
+    assert report["records_pruned"] == 5
+    assert report["archive_only_written"] == 5
+    assert len(records) == 3
+    assert any("memory robust" in statement for statement in statements)
+    assert any("direct grounded answers" in statement for statement in statements)
+    assert any("voice-to-voice" in statement for statement in statements)
+    assert not any("lunch" in statement for statement in statements)
+    assert not any("#general" in statement for statement in statements)
+    assert (profile / "memory_v2" / "inbox" / "core_import_pruned.jsonl").is_file()
+    assert all("score=" in reason for reason in report["pruned_reasons"].values())
+
+
+def test_import_core_memory_keeps_per_category_minimums_when_pruning(tmp_path):
+    profile = tmp_path / "testing_profile"
+    profile.mkdir()
+    (profile / "USER.md").write_text("§".join([f"Dylan prefers stable preference {i}." for i in range(6)]), encoding="utf-8")
+    (profile / "SOUL.md").write_text("\n".join(["- Prefer truth over sounding confident.", "- Private things stay private."]), encoding="utf-8")
+    (profile / "TOOLS.md").write_text("- ffmpeg is installed user-local at `~/.local/bin/ffmpeg`.", encoding="utf-8")
+
+    report = import_core_memory_from_context_files(
+        target_hermes_home=profile,
+        source_hermes_home=profile,
+        core_budget=4,
+        category_minimums={"user": 1, "assistant_identity": 1, "environment": 1},
+    )
+    store = MemoryV2Store(profile / "memory_v2")
+
+    assert report["records_written"] == 4
+    assert len(store.list_core_memory_records(category="user")) >= 1
+    assert len(store.list_core_memory_records(category="assistant_identity")) >= 1
+    assert len(store.list_core_memory_records(category="environment")) >= 1

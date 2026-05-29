@@ -63,6 +63,9 @@ def import_core_memory_from_context_files(
     source_hermes_home: str | Path | None = None,
     context_files: Iterable[str] = CONTEXT_FILES,
     max_records_per_file: int = 12,
+    core_budget: int | None = None,
+    category_minimums: Dict[str, int] | None = None,
+    archive_pruned: bool = False,
 ) -> Dict[str, Any]:
     """Import context files into a target profile's Memory v2 core store.
 
@@ -71,7 +74,10 @@ def import_core_memory_from_context_files(
         source_hermes_home: Hermes home/profile to read context files from. Defaults
             to target, which is useful after copying files into a test profile.
         context_files: Relative context file paths to import.
-        max_records_per_file: Hard cap to keep the core prompt small.
+        max_records_per_file: Hard cap for extraction from each file before global pruning.
+        core_budget: Optional global prompt-core budget. When set, imported candidates are scored and only the top records are written as core.
+        category_minimums: Optional per-category minimum counts protected during pruning when enough candidates exist.
+        archive_pruned: If true, write pruned records to ``inbox/core_import_pruned.jsonl`` as archive-only evidence.
 
     Returns:
         JSON-serializable import report.
@@ -81,14 +87,16 @@ def import_core_memory_from_context_files(
     source_home = Path(source_hermes_home or target_home).expanduser().resolve()
     if max_records_per_file < 1:
         raise ValueError("max_records_per_file must be at least 1")
+    if core_budget is not None and core_budget < 1:
+        raise ValueError("core_budget must be at least 1 when provided")
 
     store = MemoryV2Store(target_home / "memory_v2")
     store.initialize()
 
     imported_files: List[str] = []
     skipped_files: List[str] = []
-    record_ids: List[str] = []
     source_ids: List[str] = []
+    candidates: List[CoreMemoryRecord] = []
 
     for rel_path in context_files:
         rel = str(rel_path).strip().replace("\\", "/")
@@ -108,8 +116,8 @@ def import_core_memory_from_context_files(
         store.write_source_ref(source)
         source_ids.append(source.id)
         category = _category_for_file(rel)
-        priority = _PRIORITY_BY_CATEGORY[category]
         for statement in statements:
+            priority = _score_statement(statement, category)
             record = CoreMemoryRecord(
                 id=_record_id(category, statement),
                 category=category,
@@ -120,10 +128,29 @@ def import_core_memory_from_context_files(
                 source_refs=[source.id],
                 tags=["imported_context", _safe_slug(rel.rsplit("/", 1)[-1].removesuffix(".md"))],
             )
-            store.write_core_memory_record(record)
-            record_ids.append(record.id)
+            candidates.append(record)
         imported_files.append(rel)
 
+    selected, pruned, pruned_reasons = _select_core_records(
+        candidates,
+        core_budget=core_budget,
+        category_minimums=category_minimums or {},
+    )
+    _rewrite_core_categories(store, selected)
+    if archive_pruned:
+        for record in pruned:
+            store._append_jsonl(
+                store.inbox_dir / "core_import_pruned.jsonl",
+                {
+                    "id": record.id,
+                    "decision": "archive_only",
+                    "reason": pruned_reasons[record.id],
+                    "record": record.to_dict(),
+                    "created_at": utc_now_iso(),
+                },
+            )
+
+    record_ids = [record.id for record in selected]
     return {
         "success": True,
         "target_hermes_home": str(target_home),
@@ -131,11 +158,121 @@ def import_core_memory_from_context_files(
         "imported_files": imported_files,
         "skipped_files": skipped_files,
         "sources_written": len(set(source_ids)),
+        "records_seen": len(candidates),
         "records_written": len(set(record_ids)),
+        "records_pruned": len(pruned),
+        "archive_only_written": len(pruned) if archive_pruned else 0,
+        "pruned_reasons": pruned_reasons,
         "source_ids": sorted(set(source_ids)),
         "record_ids": sorted(set(record_ids)),
     }
 
+
+
+def _select_core_records(
+    candidates: List[CoreMemoryRecord],
+    *,
+    core_budget: int | None,
+    category_minimums: Dict[str, int],
+) -> tuple[List[CoreMemoryRecord], List[CoreMemoryRecord], Dict[str, str]]:
+    deduped: Dict[str, CoreMemoryRecord] = {}
+    for record in candidates:
+        existing = deduped.get(record.id)
+        if existing is None or record.priority > existing.priority:
+            deduped[record.id] = record
+    records = list(deduped.values())
+    if core_budget is None or len(records) <= core_budget:
+        return sorted(records, key=_record_sort_key), [], {}
+
+    selected_ids: set[str] = set()
+    for category, minimum in category_minimums.items():
+        if minimum <= 0:
+            continue
+        category_records = [record for record in records if record.category.value == category]
+        for record in sorted(category_records, key=_record_sort_key)[:minimum]:
+            if len(selected_ids) < core_budget:
+                selected_ids.add(record.id)
+    for record in sorted(records, key=_record_sort_key):
+        if len(selected_ids) >= core_budget:
+            break
+        selected_ids.add(record.id)
+
+    selected = [record for record in records if record.id in selected_ids]
+    pruned = [record for record in records if record.id not in selected_ids]
+    pruned_reasons = {
+        record.id: f"score={record.priority:.3f}; outside core_budget={core_budget}; archived_only"
+        for record in pruned
+    }
+    return sorted(selected, key=_record_sort_key), sorted(pruned, key=_record_sort_key), pruned_reasons
+
+
+def _record_sort_key(record: CoreMemoryRecord) -> tuple[float, str, str]:
+    return (-record.priority, record.category.value, record.id)
+
+
+def _rewrite_core_categories(store: MemoryV2Store, records: List[CoreMemoryRecord]) -> None:
+    by_category: Dict[str, List[CoreMemoryRecord]] = {}
+    for record in records:
+        by_category.setdefault(record.category.value, []).append(record)
+    touched = {record.category.value for record in store.list_core_memory_records()}
+    touched.update(by_category)
+    for category in touched:
+        category_records = sorted(by_category.get(category, []), key=_record_sort_key)
+        path = store._core_category_path(category)
+        if category_records:
+            store._atomic_write_yaml(
+                path,
+                {
+                    "version": 1,
+                    "category": category,
+                    "records": [record.to_dict() for record in category_records],
+                },
+            )
+        elif path.exists():
+            path.unlink()
+
+
+def _score_statement(statement: str, category: str) -> float:
+    text = statement.lower()
+    score = _PRIORITY_BY_CATEGORY.get(category, 0.75)
+    high_signal_markers = {
+        "prefers": 0.08,
+        "wants": 0.08,
+        "source-grounded": 0.07,
+        "low-compute": 0.07,
+        "gated": 0.06,
+        "spec/eval": 0.06,
+        "memory": 0.04,
+        "voice-to-voice": 0.06,
+        "discord": 0.04,
+        "truth": 0.05,
+        "private": 0.05,
+        "external actions": 0.05,
+        "ffmpeg": 0.04,
+        "installed": 0.03,
+    }
+    low_signal_markers = {
+        "temporary": -0.2,
+        "yesterday": -0.18,
+        "lunch": -0.18,
+        "random": -0.15,
+        "#general": -0.18,
+        "channel id": -0.08,
+        "ids that": -0.08,
+    }
+    for marker, delta in high_signal_markers.items():
+        if marker in text:
+            score += delta
+    for marker, delta in low_signal_markers.items():
+        if marker in text:
+            score += delta
+    if text.startswith("#"):
+        score -= 0.25
+    if len(statement) > 280:
+        score -= 0.05
+    if len(statement) < 28:
+        score -= 0.04
+    return max(0.0, min(1.0, round(score, 3)))
 
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
@@ -191,9 +328,9 @@ def _extract_statements(text: str, rel_path: str, *, limit: int) -> List[str]:
             continue
         seen.add(key)
         statements.append(statement)
-        if len(statements) >= limit:
-            break
-    return statements
+    category = _category_for_file(rel_path)
+    statements.sort(key=lambda statement: (-_score_statement(statement, category), statement.lower()))
+    return statements[:limit]
 
 
 def _looks_like_plain_statement(text: str) -> bool:

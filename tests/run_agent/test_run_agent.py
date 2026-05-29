@@ -2948,6 +2948,7 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("image")
 
@@ -2985,6 +2986,7 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("image")
 
@@ -3030,6 +3032,7 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("help me")
 
@@ -3057,6 +3060,7 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("search for something")
 
@@ -3477,6 +3481,7 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("answer me")
 
@@ -3622,6 +3627,7 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("ask me")
         # Should recover partial streamed content, not fall through to (empty)

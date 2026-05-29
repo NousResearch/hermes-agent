@@ -370,9 +370,11 @@ class TestTencentTokenhubAuxiliary:
         assert _API_KEY_PROVIDER_AUX_MODELS["tencent-tokenhub"] == "hy3-preview"
 
     def test_aux_aliases(self):
-        from agent.auxiliary_client import _PROVIDER_ALIASES
-        assert _PROVIDER_ALIASES.get("tencent") == "tencent-tokenhub"
-        assert _PROVIDER_ALIASES.get("tokenhub") == "tencent-tokenhub"
+        # The aux client no longer owns a private alias table; it delegates to
+        # the unified canonicalize_provider (cpf-zkw.2 / #12146).
+        from agent.auxiliary_client import _normalize_aux_provider
+        assert _normalize_aux_provider("tencent") == "tencent-tokenhub"
+        assert _normalize_aux_provider("tokenhub") == "tencent-tokenhub"
 
 
 # =============================================================================

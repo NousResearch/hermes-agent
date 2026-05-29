@@ -44,6 +44,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
+from hermes_cli.provider_resolution import canonicalize_provider
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
@@ -1473,59 +1474,23 @@ def resolve_provider(
     Priority (when requested="auto" or None):
     1. active_provider in auth.json with valid credentials
     2. Explicit CLI api_key/base_url -> "openrouter"
-    3. OPENAI_API_KEY or OPENROUTER_API_KEY env vars -> "openrouter"
-    4. Provider-specific API keys (GLM, Kimi, MiniMax) -> that provider
-    5. Fallback: "openrouter"
-    """
-    normalized = (requested or "auto").strip().lower()
+    3. Provider-specific API keys (GLM, Kimi, MiniMax, DeepSeek, …) -> that provider
+    4. AWS Bedrock via the boto3 credential chain -> "bedrock"
+    5. Ambient OPENAI_API_KEY / OPENROUTER_API_KEY -> "openrouter"
+    6. No provider configured -> AuthError
 
-    # Normalize provider aliases
-    _PROVIDER_ALIASES = {
-        "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
-        "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-        "x-ai": "xai", "x.ai": "xai", "grok": "xai",
-        "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
-        "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
-        "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
-        "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
-        "step": "stepfun", "stepfun-coding-plan": "stepfun",
-        "arcee-ai": "arcee", "arceeai": "arcee",
-        "gmi-cloud": "gmi", "gmicloud": "gmi",
-        "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-        "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
-        "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
-        "alibaba_coding_plan": "alibaba-coding-plan",
-        "claude": "anthropic", "claude-code": "anthropic",
-        "github": "copilot", "github-copilot": "copilot",
-        "github-models": "copilot", "github-model": "copilot",
-        "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-        "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
-        "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
-        "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
-        "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
-        "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
-        "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
-        "go": "opencode-go", "opencode-go-sub": "opencode-go",
-        "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
-        "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
-        # Local server aliases — route through the generic custom provider
-        "ollama": "custom", "ollama_cloud": "ollama-cloud",
-        "vllm": "custom", "llamacpp": "custom",
-        "llama.cpp": "custom", "llama-cpp": "custom",
-    }
-    # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.
-    # This keeps providers/ as the single source for new aliases while the
-    # hardcoded dict above remains authoritative for existing ones.
-    try:
-        from providers import list_providers as _lp
-        for _pp in _lp():
-            for _alias in _pp.aliases:
-                if _alias not in _PROVIDER_ALIASES:
-                    _PROVIDER_ALIASES[_alias] = _pp.name
-    except Exception:
-        pass
-    normalized = _PROVIDER_ALIASES.get(normalized, normalized)
+    The ambient OPENAI/OPENROUTER short-circuit runs *below* the per-provider
+    scan (#5358): a user who set DEEPSEEK_API_KEY (etc.) AND happens to have an
+    ambient OPENAI_API_KEY in their environment should reach DeepSeek, not be
+    silently relabeled to OpenRouter.
+    """
+    # Normalize provider aliases via the single authoritative table
+    # (hermes_cli.provider_resolution.canonicalize_provider). This replaces the
+    # inline literal that used to live here and the duplicate in
+    # agent/auxiliary_client.py — both drifted, which was the root of #12146.
+    # canonicalize_provider folds in plugin-declared aliases from providers/
+    # exactly as the old inline registry-extension loop did.
+    normalized = canonicalize_provider(requested)
 
     if normalized == "openrouter":
         return "openrouter"
@@ -1558,9 +1523,6 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
-    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
-        return "openrouter"
-
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
@@ -1571,7 +1533,14 @@ def resolve_provider(
         # whose availability isn't implied by LM_API_KEY presence (it may be
         # offline, and the no-auth setup uses a placeholder value), so it
         # also requires explicit selection.
-        if pid in {"copilot", "lmstudio"}:
+        #
+        # openai-api claims the ambient OPENAI_API_KEY. Historically that key
+        # short-circuited to "openrouter" *above* this scan; now that the
+        # short-circuit moved below the scan (#5358), openai-api must be skipped
+        # here so a bare OPENAI_API_KEY still falls through to the ambient
+        # openrouter fallback rather than silently auto-selecting direct OpenAI.
+        # openai-api remains reachable by explicit `provider: openai-api`.
+        if pid in {"copilot", "lmstudio", "openai-api"}:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -1585,6 +1554,12 @@ def resolve_provider(
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed — skip Bedrock auto-detection
+
+    # Ambient OpenAI/OpenRouter keys are the LAST resort before giving up
+    # (#5358). This runs after the per-provider scan + Bedrock so a configured
+    # vendor key always wins over an incidental OPENAI_API_KEY/OPENROUTER_API_KEY.
+    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
+        return "openrouter"
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "

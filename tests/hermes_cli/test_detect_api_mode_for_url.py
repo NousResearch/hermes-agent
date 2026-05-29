@@ -77,3 +77,75 @@ class TestDefaultCase:
 
     def test_localhost_returns_none(self):
         assert _detect_api_mode_for_url("http://localhost:11434/v1") is None
+
+
+class TestRuntimeAndLeafDetectorsAgree:
+    """The resolver (``runtime_provider``) and the leaf (``provider_resolution``)
+    must select the SAME api_mode for every URL — the Epic previously shipped
+    divergent copies (cpf-zkw.10). This asserts behavioral agreement across a
+    representative URL set (incl. the query/fragment-spoof and lookalike cases)
+    so the two can never drift apart unnoticed, regardless of how they're wired.
+    """
+
+    URLS = [
+        "https://api.openai.com/v1",
+        "https://api.x.ai/v1",
+        "https://api.minimax.io/anthropic",
+        "https://api.kimi.com/coding",
+        "https://gw.example.com/anthropic?api-version=1",
+        "https://api.example.com/v1?next=/anthropic",
+        "https://api.example.com/v1#/anthropic",
+        "https://api.openai.com.attacker.test/v1",
+        "http://localhost:11434/v1",
+        "https://api.together.xyz/v1",
+        "",
+    ]
+
+    def test_detect_api_mode_agrees_for_every_url(self):
+        from hermes_cli import provider_resolution, runtime_provider
+
+        for url in self.URLS:
+            assert (
+                runtime_provider._detect_api_mode_for_url(url)
+                == provider_resolution._detect_api_mode_for_url(url)
+            ), f"detectors disagree on {url!r}"
+
+    def test_parse_api_mode_agrees_for_every_value(self):
+        from hermes_cli import provider_resolution, runtime_provider
+
+        for raw in ("chat_completions", "anthropic_messages", "codex_responses",
+                    "codex_app_server", "  Anthropic_Messages ", "bogus", "", None):
+            assert (
+                runtime_provider._parse_api_mode(raw)
+                == provider_resolution._parse_api_mode(raw)
+            ), f"parse disagrees on {raw!r}"
+
+    def test_codex_app_server_is_a_valid_mode_in_both(self):
+        from hermes_cli import provider_resolution, runtime_provider
+
+        assert "codex_app_server" in runtime_provider._VALID_API_MODES
+        assert "codex_app_server" in provider_resolution.VALID_API_MODES
+
+
+class TestQueryAndFragmentCannotSpoof:
+    """Detection matches on the URL PATH only, so a query/fragment value can't
+    masquerade as a protocol suffix. (The previous full-URL copy matched
+    ``?x=/anthropic`` and ``#/anthropic`` as ``anthropic_messages``.)
+    """
+
+    def test_query_string_anthropic_does_not_match(self):
+        assert _detect_api_mode_for_url("https://api.example.com/v1?next=/anthropic") is None
+
+    def test_fragment_anthropic_does_not_match(self):
+        assert _detect_api_mode_for_url("https://api.example.com/v1#/anthropic") is None
+
+    def test_query_string_coding_on_kimi_does_not_match(self):
+        assert _detect_api_mode_for_url("https://api.kimi.com/v1?redirect=/coding") is None
+
+    def test_legit_anthropic_gateway_with_query_still_matches(self):
+        # A real /anthropic gateway carrying a query string is correctly
+        # detected (the full-URL copy used to MISS this → 404).
+        assert (
+            _detect_api_mode_for_url("https://gw.example.com/anthropic?api-version=1")
+            == "anthropic_messages"
+        )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,22 @@ from hermes_cli.auth import (
     has_usable_secret,
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
+# api_mode selection primitives live in the import-light leaf module
+# hermes_cli.provider_resolution — the single offline source of truth. They are
+# imported (and re-exported under their historical names) so external importers
+# (hermes_cli.main, tools.delegate_tool) and tests that read
+# ``runtime_provider._detect_api_mode_for_url`` / ``_parse_api_mode`` /
+# ``_VALID_API_MODES`` keep working unchanged, while there is exactly ONE
+# implementation. The previous inline copies matched on the full URL (a query
+# or fragment like ``?x=/anthropic`` could spoof detection); the shared copy
+# matches on the URL path only. (#4600 / cpf-zkw.10 follow-up.)
+from hermes_cli.provider_resolution import (
+    ResolvedProvider,
+    VALID_API_MODES as _VALID_API_MODES,
+    _detect_api_mode_for_url,
+    _parse_api_mode,
+    normalize_base_url,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname
 
@@ -73,31 +90,8 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     return _loopback_hostname(base_url_hostname(bu))
 
 
-def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
-    """Auto-detect api_mode from the resolved base URL.
-
-    - Direct api.openai.com endpoints need the Responses API for GPT-5.x
-      tool calls with reasoning (chat/completions returns 400).
-    - Third-party Anthropic-compatible gateways (MiniMax, Zhipu GLM,
-      LiteLLM proxies, etc.) conventionally expose the native Anthropic
-      protocol under a ``/anthropic`` suffix — treat those as
-      ``anthropic_messages`` transport instead of the default
-      ``chat_completions``.
-    - Kimi Code's ``api.kimi.com/coding`` endpoint also speaks the
-      Anthropic Messages protocol (the /coding route accepts Claude
-      Code's native request shape).
-    """
-    normalized = (base_url or "").strip().lower().rstrip("/")
-    hostname = base_url_hostname(base_url)
-    if hostname == "api.x.ai":
-        return "codex_responses"
-    if hostname == "api.openai.com":
-        return "codex_responses"
-    if normalized.endswith("/anthropic"):
-        return "anthropic_messages"
-    if hostname == "api.kimi.com" and "/coding" in normalized:
-        return "anthropic_messages"
-    return None
+# _detect_api_mode_for_url is imported from hermes_cli.provider_resolution (see
+# the import block above) — the single, path-scoped api_mode detector.
 
 
 def _host_derived_api_key(base_url: str) -> str:
@@ -181,6 +175,21 @@ def _auto_detect_local_model(base_url: str) -> str:
 
 
 def _get_model_config() -> Dict[str, Any]:
+    """Pure, offline read of the ``model:`` config block.
+
+    INVARIANT (plan §3 decision #2): no network I/O. Provider/credential
+    resolution must be a pure offline computation — "endpoint unreachable" is a
+    runtime error surfaced at request time, never during resolution.
+
+    Local single-model auto-detection (a ``GET <base_url>/v1/models`` probe)
+    used to live here; it now lives only in the interactive / startup layer,
+    which already owns it and persists the result:
+      • cli.py CLIHarness model selection (auto-detects when config has a local
+        base_url and no default),
+      • model_switch.py ``/model`` handler.
+    This reader only normalizes the ``model`` → ``default`` alias. The
+    ``tests/integration`` no-socket tripwire locks the invariant.
+    """
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
@@ -188,14 +197,6 @@ def _get_model_config() -> Dict[str, Any]:
         # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
-        default = (cfg.get("default") or "").strip()
-        base_url = (cfg.get("base_url") or "").strip()
-        is_local = "localhost" in base_url or "127.0.0.1" in base_url
-        is_fallback = not default
-        if is_local and is_fallback and base_url:
-            detected = _auto_detect_local_model(base_url)
-            if detected:
-                cfg["default"] = detected
         return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}
@@ -237,27 +238,12 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {
-    "chat_completions",
-    "codex_responses",
-    "anthropic_messages",
-    "bedrock_converse",
-    # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
-    # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
-    # instead of Hermes' tool dispatch. Gated behind config key
-    # `model.openai_runtime == "codex_app_server"` AND provider in
-    # {"openai", "openai-codex"}. Default is unchanged.
-    "codex_app_server",
-}
-
-
-def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
-    if isinstance(raw, str):
-        normalized = raw.strip().lower()
-        if normalized in _VALID_API_MODES:
-            return normalized
-    return None
+# _VALID_API_MODES (aliased to provider_resolution.VALID_API_MODES) and
+# _parse_api_mode are imported from hermes_cli.provider_resolution — see the
+# import block above. The set includes "codex_app_server": the optional opt-in
+# that hands the entire turn to a `codex app-server` subprocess (gated behind
+# `model.openai_runtime == "codex_app_server"` AND provider in
+# {"openai", "openai-codex"}; default unchanged).
 
 
 def _maybe_apply_codex_app_server_runtime(
@@ -658,25 +644,29 @@ def _resolve_named_custom_runtime(
         _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
-            (explicit_api_key or "").strip(),
+            ((explicit_api_key or "").strip(), "explicit"),
             # Gate env key fallbacks on authoritative hosts (#28660)
-            (os.getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
-            (os.getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
+            ((os.getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""), "env:OPENAI_API_KEY"),
+            ((os.getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""), "env:OPENROUTER_API_KEY"),
             # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
             # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
             # intuitive match without configuring `custom_providers` first.
-            _host_derived_api_key(base_url),
+            (_host_derived_api_key(base_url), "env:host-derived"),
         ]
-        api_key = next(
-            (c for c in api_key_candidates if has_usable_secret(c)),
-            "",
-        ) or "no-key-required"
+        api_key, key_source = next(
+            ((c, s) for c, s in api_key_candidates if has_usable_secret(c)),
+            ("", "none"),
+        )
+        if not api_key:
+            api_key, key_source = "no-key-required", "no-key-required"
         return {
             "provider": "custom",
             "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": api_key,
             "source": "direct-alias",
+            "base_url_source": "explicit",
+            "key_source": key_source,
             "requested_provider": requested_provider,
         }
 
@@ -709,19 +699,24 @@ def _resolve_named_custom_runtime(
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
+    _cp_key_env = str(custom_provider.get("key_env", "") or "").strip()
     api_key_candidates = [
-        (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
-        os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
+        ((explicit_api_key or "").strip(), "explicit"),
+        (str(custom_provider.get("api_key", "") or "").strip(), "config"),
+        (os.getenv(_cp_key_env, "").strip(), f"env:{_cp_key_env}" if _cp_key_env else "env:key_env"),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
-        (os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
-        (os.getenv("OPENROUTER_API_KEY", "").strip() if _cp_is_openrouter  else ""),
+        ((os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""), "env:OPENAI_API_KEY"),
+        ((os.getenv("OPENROUTER_API_KEY", "").strip() if _cp_is_openrouter  else ""), "env:OPENROUTER_API_KEY"),
         # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host as a final
         # fallback when key_env wasn't set explicitly.
-        _host_derived_api_key(base_url),
+        (_host_derived_api_key(base_url), "env:host-derived"),
     ]
-    api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
+    api_key, key_source = next(
+        ((c, s) for c, s in api_key_candidates if has_usable_secret(c)), ("", "none")
+    )
+    if not api_key:
+        key_source = "no-key-required"
 
     result = {
         "provider": "custom",
@@ -731,6 +726,8 @@ def _resolve_named_custom_runtime(
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "base_url_source": "explicit" if (explicit_base_url or "").strip() else f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "key_source": key_source,
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
@@ -789,13 +786,18 @@ def _resolve_openrouter_runtime(
         ):
             use_config_base_url = True
 
-    base_url = (
-        (explicit_base_url or "").strip()
-        or env_custom_base_url
-        or (cfg_base_url.strip() if use_config_base_url else "")
-        or env_openrouter_base_url
-        or OPENROUTER_BASE_URL
-    ).rstrip("/")
+    # First non-empty candidate wins; track which one for provenance (plan §2).
+    _base_url_candidates = [
+        ((explicit_base_url or "").strip(), "explicit"),
+        (env_custom_base_url, "env:CUSTOM_BASE_URL"),
+        (cfg_base_url.strip() if use_config_base_url else "", "config.base_url"),
+        (env_openrouter_base_url, "env:OPENROUTER_BASE_URL"),
+        (OPENROUTER_BASE_URL, "registry-default"),
+    ]
+    base_url, base_url_source = next(
+        ((v, s) for v, s in _base_url_candidates if v), ("", "none")
+    )
+    base_url = base_url.rstrip("/")
 
     # Choose API key based on whether the resolved base_url targets OpenRouter.
     # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
@@ -813,9 +815,9 @@ def _resolve_openrouter_runtime(
     )
     if _is_openrouter_context:
         api_key_candidates = [
-            explicit_api_key,
-            os.getenv("OPENROUTER_API_KEY"),
-            os.getenv("OPENAI_API_KEY"),
+            (explicit_api_key, "explicit"),
+            (os.getenv("OPENROUTER_API_KEY"), "env:OPENROUTER_API_KEY"),
+            (os.getenv("OPENAI_API_KEY"), "env:OPENAI_API_KEY"),
         ]
     else:
         # Custom endpoint: use api_key from config when using config base_url (#1760).
@@ -833,20 +835,20 @@ def _resolve_openrouter_runtime(
         # Mistral, …) leaks credentials and causes 401s (issue #28660).
         # Mirrors the OLLAMA_API_KEY host-gate added in GHSA-76xc-57q6-vm5m.
         api_key_candidates = [
-            explicit_api_key,
-            (cfg_api_key if use_config_base_url else ""),
-            (os.getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
-            (os.getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
-            (os.getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),
+            (explicit_api_key, "explicit"),
+            ((cfg_api_key if use_config_base_url else ""), "config"),
+            ((os.getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""), "env:OLLAMA_API_KEY"),
+            ((os.getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""), "env:OPENAI_API_KEY"),
+            ((os.getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""), "env:OPENROUTER_API_KEY"),
             # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
             # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
             # intuitive match. Helper returns "" for IPs/loopback and for env
             # vars already handled by the explicit host-gated paths above.
-            _host_derived_api_key(base_url),
+            (_host_derived_api_key(base_url), "env:host-derived"),
         ]
-    api_key = next(
-        (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),
-        "",
+    api_key, key_source = next(
+        ((str(v or "").strip(), s) for v, s in api_key_candidates if has_usable_secret(v)),
+        ("", "none"),
     )
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
@@ -856,6 +858,30 @@ def _resolve_openrouter_runtime(
     # Also provide a placeholder API key for local servers that don't require
     # authentication — the OpenAI SDK requires a non-empty api_key string.
     effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+
+    # Fail-closed (plan §1 decision #1): a declared custom provider with no
+    # resolvable endpoint of its OWN — base_url fell all the way through to the
+    # OpenRouter registry default AND no usable key resolved — must raise rather
+    # than silently route custom intent to openrouter.ai with an empty key (the
+    # relabeled silent fallback this epic exists to kill). The guard is scoped
+    # exactly as the plan says ("auth-required endpoint with no resolvable key"):
+    #   * a real user-supplied URL (base_url_source != "registry-default") is a
+    #     resolvable endpoint and is honored as before; and
+    #   * a usable key present at the registry-default terminus is the
+    #     established #14676 case (picker selected Custom while config still
+    #     points at OpenRouter and the user HAS OpenRouter creds) — fall back to
+    #     OpenRouter as before rather than break a working setup.
+    if (
+        effective_provider == "custom"
+        and base_url_source == "registry-default"
+        and not has_usable_secret(api_key)
+    ):
+        raise AuthError(
+            "Custom provider selected but no base URL could be resolved. Set "
+            "model.base_url in config.yaml (run 'hermes model'), pass "
+            "--base-url, or set CUSTOM_BASE_URL.",
+            code="custom_provider_unresolved",
+        )
 
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
@@ -870,6 +896,7 @@ def _resolve_openrouter_runtime(
 
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
+        key_source = "no-key-required"
 
     return {
         "provider": effective_provider,
@@ -879,6 +906,8 @@ def _resolve_openrouter_runtime(
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
+        "base_url_source": base_url_source,
+        "key_source": key_source,
     }
 
 
@@ -1203,14 +1232,221 @@ def _resolve_explicit_runtime(
     return None
 
 
+# Legacy runtime-dict keys promoted to first-class ResolvedProvider fields.
+# Everything else a branch emits (region, command, args, bedrock_anthropic,
+# guardrail_config, expires_at, last_refresh, email, project_id, …) is carried
+# verbatim in ResolvedProvider.extra and round-trips through .as_dict().
+_RESOLVED_PROVIDER_FIELDS = frozenset(
+    {
+        "provider", "requested_provider", "api_mode", "base_url", "api_key",
+        "model", "credential_pool",
+        # External-process launch fields, promoted to first-class (Task 10).
+        "command", "args",
+        # Provenance (plan §2). Read by _finalize_runtime into the typed
+        # ResolvedProvider fields; excluded from `extra` so .as_dict() stays
+        # byte-compatible (these are metadata, not part of the legacy runtime
+        # dict shape consumers depend on).
+        "base_url_source", "key_source",
+    }
+)
+
+
+def _derive_provenance(runtime: Dict[str, Any]) -> tuple[str, str]:
+    """Fallback provenance for resolver branches that don't stamp distinct
+    ``base_url_source``/``key_source`` themselves.
+
+    The legacy runtime dict carries a single coarse ``source`` label
+    (``"pool:…"``, ``"portal"``, ``"hermes-auth-store"``, ``"process"``,
+    ``"explicit"``, …). For OAuth / pool / external-process branches the
+    base_url and key genuinely share one origin, so mapping that label to both
+    fields is accurate — not a placeholder. The custom / openrouter terminal
+    paths (where base_url and key can diverge, e.g. config base_url + env key)
+    stamp the two fields explicitly and bypass this.
+    """
+    src = str(runtime.get("source") or "").strip() or "unknown"
+    return src, src
+
+
+def _finalize_runtime(runtime: Dict[str, Any]) -> ResolvedProvider:
+    """Single choke point: build the authoritative :class:`ResolvedProvider` and
+    apply the one ``/v1`` normalizer (#4600). Callers that need the legacy dict
+    shape call ``.as_dict()`` on the returned object.
+
+    base_url normalization (#4600) is applied here for the **custom** provider
+    only — that is the path where the user supplies an arbitrary local/custom
+    endpoint that may be a bare host needing ``/v1`` (chat_completions) or a
+    redundant ``/v1`` to strip (anthropic_messages). Built-in providers carry
+    fixed, already-correct endpoints (e.g. copilot's ``api.githubcopilot.com``
+    is a bare host that must NOT gain ``/v1``), so they are left untouched.
+    ``normalize_base_url`` is idempotent.
+    """
+    provider = str(runtime.get("provider") or "")
+    api_mode = runtime.get("api_mode") or "chat_completions"
+    base_url = runtime.get("base_url") or ""
+    if provider == "custom":
+        base_url = normalize_base_url(base_url, api_mode)
+    extra = {k: v for k, v in runtime.items() if k not in _RESOLVED_PROVIDER_FIELDS}
+    # Real provenance (plan §2). Branches that can produce a divergent
+    # base_url vs key origin (the custom / openrouter terminal paths) stamp
+    # these explicitly; everything else derives from the coarse legacy
+    # ``source`` label, which for OAuth/pool/process branches is the true
+    # shared origin of both.
+    _derived_bu, _derived_key = _derive_provenance(runtime)
+    base_url_source = str(runtime.get("base_url_source") or _derived_bu)
+    key_source = str(runtime.get("key_source") or _derived_key)
+    resolved = ResolvedProvider(
+        provider=provider,
+        requested_provider=str(runtime.get("requested_provider") or ""),
+        api_mode=api_mode,
+        base_url=base_url,
+        api_key=runtime.get("api_key", ""),
+        base_url_source=base_url_source,
+        key_source=key_source,
+        model=runtime.get("model"),
+        credential_pool=runtime.get("credential_pool"),
+        command=runtime.get("command"),
+        args=tuple(runtime.get("args") or ()),
+        extra=extra,
+    )
+    return resolved
+
+
+# ── Resolution memoization (plan §4 Task 9) ──────────────────────────────────
+# resolve_runtime_provider is a pure, offline computation of (config.yaml + env
+# + explicit args + pool state). Long-running callers (the gateway) invoke it
+# once per inbound message; memoizing the result keyed on those inputs removes
+# the redundant config.yaml parse + recompute while PRESERVING live config
+# reload — the key embeds the config file's mtime/size and an env fingerprint,
+# so an edited config.yaml or changed env invalidates the entry on the next
+# call. Over-invalidation is safe (just recomputes); under-invalidation would
+# serve stale routing, so the key is deliberately broad.
+#
+# ONLY results from a static-source allowlist are memoized. Dynamic-credential
+# paths must re-resolve every call:
+#   * pool-bearing results — the credential pool is a live, mutable object the
+#     agent rotates on 429/402 (agent_runtime_helpers.py); and
+#   * OAuth / portal / external-process providers (codex, nous, xai-oauth,
+#     qwen-oauth, minimax-oauth, google-gemini-cli, copilot-acp) — these return
+#     an expiring token SNAPSHOT with no pool, and their resolver functions are
+#     the proactive pre-expiry refresh on the build path. Memoizing them would
+#     freeze a token for the gateway's process lifetime → 401s on expiry.
+# An ALLOWLIST (not a blocklist) is used so a future provider with a new source
+# label defaults to NOT cached (safe) rather than silently frozen.
+_RESOLUTION_MEMO: "OrderedDict[tuple, ResolvedProvider]" = OrderedDict()
+_RESOLUTION_MEMO_MAX = 32
+
+# Source labels whose base_url AND key are fully determined by config.yaml / env
+# / explicit args — no expiring credential, safe to memoize until those inputs
+# change. (`custom_provider:<name>` is matched by prefix.)
+_MEMOIZABLE_SOURCES = frozenset(
+    {"explicit", "env", "config", "env/config", "direct-alias", "registry-default", "azure-explicit"}
+)
+
+
+def _is_memoizable(resolved: ResolvedProvider) -> bool:
+    """True only for static, non-expiring resolutions (see _MEMOIZABLE_SOURCES).
+
+    Pool-bearing and OAuth/portal/process results carry live credentials and
+    must re-resolve each call so their refresh logic keeps running."""
+    if resolved.credential_pool is not None:
+        return False
+    src = str(resolved.extra.get("source") or "").strip().lower()
+    return src in _MEMOIZABLE_SOURCES or src.startswith("custom_provider:")
+
+
+def _config_fingerprint() -> tuple:
+    """(path, mtime_ns, size) of config.yaml — or a sentinel if unreadable.
+
+    The single disk ``stat`` here is the price of preserving live reload; it is
+    cheap relative to the yaml parse + resolution the memo avoids."""
+    try:
+        from hermes_cli.config import get_config_path
+
+        p = get_config_path()
+        st = p.stat()
+        return (str(p), st.st_mtime_ns, st.st_size)
+    except Exception:
+        return ("<no-config>", 0, 0)
+
+
+def _env_fingerprint() -> int:
+    """Hash of the full process environment.
+
+    Deliberately broad: resolution consults many env vars (per-vendor
+    ``*_API_KEY``, ``HERMES_HOME``, ``AWS_*``, proxy vars, …) and the exact set
+    differs per branch. Hashing everything over-invalidates on unrelated env
+    changes (safe — recompute) rather than risking a missed key (stale)."""
+    return hash(frozenset(os.environ.items()))
+
+
+def clear_resolution_memo() -> None:
+    """Drop all memoized resolutions. Call from tests that mutate config/env
+    outside the fingerprinted surface, or to force a fresh resolve."""
+    _RESOLUTION_MEMO.clear()
+
+
+def resolve_runtime_provider_object(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> ResolvedProvider:
+    """Resolve and return the authoritative :class:`ResolvedProvider` object —
+    including real ``base_url_source`` / ``key_source`` provenance.
+
+    This is the typed entry point callers carry on the agent.
+    :func:`resolve_runtime_provider` is the historical alias and now returns the
+    same object; both still support dict-style reads for legacy consumers.
+
+    Memoized on (args + config.yaml fingerprint + env fingerprint); pool-bearing
+    results bypass the cache so credential rotation stays live.
+    """
+    key = (
+        requested,
+        # Hash secrets/urls rather than holding raw copies in the key.
+        hash(explicit_api_key) if explicit_api_key else None,
+        explicit_base_url,
+        target_model,
+        _config_fingerprint(),
+        _env_fingerprint(),
+    )
+    cached = _RESOLUTION_MEMO.get(key)
+    if cached is not None:
+        _RESOLUTION_MEMO.move_to_end(key)
+        return cached
+
+    runtime = _resolve_runtime_provider_impl(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    resolved = _finalize_runtime(runtime)
+
+    # Cache only static, non-expiring resolutions (pool + OAuth/portal/process
+    # credentials must stay live — see _is_memoizable).
+    if _is_memoizable(resolved):
+        _RESOLUTION_MEMO[key] = resolved
+        while len(_RESOLUTION_MEMO) > _RESOLUTION_MEMO_MAX:
+            _RESOLUTION_MEMO.popitem(last=False)
+    return resolved
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> "ResolvedProvider":
     """Resolve runtime provider credentials for agent execution.
+
+    Returns the authoritative :class:`ResolvedProvider` value object. It still
+    supports dict-style reads (``runtime["base_url"]`` / ``runtime.get(...)`` /
+    ``"x" in runtime``) for compatibility, but new code should read typed
+    attributes (``runtime.base_url``). Alias of
+    :func:`resolve_runtime_provider_object`, kept as the historical name.
 
     target_model: Optional override for model_cfg.get("default") when
     computing provider-specific api_mode (e.g. OpenCode Zen/Go where different
@@ -1220,6 +1456,25 @@ def resolve_runtime_provider(
     persisted default. Other callers can leave it None to preserve existing
     behavior (api_mode derived from config).
     """
+    return resolve_runtime_provider_object(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+
+
+def _resolve_runtime_provider_impl(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Internal staged resolver. Returns the legacy runtime dict; the public
+    :func:`resolve_runtime_provider` wraps it with the normalization/typed-shim
+    finalizer. Kept as one body to preserve the existing branch ordering and
+    OAuth credential fetchers verbatim."""
     requested_provider = resolve_requested_provider(requested)
 
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint

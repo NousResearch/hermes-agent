@@ -2705,3 +2705,113 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+# =============================================================================
+# Task 3 (cpf-zkw.3): ResolvedProvider + central /v1 normalization + shim
+# =============================================================================
+
+def test_v1_appended_to_bare_custom_chat_completions_host(monkeypatch):
+    """#4600: a bare custom/local chat_completions base_url gains exactly one
+    /v1 at the single normalization choke point in resolve_runtime_provider."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:1234",
+    })
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
+
+    # Idempotent: an already-normalized URL keeps exactly one /v1.
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:1234/v1",
+    })
+    assert rp.resolve_runtime_provider(requested="custom")["base_url"] == "http://127.0.0.1:1234/v1"
+
+
+def test_v1_not_appended_for_anthropic_messages_custom_host(monkeypatch):
+    """#4600: anthropic_messages endpoints must never gain /v1 (the SDK appends
+    /v1/messages itself); a configured trailing /v1 is stripped centrally."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:1234/v1",
+        "api_mode": "anthropic_messages",
+    })
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "http://127.0.0.1:1234"
+
+
+def test_configured_custom_provider_never_relabeled_openrouter(monkeypatch):
+    """Global guard (§5): a fully-configured custom provider resolves to
+    "custom" and never carries the OpenRouter host."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:1234/v1",
+        "api_key": "local-key",
+    })
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom"
+    assert "openrouter.ai" not in resolved["base_url"]
+
+
+def test_get_model_config_is_offline_for_local_base_url(monkeypatch):
+    """cpf-zkw.4 / decision #2: _get_model_config is a pure offline reader. A
+    local base_url with no configured default must NOT trigger a network probe
+    (the auto-detect moved to the interactive/startup layer)."""
+    import socket as _socket
+
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "model": {"base_url": "http://localhost:1234"},
+    })
+    monkeypatch.setattr(
+        _socket, "socket",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("_get_model_config opened a socket")),
+    )
+
+    cfg = rp._get_model_config()
+    assert cfg["base_url"] == "http://localhost:1234"
+    # No model auto-detected — offline reader leaves default unset.
+    assert not cfg.get("default")
+
+
+def test_get_model_config_normalizes_model_alias(monkeypatch):
+    """The pure reader still maps the `model` → `default` alias."""
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "model": {"model": "my-local-model", "base_url": "http://localhost:1234"},
+    })
+    cfg = rp._get_model_config()
+    assert cfg["default"] == "my-local-model"
+
+
+def test_resolved_dict_shim_preserves_provider_specific_keys(monkeypatch):
+    """The ResolvedProvider.as_dict() shim must round-trip provider-specific
+    keys that the legacy dict carried inline (e.g. nous 'expires_at',
+    'source') — they live in ResolvedProvider.extra now."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(rp, "resolve_nous_runtime_credentials", lambda **kw: {
+        "base_url": "https://inference-api.nousresearch.com/v1",
+        "api_key": "nous-key",
+        "source": "portal",
+        "expires_at": "2099-01-01T00:00:00Z",
+    })
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+    assert resolved["provider"] == "nous"
+    assert resolved["source"] == "portal"
+    assert resolved["expires_at"] == "2099-01-01T00:00:00Z"
+    assert resolved["requested_provider"] == "nous"

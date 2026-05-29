@@ -285,10 +285,20 @@ class TestResolveProvider:
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
         assert resolve_provider("auto") == "huggingface"
 
-    def test_openrouter_takes_priority_over_glm(self, monkeypatch):
-        """OpenRouter API key should win over GLM in auto-detection."""
+    def test_configured_vendor_key_wins_over_ambient_openrouter(self, monkeypatch):
+        """#5358: a configured vendor key (GLM → zai) wins over an ambient
+        OPENROUTER_API_KEY. The OPENAI/OPENROUTER short-circuit now runs at the
+        BOTTOM of the auto-detect scan, so it no longer hijacks selection away
+        from an explicitly-configured provider. (Inverts the pre-#5358 behavior
+        where OpenRouter took priority.)"""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        assert resolve_provider("auto") == "zai"
+
+    def test_ambient_openrouter_key_is_last_resort(self, monkeypatch):
+        """With no configured vendor key, the ambient OPENROUTER_API_KEY
+        short-circuit still resolves to openrouter (final fallback preserved)."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         assert resolve_provider("auto") == "openrouter"
 
     def test_auto_does_not_select_copilot_from_github_token(self, monkeypatch):

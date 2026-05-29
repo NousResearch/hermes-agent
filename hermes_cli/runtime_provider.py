@@ -185,9 +185,17 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
-        # Accept "model" as alias for "default" (users intuitively write model.model)
-        if not cfg.get("default") and cfg.get("model"):
-            cfg["default"] = cfg["model"]
+        # Accept "model" / "name" as aliases for "default". Users intuitively
+        # write model.model or model.name (the latter mirrors the per-entry
+        # ``name`` field used by custom_providers and is already honoured by
+        # display paths such as `hermes status` / `hermes dump`). Without this,
+        # a config like ``model: {name: <id>, provider: <custom>}`` resolves to
+        # an empty model and the API request goes out with ``model=`` (HTTP
+        # 400 from OpenAI-compatible backends). See issue #34500.
+        if not cfg.get("default"):
+            alias = cfg.get("model") or cfg.get("name")
+            if alias:
+                cfg["default"] = alias
         default = (cfg.get("default") or "").strip()
         base_url = (cfg.get("base_url") or "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url

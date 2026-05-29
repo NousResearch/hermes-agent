@@ -2657,3 +2657,55 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+class TestGetModelConfigNameAlias:
+    """Regression tests for issue #34500 — ``model.name`` must resolve to a
+    non-empty model so custom providers don't send ``model=`` to the backend.
+
+    ``_get_model_config`` already aliases ``model`` → ``default``; these tests
+    extend that to ``name`` so a config like::
+
+        model:
+          name: claude-sonnet-4-20250514
+          provider: my-litellm
+
+    resolves the model name instead of silently dropping it.
+    """
+
+    def test_name_aliases_default(self, monkeypatch):
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {"model": {"name": "claude-sonnet-4-20250514", "provider": "my-litellm"}},
+        )
+        cfg = rp._get_model_config()
+        assert cfg["default"] == "claude-sonnet-4-20250514"
+
+    def test_explicit_default_wins_over_name(self, monkeypatch):
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {"model": {"default": "real-model", "name": "ignored-model"}},
+        )
+        cfg = rp._get_model_config()
+        assert cfg["default"] == "real-model"
+
+    def test_model_alias_still_wins_over_name(self, monkeypatch):
+        # ``model`` is checked before ``name`` to preserve existing precedence.
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {"model": {"model": "model-key", "name": "name-key"}},
+        )
+        cfg = rp._get_model_config()
+        assert cfg["default"] == "model-key"
+
+    def test_no_model_keys_stays_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {"model": {"provider": "my-litellm"}},
+        )
+        cfg = rp._get_model_config()
+        assert (cfg.get("default") or "") == ""

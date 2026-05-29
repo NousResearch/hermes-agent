@@ -1471,7 +1471,12 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     if isinstance(model_cfg, str):
         return model_cfg
     elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
+        # Accept "name" as an alias for "default"/"model" so a config like
+        # ``model: {name: <id>, provider: <custom>}`` does not resolve to an
+        # empty model (which would send ``model=`` to the backend). Mirrors
+        # the CLI runtime path in hermes_cli.runtime_provider._get_model_config
+        # and the display paths in `hermes status` / `hermes dump`. See #34500.
+        return model_cfg.get("default") or model_cfg.get("model") or model_cfg.get("name") or ""
     return ""
 
 

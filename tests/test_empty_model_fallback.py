@@ -106,6 +106,19 @@ class TestResolveGatewayModel:
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": {"model": "gpt-5.4"}}) == "gpt-5.4"
 
+    def test_returns_name_key_fallback(self):
+        """Regression for #34500 — ``model.name`` resolves instead of empty."""
+        from gateway.run import _resolve_gateway_model
+        assert _resolve_gateway_model(
+            {"model": {"name": "claude-sonnet-4-20250514", "provider": "my-litellm"}}
+        ) == "claude-sonnet-4-20250514"
+
+    def test_default_wins_over_name(self):
+        from gateway.run import _resolve_gateway_model
+        assert _resolve_gateway_model(
+            {"model": {"default": "real-model", "name": "ignored"}}
+        ) == "real-model"
+
     def test_returns_empty_when_missing(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": {}}) == ""

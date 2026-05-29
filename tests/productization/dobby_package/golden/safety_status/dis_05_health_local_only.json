@@ -23,7 +23,7 @@
       "require_signature": true,
       "signature_algorithm": "hmac-sha256",
       "unsigned_requests": "deny",
-      "allowed_routes": ["/webhooks/dobby/events"]
+      "allowed_routes": ["/webhooks/dobby"]
     },
     "discord": {
       "allowed_users": ["111111111111111111"],

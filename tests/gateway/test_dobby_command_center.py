@@ -13,8 +13,8 @@ from gateway.session import SessionSource, build_session_key
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, resolve_command
 
 
-SECRET_TOKEN = "sk-secret-012345678901234567890123456789"
-WEBHOOK_SECRET = "whsec_secret012345678901234567890123456789"
+SECRET_TOKEN = "sk-" + ("S" * 32)
+WEBHOOK_SECRET = "whsec_" + ("W" * 32)
 
 
 def _make_source() -> SessionSource:

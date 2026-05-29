@@ -65,7 +65,7 @@ webhook:
   unsigned_requests: "deny"
   replay_cache_required: true
   allowed_routes:
-    - "/webhooks/dobby/events"
+    - "/webhooks/dobby"
 
 discord:
   require_mention: true

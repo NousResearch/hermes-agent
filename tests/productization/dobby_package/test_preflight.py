@@ -145,7 +145,7 @@ def test_runtime_preflight_rejects_unsafe_hermes_home_paths(tmp_path):
     [
         ('    - "<DISCORD_USER_ID>"', '    - "*"', "config allowlists contain broad user or channel values"),
         ("  require_signature: true", "  require_signature: false", "webhook policy must require HMAC signature"),
-        ('    - "/webhooks/dobby/events"', '    - "*"', "webhook route allowlist must contain explicit non-wildcard routes"),
+        ('    - "/webhooks/dobby"', '    - "*"', "webhook route allowlist must contain explicit non-wildcard routes"),
     ],
 )
 def test_runtime_preflight_rejects_unsafe_config_policy(tmp_path, old, new, expected):

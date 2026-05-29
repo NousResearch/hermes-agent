@@ -103,6 +103,7 @@ class _BotState:
         self.realtime = False
         self.realtime_ready = False
         self.realtime_device: Optional[str] = None
+        self.virtual_mic_source: Optional[str] = None
         self.audio_bytes_out: int = 0
         self.last_audio_out_at: Optional[float] = None
         self.last_barge_in_at: Optional[float] = None
@@ -158,6 +159,7 @@ class _BotState:
             "realtime": self.realtime,
             "realtimeReady": self.realtime_ready,
             "realtimeDevice": self.realtime_device,
+            "virtualMicSource": self.virtual_mic_source,
             "audioBytesOut": self.audio_bytes_out,
             "lastAudioOutAt": self.last_audio_out_at,
             "lastBargeInAt": self.last_barge_in_at,
@@ -457,6 +459,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     realtime_voice = os.environ.get("HERMES_MEET_REALTIME_VOICE", "alloy")
     realtime_instructions = os.environ.get("HERMES_MEET_REALTIME_INSTRUCTIONS", "")
     realtime_api_key = os.environ.get("HERMES_MEET_REALTIME_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    virtual_mic_source = os.environ.get("HERMES_MEET_VIRTUAL_MIC_SOURCE", "").strip()
 
     if not url or not _is_safe_meet_url(url):
         sys.stderr.write(
@@ -522,19 +525,23 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             rt["bridge"].teardown()
         return 3
 
-    # Chrome env: if realtime is live on Linux, point PULSE_SOURCE at the
-    # virtual source so Chrome's fake mic reads the audio we generate.
+    # Chrome env: point Chromium at the virtual source when one is provided.
+    # Sassy's transcribe+Edge-TTS path writes speech to hermes_meet_sink; Chrome
+    # must read the paired Pulse source. Falling back to Chrome's fake device is
+    # only acceptable for note-only / no-speech sessions.
     chrome_env = os.environ.copy()
     chrome_args = [
         "--use-fake-ui-for-media-stream",
         "--disable-blink-features=AutomationControlled",
     ]
-    if not rt["enabled"]:
-        # v1-style fake device (silence) — we don't care about mic content
-        # when we're not speaking.
+    if rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
+        virtual_mic_source = rt["bridge_info"].get("device_name", "") or virtual_mic_source
+    if virtual_mic_source:
+        chrome_env["PULSE_SOURCE"] = virtual_mic_source
+        state.set(virtual_mic_source=virtual_mic_source)
+    elif not rt["enabled"]:
+        # Note-only fallback: fake/silent device. Do not use for Sassy speech.
         chrome_args.insert(1, "--use-fake-device-for-media-stream")
-    elif rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
-        chrome_env["PULSE_SOURCE"] = rt["bridge_info"].get("device_name", "")
 
     try:
         with sync_playwright() as pw:

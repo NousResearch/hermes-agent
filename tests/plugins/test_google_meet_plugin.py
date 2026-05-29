@@ -99,6 +99,10 @@ def test_bot_state_dedupes_captions_and_flushes_status(tmp_path):
     assert status["transcriptLines"] == 2
     assert status["transcriptPath"].endswith("transcript.txt")
 
+    state.set(virtual_mic_source="output.hermes_meet_src")
+    status = json.loads((out / "status.json").read_text())
+    assert status["virtualMicSource"] == "output.hermes_meet_src"
+
 
 def test_bot_state_ignores_blank_text(tmp_path):
     from plugins.google_meet.meet_bot import _BotState

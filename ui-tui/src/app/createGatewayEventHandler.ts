@@ -19,13 +19,13 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { getUiState, markSkinReady, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
-const applySkin = (s: GatewaySkin) =>
+const applySkin = (s: GatewaySkin) => {
   patchUiState({
     theme: fromSkin(
       s.colors ?? {},
@@ -36,6 +36,10 @@ const applySkin = (s: GatewaySkin) =>
       s.help_header ?? ''
     )
   })
+  // First skin applied — release the first-paint gate so App renders once,
+  // already in the user's theme, instead of flashing DEFAULT_THEME first.
+  markSkinReady()
+}
 
 const dropBgTask = (taskId: string) =>
   patchUiState(state => {
@@ -210,6 +214,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     if (skin) {
       applySkin(skin)
     }
+
+    // gateway.ready means the gateway is up; even if it carried no skin (old
+    // gateway / edge config), release the gate now rather than waiting out the
+    // timeout fallback. applySkin already marks ready when a skin is present.
+    markSkinReady()
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {

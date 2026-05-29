@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
@@ -577,6 +578,22 @@ class DockerEnvironment(BaseEnvironment):
             )
 
             for mount_entry in get_credential_file_mounts():
+                src = Path(mount_entry["host_path"])
+                if src.is_dir():
+                    # Docker-in-Docker: Docker auto-created the source path as
+                    # a directory when it didn't exist on the host.  Mounting a
+                    # directory over a file destination causes exit 125.
+                    logger.warning(
+                        "Docker: skipping credential mount — source is a directory "
+                        "(likely Docker-in-Docker auto-creation): %s",
+                        src,
+                    )
+                    continue
+                if not src.is_file():
+                    logger.warning(
+                        "Docker: skipping credential mount — source not found: %s", src,
+                    )
+                    continue
                 volume_args.extend([
                     "-v",
                     f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
@@ -590,6 +607,13 @@ class DockerEnvironment(BaseEnvironment):
             # Mount skill directories (local + external) so skill
             # scripts/templates are available inside the container.
             for skills_mount in get_skills_directory_mount():
+                src = Path(skills_mount["host_path"])
+                if not src.is_dir():
+                    logger.warning(
+                        "Docker: skipping skills mount — source is not a directory: %s",
+                        src,
+                    )
+                    continue
                 volume_args.extend([
                     "-v",
                     f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
@@ -605,6 +629,13 @@ class DockerEnvironment(BaseEnvironment):
             # cached media from inside the container.  Read-only — the
             # container reads these but the host gateway manages writes.
             for cache_mount in get_cache_directory_mounts():
+                src = Path(cache_mount["host_path"])
+                if not src.is_dir():
+                    logger.warning(
+                        "Docker: skipping cache mount — source is not a directory: %s",
+                        src,
+                    )
+                    continue
                 volume_args.extend([
                     "-v",
                     f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",

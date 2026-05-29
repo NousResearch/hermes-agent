@@ -98,6 +98,7 @@ from gateway.platforms.qqbot.constants import (
     DEFAULT_API_TIMEOUT,
     FILE_UPLOAD_TIMEOUT,
     CONNECT_TIMEOUT_SECONDS,
+    RECEIVE_TIMEOUT,
     RECONNECT_BACKOFF,
     MAX_RECONNECT_ATTEMPTS,
     RATE_LIMIT_DELAY,
@@ -472,6 +473,7 @@ class QQAdapter(BasePlatformAdapter):
                 "User-Agent": build_user_agent(),
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
+            receive_timeout=RECEIVE_TIMEOUT,
             proxy=ws_proxy,
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)

@@ -37,6 +37,14 @@ QR_URL_TEMPLATE = (
 DEFAULT_API_TIMEOUT = 30.0
 FILE_UPLOAD_TIMEOUT = 120.0
 CONNECT_TIMEOUT_SECONDS = 20.0
+# If no WebSocket frame arrives within this window the connection is
+# considered dead and the adapter will reconnect.  Covers CLOSE_WAIT
+# half-open sockets where the transport has already failed but aiohttp
+# hasn't detected it yet (no TCP RST, no close frame).
+# Set well above 3x heartbeat_interval so transient lag doesn't trigger
+# false reconnects.  QQ's default server-side heartbeat is 30 s;
+# Hermes sends at 80 % = 24 s.  90 s = 3.7 heartbeat periods.
+RECEIVE_TIMEOUT = 90.0
 
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 MAX_RECONNECT_ATTEMPTS = 100

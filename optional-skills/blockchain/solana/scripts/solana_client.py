@@ -103,7 +103,7 @@ def _rpc_call(method: str, params: list = None, retries: int = 2) -> Any:
             headers={"Content-Type": "application/json"}, method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=20) as resp:  # SSRF: add IP block check
                 body = json.load(resp)
             if "error" in body:
                 err = body["error"]

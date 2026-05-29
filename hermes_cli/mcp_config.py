@@ -205,6 +205,22 @@ def _probe_single_server(
     return tools_found
 
 
+def _oauth_tokens_present(name: str) -> bool:
+    """Return True if an OAuth token file exists on disk for ``name``.
+
+    Used after ``hermes mcp login`` to distinguish a genuine authentication
+    from a probe that succeeded only because the server allowed
+    initialize/tools-list without auth (so no token was ever acquired).
+    """
+    try:
+        from tools.mcp_oauth import HermesTokenStorage
+        return HermesTokenStorage(name).has_cached_tokens()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
+        # Be permissive on unexpected errors: don't block a real success.
+        return True
+
+
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -631,6 +647,36 @@ def cmd_mcp_login(args):
     # Probe triggers the OAuth flow (browser redirect + callback capture).
     try:
         tools = _probe_single_server(name, server_config)
+        # A clean probe is NOT proof of authentication. Some MCP servers
+        # (notably Google's official Drive server) serve initialize +
+        # tools/list WITHOUT auth, so the probe lists tools even when the
+        # OAuth flow never completed — e.g. dynamic client registration
+        # 400'd because the provider doesn't support RFC 7591. Reporting
+        # "Authenticated — N tools" in that case is a false success: every
+        # real tool call later hangs until timeout because there's no token.
+        # Verify a token actually landed on disk before claiming success.
+        if not _oauth_tokens_present(name):
+            _warning(
+                "Server responded, but no OAuth token was obtained — "
+                "authentication did not complete."
+            )
+            print()
+            _info(
+                "Some providers (e.g. Google Drive, Atlassian) do not support "
+                "automatic client registration. For those you must create an "
+                "OAuth client yourself and add its credentials to config.yaml:"
+            )
+            print()
+            print(color(f"    mcp_servers:", Colors.DIM))
+            print(color(f"      {name}:", Colors.DIM))
+            print(color(f"        url: {url}", Colors.DIM))
+            print(color(f"        auth: oauth", Colors.DIM))
+            print(color(f"        oauth:", Colors.DIM))
+            print(color(f"          client_id: \"<your-oauth-client-id>\"", Colors.DIM))
+            print(color(f"          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
+            print()
+            _info("Then re-run `hermes mcp login " + name + "`.")
+            return
         if tools:
             _success(f"Authenticated — {len(tools)} tool(s) available")
         else:

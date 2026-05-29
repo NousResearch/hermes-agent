@@ -6448,6 +6448,13 @@ def _update_via_zip(args):
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
+    # Fire post_update hook so users can re-apply custom patches, run
+    # migrations, or restart services after the update.
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        get_plugin_manager().invoke_hook("post_update")
+    except Exception as e:
+        logger.debug("post_update hook failed: %s", e)
     _kill_stale_dashboard_processes()
 
 
@@ -10308,6 +10315,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _ensure_fhs_path_guard()
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
+
+        # Fire post_update hook (see also the main update path above).
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            get_plugin_manager().invoke_hook("post_update")
+        except Exception as e:
+            logger.debug("post_update hook failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the

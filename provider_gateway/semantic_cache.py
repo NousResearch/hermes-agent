@@ -20,17 +20,28 @@ from provider_gateway.usage_tracker import ProviderUsageTracker
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CACHE_TTL_SECONDS: int = 86400  # 24 hours
+DEFAULT_CACHE_MAX_ENTRIES: int = 500
+
 
 class SemanticCache:
     """SQLite-backed cache for conversation histories."""
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
+        max_entries: int = DEFAULT_CACHE_MAX_ENTRIES,
+    ) -> None:
         # Re-use the usage tracker's default db path resolver to keep profiles clean
         if db_path is not None:
             self.db_path = Path(db_path)
         else:
             self.db_path = ProviderUsageTracker().db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.ttl_seconds = ttl_seconds
+        self.max_entries = max_entries
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -144,6 +155,27 @@ class SemanticCache:
             usage=None,
         )
 
+    def _evict_stale(self) -> None:
+        """Remove expired entries (older than TTL) and enforce max entry count."""
+        conn = self._connect()
+        try:
+            cutoff = time.time() - self.ttl_seconds
+            conn.execute("DELETE FROM semantic_cache WHERE created_at < ?", (cutoff,))
+            # Enforce max entries by keeping only the newest
+            conn.execute(
+                """
+                DELETE FROM semantic_cache WHERE id NOT IN (
+                    SELECT id FROM semantic_cache ORDER BY created_at DESC LIMIT ?
+                )
+                """,
+                (self.max_entries,),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.debug("Semantic cache eviction failed: %s", exc)
+        finally:
+            conn.close()
+
     def set_cached_response(
         self,
         agent: Any,
@@ -154,6 +186,9 @@ class SemanticCache:
         config = getattr(agent, "_provider_gateway_config", None)
         if config is None or not config.enabled:
             return
+
+        # Lazy eviction — clean stale/excess entries before inserting
+        self._evict_stale()
 
         # Do not cache empty or tool-call responses
         if not response_text or response_text.strip() == "":

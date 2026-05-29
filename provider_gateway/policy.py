@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from agent.error_classifier import FailoverReason
 from provider_gateway.config import GatewayConfig, load_gateway_config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

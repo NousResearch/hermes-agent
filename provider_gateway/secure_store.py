@@ -8,6 +8,7 @@ Encripts and stores API keys securely across various platforms:
 
 from __future__ import annotations
 
+import base64
 import getpass
 import hashlib
 import logging
@@ -62,6 +63,24 @@ class DynamicCredentialStore:
         except Exception:
             return False
 
+    @staticmethod
+    def _ps_b64(value: str) -> str:
+        """Base64-encode a string for safe PowerShell parameter passing.
+
+        This prevents command injection when interpolating user-supplied
+        values (provider names, API keys) into PowerShell command strings.
+        """
+        return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+    def _run_ps_vault_command(self, ps_script: str) -> subprocess.CompletedProcess[str]:
+        """Execute a PowerShell script via WSL interop with safe defaults."""
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
     def store_credential(self, provider: str, api_key: str) -> bool:
         """Store API key securely using the best available platform backend."""
         provider = str(provider).strip().lower()
@@ -79,19 +98,17 @@ class DynamicCredentialStore:
         # 2. Try WSL Windows Credential Manager Interoperability
         if self.is_wsl() and self.has_powershell_interop():
             try:
-                # WinRT PasswordVault powershell payload
+                b64_prov = self._ps_b64(provider)
+                b64_key = self._ps_b64(api_key)
                 ps_cmd = (
+                    f"$p = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64_prov}')); "
+                    f"$k = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64_key}')); "
                     f"[void][Windows.Security.Credentials.PasswordVault, Windows.Security.Credentials, ContentType=WindowsRuntime]; "
                     f"$vault = New-Object Windows.Security.Credentials.PasswordVault; "
-                    f"$cred = New-Object Windows.Security.Credentials.PasswordCredential('hermes_agent/provider_gateway', '{provider}', '{api_key}'); "
+                    f"$cred = New-Object Windows.Security.Credentials.PasswordCredential('hermes_agent/provider_gateway', $p, $k); "
                     f"$vault.Add($cred);"
                 )
-                res = subprocess.run(
-                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+                res = self._run_ps_vault_command(ps_cmd)
                 if res.returncode == 0:
                     logger.debug("Successfully stored credential for %s via WSL Powershell Windows Vault.", provider)
                     return True
@@ -123,23 +140,20 @@ class DynamicCredentialStore:
         # 2. Try WSL Windows Credential Manager Interop
         if self.is_wsl() and self.has_powershell_interop():
             try:
+                b64_prov = self._ps_b64(provider)
                 ps_cmd = (
+                    f"$p = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64_prov}')); "
                     f"[void][Windows.Security.Credentials.PasswordVault, Windows.Security.Credentials, ContentType=WindowsRuntime]; "
                     f"$vault = New-Object Windows.Security.Credentials.PasswordVault; "
                     f"try {{"
-                    f"  $cred = $vault.Retrieve('hermes_agent/provider_gateway', '{provider}');"
+                    f"  $cred = $vault.Retrieve('hermes_agent/provider_gateway', $p);"
                     f"  $cred.RetrievePassword();"
                     f"  Write-Output $cred.Password;"
                     f"}} catch {{"
                     f"  Write-Error 'Not found';"
                     f"}}"
                 )
-                res = subprocess.run(
-                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+                res = self._run_ps_vault_command(ps_cmd)
                 if res.returncode == 0 and res.stdout.strip():
                     return res.stdout.strip()
             except Exception as wsl_exc:
@@ -168,19 +182,17 @@ class DynamicCredentialStore:
         # 2. WSL Powershell
         if self.is_wsl() and self.has_powershell_interop():
             try:
+                b64_prov = self._ps_b64(provider)
                 ps_cmd = (
+                    f"$p = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64_prov}')); "
                     f"[void][Windows.Security.Credentials.PasswordVault, Windows.Security.Credentials, ContentType=WindowsRuntime]; "
                     f"$vault = New-Object Windows.Security.Credentials.PasswordVault; "
                     f"try {{"
-                    f"  $cred = $vault.Retrieve('hermes_agent/provider_gateway', '{provider}');"
+                    f"  $cred = $vault.Retrieve('hermes_agent/provider_gateway', $p);"
                     f"  $vault.Remove($cred);"
                     f"}} catch {{}}"
                 )
-                subprocess.run(
-                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
+                self._run_ps_vault_command(ps_cmd)
                 deleted = True
             except Exception:
                 pass

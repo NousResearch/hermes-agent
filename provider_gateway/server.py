@@ -8,16 +8,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-import openai
 from provider_gateway.config import load_gateway_config
 from provider_gateway.policy import build_gateway_policy
-from provider_gateway.runtime import get_discovered_ollama_models, get_secure_store, get_guardrails
+from provider_gateway.runtime import get_discovered_ollama_models, get_secure_store
 
 logger = logging.getLogger(__name__)
+
+# Optional Bearer token auth — set HERMES_GATEWAY_TOKEN env var to enable.
+# When unset, authentication is disabled (open access from localhost only).
+_GATEWAY_TOKEN: str = os.environ.get("HERMES_GATEWAY_TOKEN", "").strip()
 
 
 class GatewayHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -29,6 +33,8 @@ class GatewayHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Handle GET requests, mainly /v1/models."""
+        if not self._check_auth():
+            return
         if self.path == "/v1/models":
             self._handle_models()
         else:
@@ -36,10 +42,26 @@ class GatewayHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         """Handle POST requests, mainly /v1/chat/completions."""
+        if not self._check_auth():
+            return
         if self.path == "/v1/chat/completions":
             self._handle_chat_completions()
         else:
             self._send_error(404, "Not Found")
+
+    def _check_auth(self) -> bool:
+        """Validate Bearer token if HERMES_GATEWAY_TOKEN is configured.
+
+        Returns True if auth is disabled or token matches. Sends 401 and
+        returns False otherwise.
+        """
+        if not _GATEWAY_TOKEN:
+            return True  # Auth disabled — open localhost access
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header == f"Bearer {_GATEWAY_TOKEN}":
+            return True
+        self._send_error(401, "Unauthorized: invalid or missing Bearer token")
+        return False
 
     def _send_error(self, status_code: int, message: str) -> None:
         self.send_response(status_code)
@@ -144,36 +166,36 @@ class GatewayHTTPRequestHandler(BaseHTTPRequestHandler):
 
         base_url = selected_route.base_url
 
-        # 3. Apply PII Guardrails Preflight
+        # 3. Apply PII Guardrails Preflight — fresh instance per request for thread safety
         sanitizer = None
         deanonimizer = None
         if config.enabled and config.guardrails_enabled:
             try:
-                sanitizer = get_guardrails()
-                if sanitizer is not None:
-                    deanonimizer = sanitizer.get_deanonimizer()
-                    
-                    # Sanitize prompt messages
-                    for msg in messages:
-                        if "content" in msg and isinstance(msg["content"], str):
-                            msg["content"] = sanitizer.sanitize_prompt(msg["content"])
-                    req_body["messages"] = messages
+                from provider_gateway.guardrails import PIISanitizer
+                sanitizer = PIISanitizer()  # Per-request instance — no cross-request data leaks
+                deanonimizer = sanitizer.get_deanonimizer()
+                
+                # Sanitize prompt messages
+                for msg in messages:
+                    if "content" in msg and isinstance(msg["content"], str):
+                        msg["content"] = sanitizer.sanitize_prompt(msg["content"])
+                req_body["messages"] = messages
             except Exception as pii_exc:
                 logger.debug("Failed to apply guardrails preflight: %s", pii_exc)
 
-        # 4. Prepare Client
-        client_kwargs = {
+        # 4. Prepare Client — lazy import to avoid mandatory openai dependency
+        import openai as _openai
+
+        client_kwargs: dict[str, Any] = {
             "api_key": api_key,
         }
         if base_url:
             client_kwargs["base_url"] = base_url
 
-        client = openai.OpenAI(**client_kwargs)
+        client = _openai.OpenAI(**client_kwargs)
 
         # Prepare request payload for OpenAI API
-        # Remove extra keys not compliant with general cloud completions if necessary,
-        # but forwarding the common keys is safest.
-        api_payload = {
+        api_payload: dict[str, Any] = {
             "model": selected_route.model,
             "messages": messages,
             "stream": stream_requested,

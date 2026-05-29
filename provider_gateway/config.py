@@ -28,6 +28,16 @@ class GatewayConfig:
     guardrails_enabled: bool = False
     server_port: int = 8000
 
+    def __repr__(self) -> str:
+        return (
+            f"GatewayConfig(enabled={self.enabled}, backend={self.backend!r}, "
+            f"strategy={self.routing_strategy!r}, track_usage={self.track_usage}, "
+            f"track_cost={self.track_cost}, guardrails={self.guardrails_enabled}, "
+            f"fallback_models={len(self.fallback_models)}, "
+            f"daily_limit={'set' if self.daily_limit_usd is not None else 'none'}, "
+            f"monthly_limit={'set' if self.monthly_limit_usd is not None else 'none'})"
+        )
+
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "GatewayConfig":
         """Build a gateway config from a raw config mapping."""

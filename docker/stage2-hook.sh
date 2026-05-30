@@ -186,6 +186,18 @@ if [ -f "$HERMES_HOME/config.yaml" ]; then
     chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
 fi
 
+# --- Fix root-owned files in HERMES_HOME root ---
+# When `docker exec -u root` creates or modifies files directly in
+# $HERMES_HOME (e.g. gateway.lock, state.db, auth.json), they become
+# root-owned and the hermes user gets PermissionError on next startup.
+# We can't chown -R the whole directory (issue #19788 — host-mounted
+# bind may contain unrelated user files), but chowning individual
+# root-owned files is safe.
+if [ "$actual_hermes_uid" != "0" ]; then
+    find "$HERMES_HOME" -maxdepth 1 -user root -type f -exec \
+        chown hermes:hermes {} + 2>/dev/null || true
+fi
+
 # --- Seed directory structure as hermes user ---
 # Run as hermes via s6-setuidgid so dirs end up owned correctly (matters
 # under rootless Podman where chown back to root would fail).

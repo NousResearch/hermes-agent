@@ -32,12 +32,12 @@ def run(*args: str, **kwargs) -> subprocess.CompletedProcess:
 
 
 # ── Profile specifications ──────────────────────────────────────────────────
-# Each profile: (name, display_name, description, model, provider, toolsets,
-#                skills, turns, memory_budget, compression_aggressive,
-#                kanban_worker, is_documentation_agent)
+# Each profile: (display_name, description, model, provider, toolsets,
+#                skills, turns, memory_budget, compression_threshold,
+#                kanban_worker, is_documentation_agent, delegation_base_url)
 
 ProfileSpec = tuple[
-    str, str, str, str, str, list[str], list[str],
+    str, str, str, str, list[str], list[str],
     int, int, float, bool, bool, str,
 ]
 
@@ -48,7 +48,7 @@ PROFILES: dict[str, ProfileSpec] = {
         "gpt-5.5", "openai-codex",
         ["terminal", "file", "todo", "kanban", "factory", "delegation", "cronjob", "session_search", "skills", "web"],
         ["software-factory-orchestration", "kanban-orchestrator", "programming-delegation-engines"],
-        120, 2200, 0.5, True, "", False,
+        120, 2200, 0.5, True, False, "",
     ),
     "product-analyst": (
         "Factory Product Analyst",
@@ -56,7 +56,7 @@ PROFILES: dict[str, ProfileSpec] = {
         "gpt-5.5", "openai-codex",
         ["web", "file", "kanban", "factory", "session_search", "skills", "todo", "search"],
         ["writing-plans"],
-        60, 2200, 0.3, True, "", False,
+        60, 2200, 0.3, True, False, "",
     ),
     "solution-architect": (
         "Factory Solution Architect",
@@ -64,15 +64,15 @@ PROFILES: dict[str, ProfileSpec] = {
         "gpt-5.5", "openai-codex",
         ["web", "file", "terminal", "kanban", "factory", "session_search", "skills", "search"],
         ["writing-plans", "systematic-debugging", "codebase-inspection"],
-        90, 3000, 0.4, True, "", False,
+        90, 3000, 0.4, True, False, "",
     ),
     "implementation-planner": (
         "Factory Implementation Planner",
         "Transforma PRD y arquitectura en epics y tareas pequeñas con dependencias, owner, engine, gates y comandos de verificación. Alimenta el Kanban y la DB de progreso.",
-        "gpt-5.5", "openai-codex",
+        "MiniMax-M2.7-highspeed", "minimax-oauth",
         ["file", "terminal", "kanban", "factory", "session_search", "skills", "todo"],
         ["writing-plans", "kanban-orchestrator"],
-        60, 2200, 0.3, True, "", False,
+        60, 2200, 0.3, True, False, "https://api.minimax.io/v1",
     ),
     "claude-builder": (
         "Factory Claude Builder",
@@ -100,8 +100,8 @@ PROFILES: dict[str, ProfileSpec] = {
     ),
     "quality-reviewer": (
         "Factory Quality Reviewer",
-        "Revisión independiente de calidad, mantenibilidad, spec compliance y riesgos. Nunca autoaprueba trabajo propio. Usa deepseek como modelo rápido y económico para revisiones frecuentes.",
-        "deepseek", "deepseek",
+        "Revisión independiente de calidad, mantenibilidad, spec compliance y riesgos. Nunca autoaprueba trabajo propio. Usa deepseek-chat para revisiones económicas y rápidas.",
+        "deepseek-chat", "deepseek",
         ["terminal", "file", "kanban", "factory", "skills", "session_search", "search"],
         ["requesting-code-review", "systematic-debugging", "github-code-review"],
         60, 1500, 0.3, True, False, "https://api.deepseek.com/v1",
@@ -112,15 +112,15 @@ PROFILES: dict[str, ProfileSpec] = {
         "gpt-5.5", "openai-codex",
         ["terminal", "file", "kanban", "factory", "skills", "session_search", "search"],
         ["requesting-code-review", "systematic-debugging"],
-        90, 2200, 0.4, True, "", False,
+        90, 2200, 0.4, True, False, "",
     ),
     "qa-verifier": (
         "Factory QA Verifier",
-        "Ejecuta smoke tests, validaciones E2E y captura evidencia de calidad. Reporta en factory_events y factory_gates. Usa deepseek para agilidad.",
-        "deepseek", "deepseek",
+        "Ejecuta smoke tests, validaciones E2E y captura evidencia de calidad. Reporta en factory_events y factory_gates. Usa MiniMax Hyperfast para agilidad y bajo costo en QA rutinario.",
+        "MiniMax-M2.7-highspeed", "minimax-oauth",
         ["terminal", "file", "browser", "vision", "kanban", "factory", "skills"],
         ["dogfood", "test-driven-development"],
-        60, 1000, 0.5, True, False, "https://api.deepseek.com/v1",
+        60, 1000, 0.5, True, False, "https://api.minimax.io/v1",
     ),
     "devops-release": (
         "Factory DevOps Release",
@@ -128,15 +128,15 @@ PROFILES: dict[str, ProfileSpec] = {
         "gpt-5.5", "openai-codex",
         ["terminal", "file", "web", "kanban", "factory", "skills", "session_search", "cronjob"],
         ["github-pr-workflow", "cloud-sql-fleet-registry"],
-        90, 1500, 0.4, True, "", False,
+        90, 1500, 0.4, True, False, "",
     ),
     "factory-reporter": (
         "Factory Reporter",
         "Genera reportes ejecutivos, benchmarks de motores y documentación en Notion. Compila métricas de la DB y produce DELIVERY_REPORT.md y NOTION_UPDATE.md. Es el agente de documentación de la Factory.",
-        "gpt-5.5", "openai-codex",
+        "MiniMax-M2.7-highspeed", "minimax-oauth",
         ["file", "web", "kanban", "factory", "session_search", "skills", "search"],
         ["software-factory-orchestration", "productivity/notion", "writing-plans"],
-        90, 3000, 0.3, True, True, "",
+        90, 3000, 0.3, True, True, "https://api.minimax.io/v1",
     ),
 }
 
@@ -296,7 +296,7 @@ def build_profile_yaml(profile_id: str, spec: ProfileSpec) -> dict:
         "model": {
             "default": model,
             "provider": provider,
-            "base_url": "",
+            "base_url": delegation_base_url or "",
         },
         "providers": {},
         "fallback_providers": fallback_providers,
@@ -319,7 +319,7 @@ def build_profile_yaml(profile_id: str, spec: ProfileSpec) -> dict:
         },
         "delegation": {
             "model": "",
-            "provider": "deepseek" if delegation_base_url else "",
+            "provider": provider if delegation_base_url else "",
             "base_url": delegation_base_url or "",
             "api_key": "",
             "api_mode": "",
@@ -545,16 +545,16 @@ def main() -> int:
             # 1. Write profile config.yaml
             config = build_profile_yaml(profile_id, spec)
             config_path = profile_dir / "config.yaml"
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
             # 2. Write SOUL.md
             soul = generate_soul(profile_id, spec)
             soul_path = profile_dir / "SOUL.md"
-            with open(soul_path, "w") as f:
+            with open(soul_path, "w", encoding="utf-8") as f:
                 f.write(soul)
 
-            results[profile_id] = f"OK (model={spec[3]}, turns={spec[6]}, mem={spec[7]}, comp={spec[8]}, kanban={spec[9]})"
+            results[profile_id] = f"OK (provider={spec[3]}, model={spec[2]}, turns={spec[6]}, mem={spec[7]}, comp={spec[8]}, kanban={spec[9]})"
 
         except Exception as e:
             errors.append(f"{profile_id}: {e}")
@@ -578,7 +578,7 @@ def main() -> int:
         summary[pid] = m
     ensure_dir(SCRIPTS_DIR)
     export_path = SCRIPTS_DIR / "factory_profiles_summary.json"
-    with open(export_path, "w") as f:
+    with open(export_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(f"\nSummary exported to {export_path}")
 

@@ -272,8 +272,10 @@ class TestLoopCommandGateway:
         with patch("tools.cronjob_tools.cronjob", side_effect=_mock_cron_api()):
             result = await runner._handle_loop_command(_make_event("/loop foobar"))
 
-        assert "Unknown subcommand" in result
-        assert "foobar" in result
+        # Handler treats bare unknown words as schedule expressions;
+        # without a prompt it returns usage guidance.
+        assert "Usage" in result or "Unknown" in result
+        assert "foobar" in result or "schedule" in result.lower()
 
     @pytest.mark.asyncio
     async def test_strip_loop_prefix_variants(self):

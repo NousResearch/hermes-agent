@@ -15,7 +15,9 @@ import logging
 import os
 import re
 import time
+import dataclasses
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, Tuple, List
 
 try:
@@ -1992,6 +1994,8 @@ class SlackAdapter(BasePlatformAdapter):
                     )
                 )
                 if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+                    if self._slack_observe_unmentioned() and self._should_observe_unmentioned_message(event, channel_id):
+                        await self._observe_unmentioned_message(event, text, channel_id, user_id, team_id, ts)
                     return
 
         if is_mentioned:
@@ -3025,3 +3029,141 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    # -----------------------------------------------------------------------
+    # Observe unmentioned group messages
+    # -----------------------------------------------------------------------
+
+    def _slack_observe_unmentioned(self) -> bool:
+        """Return whether to observe unmentioned channel messages.
+
+        When enabled, messages that do not trigger the bot (no @mention,
+        no active session, no bot-thread reply) are still silently recorded
+        in the session transcript as observed context. The next time the bot
+        is addressed, the observed messages are injected into the prompt as
+        background context, so the agent knows what was discussed before.
+        """
+        configured = self.config.extra.get("observe_unmentioned")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("SLACK_OBSERVE_UNMENTIONED", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _slack_observe_allowed_channels(self) -> set:
+        """Return channel IDs where unmentioned observation is allowed.
+
+        When empty, observation is allowed in ALL channels (subject to the
+        global ``allowed_channels`` whitelist). When non-empty, observation
+        is restricted to these channels only.
+        """
+        raw = self.config.extra.get("observe_unmentioned_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_OBSERVE_UNMENTIONED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
+    def _slack_group_observe_shared_source(self, source) -> Any:
+        """Build a shared source for observed messages (channel-level, no user)."""
+        shared = dataclasses.replace(source)
+        shared.user_id = None
+        shared.user_name = None
+        return shared
+
+    def _slack_group_observe_attributed_text(self, event, text: str) -> str:
+        """Prefix observed text with sender attribution."""
+        user_name = getattr(getattr(event, "source", None), "user_name", None)
+        display_name = user_name or getattr(event, "user", "unknown")
+        return f"{display_name}: {text}"
+
+    def _slack_group_observe_channel_prompt(self, bot_uid: str) -> str:
+        """Return the channel prompt for observe-unmentioned mode."""
+        return (
+            "You are handling a Slack channel message.\n"
+            f"- Your identity: bot_user_id={bot_uid}\n"
+            "- observed Slack channel context may be provided in a separate context-only block "
+            "before the current message; it is not necessarily addressed to you.\n"
+            "- Treat only the current new message as a request explicitly directed at you, "
+            "and use observed context only when the current message asks for it."
+        )
+
+    def _should_observe_unmentioned_message(self, event, channel_id: str) -> bool:
+        """Check if an unmentioned message should be observed."""
+        # Skip bot messages
+        subtype = event.get("subtype", "")
+        if subtype == "bot_message":
+            return False
+        # Skip empty messages
+        text = (event.get("text", "") or "").strip()
+        if not text:
+            return False
+        # Skip commands
+        if text.startswith("/"):
+            return False
+        # Skip our own messages
+        bot_uid = self._team_bot_user_ids.get(event.get("team", ""), self._bot_user_id)
+        if bot_uid and event.get("user") == bot_uid:
+            return False
+        # Respect allowed_channels whitelist
+        allowed_channels = self._slack_allowed_channels()
+        if allowed_channels and channel_id not in allowed_channels:
+            return False
+        # Respect observe_unmentioned_channels whitelist
+        observe_allowed = self._slack_observe_allowed_channels()
+        if observe_allowed and channel_id not in observe_allowed:
+            return False
+        return True
+
+    async def _observe_unmentioned_message(
+        self,
+        event: dict,
+        text: str,
+        channel_id: str,
+        user_id: str,
+        team_id: str,
+        ts: str,
+    ) -> None:
+        """Silently record an unmentioned message as observed context."""
+        # Resolve user name
+        user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+        # Build source
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_id,
+            chat_type="group",
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=event.get("thread_ts"),
+        )
+        # Build shared source (channel-level, no user attribution)
+        shared_source = self._slack_group_observe_shared_source(source)
+        # Build attributed text
+        attributed_text = self._slack_group_observe_attributed_text(event, text)
+        # Build session key
+        session_key = self._session_store._generate_session_key(shared_source)
+        # Get or create session
+        session_entry = self._session_store.get_or_create_session(session_key, shared_source)
+        # Build observe channel prompt
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id) or ""
+        channel_prompt = self._slack_group_observe_channel_prompt(bot_uid)
+        # Build observed entry
+        entry = {
+            "role": "user",
+            "content": attributed_text,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "observed": True,
+            "channel_prompt": channel_prompt,
+        }
+        if ts:
+            entry["message_id"] = str(ts)
+        if event.get("thread_ts"):
+            entry["reply_to_message_id"] = str(event.get("thread_ts"))
+        # Append to transcript
+        self._session_store.append_to_transcript(session_entry.session_id, entry)
+        logger.debug(
+            "[Slack] Observed unmentioned message in %s: %s",
+            channel_id, attributed_text[:60],
+        )

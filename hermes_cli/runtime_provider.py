@@ -1061,7 +1061,9 @@ def _resolve_explicit_runtime(
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
-    if not explicit_api_key and not explicit_base_url:
+    # Nous provider can resolve credentials from cached auth state even
+    # without explicit api_key/base_url, so it must not early-return here.
+    if not explicit_api_key and not explicit_base_url and provider != "nous":
         return None
 
     if provider == "anthropic":
@@ -1131,10 +1133,19 @@ def _resolve_explicit_runtime(
                 api_key = ""
         
         if not api_key:
-            creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-            )
+            try:
+                creds = resolve_nous_runtime_credentials(
+                    min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                    timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                )
+            except AuthError:
+                # Credential resolution failed (revoked token, network error, etc.)
+                # When there's no explicit api_key, return None so auto-detection
+                # can fall through to the next provider (e.g. OpenRouter).
+                if not explicit_api_key:
+                    logger.debug("Nous credential resolution failed, falling through")
+                    return None
+                raise
             api_key = creds.get("api_key", "")
             expires_at = creds.get("expires_at")
             if not explicit_base_url:

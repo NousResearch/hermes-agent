@@ -477,6 +477,57 @@ class TestPreflightCompression:
         assert "Compacting context" in events[0][1]
         assert events[1] == ("compress", "started")
 
+    def test_compress_context_suppresses_automatic_status_when_engine_opts_out(self, agent):
+        """Plugin engines can make successful automatic compaction silent."""
+        events = []
+        agent.status_callback = lambda ev, msg: events.append((ev, msg))
+        agent.context_compressor.emit_automatic_compaction_status = False
+
+        def _fake_compress(messages, current_tokens=None, focus_topic=None):
+            events.append(("compress", "started"))
+            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+
+        with (
+            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
+            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
+            patch("run_agent.estimate_request_tokens_rough", return_value=42),
+        ):
+            compressed, new_system_prompt = agent._compress_context(
+                [{"role": "user", "content": "hello"}],
+                "system prompt",
+                approx_tokens=1234,
+            )
+
+        assert compressed == [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+        assert new_system_prompt == "new system prompt"
+        assert events == [("compress", "started")]
+
+    def test_compress_context_force_keeps_manual_status_when_engine_opts_out(self, agent):
+        """Manual /compress remains visible even for quiet automatic engines."""
+        events = []
+        agent.status_callback = lambda ev, msg: events.append((ev, msg))
+        agent.context_compressor.emit_automatic_compaction_status = False
+
+        def _fake_compress(messages, current_tokens=None, focus_topic=None, force=False):
+            events.append(("compress", "started"))
+            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+
+        with (
+            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
+            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
+            patch("run_agent.estimate_request_tokens_rough", return_value=42),
+        ):
+            agent._compress_context(
+                [{"role": "user", "content": "hello"}],
+                "system prompt",
+                approx_tokens=1234,
+                force=True,
+            )
+
+        assert events[0][0] == "lifecycle"
+        assert "Compacting context" in events[0][1]
+        assert events[1] == ("compress", "started")
+
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
         agent.compression_enabled = True
@@ -528,6 +579,98 @@ class TestPreflightCompression:
             ev == "lifecycle" and "Preflight compression" in msg
             for ev, msg in status_messages
         )
+
+    def test_preflight_suppresses_status_when_context_engine_opts_out(self, agent):
+        """LCM-style engines can keep routine automatic preflight maintenance silent."""
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 100_000
+        agent.context_compressor.emit_automatic_compaction_status = False
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} padded"})
+            big_history.append({"role": "assistant", "content": f"Response {i} padded"})
+
+        ok_resp = _mock_response(content="After quiet preflight", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+
+        _rough_calls = {"n": 0}
+
+        def _rough_estimate(*_args, **_kwargs):
+            _rough_calls["n"] += 1
+            return 114_000 if _rough_calls["n"] == 1 else 40_000
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert not any(
+            ev == "lifecycle" and "Preflight compression" in msg
+            for ev, msg in status_messages
+        )
+
+    def test_preflight_uses_context_engine_custom_status_message(self, agent):
+        """Plugin engines can replace generic built-in-compressor wording."""
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 100_000
+
+        def _custom_status(**kwargs):
+            assert kwargs["phase"] == "preflight"
+            assert kwargs["approx_tokens"] == 114_000
+            assert kwargs["threshold_tokens"] == 100_000
+            return "🔧 LCM context maintenance: preparing compacted context."
+
+        agent.context_compressor.get_automatic_compaction_status_message = _custom_status
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} padded"})
+            big_history.append({"role": "assistant", "content": f"Response {i} padded"})
+
+        ok_resp = _mock_response(content="After custom preflight", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+
+        _rough_calls = {"n": 0}
+
+        def _rough_estimate(*_args, **_kwargs):
+            _rough_calls["n"] += 1
+            return 114_000 if _rough_calls["n"] == 1 else 40_000
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        lifecycle_messages = [msg for ev, msg in status_messages if ev == "lifecycle"]
+        assert "🔧 LCM context maintenance: preparing compacted context." in lifecycle_messages
+        assert not any("Preflight compression" in msg for msg in lifecycle_messages)
 
     def test_preflight_defers_when_recent_real_usage_fit(self, agent):
         """A noisy rough estimate should not re-compact a recently fitting request."""

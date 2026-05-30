@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from agent.context_engine import automatic_compaction_status_message
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -334,7 +335,19 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(COMPACTION_STATUS)
+    _compaction_status = COMPACTION_STATUS
+    if not force:
+        _compaction_status = automatic_compaction_status_message(
+            agent.context_compressor,
+            phase="compress",
+            default_message=_compaction_status,
+            approx_tokens=approx_tokens,
+            message_count=_pre_msg_count,
+            model=agent.model,
+            focus_topic=focus_topic,
+        )
+    if _compaction_status:
+        agent._emit_status(_compaction_status)
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two

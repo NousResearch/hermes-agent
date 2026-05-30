@@ -662,6 +662,36 @@ def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
     assert captured.err == ""
 
 
+def test_oneshot_fails_closed_on_agent_exception(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("not a TTY")
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _boom)
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "agent failed" in captured.err
+    assert "not a TTY" in captured.err
+
+
+def test_oneshot_reraises_keyboard_interrupt(monkeypatch):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+    import pytest as _pytest
+
+    def _interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _interrupt)
+
+    with _pytest.raises(KeyboardInterrupt):
+        oneshot_mod.run_oneshot("hello")
+
+
 def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     from hermes_cli.oneshot import _validate_explicit_toolsets

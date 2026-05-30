@@ -1,0 +1,3 @@
+name: hosting-digest
+version: 0.1.0
+description: Manually trigger the hosting infrastructure cost digest from chat.

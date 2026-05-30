@@ -7843,6 +7843,38 @@ class GatewayRunner:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            # ── pre_gateway_text_send hook ─────────────────────────
+            # Let plugins intercept/rewrite outbound text before it is
+            # delivered to the platform adapter.  Handlers receive
+            # {text, platform, chat_id} and may return:
+            #   - str:  use this as the new message text
+            #   - None: block delivery (return None to the adapter)
+            #   - anything else: pass the original text through
+            if response and self.hooks:
+                try:
+                    hook_ctx_send = {
+                        "text": response,
+                        "platform": source.platform.value if source.platform else "",
+                        "chat_id": source.chat_id,
+                    }
+                    hook_results = await self.hooks.emit_collect(
+                        "pre_gateway_text_send", hook_ctx_send
+                    )
+                    for hook_result in hook_results:
+                        if hook_result is None:
+                            logger.info(
+                                "pre_gateway_text_send: blocked message to %s/%s",
+                                hook_ctx_send["platform"], hook_ctx_send["chat_id"],
+                            )
+                            return None
+                        if isinstance(hook_result, str):
+                            response = hook_result
+                except Exception as _send_hook_err:
+                    logger.debug(
+                        "pre_gateway_text_send hook dispatch failed (non-fatal): %s",
+                        _send_hook_err,
+                    )
+
             return response
             
         except Exception as e:

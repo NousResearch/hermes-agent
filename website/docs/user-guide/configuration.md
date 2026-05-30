@@ -528,6 +528,8 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+Built-in memory emits a structured warning at 95% of `memory_char_limit` or `user_char_limit`. Treat the warning as a prompt-budget signal: prune stale entries first, shorten or replace entries second, and raise the configured limit only when every future session should carry that extra context.
+
 ## File Read Safety
 
 Controls how much content a single `read_file` call can return. Reads that exceed the limit are rejected with an error telling the agent to use `offset` and `limit` for a smaller range. This prevents a single read of a minified JS bundle or large data file from flooding the context window.

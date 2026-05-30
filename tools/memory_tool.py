@@ -57,6 +57,7 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+MEMORY_USAGE_WARNING_THRESHOLD = 0.95
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +295,65 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def _usage_warning(
+        self,
+        target: str,
+        current: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a structured warning when a memory store is near its limit."""
+        if current is None:
+            current = self._char_count(target)
+        if limit is None:
+            limit = self._char_limit(target)
+        if limit <= 0:
+            return None
+
+        usage_ratio = current / limit
+        if usage_ratio < MEMORY_USAGE_WARNING_THRESHOLD:
+            return None
+
+        config_key = "memory.user_char_limit" if target == "user" else "memory.memory_char_limit"
+        usage_percent = round(usage_ratio * 100, 1)
+        threshold_percent = int(MEMORY_USAGE_WARNING_THRESHOLD * 100)
+        return {
+            "code": "memory_char_limit_near",
+            "target": target,
+            "current_chars": current,
+            "limit_chars": limit,
+            "usage_percent": usage_percent,
+            "threshold_percent": threshold_percent,
+            "config_key": config_key,
+            "message": (
+                f"{target} memory is at {current:,}/{limit:,} chars "
+                f"({usage_percent:g}%), at or above the {threshold_percent}% warning threshold."
+            ),
+            "remediation": (
+                "Prune stale entries, shorten the proposed memory, replace an existing entry, "
+                f"or raise {config_key} if the larger prompt budget is intentional."
+            ),
+        }
+
+    def _attach_usage_warning(
+        self,
+        response: Dict[str, Any],
+        target: str,
+        current: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        warning = self._usage_warning(target, current=current, limit=limit)
+        if warning:
+            logger.warning(
+                "Memory store near char limit: target=%s usage=%s/%s chars (%.1f%%) config_key=%s",
+                warning["target"],
+                warning["current_chars"],
+                warning["limit_chars"],
+                warning["usage_percent"],
+                warning["config_key"],
+            )
+            response["warning"] = warning
+        return response
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -327,16 +387,21 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+                return self._attach_usage_warning(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Memory at {current:,}/{limit:,} chars. "
+                            f"Adding this entry ({len(content)} chars) would exceed the limit. "
+                            f"Replace or remove existing entries first."
+                        ),
+                        "current_entries": entries,
+                        "usage": f"{current:,}/{limit:,}",
+                    },
+                    target,
+                    current=current,
+                    limit=limit,
+                )
 
             entries.append(content)
             self._set_entries(target, entries)
@@ -390,13 +455,19 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
-                return {
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
-                    ),
-                }
+                current = self._char_count(target)
+                return self._attach_usage_warning(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
+                            f"Shorten the new content or remove other entries first."
+                        ),
+                    },
+                    target,
+                    current=current,
+                    limit=limit,
+                )
 
             entries[idx] = new_content
             self._set_entries(target, entries)
@@ -470,7 +541,7 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
-        return resp
+        return self._attach_usage_warning(resp, target, current=current, limit=limit)
 
     def _render_block(self, target: str, entries: List[str]) -> str:
         """Render a system prompt block with header and usage indicator."""

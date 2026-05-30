@@ -211,6 +211,15 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+Hermes warns, but does not block, when a built-in memory store reaches 95% of its configured character limit. The structured warning appears in memory tool responses with the current character count, limit, config key, and remediation guidance. If you see it:
+
+1. Prune stale entries that no longer need to be injected into every prompt.
+2. Shorten the proposed memory or replace an existing entry instead of adding another one.
+3. Move time-bound details to session history and use `session_search` when needed.
+4. Raise `memory.memory_char_limit` or `memory.user_char_limit` only when the extra always-on prompt budget is intentional.
+
+Tune limits conservatively for long-lived agents. Larger values reduce write failures, but every saved character is injected into future sessions and increases baseline context cost.
+
 ## External Memory Providers
 
 For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 8 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory.

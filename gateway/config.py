@@ -1252,8 +1252,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         if Platform.TELEGRAM not in config.platforms:
-            config.platforms[Platform.TELEGRAM] = PlatformConfig()
-        config.platforms[Platform.TELEGRAM].enabled = True
+            # No yaml config — env-only setup, enable it
+            config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True)
+        # If YAML config exists, respect its enabled flag (don't override
+        # explicit enabled: false). Token is still stored so skills that
+        # send Telegram messages can use it without activating the gateway
+        # adapter.
         config.platforms[Platform.TELEGRAM].token = telegram_token
     
     # Reply threading mode for Telegram (off/first/all)
@@ -1284,8 +1288,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     discord_token = os.getenv("DISCORD_BOT_TOKEN")
     if discord_token:
         if Platform.DISCORD not in config.platforms:
-            config.platforms[Platform.DISCORD] = PlatformConfig()
-        config.platforms[Platform.DISCORD].enabled = True
+            # No yaml config — env-only setup, enable it
+            config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True)
+        # If YAML config exists, respect its enabled flag (don't override
+        # explicit enabled: false). Token is still stored so skills that
+        # send Discord messages can use it without activating the gateway
+        # adapter.
         config.platforms[Platform.DISCORD].token = discord_token
     
     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
@@ -1880,11 +1888,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     )
                     seed_for_probe = None
 
-            # Only consult is_connected for platforms that are NOT already
-            # explicitly configured in YAML / env (existing_cfg with
-            # enabled=True means the user wrote it themselves or another
-            # env-var bridge enabled it — keep that decision).
-            if existing_cfg is None or not existing_cfg.enabled:
+            # Only consult is_connected for platforms that have NO existing
+            # config at all.  When YAML explicitly sets enabled: false, the
+            # user has made a deliberate choice — do NOT auto-enable even if
+            # the plugin's env vars are present.  This prevents profile-level
+            # platform disabling from being overridden by shared .env tokens.
+            if existing_cfg is None:
                 if entry.is_connected is not None:
                     try:
                         # Probe with ``enabled=True`` since we're asking
@@ -1930,29 +1939,30 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                             entry.name,
                         )
                         continue
-            if platform not in config.platforms:
-                config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
-            # Commit env-seeded extras onto the now-enabled platform.
-            # We've already called ``env_enablement_fn`` above (for the
-            # probe); reuse that result instead of calling it twice.
-            if isinstance(seed_for_probe, dict) and seed_for_probe:
-                seed = dict(seed_for_probe)
-                # Extract the home_channel dict (if provided) so we wire it
-                # up as a proper HomeChannel dataclass.  Everything else is
-                # merged into ``extra``.
-                home = seed.pop("home_channel", None)
-                config.platforms[platform].extra.update(seed)
-                if isinstance(home, dict) and home.get("chat_id"):
-                    config.platforms[platform].home_channel = HomeChannel(
-                        platform=platform,
-                        chat_id=str(home["chat_id"]),
-                        name=str(home.get("name") or "Home"),
-                        thread_id=(
-                            str(home["thread_id"])
-                            if home.get("thread_id")
-                            else None
-                        ),
-                    )
+            if existing_cfg is None:
+                if platform not in config.platforms:
+                    config.platforms[platform] = PlatformConfig()
+                config.platforms[platform].enabled = True
+                # Commit env-seeded extras onto the now-enabled platform.
+                # We've already called ``env_enablement_fn`` above (for the
+                # probe); reuse that result instead of calling it twice.
+                if isinstance(seed_for_probe, dict) and seed_for_probe:
+                    seed = dict(seed_for_probe)
+                    # Extract the home_channel dict (if provided) so we wire it
+                    # up as a proper HomeChannel dataclass.  Everything else is
+                    # merged into ``extra``.
+                    home = seed.pop("home_channel", None)
+                    config.platforms[platform].extra.update(seed)
+                    if isinstance(home, dict) and home.get("chat_id"):
+                        config.platforms[platform].home_channel = HomeChannel(
+                            platform=platform,
+                            chat_id=str(home["chat_id"]),
+                            name=str(home.get("name") or "Home"),
+                            thread_id=(
+                                str(home["thread_id"])
+                                if home.get("thread_id")
+                                else None
+                            ),
+                        )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

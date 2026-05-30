@@ -815,4 +815,63 @@ class TestHomeChannelEnvOverrides:
 
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
-            assert (home.chat_id, home.name) == expected, platform.value
+            assert home.chat_id == expected[0]
+            assert home.name == expected[1]
+
+
+class TestEnvOverrideRespectsExplicitDisable:
+    """Env token presence must NOT override explicit enabled: false in YAML config.
+
+    Regression tests for #35555: profile config platforms.telegram.enabled: false
+    was ignored when TELEGRAM_BOT_TOKEN was in the environment.
+    """
+
+    def test_telegram_env_token_does_not_override_yaml_disabled(self):
+        """TELEGRAM_BOT_TOKEN in env should NOT auto-enable when YAML says enabled: false."""
+        config = GatewayConfig(platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=False),
+        })
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "bot123"}, clear=False):
+            _apply_env_overrides(config)
+        # YAML's explicit enabled: false must be respected
+        assert config.platforms[Platform.TELEGRAM].enabled is False
+        # Token should still be stored for skills that send Telegram messages
+        assert config.platforms[Platform.TELEGRAM].token == "bot123"
+
+    def test_telegram_env_token_auto_enables_when_no_yaml_config(self):
+        """TELEGRAM_BOT_TOKEN in env should auto-enable when no YAML config exists."""
+        config = GatewayConfig()
+        assert Platform.TELEGRAM not in config.platforms
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "bot123"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+        assert config.platforms[Platform.TELEGRAM].token == "bot123"
+
+    def test_telegram_env_token_preserves_yaml_enabled_true(self):
+        """TELEGRAM_BOT_TOKEN should not disable a platform that YAML enabled."""
+        config = GatewayConfig(platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True),
+        })
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "bot123"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+        assert config.platforms[Platform.TELEGRAM].token == "bot123"
+
+    def test_discord_env_token_does_not_override_yaml_disabled(self):
+        """DISCORD_BOT_TOKEN in env should NOT auto-enable when YAML says enabled: false."""
+        config = GatewayConfig(platforms={
+            Platform.DISCORD: PlatformConfig(enabled=False),
+        })
+        with patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "discord123"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.DISCORD].enabled is False
+        assert config.platforms[Platform.DISCORD].token == "discord123"
+
+    def test_discord_env_token_auto_enables_when_no_yaml_config(self):
+        """DISCORD_BOT_TOKEN in env should auto-enable when no YAML config exists."""
+        config = GatewayConfig()
+        assert Platform.DISCORD not in config.platforms
+        with patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "discord123"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.DISCORD].enabled is True
+        assert config.platforms[Platform.DISCORD].token == "discord123"

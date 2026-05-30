@@ -2004,6 +2004,77 @@ class TestAuxiliaryTaskExtraBody:
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Should NOT warn when OPENAI_BASE_URL is not set"
 
+    def test_get_auxiliary_extra_body_merges_task_config(self):
+        """get_auxiliary_extra_body(task) merges task-specific extra_body from config."""
+        import agent.auxiliary_client as mod
+
+        config = {
+            "auxiliary": {
+                "profile_describer": {
+                    "extra_body": {
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    }
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch.object(mod, "auxiliary_is_nous", False):
+            result = mod.get_auxiliary_extra_body("profile_describer")
+
+        assert result["chat_template_kwargs"] == {"enable_thinking": False}
+
+    def test_get_auxiliary_extra_body_no_task_returns_base(self):
+        """get_auxiliary_extra_body() without task returns base result only."""
+        import agent.auxiliary_client as mod
+
+        with patch.object(mod, "auxiliary_is_nous", False):
+            result = mod.get_auxiliary_extra_body()
+
+        assert result == {}
+
+    def test_get_auxiliary_extra_body_task_without_extra_body(self):
+        """get_auxiliary_extra_body(task) when task has no extra_body returns base."""
+        import agent.auxiliary_client as mod
+
+        config = {"auxiliary": {"profile_describer": {"model": "qwen3"}}}
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch.object(mod, "auxiliary_is_nous", False):
+            result = mod.get_auxiliary_extra_body("profile_describer")
+
+        assert result == {}
+
+    def test_get_auxiliary_extra_body_task_config_error_returns_base(self):
+        """get_auxiliary_extra_body(task) returns base result when config load fails."""
+        import agent.auxiliary_client as mod
+
+        with patch("hermes_cli.config.load_config", side_effect=ImportError("no config")), \
+             patch.object(mod, "auxiliary_is_nous", False):
+            result = mod.get_auxiliary_extra_body("profile_describer")
+
+        assert result == {}
+
+    def test_get_auxiliary_extra_body_nous_plus_task_config(self):
+        """get_auxiliary_extra_body(task) merges Nous extras AND task extras."""
+        import agent.auxiliary_client as mod
+
+        config = {
+            "auxiliary": {
+                "web_extract": {
+                    "extra_body": {"custom_param": True},
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch.object(mod, "auxiliary_is_nous", True), \
+             patch.object(mod, "_nous_extra_body", return_value={"tags": ["test"]}):
+            result = mod.get_auxiliary_extra_body("web_extract")
+
+        assert result["tags"] == ["test"]
+        assert result["custom_param"] is True
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible image block conversion
 # ---------------------------------------------------------------------------

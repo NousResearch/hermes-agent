@@ -161,6 +161,255 @@ def test_codex_stream_postlude_error_still_falls_back():
     mock_fallback.assert_called_once()
 
 
+def test_codex_stream_nonetype_iterable_typeerror_falls_back():
+    """SDK stream TypeError from malformed/partial Codex frames should recover."""
+    agent = _make_codex_agent()
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.side_effect = TypeError("'NoneType' object is not iterable")
+
+    fallback_response = SimpleNamespace(output=[], status="completed")
+    with patch.object(
+        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
+    ) as mock_fallback:
+        result = agent._run_codex_stream({}, client=mock_client)
+
+    assert result is fallback_response
+    mock_fallback.assert_called_once_with({}, client=mock_client)
+
+
+def test_codex_stream_nonetype_iterable_typeerror_uses_raw_sse_after_stream_fallback_breaks():
+    """If both SDK streaming paths hit the parser bug, use raw SSE parsing."""
+    agent = _make_codex_agent()
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.side_effect = TypeError("'NoneType' object is not iterable")
+
+    fallback_response = SimpleNamespace(output=[], status="completed")
+    with patch.object(
+        agent,
+        "_run_codex_create_stream_fallback",
+        side_effect=TypeError("'NoneType' object is not iterable"),
+    ) as mock_stream_fallback:
+        with patch.object(
+            agent, "_run_codex_raw_sse_fallback", return_value=fallback_response
+        ) as mock_raw_sse_fallback:
+            result = agent._run_codex_stream({}, client=mock_client)
+
+    assert result is fallback_response
+    mock_stream_fallback.assert_called_once_with({}, client=mock_client)
+    mock_raw_sse_fallback.assert_called_once_with({}, client=mock_client)
+
+
+def test_codex_stream_prelude_error_uses_raw_sse_after_stream_fallback_typeerror():
+    """Prelude errors must also survive the create(stream=True) parser bug."""
+    agent = _make_codex_agent()
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.side_effect = RuntimeError(
+        "Expected to have received `response.created` before `error`"
+    )
+
+    fallback_response = SimpleNamespace(output=[], status="completed")
+    with patch.object(
+        agent,
+        "_run_codex_create_stream_fallback",
+        side_effect=TypeError("'NoneType' object is not iterable"),
+    ) as mock_stream_fallback:
+        with patch.object(
+            agent, "_run_codex_raw_sse_fallback", return_value=fallback_response
+        ) as mock_raw_sse_fallback:
+            result = agent._run_codex_stream({}, client=mock_client)
+
+    assert result is fallback_response
+    mock_stream_fallback.assert_called_once_with({}, client=mock_client)
+    mock_raw_sse_fallback.assert_called_once_with({}, client=mock_client)
+
+
+def test_codex_raw_sse_fallback_synthesizes_output_from_done_item(monkeypatch):
+    """Raw SSE fallback handles Codex completed events whose response has no output."""
+    import httpx
+
+    from agent import codex_runtime
+
+    agent = _make_codex_agent()
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def iter_lines(self):
+            yield 'event: response.created'
+            yield 'data: {"type":"response.created","response":{"status":"in_progress"}}'
+            yield 'event: response.output_text.delta'
+            yield (
+                'data: {"type":"response.output_text.delta","delta":"OK",'
+                '"output_index":0,"content_index":0,"sequence_number":1}'
+            )
+            yield 'event: response.output_item.done'
+            yield (
+                'data: {"type":"response.output_item.done","item":{"type":"message",'
+                '"role":"assistant","status":"completed","content":[{"type":"output_text",'
+                '"text":"OK"}]},"output_index":0,"sequence_number":2}'
+            )
+            yield 'event: response.completed'
+            yield 'data: {"type":"response.completed","response":{"status":"completed"},"sequence_number":3}'
+
+    class _FakeHttpClient:
+        def __init__(self, *args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def stream(self, method, url, headers, json):
+            captured.update({"method": method, "url": url, "headers": headers, "json": json})
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "Client", _FakeHttpClient)
+
+    fake_client = SimpleNamespace(
+        base_url="https://chatgpt.com/backend-api/codex/",
+        default_headers=httpx.Headers({"Content-Type": "application/json"}),
+        auth_headers=httpx.Headers({"Authorization": "Bearer test"}),
+    )
+
+    response = codex_runtime.run_codex_raw_sse_fallback(
+        agent,
+        {
+            "model": "gpt-5.5",
+            "instructions": "test",
+            "input": [{"role": "user", "content": "Reply OK"}],
+            "store": False,
+            "extra_headers": {"x-client-request-id": "test-session"},
+        },
+        client=fake_client,
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert captured["json"]["stream"] is True
+    assert "extra_headers" not in captured["json"]
+    assert captured["headers"]["x-client-request-id"] == "test-session"
+    assert "Content-Type" not in captured["headers"]
+    assert captured["headers"].get("content-type") == "application/json"
+    assert captured["headers"].get("authorization") == "Bearer test"
+    assert response.output[0].content[0].text == "OK"
+    assert response.output_text == "OK"
+
+
+def test_codex_raw_sse_fallback_coerces_missing_output(monkeypatch):
+    """Raw SSE fallback also returns a list-shaped output for empty completions."""
+    import httpx
+
+    from agent import codex_runtime
+
+    agent = _make_codex_agent()
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"type":"response.completed","response":{"status":"completed"}}'
+
+    class _FakeHttpClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def stream(self, method, url, headers, json):
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "Client", _FakeHttpClient)
+    fake_client = SimpleNamespace(
+        base_url="https://chatgpt.com/backend-api/codex/",
+        default_headers={},
+        auth_headers={},
+    )
+
+    response = codex_runtime.run_codex_raw_sse_fallback(
+        agent,
+        {"model": "gpt-5.5", "instructions": "test", "input": [], "store": False},
+        client=fake_client,
+    )
+
+    assert response.output == []
+
+
+def test_codex_raw_sse_fallback_reads_stream_error_body(monkeypatch):
+    """HTTP errors in httpx.stream mode must surface the provider body."""
+    import httpx
+
+    from agent import codex_runtime
+
+    agent = _make_codex_agent()
+
+    class _FakeResponse:
+        status_code = 400
+        encoding = "utf-8"
+
+        @property
+        def text(self):
+            raise AssertionError("streaming response body must be read explicitly")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self):
+            return b'{"detail":"Stream must be set to true"}'
+
+    class _FakeHttpClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def stream(self, method, url, headers, json):
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "Client", _FakeHttpClient)
+    fake_client = SimpleNamespace(
+        base_url="https://chatgpt.com/backend-api/codex/",
+        default_headers={},
+        auth_headers={},
+    )
+
+    with pytest.raises(RuntimeError, match="Stream must be set to true"):
+        codex_runtime.run_codex_raw_sse_fallback(
+            agent,
+            {"model": "gpt-5.5", "instructions": "test", "input": [], "store": False},
+            client=fake_client,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fix B: surface xAI's entitlement body verbatim (no editorializing)
 #

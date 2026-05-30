@@ -2636,6 +2636,11 @@ class AIAgent:
         from agent.codex_runtime import run_codex_create_stream_fallback
         return run_codex_create_stream_fallback(self, api_kwargs, client)
 
+    def _run_codex_raw_sse_fallback(self, api_kwargs: dict, client: Any = None):
+        """Forwarder — see ``agent.codex_runtime.run_codex_raw_sse_fallback``."""
+        from agent.codex_runtime import run_codex_raw_sse_fallback
+        return run_codex_raw_sse_fallback(self, api_kwargs, client)
+
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
             return False

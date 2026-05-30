@@ -186,6 +186,17 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _SdkLikeCodexResponse(SimpleNamespace):
+    @property
+    def output_text(self):
+        parts = []
+        for output in self.output:
+            for content in getattr(output, "content", []) or []:
+                if getattr(content, "type", None) == "output_text":
+                    parts.append(getattr(content, "text", ""))
+        return "".join(parts)
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -445,6 +456,89 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert response.output[0].content[0].text == "create fallback ok"
 
 
+def test_run_codex_stream_backfills_none_output_from_stream_item(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    final_response = _SdkLikeCodexResponse(output=None, status="completed", model="gpt-5-codex")
+    done_item = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text="stream item ok")],
+    )
+
+    class _FakeNoneOutputStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter([SimpleNamespace(type="response.output_item.done", item=done_item)])
+
+        def get_final_response(self):
+            return final_response
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeNoneOutputStream(),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].content[0].text == "stream item ok"
+    assert response.output_text == "stream item ok"
+
+
+def test_run_codex_stream_coerces_none_output_without_backfill(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    final_response = _SdkLikeCodexResponse(output=None, status="completed", model="gpt-5-codex")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(final_response=final_response),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output == []
+    assert response.output_text == ""
+
+
+def test_run_codex_stream_coerces_none_output_with_tool_call_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    final_response = _SdkLikeCodexResponse(output=None, status="completed", model="gpt-5-codex")
+
+    class _FakeToolCallDeltaStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter(
+                [
+                    SimpleNamespace(type="response.function_call_arguments.delta", delta="{}"),
+                    SimpleNamespace(type="response.output_text.delta", delta="tool-adjacent text"),
+                ]
+            )
+
+        def get_final_response(self):
+            return final_response
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeToolCallDeltaStream(),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output == []
+    assert response.output_text == ""
+
+
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0, "create": 0}
@@ -479,6 +573,26 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_create_stream_fallback_coerces_none_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal = _SdkLikeCodexResponse(output=None, status="completed", model="gpt-5-codex")
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.completed", response=terminal),
+        ]
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: create_stream,
+        )
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert response.output == []
+    assert response.output_text == ""
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

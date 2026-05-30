@@ -3392,7 +3392,7 @@ class GatewayRunner:
                 metadata=thread_meta,
             )
         except Exception as e:
-            logger.debug("Failed to send busy-ack: %s", e)
+            logger.warning("Failed to send busy-ack: %s", e)
 
         return True
 
@@ -3434,7 +3434,7 @@ class GatewayRunner:
                 agent.interrupt(reason)
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
-                logger.debug("Failed interrupting agent during shutdown: %s", e)
+                logger.warning("Failed interrupting agent during shutdown: %s", e)
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
@@ -4179,7 +4179,7 @@ class GatewayRunner:
             if stuck:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
-            logger.debug("Stuck-loop detection failed: %s", e)
+            logger.warning("Stuck-loop detection failed: %s", e)
 
         connected_count = 0
         enabled_platform_count = 0

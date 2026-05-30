@@ -162,6 +162,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
+- **gws-native mode:** if Hermes was never set up (no `~/.hermes/google_token.json`) but `gws` is already authenticated on its own (via `gws auth login`), the skill uses gws's own credentials. `setup.py --check` reports `AUTHENTICATED: via gws CLI`, and operations route through gws automatically — no separate Hermes OAuth needed. Exception: `drive upload` and `drive download` use the Python client directly (no gws route) and still require Hermes-managed OAuth; they exit with a clear message in gws-native mode.
 - To revoke: `$GSETUP --revoke`
 
 ## Usage

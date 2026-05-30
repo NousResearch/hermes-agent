@@ -36,6 +36,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import display_hermes_home, get_hermes_home
+from _gws_auth import gws_live_check, gws_native_authed
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -136,6 +137,20 @@ def check_auth_live():
     # final status line reflects the live-call outcome (OK or FAILED).
     if not check_auth(quiet=True):
         return False
+    # gws-native mode (no Hermes token, but gws is independently authed):
+    # validate via a real gws API call rather than the Python token client,
+    # which has no token file to read.
+    if not TOKEN_PATH.exists():
+        ok, detail = gws_live_check()
+        if ok:
+            print("LIVE_CHECK_OK: Real gws API call succeeded.")
+            return True
+        lowered = detail.lower()
+        if "disabled_client" in lowered or "invalid_client" in lowered:
+            print(f"LIVE_CHECK_FAILED: OAuth client or account disabled: {detail}")
+        else:
+            print(f"LIVE_CHECK_FAILED: {detail}")
+        return False
     try:
         from googleapiclient.discovery import build
         from google.oauth2.credentials import Credentials
@@ -159,6 +174,10 @@ def check_auth_live():
 def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
+        if gws_native_authed():
+            if not quiet:
+                print("AUTHENTICATED: via gws CLI (gws-native credentials)")
+            return True
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
         return False
 

@@ -587,9 +587,20 @@ def apply_nous_managed_defaults(
         changed.add("browser")
 
     if "image_gen" in selected_toolsets and not fal_key_is_configured():
+        image_cfg = config.get("image_gen")
+        if not isinstance(image_cfg, dict):
+            image_cfg = {}
+            config["image_gen"] = image_cfg
+        image_cfg["use_gateway"] = True
         changed.add("image_gen")
 
     if "video_gen" in selected_toolsets and not fal_key_is_configured():
+        video_cfg = config.get("video_gen")
+        if not isinstance(video_cfg, dict):
+            video_cfg = {}
+            config["video_gen"] = video_cfg
+        video_cfg["provider"] = "fal"
+        video_cfg["use_gateway"] = True
         changed.add("video_gen")
 
     return changed

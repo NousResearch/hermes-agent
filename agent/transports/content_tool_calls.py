@@ -124,8 +124,10 @@ def find_kimi_k2(content: str) -> list[RawCall]:
         for m in _KIMI_CALL_RE.finditer(section.group(1)):
             obj = _loads_lenient(m.group("args").strip())
             name = _kimi_name(m.group("id"))
+            # Per-call span (not the whole section): a section may hold several
+            # parallel calls and they must not dedup against each other.
             if name and isinstance(obj, dict):
-                out.append(RawCall(name=name, arguments=obj, span=section.group(0)))
+                out.append(RawCall(name=name, arguments=obj, span=m.group(0)))
     return out
 
 
@@ -157,10 +159,13 @@ def find_minimax_invoke(content: str) -> list[RawCall]:
 FORMATS.append(ContentFormat("minimax_invoke", find_minimax_invoke))
 
 
-# Boundary+attribute gated so prose ("Use <function> in JS") is not matched.
-# Ported gate from agent/agent_runtime_helpers.py strip_think_blocks (openclaw#67318).
+# Line-start + attribute gated so prose is not matched. Adapted from the
+# strip_think_blocks gate (openclaw#67318) but STRICTER: that gate also allows
+# sentence-ending punctuation (.!?:) as a boundary, which is safe for *display
+# stripping* but not here — promotion EXECUTES the call, so "I'll call:
+# <function name=...>" mid-sentence prose must not fire. Only line/content start.
 _GEMMA_FUNC_RE = re.compile(
-    r"(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*"
+    r"(?:(?<=^)|(?<=[\n\r]))[ \t]*"
     r'<function\b[^>]*\bname\s*=\s*"(?P<name>[^"]+)"[^>]*>'
     r"(?P<body>(?:(?!</function>).)*)</function>",
     re.DOTALL | re.IGNORECASE,
@@ -209,6 +214,10 @@ def _dedupe_overlapping(raws: list[RawCall], content: str) -> list[RawCall]:
     taken: list[tuple[int, int]] = []
     kept: list[RawCall] = []
     for rc in raws:
+        # First-occurrence find: two byte-identical spans collapse to one. That
+        # is the intent for cross-format overlap (bare-JSON vs <tool_call> on the
+        # same bytes); a model emitting the same call verbatim twice is treated
+        # as one. Distinct calls have distinct span text and survive.
         start = content.find(rc.span)
         if start < 0:
             continue

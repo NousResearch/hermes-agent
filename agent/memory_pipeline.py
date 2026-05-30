@@ -1,4 +1,4 @@
-"""MemoryPipeline -- organic memory infrastructure inside MemoryManager.
+﻿"""MemoryPipeline -- organic memory infrastructure inside MemoryManager.
 
 NOT a MemoryProvider.  No name, no tools, no system_prompt_block.
 Pure interceptor: executes organic logic before/after MemoryManager lifecycle methods.
@@ -1668,6 +1668,25 @@ class MemoryPipeline:
             except Exception as e:
                 logger.debug("DreamEngine init failed: %s", e)
 
+        # Layer 9a: HippocampalIndex (sparse index for pattern completion)
+        hippo_cfg = self._config.get("hippocampal_index", {})
+        self._hippocampal = None
+        if hippo_cfg.get("enabled", False):
+            try:
+                import importlib.util
+                _spec = importlib.util.spec_from_file_location(
+                    "hippocampal_index",
+                    str(Path(__file__).resolve().parent.parent
+                        / "plugins" / "memory" / "holographic"
+                        / "hippocampal_index.py"))
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                self._hippocampal = _mod.HippocampalIndex(
+                    self._state._conn, self._state._lock)
+                self._hippocampal.init_tables()
+            except Exception as e:
+                logger.debug("HippocampalIndex init failed: %s", e)
+
         # Layer 9: SleepScheduler (automatic sleep-driven consolidation)
         sleep_cfg = self._config.get("sleep", {})
         if sleep_cfg.get("enabled", False):
@@ -1754,6 +1773,49 @@ class MemoryPipeline:
                         ).start()
                 except Exception as e:
                     logger.debug("SleepScheduler failed: %s", e)
+
+            # GAP 5: merged from sync_turn -- emotion-modulated engram
+            # decay and salience-to-engram initial strength.  These were
+            # previously dead code in sync_turn() which MemoryManager
+            # never called.
+            if self._engrams and self._state:
+                try:
+                    decay_affected = self._engrams.apply_decay(
+                        self._state,
+                        hours_elapsed=1.0,
+                        emotional_valence=result.emotion,
+                    )
+                    meta["decay_affected"] = decay_affected
+                    logger.debug(
+                        "pre_sync emgram decay: emotion=%.3f, affected=%d",
+                        result.emotion, decay_affected)
+                except Exception as e:
+                    logger.debug("Emotion-modulated engram decay failed: %s", e)
+
+                # Salience-to-Engram: initial strength from salience score
+                try:
+                    sal = result.overall
+                    if sal > 0.5:
+                        init_str = 1.0
+                    elif sal > 0.2:
+                        init_str = 0.7
+                    else:
+                        init_str = 0.4
+                    ref = sha256(user.encode()).hexdigest()[:16]
+                    with self._state._lock:
+                        self._state._conn.execute(
+                            "INSERT INTO engram_strengths "
+                            "(memory_ref, provider, strength) "
+                            "VALUES (?, 'salience_init', ?) "
+                            "ON CONFLICT(memory_ref) DO UPDATE SET "
+                            "strength = MAX(strength, excluded.strength), "
+                            "last_accessed = CURRENT_TIMESTAMP",
+                            (ref, init_str),
+                        )
+                        self._state._conn.commit()
+                    meta["initial_engram_strength"] = init_str
+                except Exception as e:
+                    logger.debug("Salience-to-engram init failed: %s", e)
 
             # Fix 6: Activation to Retrieval: expand query with
             # co-activated terms before provider retrieval
@@ -1861,21 +1923,16 @@ class MemoryPipeline:
 
     def sync_turn(self, user_content: str,
                   assistant_content: str = "") -> dict | None:
-        """Score salience and apply emotion-modulated engram decay.
+        """DEPRECATED: all unique logic has been merged into pre_sync().
 
-        Called after each completed turn.  Extracts the emotional valence
-        from the user message via SalienceScorer and passes it to engram
-        decay so that emotionally arousing memories decay more slowly.
-        Scientific basis: McGaugh 2004 -- amygdala modulates emotionally
-        arousing memory consolidation.
+        MemoryManager.sync_all() calls pre_sync() but never calls
+        sync_turn() on the pipeline.  The emotion-modulated engram
+        decay and salience-to-engram initialization that this method
+        contained are now executed inside pre_sync() (GAP 5 fix).
 
-        Args:
-            user_content: The user message text.
-            assistant_content: The assistant reply (unused for now,
-                reserved for future bilateral scoring).
-
-        Returns:
-            Metadata dict with salience and decay info, or None on failure.
+        This method is retained only for backward compatibility with
+        any external code that may call it directly.  It will be
+        removed in a future release.
         """
         if not self._salience or not self._engrams or not self._state:
             return None
@@ -2010,6 +2067,22 @@ class MemoryPipeline:
                 if len(entities) >= 2:
                     self._activation.record_co_activation(self._state, entities)
 
+            # GAP 1: record co-activation from result content entities
+            if self._activation and name == "fact_store":
+                try:
+                    result_entities = re.findall(
+                        r"[A-Z][a-z]{2,}", result)
+                    zh_result_entities = [
+                        e for e in re.findall(r"[一-鿿]{2,6}", result)
+                        if e not in _ZH_STOPWORDS]
+                    result_entities.extend(zh_result_entities)
+                    if len(result_entities) >= 2:
+                        self._activation.record_co_activation(
+                            self._state, result_entities, delta=0.05)
+                except Exception as e:
+                    logger.debug(
+                        "post_tool_call result co-activation "
+                        "failed: %s", e)
             # GAP 3: 'add' action -- score salience, init engram strength,
             # record co-activation, append to current episode
             if name == "fact_store" and args.get("action") == "add":
@@ -2085,6 +2158,28 @@ class MemoryPipeline:
                                 "post_tool_call add episodic append "
                                 "failed: %s", e)
 
+                    # 5. Hippocampal index: index the new fact
+                    if self._hippocampal:
+                        try:
+                            fact_id = None
+                            try:
+                                parsed = json.loads(result)
+                                fact_id = parsed.get("fact_id")
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            if fact_id is not None:
+                                ents = re.findall(
+                                    r"[A-Z][a-z]{2,}", content)
+                                zh_ents = [e for e in re.findall(
+                                    r"[一-鿿]{2,6}", content)
+                                    if e not in _ZH_STOPWORDS]
+                                ents.extend(zh_ents)
+                                self._hippocampal.index_memory(
+                                    str(fact_id), content, entities=ents)
+                        except Exception as e:
+                            logger.debug(
+                                "post_tool_call add hippocampal "
+                                "index failed: %s", e)
             # GAP 5: fact_feedback -- route user feedback to salience
             # and adaptive weight systems
             if name == "fact_feedback":
@@ -2246,8 +2341,31 @@ class MemoryPipeline:
             logger.debug("Pipeline post_session_end failed: %s", e)
 
     def post_session_switch(self, new_id: str, **kwargs) -> None:
-        """No-op for now. Phase 2+: update per-session consolidation state."""
-        pass
+        """Propagate session switch to pipeline internals.
+
+        Updates the cached session_id, closes the current episodic episode
+        and opens a new one, and resets the sleep scheduler so accumulated
+        salience does not bleed across sessions.
+        """
+        old_id = self._session_id
+        self._session_id = new_id
+
+        # Close old episode, start new one
+        if self._episodic:
+            try:
+                self._episodic.close_episode(
+                    summary=f"Session {old_id} ended (switch)")
+                self._episodic.start_episode(new_id)
+            except Exception as e:
+                logger.debug("Episode switch failed: %s", e)
+
+        # Update sleep scheduler so salience accumulators reset
+        if self._scheduler:
+            try:
+                self._scheduler._session_id = new_id
+                self._scheduler.reset()
+            except Exception as e:
+                logger.debug("Scheduler reset failed: %s", e)
 
     def post_delegation(self, task: str, result: str, **kwargs) -> None:
         """No-op for now. Phase 2+: score subagent result."""

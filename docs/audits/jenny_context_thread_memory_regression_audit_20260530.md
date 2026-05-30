@@ -476,6 +476,58 @@ The two Family Hub thread mappings remain `matched_zero_messages`:
 - `1507081077196460185` / `Family Hub Public App -- Part 4` /
   `20260529_084135_9f74ecab`
 
+## Stale Mapping Source Follow-up
+
+`tools/trace_discord_session_mappings_across_backups.py` now traces mapped
+Discord thread session IDs across explicit backup/snapshot DB paths using
+session-row and aggregate message metadata only. It does not select transcript
+content.
+
+Live metadata-only tracing checked all 106
+`mapped_session_absent_from_db` rows from `/home/jenny/.hermes/sessions` against
+the discovered candidate DBs:
+
+- `/home/jenny/.hermes/profiles/learning-improvement/state.db`
+- `/home/jenny/.hermes/profiles/money-signal-video/state.db`
+- `/home/jenny/.hermes/profiles/hermes-ops/state.db`
+- `/home/jenny/.hermes/profiles/no-call-estimateready/state.db`
+- `/home/jenny/.hermes/profiles/wahainspection/state.db`
+- `/home/jenny/.hermes/profiles/family-hub/state.db`
+- `/home/jenny/.hermes/profiles/memory-lab/state.db`
+- `/home/jenny/.hermes/maintenance-backups/20260528-004804-controlled-maintenance/state.db`
+- `/home/jenny/.hermes/state-snapshots/20260529-013414-pre-session-prune-30d/state.db`
+
+Result:
+
+- Traced absent mappings: 106
+- Found in any candidate DB by exact `session_id`: 0
+- Not found in any candidate DB by exact `session_id`: 106
+- Backup/candidate DB checks returning `session_absent`: 954
+
+This means the currently located DBs do not contain backing session rows for
+the 106 stale mapped session IDs. The evidence supports an unreconciled stale
+`sessions.json` index rather than a query mismatch, missing schema, or a
+session row recoverable from the discovered backup/snapshot DBs.
+
+Top metadata-only examples still not found in any candidate DB:
+
+- `1498644476091170916` / `Development` /
+  `20260505_112443_b6be40`
+- `1499443166615572560` / `Space Opera` /
+  `20260505_023222_26531c`
+- `1500921554010243243` / `u back?` /
+  `20260505_020626_fdc6cf27`
+- `1501217405337337866` / `The Crucible` /
+  `20260508_133027_a21b72`
+- `1501221353557327943` / `Family Hub` /
+  `20260508_223550_e862b7`
+
+Do not restore, prune, or rewrite these mappings automatically. A safe next
+step is a separate operator-reviewed archive/cleanup design that preserves a
+read-only evidence snapshot, labels stale mappings by thread/session metadata,
+and only then considers whether inactive stale rows should be archived outside
+the live routing index.
+
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:

@@ -66,6 +66,7 @@ def _load_config() -> Dict[str, Any]:
             guard_cfg = {}
         _config_cache = guard_cfg
         _config_cache_time = time.monotonic()
+        _config_disable = False  # reset on refresh — don't carry stale disable state
         if not guard_cfg.get("enabled", False):
             _config_disable = True
         return guard_cfg
@@ -107,30 +108,34 @@ def _get_session_context(
       }
     """
     result: Dict[str, Any] = {"tool_calls": [], "turns": []}
-    # When the upstream invoke_tool fix is not yet merged, the hook
-    # receives an empty session_id.  Fall back to the value stashed by
-    # __init__.py's monkey-patch via thread-local storage.
+    # Upstream bug: invoke_tool() does not pass session_id to the
+    # pre_tool_call hook.  Walk the call stack to discover it from
+    # AIAgent._invoke_tool's `self` parameter.  No monkey-patching,
+    # no system file modifications — just read what's already there.
     effective_id = session_id
     if not effective_id:
         try:
-            from . import _get_session_id_from_agent
-            effective_id = _get_session_id_from_agent()
+            import inspect
+            for frame_info in inspect.stack():
+                if frame_info.function == "_invoke_tool":
+                    agent = frame_info.frame.f_locals.get("self")
+                    if agent is not None:
+                        sid = getattr(agent, "session_id", None)
+                        if sid:
+                            effective_id = sid
+                            logger.info("call-stack session_id discovery: %s", effective_id)
+                            break
         except Exception:
             pass
     if not effective_id:
-        logger.warning("_get_session_context: session_id is empty — cannot query SessionDB")
         return result
 
     try:
         from hermes_state import SessionDB
         db = SessionDB()
         messages = db.get_messages(effective_id)
-        logger.debug(
-            "_get_session_context: session_id=%s, messages=%d",
-            effective_id, len(messages),
-        )
     except Exception as exc:
-        logger.warning("Session DB query failed for %s: %s", effective_id, exc)
+        logger.debug("Session DB query failed: %s", exc)
         return result
 
     # ── Extract tool call chain ───────────────────────────────────

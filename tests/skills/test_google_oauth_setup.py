@@ -6,6 +6,8 @@ code exchange happen in separate process invocations.
 
 import importlib.util
 import json
+import re
+import shlex
 import sys
 import types
 from pathlib import Path
@@ -16,6 +18,10 @@ import pytest
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
     / "skills/productivity/google-workspace/scripts/setup.py"
+)
+SKILL_DOC_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "skills/productivity/google-workspace/SKILL.md"
 )
 
 
@@ -130,6 +136,28 @@ def setup_module(monkeypatch, tmp_path):
     }
     module.CLIENT_SECRET_PATH.write_text(json.dumps(client_secret))
     return module
+
+
+class TestSkillDocs:
+    def test_setup_examples_use_flags_supported_by_setup_script(self):
+        """Keep SKILL.md's documented setup commands aligned with setup.py argparse."""
+        script_text = SCRIPT_PATH.read_text()
+        supported_flags = set(re.findall(r'add_argument\("(--[\w-]+)"', script_text))
+        assert supported_flags
+
+        doc_text = SKILL_DOC_PATH.read_text()
+        setup_lines = [line.strip() for line in doc_text.splitlines() if "$GSETUP" in line]
+        assert setup_lines
+
+        unsupported = []
+        for line in setup_lines:
+            command_tail = line.split("$GSETUP", 1)[1].replace("`", "")
+            args = shlex.split(command_tail)
+            for arg in args:
+                if arg.startswith("--") and arg not in supported_flags:
+                    unsupported.append((line, arg))
+
+        assert unsupported == []
 
 
 class TestGetAuthUrl:

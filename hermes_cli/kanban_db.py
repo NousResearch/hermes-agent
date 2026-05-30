@@ -2927,12 +2927,26 @@ def recompute_ready(
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.status, t.assignee FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                # Inherit assignee from a parent when the child has none
+                # set. Without this, children promoted via recompute_ready
+                # sit in 'ready' forever because the dispatcher skips
+                # unassigned tasks (dispatch_once: "if not
+                # row['assignee']: continue").
+                inherited_assignee = None
+                child_assignee = conn.execute(
+                    "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+                if child_assignee and not child_assignee["assignee"]:
+                    for p in parents:
+                        if p["assignee"]:
+                            inherited_assignee = p["assignee"]
+                            break
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -2950,16 +2964,31 @@ def recompute_ready(
                     )
                     if failures >= effective_limit:
                         continue
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' "
-                        "WHERE id = ? AND status = 'blocked'",
-                        (task_id,),
-                    )
+                    if inherited_assignee:
+                        conn.execute(
+                            "UPDATE tasks SET status = 'ready', "
+                            "assignee = ? "
+                            "WHERE id = ? AND status = 'blocked'",
+                            (inherited_assignee, task_id,),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE tasks SET status = 'ready' "
+                            "WHERE id = ? AND status = 'blocked'",
+                            (task_id,),
+                        )
                 else:
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
-                        (task_id,),
-                    )
+                    if inherited_assignee:
+                        conn.execute(
+                            "UPDATE tasks SET status = 'ready', assignee = ? "
+                            "WHERE id = ? AND status = 'todo'",
+                            (inherited_assignee, task_id,),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
+                            (task_id,),
+                        )
                 _append_event(conn, task_id, "promoted", None)
                 promoted += 1
     return promoted

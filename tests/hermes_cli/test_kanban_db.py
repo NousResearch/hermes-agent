@@ -3211,6 +3211,45 @@ def test_connect_refuses_corrupt_existing_file(tmp_path):
         kb.connect(db_path=db_path)
 
 
+def test_backup_corrupt_db_debounces_same_reason(tmp_path, monkeypatch):
+    """Repeat corrupt probes should reuse the same backup within the debounce window."""
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path)
+    monkeypatch.setattr(kb.time, "time", lambda: 1000.0)
+
+    first = kb._backup_corrupt_db(db_path, "integrity check failed")
+    second = kb._backup_corrupt_db(db_path, "integrity check failed")
+
+    assert first is not None
+    assert second == first
+    assert first.exists()
+    assert first.read_bytes() == original
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 1
+
+
+def test_cleanup_bak_files_and_health_check_flag_excess_backups(tmp_path):
+    """Health checks flag backup storms and cleanup prunes them back to budget."""
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+
+    for idx in range(7):
+        bak = tmp_path / f"kanban.db.corrupt.20260530_120{idx:02d}.bak"
+        bak.write_text(f"backup-{idx}", encoding="utf-8")
+
+    unhealthy = kb.health_check(db_path, max_bak_files=5)
+    cleanup = kb.cleanup_bak_files(db_path, max_files=2)
+    healthy = kb.health_check(db_path, max_bak_files=2)
+
+    assert unhealthy["healthy"] is False
+    assert unhealthy["bak_files_ok"] is False
+    assert unhealthy["bak_file_count"] == 7
+    assert cleanup["deleted"] == 5
+    assert cleanup["remaining"] == 2
+    assert healthy["healthy"] is True
+    assert healthy["bak_files_ok"] is True
+    assert healthy["bak_file_count"] == 2
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite

@@ -133,6 +133,61 @@ def test_issue_state_store_persists_fifo_and_resets_running(tmp_path):
     assert store.get_run(first.id).status is IssueRunStatus.QUEUED
 
 
+def test_issue_state_store_retries_failed_runs_with_backoff(tmp_path, monkeypatch):
+    """Failed issue runs should be delayed and retried before permanent failure."""
+    current_time = 1000.0
+    monkeypatch.setattr("gateway.issue_resolution._now", lambda: current_time)
+    store = IssueStateStore(tmp_path / "issues.db")
+    run = store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 1, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+
+    claimed = store.claim_next_run()
+
+    assert claimed is not None
+    assert store.mark_retry_or_failed(claimed, "temporary failure") is True
+    retrying = store.get_run(run.id)
+    assert retrying.status is IssueRunStatus.QUEUED
+    assert retrying.attempt_count == 1
+    assert retrying.next_attempt_at == current_time + 60
+    assert store.claim_next_run() is None
+    assert store.next_queued_delay() == 60
+
+
+def test_issue_state_store_fails_after_retry_budget(tmp_path, monkeypatch):
+    """Retry budget prevents a broken issue run from looping forever."""
+    current_time = 1000.0
+
+    def now():
+        return current_time
+
+    monkeypatch.setattr("gateway.issue_resolution._now", now)
+    store = IssueStateStore(tmp_path / "issues.db")
+    store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 1, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+
+    first = store.claim_next_run()
+    assert first is not None
+    assert store.mark_retry_or_failed(first, "temporary failure") is True
+
+    current_time += 60
+    second = store.claim_next_run()
+    assert second is not None
+    assert store.mark_retry_or_failed(second, "temporary failure") is True
+
+    current_time += 300
+    third = store.claim_next_run()
+    assert third is not None
+    assert store.mark_retry_or_failed(third, "permanent failure") is False
+
+    failed = store.get_run(third.id)
+    assert failed.status is IssueRunStatus.FAILED
+    assert failed.attempt_count == 3
+
+
 @pytest.mark.asyncio
 async def test_master_expansion_creates_persisted_subissue_runs(tmp_path, monkeypatch):
     """Master expansion creates GitHub sub-issues and queues each one."""

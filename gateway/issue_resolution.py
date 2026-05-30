@@ -32,6 +32,9 @@ DEFAULT_AIDER_BIN = Path.home() / "aider" / ".venv" / "bin" / "aider"
 DEFAULT_STATE_DB = get_hermes_home() / "issue_resolution.db"
 MASTER_PLAN_LABEL = "master-plan"
 MASTER_PLAN_HEADING = "# Master Project Plan"
+ISSUE_RUN_MAX_ATTEMPTS = 3
+ISSUE_RUN_RETRY_DELAYS_SECONDS = (60, 300)
+ISSUE_RUN_IDLE_POLL_SECONDS = 5.0
 
 
 class AiderRole(str, Enum):
@@ -123,6 +126,8 @@ class IssueRun:
     pr_number: int | None
     pr_url: str | None
     error: str | None
+    attempt_count: int = 0
+    next_attempt_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -213,14 +218,31 @@ async def _issue_queue_worker() -> None:
     while True:
         run = store.claim_next_run()
         if run is None:
-            return
+            retry_delay = store.next_queued_delay()
+            if retry_delay is None:
+                return
+            await asyncio.sleep(min(retry_delay, ISSUE_RUN_IDLE_POLL_SECONDS))
+            continue
         notify = _RUN_NOTIFIERS.get(run.id) or _DEFAULT_NOTIFY or _noop_notify
         try:
             await _execute_run(store, run, notify)
         except Exception as exc:
-            store.mark_failed(run.id, str(exc))
-            await notify(f"Hermes: Issue run #{run.id} failed: {exc}")
-            logger.exception("issue-resolution run %s failed", run.id)
+            if store.mark_retry_or_failed(run, str(exc)):
+                retrying = store.get_run(run.id)
+                delay = max(0, int(retrying.next_attempt_at - _now()))
+                await notify(
+                    f"Hermes: Issue run #{run.id} failed attempt "
+                    f"{retrying.attempt_count}/{ISSUE_RUN_MAX_ATTEMPTS}; "
+                    f"retrying in {delay}s: {exc}"
+                )
+                logger.exception("issue-resolution run %s failed; queued retry", run.id)
+            else:
+                failed = store.get_run(run.id)
+                await notify(
+                    f"Hermes: Issue run #{run.id} failed after "
+                    f"{failed.attempt_count}/{ISSUE_RUN_MAX_ATTEMPTS} attempts: {exc}"
+                )
+                logger.exception("issue-resolution run %s failed permanently", run.id)
         finally:
             _RUN_NOTIFIERS.pop(run.id, None)
             await _complete_ready_masters(store, notify)
@@ -396,10 +418,10 @@ class IssueStateStore:
             row = conn.execute(
                 """
                 SELECT * FROM issue_runs
-                WHERE status = ?
-                ORDER BY id ASC LIMIT 1
+                WHERE status = ? AND next_attempt_at <= ?
+                ORDER BY next_attempt_at ASC, id ASC LIMIT 1
                 """,
-                (IssueRunStatus.QUEUED.value,),
+                (IssueRunStatus.QUEUED.value, now),
             ).fetchone()
             if row is None:
                 return None
@@ -410,6 +432,22 @@ class IssueStateStore:
             conn.commit()
             row = conn.execute("SELECT * FROM issue_runs WHERE id = ?", (int(row["id"]),)).fetchone()
         return self._row_to_run(row)
+
+    def next_queued_delay(self) -> float | None:
+        """Return seconds until the next delayed queued run is due."""
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT MIN(next_attempt_at) AS next_attempt_at
+                FROM issue_runs
+                WHERE status = ?
+                """,
+                (IssueRunStatus.QUEUED.value,),
+            ).fetchone()
+        if row is None or row["next_attempt_at"] is None:
+            return None
+        return max(0.0, float(row["next_attempt_at"]) - now)
 
     def reset_interrupted_runs(self) -> int:
         now = _now()
@@ -443,6 +481,43 @@ class IssueStateStore:
                 (IssueRunStatus.FAILED.value, error[:4000], now, run_id),
             )
             conn.commit()
+
+    def mark_retry_or_failed(self, run: IssueRun, error: str) -> bool:
+        """Retry a failed run when attempts remain, otherwise fail it permanently."""
+        attempt_count = run.attempt_count + 1
+        now = _now()
+        if attempt_count >= ISSUE_RUN_MAX_ATTEMPTS:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE issue_runs
+                    SET status = ?, error = ?, attempt_count = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (IssueRunStatus.FAILED.value, error[:4000], attempt_count, now, run.id),
+                )
+                conn.commit()
+            return False
+
+        delay = _retry_delay_seconds(attempt_count)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE issue_runs
+                SET status = ?, error = ?, attempt_count = ?, next_attempt_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    IssueRunStatus.QUEUED.value,
+                    error[:4000],
+                    attempt_count,
+                    now + delay,
+                    now,
+                    run.id,
+                ),
+            )
+            conn.commit()
+        return True
 
     def record_pr(self, run_id: int, pr: PullRequestMetadata) -> None:
         now = _now()
@@ -535,6 +610,8 @@ class IssueStateStore:
                     pr_number INTEGER,
                     pr_url TEXT,
                     error TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -558,7 +635,15 @@ class IssueStateStore:
                 );
                 """
             )
+            self._ensure_column(conn, "issue_runs", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "issue_runs", "next_attempt_at", "REAL NOT NULL DEFAULT 0")
             conn.commit()
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -579,6 +664,8 @@ class IssueStateStore:
             pr_number=int(row["pr_number"]) if row["pr_number"] is not None else None,
             pr_url=str(row["pr_url"]) if row["pr_url"] else None,
             error=str(row["error"]) if row["error"] else None,
+            attempt_count=int(row["attempt_count"] or 0),
+            next_attempt_at=float(row["next_attempt_at"] or 0.0),
         )
 
 
@@ -1169,3 +1256,10 @@ async def _noop_notify(_message: str) -> None:
 
 def _now() -> float:
     return time.time()
+
+
+def _retry_delay_seconds(failed_attempt_count: int) -> int:
+    index = max(0, failed_attempt_count - 1)
+    if index >= len(ISSUE_RUN_RETRY_DELAYS_SECONDS):
+        return ISSUE_RUN_RETRY_DELAYS_SECONDS[-1]
+    return ISSUE_RUN_RETRY_DELAYS_SECONDS[index]

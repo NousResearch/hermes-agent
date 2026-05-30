@@ -3752,14 +3752,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             ):
                 try:
                     from agent.title_generator import maybe_auto_title
+                    from hermes_cli.config import read_raw_config
 
-                    maybe_auto_title(
-                        _get_db(),
-                        session.get("session_key") or sid,
-                        text,
-                        raw,
-                        session.get("history", []),
+                    _title_cfg = (read_raw_config().get("auxiliary") or {}).get(
+                        "title_generation", {}
                     )
+                    if not (isinstance(_title_cfg, dict) and _title_cfg.get("enabled", True) is False):
+                        maybe_auto_title(
+                            _get_db(),
+                            session.get("session_key") or sid,
+                            text,
+                            raw,
+                            session.get("history", []),
+                        )
                 except Exception:
                     pass
 

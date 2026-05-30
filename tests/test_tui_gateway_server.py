@@ -3791,6 +3791,49 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
     mock_title.assert_not_called()
 
 
+
+def test_prompt_submit_skips_auto_title_when_config_disabled(monkeypatch):
+    """When auxiliary.title_generation.enabled is False, maybe_auto_title must NOT be called."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "Rome was founded in 753 BC.",
+                "messages": [
+                    {"role": "user", "content": "Tell me about Rome"},
+                    {"role": "assistant", "content": "Rome was founded in 753 BC."},
+                ],
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"auxiliary": {"title_generation": {"enabled": False}}},
+    )
+
+    with patch("agent.title_generator.maybe_auto_title") as mock_title:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "Tell me about Rome"},
+            }
+        )
+
+    mock_title.assert_not_called()
+
+
 def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     """When the backend fails with no visible response (e.g. invalid model slug
     → provider 4xx), the TUI must surface result['error'] as visible text

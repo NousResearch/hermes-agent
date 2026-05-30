@@ -17658,45 +17658,51 @@ class GatewayRunner:
             # Reset to 0 so the gateway writes ALL compressed messages.
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
-            # Auto-generate session title after first exchange (non-blocking)
+             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
                     from agent.title_generator import maybe_auto_title
-                    all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
-                    # In Gateway mode, auto-title failures must NOT be
-                    # surfaced as user-visible messages (fixes #23246).
-                    # Log them at debug level only — they are not actionable
-                    # to the end user. CLI mode keeps the existing behaviour
-                    # via the agent's _emit_auxiliary_failure path.
-                    def _title_failure_cb(task: str, exc: BaseException) -> None:
-                        logger.debug(
-                            "Gateway auto-title failure suppressed (not user-visible): %s: %s",
-                            task, exc,
-                        )
-                    maybe_auto_title_kwargs = {
-                        "failure_callback": _title_failure_cb,
-                        "main_runtime": {
-                            "model": getattr(agent, "model", None),
-                            "provider": getattr(agent, "provider", None),
-                            "base_url": getattr(agent, "base_url", None),
-                            "api_key": getattr(agent, "api_key", None),
-                            "api_mode": getattr(agent, "api_mode", None),
-                        } if agent else None,
-                    }
-                    if self._is_telegram_topic_lane(source):
-                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
-                            source,
-                            effective_session_id,
-                            title,
-                        )
-                    maybe_auto_title(
-                        self._session_db,
-                        effective_session_id,
-                        message,
-                        final_response,
-                        all_msgs,
-                        **maybe_auto_title_kwargs,
+                    from hermes_cli.config import read_raw_config
+
+                    _title_cfg = (read_raw_config().get("auxiliary") or {}).get(
+                        "title_generation", {}
                     )
+                    if not (isinstance(_title_cfg, dict) and _title_cfg.get("enabled", True) is False):
+                        all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
+                        # In Gateway mode, auto-title failures must NOT be
+                        # surfaced as user-visible messages (fixes #23246).
+                        # Log them at debug level only — they are not actionable
+                        # to the end user. CLI mode keeps the existing behaviour
+                        # via the agent's _emit_auxiliary_failure path.
+                        def _title_failure_cb(task: str, exc: BaseException) -> None:
+                            logger.debug(
+                                "Gateway auto-title failure suppressed (not user-visible): %s: %s",
+                                task, exc,
+                            )
+                        maybe_auto_title_kwargs = {
+                            "failure_callback": _title_failure_cb,
+                            "main_runtime": {
+                                "model": getattr(agent, "model", None),
+                                "provider": getattr(agent, "provider", None),
+                                "base_url": getattr(agent, "base_url", None),
+                                "api_key": getattr(agent, "api_key", None),
+                                "api_mode": getattr(agent, "api_mode", None),
+                            } if agent else None,
+                        }
+                        if self._is_telegram_topic_lane(source):
+                            maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
+                                source,
+                                effective_session_id,
+                                title,
+                            )
+                        maybe_auto_title(
+                            self._session_db,
+                            effective_session_id,
+                            message,
+                            final_response,
+                            all_msgs,
+                            **maybe_auto_title_kwargs,
+                        )
                 except Exception:
                     pass
 

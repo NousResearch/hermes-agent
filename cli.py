@@ -12178,28 +12178,36 @@ class HermesCLI:
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
                     from agent.title_generator import maybe_auto_title
-                    # Route title-generation failures through the agent's
-                    # user-visible warning channel so a depleted auxiliary
-                    # provider doesn't silently leave sessions untitled
-                    # (issue #15775).
-                    _title_failure_cb = getattr(
-                        self.agent, "_emit_auxiliary_failure", None
-                    ) if self.agent else None
-                    maybe_auto_title(
-                        self._session_db,
-                        self.session_id,
-                        message,
-                        response,
-                        self.conversation_history,
-                        failure_callback=_title_failure_cb,
-                        main_runtime={
-                            "model": self.model,
-                            "provider": self.provider,
-                            "base_url": self.base_url,
-                            "api_key": self.api_key,
-                            "api_mode": self.api_mode,
-                        },
+                    from hermes_cli.config import read_raw_config
+
+                    _title_cfg = (read_raw_config().get("auxiliary") or {}).get(
+                        "title_generation", {}
                     )
+                    if isinstance(_title_cfg, dict) and _title_cfg.get("enabled", True) is False:
+                        pass  # title generation disabled by config
+                    else:
+                        # Route title-generation failures through the agent's
+                        # user-visible warning channel so a depleted auxiliary
+                        # provider doesn't silently leave sessions untitled
+                        # (issue #15775).
+                        _title_failure_cb = getattr(
+                            self.agent, "_emit_auxiliary_failure", None
+                        ) if self.agent else None
+                        maybe_auto_title(
+                            self._session_db,
+                            self.session_id,
+                            message,
+                            response,
+                            self.conversation_history,
+                            failure_callback=_title_failure_cb,
+                            main_runtime={
+                                "model": self.model,
+                                "provider": self.provider,
+                                "base_url": self.base_url,
+                                "api_key": self.api_key,
+                                "api_mode": self.api_mode,
+                            },
+                        )
                 except Exception:
                     pass
 

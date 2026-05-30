@@ -826,6 +826,23 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        if not isinstance(name, str) or not name.strip():
+            return json.dumps({"success": False, "error": "Skill name is required."}, ensure_ascii=False)
+        if any(ch in name for ch in ("\x00", "\r", "\n", "\\")):
+            return json.dumps(
+                {"success": False, "error": "Invalid skill name."},
+                ensure_ascii=False,
+            )
+        name_path = Path(name.replace(":", "/"))
+        if name_path.is_absolute() or ".." in name_path.parts:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Path traversal in skill name is not allowed.",
+                    "hint": "Use a skill name, category/skill path, or plugin:skill qualified name.",
+                },
+                ensure_ascii=False,
+            )
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.

@@ -92,6 +92,22 @@ def test_protocol_validate_request_rejects_bad_token():
     assert "token" in reason.lower()
 
 
+def test_protocol_validate_request_uses_constant_time_compare(monkeypatch):
+    from plugins.google_meet.node import protocol
+
+    calls = []
+
+    def fake_compare(left, right):
+        calls.append((left, right))
+        return True
+
+    monkeypatch.setattr(protocol.hmac, "compare_digest", fake_compare)
+    msg = protocol.make_request("status", "secret", {})
+    ok, _reason = protocol.validate_request(msg, "secret")
+    assert ok is True
+    assert calls == [("secret", "secret")]
+
+
 def test_protocol_validate_request_rejects_unknown_type():
     from plugins.google_meet.node import protocol
 

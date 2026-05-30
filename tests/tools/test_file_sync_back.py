@@ -155,15 +155,15 @@ class TestSyncBackAppliesChanged:
 
 
 class TestSyncBackNewRemoteFile:
-    """File created on remote (not in _pushed_hashes) is applied via _infer_host_path."""
+    """New remote files are rejected for Hermes control/loadable directories."""
 
-    def test_sync_back_detects_new_remote_file(self, tmp_path):
+    def test_sync_back_rejects_new_remote_control_file(self, tmp_path):
         # Existing mapping gives _infer_host_path a prefix to work with
         existing_host = tmp_path / "host" / "skills" / "existing.py"
         _write_file(existing_host, b"existing")
         mapping = [(str(existing_host), "/root/.hermes/skills/existing.py")]
 
-        # Remote has a NEW file in the same directory that was never pushed
+        # Remote has a NEW loadable/control file in the same directory that was never pushed
         new_remote_content = b"# brand new skill created on remote"
         download_fn = _make_download_fn({
             "root/.hermes/skills/new_skill.py": new_remote_content,
@@ -174,10 +174,9 @@ class TestSyncBackNewRemoteFile:
 
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
-        # The new file should have been inferred and written to the host
+        # New sandbox-created control files must not be introduced onto the host.
         expected_host_path = tmp_path / "host" / "skills" / "new_skill.py"
-        assert expected_host_path.exists()
-        assert expected_host_path.read_bytes() == new_remote_content
+        assert not expected_host_path.exists()
 
 
 class TestSyncBackConflict:

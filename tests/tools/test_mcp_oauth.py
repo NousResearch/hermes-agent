@@ -385,6 +385,22 @@ class TestCallbackHandlerIsolation:
         assert result["auth_code"] is None
         assert result["error"] == "access_denied"
 
+    def test_handler_escapes_error_in_html_response(self):
+        HandlerClass, result = _make_callback_handler()
+
+        handler = HandlerClass.__new__(HandlerClass)
+        handler.path = "/callback?error=%3Cscript%3Ealert(1)%3C/script%3E"
+        handler.wfile = BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.do_GET()
+
+        body = handler.wfile.getvalue().decode()
+        assert "<script>" not in body
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+        assert result["error"] == "<script>alert(1)</script>"
+
 
 # ---------------------------------------------------------------------------
 # Port sharing

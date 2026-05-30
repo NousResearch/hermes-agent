@@ -360,6 +360,8 @@ class ResponseStore:
             except Exception:
                 db_path = ":memory:"
         self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
+        if self._db_path:
+            self._prepare_owner_only_db_file(Path(self._db_path))
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
@@ -391,6 +393,16 @@ class ResponseStore:
         # rather than after every commit — chmod-on-every-write is wasted
         # syscalls on a hot path.
         self._tighten_file_permissions()
+
+    @staticmethod
+    def _prepare_owner_only_db_file(db_path: Path) -> None:
+        """Create/tighten the SQLite DB path before sqlite opens it."""
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(db_path), os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
 
     def _tighten_file_permissions(self) -> None:
         """Force owner-only permissions on the DB and SQLite sidecars."""
@@ -878,6 +890,20 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+    _SESSION_ID_ALLOWED_RE = re.compile(r"^[A-Za-z0-9_.:@+-]+$")
+
+    def _validate_api_session_id(self, value: Any):
+        """Strictly validate API-visible session IDs before DB/filesystem use."""
+        session_id = str(value or "").strip()
+        if (
+            not session_id
+            or len(session_id) > self._MAX_SESSION_HEADER_LEN
+            or ".." in session_id
+            or any(ch in session_id for ch in ("/", "\\", "\x00", "\r", "\n"))
+            or not self._SESSION_ID_ALLOWED_RE.fullmatch(session_id)
+        ):
+            return None, web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
+        return session_id, None
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -1029,8 +1055,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
-        /proc access.  No authentication required.
+        /proc access. Requires the same bearer-token auth as the API surface
+        when an API key is configured.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
         from gateway.status import read_runtime_status
 
         runtime = read_runtime_status() or {}
@@ -1284,6 +1315,10 @@ class APIServerAdapter(BasePlatformAdapter):
         return body, None
 
     def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        session_id, validation_err = self._validate_api_session_id(session_id)
+        if validation_err:
+            return None, validation_err
+        assert session_id is not None
         db = self._ensure_session_db()
         if db is None:
             return None, web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
@@ -1346,10 +1381,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         raw_id = body.get("id") or body.get("session_id")
         session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        if not session_id or re.search(r'[\r\n\x00]', session_id):
-            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
-        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
-            return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
+        session_id, invalid_session = self._validate_api_session_id(session_id)
+        if invalid_session:
+            return invalid_session
+        assert session_id is not None
         if db.get_session(session_id):
             return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
 
@@ -1450,8 +1485,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
-        if not fork_id or re.search(r'[\r\n\x00]', fork_id):
-            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
+        fork_id, invalid_session = self._validate_api_session_id(fork_id)
+        if invalid_session:
+            return invalid_session
+        assert fork_id is not None
         if db.get_session(fork_id):
             return web.json_response(_openai_error(f"Session already exists: {fork_id}", code="session_exists"), status=409)
 

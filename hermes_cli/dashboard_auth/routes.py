@@ -226,7 +226,12 @@ async def auth_callback(
     error: str = "",
     error_description: str = "",
 ):
-    pkce_raw = read_pkce_cookie(request)
+    prefix = _prefix(request)
+    pkce_raw = read_pkce_cookie(
+        request,
+        use_https=detect_https(request),
+        prefix=prefix,
+    )
     if not pkce_raw:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -337,9 +342,9 @@ async def auth_callback(
         refresh_token=session.refresh_token,
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
-        prefix=_prefix(request),
+        prefix=prefix,
     )
-    clear_pkce_cookie(resp, prefix=_prefix(request))
+    clear_pkce_cookie(resp, prefix=prefix)
     return resp
 
 
@@ -356,8 +361,32 @@ def _validate_post_login_target(raw: str) -> str:
     if not raw:
         return ""
     from urllib.parse import unquote
-    decoded = unquote(raw)
-    if not decoded.startswith("/") or decoded.startswith("//"):
+    decoded = raw
+    decoded_forms = {raw}
+    for _ in range(3):
+        next_decoded = unquote(decoded)
+        decoded_forms.add(next_decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    # Browsers and intermediaries may treat backslashes as path
+    # separators. Values like ``/\\evil.example`` or ``/%5C%5Cevil`` can
+    # therefore become protocol-relative redirects after normalization;
+    # reject any backslash before returning a Location target. Check each
+    # decode layer so double-encoded backslashes cannot survive into the
+    # Location header as ``%5C``.
+    if any("\\" in form for form in decoded_forms):
+        return ""
+    if any(
+        ord(ch) < 0x20 or ord(ch) == 0x7F
+        for form in decoded_forms
+        for ch in form
+    ):
+        return ""
+    if any(
+        not form.startswith("/") or form.startswith("//")
+        for form in decoded_forms
+    ):
         return ""
     # Don't loop back to login pages or auth flow.
     if any(
@@ -370,7 +399,12 @@ def _validate_post_login_target(raw: str) -> str:
 
 @router.post("/auth/logout", name="auth_logout")
 async def auth_logout(request: Request):
-    _at, rt = read_session_cookies(request)
+    prefix = _prefix(request)
+    _at, rt = read_session_cookies(
+        request,
+        use_https=detect_https(request),
+        prefix=prefix,
+    )
     if rt:
         # Best-effort revoke. Try every provider so a session minted by
         # any registered provider is revoked correctly. Failures are
@@ -392,7 +426,6 @@ async def auth_logout(request: Request):
         ip=_client_ip(request),
     )
 
-    prefix = _prefix(request)
     resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
     clear_session_cookies(resp, prefix=prefix)
     clear_pkce_cookie(resp, prefix=prefix)

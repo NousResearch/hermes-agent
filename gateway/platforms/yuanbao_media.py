@@ -25,7 +25,7 @@ import secrets
 import struct
 import time
 import urllib.parse
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 
 import httpx
 
@@ -202,6 +202,7 @@ def _parse_webp_size(buf: bytes) -> Optional[dict[str, int]]:
 async def download_url(
     url: str,
     max_size_mb: int = DEFAULT_MAX_SIZE_MB,
+    url_validator: Optional[Callable[[str], bool]] = None,
 ) -> tuple[bytes, str]:
     """
     下载 URL 内容，返回 (bytes, content_type)。
@@ -209,19 +210,49 @@ async def download_url(
     Args:
         url:          HTTP(S) URL
         max_size_mb:  最大允许大小（MB），超过则抛出异常
+        url_validator: Optional allowlist/SSRF validator applied before the
+            initial request and before each redirect target.
 
     Returns:
         (data_bytes, content_type_string)
 
     Raises:
-        ValueError:  内容超过大小限制
+        ValueError:  内容超过大小限制或 URL/redirect 被拒绝
         httpx.HTTPError: 网络/HTTP 错误
     """
     max_bytes = max_size_mb * 1024 * 1024
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        # 先 HEAD 检查大小
+
+    def _check(next_url: str) -> None:
+        parsed = urllib.parse.urlparse(next_url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("不安全的媒体 URL: scheme/host not allowed")
+        if url_validator is not None and not url_validator(next_url):
+            raise ValueError("不安全的媒体 URL: blocked by validator")
+
+    def _redirect_target(current_url: str, response: httpx.Response) -> Optional[str]:
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return None
+        location = response.headers.get("location")
+        if not location:
+            raise ValueError("媒体 URL 重定向缺少 Location")
+        return urllib.parse.urljoin(current_url, location)
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+        current_url = url
+        _check(current_url)
+
+        # 先 HEAD 检查大小；手动验证每个重定向目标，避免 redirect SSRF。
         try:
-            head = await client.head(url)
+            for _ in range(6):
+                head = await client.head(current_url)
+                redirected_to = _redirect_target(current_url, head)
+                if redirected_to is None:
+                    break
+                current_url = redirected_to
+                _check(current_url)
+            else:
+                raise ValueError("媒体 URL 重定向次数过多")
+
             content_length = int(head.headers.get("content-length", 0) or 0)
             if content_length > 0 and content_length > max_bytes:
                 raise ValueError(
@@ -230,25 +261,35 @@ async def download_url(
         except httpx.HTTPStatusError:
             pass  # 部分服务器不支持 HEAD，忽略
 
-        # GET 下载（流式读取，防止超限）
-        async with client.stream("GET", url) as resp:
-            resp.raise_for_status()
+        # GET 下载（流式读取，防止超限）；同样手动处理并验证重定向。
+        current_url = url
+        _check(current_url)
+        for _ in range(6):
+            async with client.stream("GET", current_url) as resp:
+                redirected_to = _redirect_target(current_url, resp)
+                if redirected_to is not None:
+                    current_url = redirected_to
+                    _check(current_url)
+                    continue
 
-            content_type = resp.headers.get("content-type", "").split(";")[0].strip()
+                resp.raise_for_status()
 
-            chunks: list[bytes] = []
-            downloaded = 0
-            async for chunk in resp.aiter_bytes(65536):
-                downloaded += len(chunk)
-                if downloaded > max_bytes:
-                    raise ValueError(
-                        f"文件过大: 已超过 {max_size_mb} MB 限制"
-                    )
-                chunks.append(chunk)
+                content_type = resp.headers.get("content-type", "").split(";")[0].strip()
 
-        data = b"".join(chunks)
-        return data, content_type
+                chunks: list[bytes] = []
+                downloaded = 0
+                async for chunk in resp.aiter_bytes(65536):
+                    downloaded += len(chunk)
+                    if downloaded > max_bytes:
+                        raise ValueError(
+                            f"文件过大: 已超过 {max_size_mb} MB 限制"
+                        )
+                    chunks.append(chunk)
 
+                data = b"".join(chunks)
+                return data, content_type
+
+        raise ValueError("媒体 URL 重定向次数过多")
 
 # ============ COS 鉴权（HMAC-SHA1） ============
 

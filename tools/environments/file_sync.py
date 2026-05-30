@@ -102,6 +102,23 @@ def _sha256_file(path: str) -> str:
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_LOADABLE_SYNC_BACK_DIRS = {"skills", "plugins", "cron"}
+_CONTROL_SYNC_BACK_FILES = {"config.yaml", "config.yml", ".env"}
+
+
+def _is_blocked_new_sync_back_path(remote_path: str) -> bool:
+    """Return True for new remote files that could plant host control code/config."""
+    parts = Path(remote_path).parts
+    try:
+        hermes_idx = parts.index(".hermes")
+    except ValueError:
+        return False
+    rel_parts = parts[hermes_idx + 1:]
+    if not rel_parts:
+        return False
+    if rel_parts[0] in _LOADABLE_SYNC_BACK_DIRS:
+        return True
+    return len(rel_parts) == 1 and rel_parts[0] in _CONTROL_SYNC_BACK_FILES
 
 
 class FileSyncManager:
@@ -341,6 +358,12 @@ class FileSyncManager:
                             if remote_hash == pushed_hash:
                                 continue
                         else:
+                            if _is_blocked_new_sync_back_path(remote_path):
+                                logger.warning(
+                                    "sync_back: rejecting new remote control/loadable file %s",
+                                    remote_path,
+                                )
+                                continue
                             remote_hash = None  # new remote file
 
                         # Resolve host path from cached mapping

@@ -247,6 +247,36 @@ class TestPatchHandler:
         assert "error" in result
         assert "traversal" in result["error"].lower()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_move_source(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: ../../../etc/shadow -> safe.txt\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_move_destination(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: safe.txt -> ../../../tmp/escaped.txt\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.return_value.patch_v4a.assert_not_called()
+
 
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")

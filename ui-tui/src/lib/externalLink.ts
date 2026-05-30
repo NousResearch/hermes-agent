@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 
 import { useEffect, useMemo, useState } from 'react'
@@ -10,6 +11,7 @@ const TITLE_CACHE_LIMIT = 500
 const TITLE_MAX_LENGTH = 240
 const TITLE_BYTE_BUDGET = 96 * 1024
 const TITLE_TIMEOUT_MS = 5000
+const TITLE_MAX_REDIRECTS = 5
 
 const TITLE_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
@@ -244,6 +246,20 @@ export function isTitleFetchable(value: string): boolean {
   return Boolean(url && /^https?:$/.test(url.protocol) && !isPrivateOrLocalHost(url.hostname))
 }
 
+async function isResolvedTitleHostSafe(url: URL): Promise<boolean> {
+  if (!isTitleFetchable(url.href)) {
+    return false
+  }
+
+  try {
+    const records = await lookup(url.hostname, { all: true })
+
+    return records.length > 0 && records.every(record => !isPrivateOrLocalHost(record.address))
+  } catch {
+    return false
+  }
+}
+
 function decodeHtmlEntities(value: string): string {
   return value
     .replace(/&(amp|lt|gt|quot|apos|nbsp|#39);/gi, (_match, key: string) => HTML_ENTITIES[key.toLowerCase()] ?? '')
@@ -332,17 +348,38 @@ async function fetchHtmlTitle(normalizedUrl: string): Promise<string> {
   const timeout = setTimeout(() => controller.abort(), TITLE_TIMEOUT_MS)
 
   try {
-    const response = await fetch(normalizedUrl, {
-      headers: {
-        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
-        'Accept-Language': 'en-US,en;q=0.7',
-        'User-Agent': TITLE_USER_AGENT
-      },
-      redirect: 'follow',
-      signal: controller.signal
-    })
+    let currentUrl = new URL(normalizedUrl)
+    let response: Response | null = null
 
-    if (!response.ok) {
+    for (let redirects = 0; redirects <= TITLE_MAX_REDIRECTS; redirects++) {
+      if (!(await isResolvedTitleHostSafe(currentUrl))) {
+        return ''
+      }
+
+      response = await fetch(currentUrl.href, {
+        headers: {
+          Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
+          'Accept-Language': 'en-US,en;q=0.7',
+          'User-Agent': TITLE_USER_AGENT
+        },
+        redirect: 'manual',
+        signal: controller.signal
+      })
+
+      if (![301, 302, 303, 307, 308].includes(response.status)) {
+        break
+      }
+
+      const location = response.headers.get('location')
+
+      if (!location || redirects === TITLE_MAX_REDIRECTS) {
+        return ''
+      }
+
+      currentUrl = new URL(location, currentUrl)
+    }
+
+    if (!response?.ok) {
       return ''
     }
 

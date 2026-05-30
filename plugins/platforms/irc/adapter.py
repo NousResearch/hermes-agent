@@ -188,9 +188,10 @@ class IRCAdapter(BasePlatformAdapter):
 
         # IRC registration sequence
         if self.server_password:
-            await self._send_raw(f"PASS {self.server_password}")
-        await self._send_raw(f"NICK {self.nickname}")
-        await self._send_raw(f"USER {self.nickname} 0 * :Hermes Agent")
+            await self._send_raw(f"PASS {_strip_irc_control_chars(self.server_password)}")
+        safe_nick = _sanitize_irc_atom(self.nickname)
+        await self._send_raw(f"NICK {safe_nick}")
+        await self._send_raw(f"USER {safe_nick} 0 * :Hermes Agent")
 
         # Start receive loop
         self._recv_task = asyncio.create_task(self._receive_loop())
@@ -206,11 +207,11 @@ class IRCAdapter(BasePlatformAdapter):
 
         # NickServ identification
         if self.nickserv_password:
-            await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
+            await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {_strip_irc_control_chars(self.nickserv_password)}")
             await asyncio.sleep(2)  # Give NickServ time to process
 
         # Join channel
-        await self._send_raw(f"JOIN {self.channel}")
+        await self._send_raw(f"JOIN {_sanitize_irc_atom(self.channel)}")
 
         self._mark_connected()
         logger.info("IRC: connected to %s:%s as %s, joined %s", self.server, self.port, self._current_nick, self.channel)
@@ -262,7 +263,10 @@ class IRCAdapter(BasePlatformAdapter):
         if not self._writer or self._writer.is_closing():
             return SendResult(success=False, error="Not connected")
 
-        target = chat_id  # channel name or nick for DMs
+        try:
+            target = _sanitize_irc_atom(chat_id)  # channel name or nick for DMs
+        except ValueError as exc:
+            return SendResult(success=False, error=str(exc))
         lines = self._split_message(content, target)
 
         for line in lines:
@@ -294,8 +298,9 @@ class IRCAdapter(BasePlatformAdapter):
         IRC has a ~512 byte line limit.  After accounting for protocol
         overhead (``PRIVMSG <target> :``), we split content into chunks.
         """
-        # Strip markdown formatting that doesn't render in IRC
-        content = self._strip_markdown(content)
+        # Strip markdown formatting that doesn't render in IRC, then remove
+        # CR/LF/NUL so content cannot terminate PRIVMSG and inject commands.
+        content = _strip_irc_control_chars(self._strip_markdown(content))
 
         overhead = len(f"PRIVMSG {target} :".encode("utf-8")) + 2  # +2 for \r\n
         max_bytes = 510 - overhead
@@ -707,6 +712,15 @@ def _strip_irc_control_chars(text: str) -> str:
     valid in PRIVMSG payloads.
     """
     return text.replace("\r", " ").replace("\n", " ").replace("\x00", "")
+
+
+def _sanitize_irc_atom(value: str) -> str:
+    """Return a single IRC protocol atom or raise on command-injection bytes."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("IRC target/identifier must be a non-empty string")
+    if any(ch in value for ch in ("\r", "\n", "\x00", " ")):
+        raise ValueError("IRC target/identifier contains illegal IRC characters")
+    return value
 
 
 def _is_irc_channel(target: str) -> bool:

@@ -18,6 +18,7 @@ check_requirements = _irc_mod.check_requirements
 validate_config = _irc_mod.validate_config
 register = _irc_mod.register
 _standalone_send = _irc_mod._standalone_send
+_sanitize_irc_atom = _irc_mod._sanitize_irc_atom
 
 
 class TestIRCProtocolHelpers:
@@ -405,6 +406,22 @@ class TestIRCAdapterSplitting:
         # Should not split in the middle of "world"
         assert any("hello" in ln for ln in lines)
         assert any("world" in ln for ln in lines)
+
+    def test_split_strips_crlf_and_nul_from_content(self):
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
+        adapter = IRCAdapter(cfg)
+        lines = adapter._split_message("hello\r\nJOIN #evil\x00", "#test")
+        joined = "".join(lines)
+        assert "\r" not in joined
+        assert "\n" not in joined
+        assert "\x00" not in joined
+        assert "JOIN #evil" in joined
+
+    def test_sanitize_rejects_protocol_separators(self):
+        for value in ["#ok\rJOIN #evil", "#ok\nJOIN #evil", "bad nick", "bad\x00nick", ""]:
+            with pytest.raises(ValueError):
+                _sanitize_irc_atom(value)
 
 
 class TestIRCProtocolHelpersExtra:

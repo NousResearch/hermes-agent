@@ -551,8 +551,11 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
-def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False) -> int:
+def resolve_gateway_approval(
+    session_key: str, choice: str, resolve_all: bool = False,
+    *, caller_user_id: str | None = None,
+    admin_user_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -562,22 +565,47 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
+    caller = str(caller_user_id or "").strip()
+    admins = {str(u).strip() for u in (admin_user_ids or set()) if str(u).strip()}
+    is_admin = bool(caller and ("*" in admins or caller in admins))
+
+    def _entry_matches(entry: _ApprovalEntry) -> bool:
+        requester = str(entry.data.get("requester_user_id") or "").strip()
+        # Legacy programmatic callers may not have a platform user identity;
+        # keep them from deadlocking tests/CLI fallback paths. Gateway text
+        # and button handlers pass caller_user_id so cross-user approvals are
+        # still denied for normal external surfaces.
+        return not caller or not requester or is_admin or caller == requester
+
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
+        matched: list[_ApprovalEntry] = []
+        remaining: list[_ApprovalEntry] = []
         if resolve_all:
-            targets = list(queue)
-            queue.clear()
+            for entry in queue:
+                if _entry_matches(entry):
+                    matched.append(entry)
+                else:
+                    remaining.append(entry)
         else:
-            targets = [queue.pop(0)]
-        if not queue:
+            resolved_one = False
+            for entry in queue:
+                if not resolved_one and _entry_matches(entry):
+                    matched.append(entry)
+                    resolved_one = True
+                else:
+                    remaining.append(entry)
+        if remaining:
+            _gateway_queues[session_key] = remaining
+        else:
             _gateway_queues.pop(session_key, None)
 
-    for entry in targets:
+    for entry in matched:
         entry.result = choice
         entry.event.set()
-    return len(targets)
+    return len(matched)
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -1074,6 +1102,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     """
     command = approval_data.get("command", "")
     description = approval_data.get("description", "")
+    if not approval_data.get("requester_user_id"):
+        try:
+            from gateway.session_context import get_session_env
+            approval_data["requester_user_id"] = get_session_env("HERMES_SESSION_USER_ID", "") or ""
+            approval_data["requester_user_name"] = get_session_env("HERMES_SESSION_USER_NAME", "") or ""
+        except Exception:
+            approval_data.setdefault("requester_user_id", "")
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 

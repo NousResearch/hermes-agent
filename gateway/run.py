@@ -7606,7 +7606,7 @@ class GatewayRunner:
         # run every command. When set → non-admins can run only commands in
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
-        if command and canonical and is_gateway_known_command(canonical):
+        if command and canonical:
             _denied = self._check_slash_access(source, canonical)
             if _denied is not None:
                 return _denied
@@ -14128,7 +14128,13 @@ class GatewayRunner:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        from gateway.slash_access import policy_for_source as _policy_for_source
+        _policy = _policy_for_source(self.config, source)
+        _admin_ids = {_policy.admin_users} if False else set(getattr(_policy, "admin_users", set()))
+        count = resolve_gateway_approval(
+            session_key, choice, resolve_all=resolve_all,
+            caller_user_id=source.user_id, admin_user_ids=_admin_ids,
+        )
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -14165,7 +14171,13 @@ class GatewayRunner:
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args
 
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
+        from gateway.slash_access import policy_for_source as _policy_for_source
+        _policy = _policy_for_source(self.config, source)
+        _admin_ids = set(getattr(_policy, "admin_users", set()))
+        count = resolve_gateway_approval(
+            session_key, "deny", resolve_all=resolve_all,
+            caller_user_id=source.user_id, admin_user_ids=_admin_ids,
+        )
         if not count:
             return t("gateway.deny.no_pending")
 

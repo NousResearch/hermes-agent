@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -47,6 +48,18 @@ ACTIVE_PIPELINE_STATES = {
     "writing_linear",
     "sending_teams",
 }
+
+
+def _safe_recording_filename(display_name: str | None, artifact_id: str) -> str:
+    """Return a confined basename for a downloaded Teams recording."""
+    raw = str(display_name or f"{artifact_id}.mp4")
+    name = Path(raw.replace("\\", "/")).name.strip()
+    name = re.sub(r"[\x00-\x1f\x7f/\\]+", "_", name)
+    if not name or name in {".", ".."}:
+        name = f"{artifact_id}.mp4"
+    if name.startswith("."):
+        name = f"recording{name}"
+    return name[:255]
 
 
 class TeamsPipelineError(RuntimeError):
@@ -456,7 +469,7 @@ class TeamsMeetingPipeline:
         temp_root = self.config.tmp_dir or (get_hermes_home() / "tmp" / "teams_pipeline")
         temp_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=str(temp_root), prefix="teams-recording-") as tmp_dir:
-            recording_name = recording.display_name or f"{recording.artifact_id}.mp4"
+            recording_name = _safe_recording_filename(recording.display_name, recording.artifact_id)
             recording_path = Path(tmp_dir) / recording_name
             await download_recording_artifact(
                 self.graph_client,

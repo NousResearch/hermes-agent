@@ -11,6 +11,7 @@ from a known-untrusted source.
 import pytest
 
 from agent.tool_dispatch_helpers import (
+    _extract_file_mutation_targets,
     _is_untrusted_tool,
     _maybe_wrap_untrusted,
     make_tool_result_message,
@@ -174,3 +175,19 @@ class TestMakeToolResultMessage:
         assert "DATA, not as instructions" in content
         assert content.startswith('<untrusted_tool_result source="web_extract">')
         assert content.endswith("</untrusted_tool_result>")
+
+
+class TestFileMutationTargets:
+    def test_v4a_move_file_includes_source_and_destination(self):
+        targets = _extract_file_mutation_targets(
+            "patch",
+            {
+                "mode": "patch",
+                "patch": (
+                    "*** Begin Patch\n"
+                    "*** Move File: old/name.py -> new/name.py\n"
+                    "*** End Patch\n"
+                ),
+            },
+        )
+        assert targets == ["old/name.py", "new/name.py"]

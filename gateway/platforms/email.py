@@ -28,7 +28,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -176,10 +176,73 @@ def _strip_html(html: str) -> str:
 
 def _extract_email_address(raw: str) -> str:
     """Extract bare email address from 'Name <addr>' format."""
-    match = re.search(r"<([^>]+)>", raw)
-    if match:
-        return match.group(1).strip().lower()
-    return raw.strip().lower()
+    _name, addr = parseaddr(raw or "")
+    if addr:
+        return addr.strip().lower()
+    return (raw or "").strip().lower()
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _allowed_email_senders() -> set[str]:
+    raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+    return {_extract_email_address(addr) for addr in raw.split(",") if addr.strip()}
+
+
+def _domain(addr: str) -> str:
+    return addr.rsplit("@", 1)[1].lower() if "@" in addr else ""
+
+
+def _authentication_results_values(headers: Dict[str, str]) -> List[str]:
+    return [str(value) for key, value in headers.items() if key.lower() == "authentication-results"]
+
+
+def _sender_has_verified_auth(sender_addr: str, headers: Dict[str, str]) -> bool:
+    """Return True when Authentication-Results verifies the sender domain.
+
+    The From header alone is attacker-controlled.  When EMAIL_ALLOWED_USERS is
+    configured, require receiver-provided authentication metadata showing SPF,
+    DKIM, or DMARC passed for the same From/sender domain.  Some IMAP servers
+    do not expose these headers; those fail closed unless EMAIL_TRUST_FROM_HEADER
+    is explicitly enabled for legacy deployments.
+    """
+    sender_domain = _domain(sender_addr)
+    if not sender_domain:
+        return False
+    for value in _authentication_results_values(headers):
+        lowered = " ".join(value.lower().split())
+        if "=pass" not in lowered:
+            continue
+        if "dmarc=pass" in lowered:
+            if re.search(r"header\.from\s*=\s*" + re.escape(sender_domain) + r"\b", lowered):
+                return True
+            # DMARC pass is defined over the RFC5322.From domain; some MTAs
+            # omit the explicit header.from property.
+            return True
+        if "dkim=pass" in lowered and re.search(
+            r"(?:header\.d|d)\s*=\s*" + re.escape(sender_domain) + r"\b", lowered
+        ):
+            return True
+        if "spf=pass" in lowered:
+            if re.search(r"smtp\.mailfrom\s*=\s*[^;\s]*@" + re.escape(sender_domain) + r"\b", lowered):
+                return True
+            if re.search(r"smtp\.mailfrom\s*=\s*" + re.escape(sender_domain) + r"\b", lowered):
+                return True
+    return False
+
+
+def _email_sender_authorized(sender_addr: str, headers: Dict[str, str]) -> bool:
+    allowed = _allowed_email_senders()
+    if not allowed:
+        return True
+    sender = _extract_email_address(sender_addr)
+    if sender not in allowed:
+        return False
+    if _truthy_env("EMAIL_TRUST_FROM_HEADER"):
+        return True
+    return _sender_has_verified_auth(sender, headers)
 
 
 def _extract_attachments(
@@ -418,6 +481,7 @@ class EmailAdapter(BasePlatformAdapter):
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
+                        "headers": msg_headers,
                     })
             finally:
                 try:
@@ -441,17 +505,13 @@ class EmailAdapter(BasePlatformAdapter):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
             return
 
-        # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
-        # from creating a MessageEvent (and thus thread context) for senders
-        # that the gateway will never authorize.  Without this early guard,
-        # a race between dispatch and authorization can result in the adapter
-        # sending a reply even though the handler returned None.
-        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
-        if allowed_raw:
-            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
-            if sender_addr.lower() not in allowed:
-                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
-                return
+        # If EMAIL_ALLOWED_USERS is configured, do not trust the spoofable From
+        # header alone.  Require receiver-provided auth metadata by default;
+        # EMAIL_TRUST_FROM_HEADER=true is an explicit legacy escape hatch.
+        msg_headers = msg_data.get("headers") or {}
+        if not _email_sender_authorized(sender_addr, msg_headers):
+            logger.debug("[Email] Dropping unauthorized sender at dispatch: %s", sender_addr)
+            return
 
         subject = msg_data["subject"]
         body = msg_data["body"].strip()

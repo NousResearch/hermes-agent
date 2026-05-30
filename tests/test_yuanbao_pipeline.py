@@ -41,6 +41,7 @@ from gateway.platforms.yuanbao import (
     DispatchMiddleware,
     InboundPipelineBuilder,
     YuanbaoAdapter,
+    _is_allowed_yuanbao_media_url,
 )
 from gateway.config import PlatformConfig
 
@@ -909,6 +910,22 @@ class TestInboundMiddlewareABC:
         mw = MyMW()
         assert "MyMW" in repr(mw)
         assert "my-mw" in repr(mw)
+
+
+class TestYuanbaoMediaUrlSafety:
+    def test_allows_yuanbao_and_cos_hosts_when_ip_safe(self, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.yuanbao.is_safe_url", lambda _url: True)
+
+        assert _is_allowed_yuanbao_media_url("https://bot.yuanbao.tencent.com/path/file.jpg")
+        assert _is_allowed_yuanbao_media_url("https://example.cos.ap-guangzhou.myqcloud.com/file.jpg")
+
+    def test_blocks_non_allowlisted_or_private_media_urls(self, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.yuanbao.is_safe_url", lambda _url: True)
+        assert not _is_allowed_yuanbao_media_url("https://example.com/file.jpg")
+        assert not _is_allowed_yuanbao_media_url("file:///tmp/file.jpg")
+
+        monkeypatch.setattr("gateway.platforms.yuanbao.is_safe_url", lambda _url: False)
+        assert not _is_allowed_yuanbao_media_url("https://bot.yuanbao.tencent.com/file.jpg")
 
 
 class TestMiddlewareClasses:

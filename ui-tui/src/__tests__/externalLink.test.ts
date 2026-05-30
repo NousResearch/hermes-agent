@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { lookup } from 'node:dns/promises'
+
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }])
+}))
 
 import {
   __resetLinkTitleCache,
@@ -11,6 +16,9 @@ import {
 
 afterEach(() => {
   __resetLinkTitleCache()
+  ;(lookup as unknown as { mockResolvedValue: (value: unknown) => unknown }).mockResolvedValue([
+    { address: '93.184.216.34', family: 4 }
+  ])
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -130,6 +138,34 @@ describe('external link helpers', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchLinkTitle('https://example.com/offers')).resolves.toBe("AT&T 'Deals'")
+  })
+
+  it('blocks manual redirects to private targets before following them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('', {
+        headers: { location: 'http://169.254.169.254/latest/meta-data' },
+        status: 302
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchLinkTitle('https://example.com/start')).resolves.toBe('')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.com/start',
+      expect.objectContaining({ redirect: 'manual' })
+    )
+  })
+
+  it('blocks title fetches when DNS resolves to private IPs', async () => {
+    ;(lookup as unknown as { mockResolvedValueOnce: (value: unknown) => unknown }).mockResolvedValueOnce([
+      { address: '127.0.0.1', family: 4 }
+    ])
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchLinkTitle('https://example.com/private')).resolves.toBe('')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('skips network fetch for non-fetchable targets', async () => {

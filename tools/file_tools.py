@@ -966,8 +966,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if mode == "patch" and patch:
         import re as _re
         from tools.path_security import has_traversal_component
+
+        v4a_paths: list[str] = []
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             v4a_path = _m.group(1).strip()
+            if v4a_path:
+                v4a_paths.append(v4a_path)
+        for _m in _re.finditer(r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
+            src = _m.group(1).strip()
+            dst = _m.group(2).strip()
+            if src:
+                v4a_paths.append(src)
+            if dst:
+                v4a_paths.append(dst)
+
+        for v4a_path in v4a_paths:
             # V4A path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
@@ -980,7 +993,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error(
                     f"V4A patch header contains '..' traversal: {v4a_path!r}. "
                     "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' / '*** Move File:' headers."
                 )
             _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:

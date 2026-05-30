@@ -145,6 +145,23 @@ class TestHelperFunctions(unittest.TestCase):
         result = _strip_html(html)
         self.assertIn("a & b", result)
 
+    @patch.dict(os.environ, {"EMAIL_ALLOWED_USERS": "User@Example.com"}, clear=True)
+    def test_allowlist_requires_verified_auth_metadata(self):
+        from gateway.platforms.email import _email_sender_authorized
+        self.assertFalse(_email_sender_authorized("user@example.com", {}))
+        self.assertTrue(_email_sender_authorized(
+            "user@example.com",
+            {"Authentication-Results": "mx.example; dmarc=pass header.from=example.com"},
+        ))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ALLOWED_USERS": "user@example.com",
+        "EMAIL_TRUST_FROM_HEADER": "true",
+    }, clear=True)
+    def test_explicit_trust_from_header_mode_allows_legacy_allowlist(self):
+        from gateway.platforms.email import _email_sender_authorized
+        self.assertTrue(_email_sender_authorized("user@example.com", {}))
+
 
 class TestExtractTextBody(unittest.TestCase):
     """Test email body extraction from different message formats."""
@@ -451,10 +468,11 @@ class TestDispatchMessage(unittest.TestCase):
             self.assertNotIn("outsider@evil.com", adapter._thread_context)
 
     def test_allowlisted_sender_proceeds(self):
-        """Senders in EMAIL_ALLOWED_USERS should proceed to dispatch normally."""
+        """Explicit trust mode preserves legacy From-header allowlist behavior."""
         import asyncio
         with patch.dict(os.environ, {
             "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+            "EMAIL_TRUST_FROM_HEADER": "true",
         }):
             adapter = self._make_adapter()
             captured_events = []

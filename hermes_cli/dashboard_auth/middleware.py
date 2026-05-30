@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from hermes_cli.dashboard_auth import list_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError
-from hermes_cli.dashboard_auth.cookies import read_session_cookies
+from hermes_cli.dashboard_auth.cookies import detect_https, read_session_cookies
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
@@ -142,7 +142,12 @@ def _safe_next_target(request: Request) -> str:
     path = request.url.path
     # Reject anything that doesn't start with "/" or starts with "//"
     # (protocol-relative URL — would open-redirect to an attacker host).
-    if not path or not path.startswith("/") or path.startswith("//"):
+    if (
+        not path
+        or not path.startswith("/")
+        or path.startswith("//")
+        or "\\" in path
+    ):
         return ""
     # Don't redirect back to the auth routes themselves — that loops.
     if any(
@@ -174,7 +179,14 @@ async def gated_auth_middleware(
     if _path_is_public(path):
         return await call_next(request)
 
-    at, _rt = read_session_cookies(request)
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+    prefix = prefix_from_request(request)
+    at, _rt = read_session_cookies(
+        request,
+        use_https=detect_https(request),
+        prefix=prefix,
+    )
     if not at:
         return _unauth_response(request, reason="no_cookie")
 
@@ -218,8 +230,7 @@ async def gated_auth_middleware(
         # prefix so the deletion's Path matches the set-Path (otherwise
         # the browser ignores it).
         from hermes_cli.dashboard_auth.cookies import clear_session_cookies
-        from hermes_cli.dashboard_auth.prefix import prefix_from_request
-        clear_session_cookies(response, prefix=prefix_from_request(request))
+        clear_session_cookies(response, prefix=prefix)
         return response
 
     request.state.session = session

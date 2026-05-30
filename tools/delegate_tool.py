@@ -2071,14 +2071,12 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                # ACP subprocess selection is operator-controlled only.
+                # Model-callable acp_command/acp_args values are ignored even
+                # if emitted from a stale cached schema; only configured
+                # delegation credentials may select an ACP transport.
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2775,6 +2773,19 @@ DELEGATE_TASK_SCHEMA = {
         "required": [],
     },
 }
+
+# Do not expose ACP executable selection to the model. Runtime code also
+# ignores stale model-supplied values, but removing the schema fields keeps
+# providers from offering a generic subprocess picker in the first place.
+try:
+    _delegate_props = DELEGATE_TASK_SCHEMA["function"]["parameters"]["properties"]
+    _delegate_props.pop("acp_command", None)
+    _delegate_props.pop("acp_args", None)
+    _task_props = _delegate_props.get("tasks", {}).get("items", {}).get("properties", {})
+    _task_props.pop("acp_command", None)
+    _task_props.pop("acp_args", None)
+except Exception:
+    pass
 
 
 # --- Registry ---

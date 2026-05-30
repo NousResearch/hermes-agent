@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import mimetypes
@@ -134,7 +135,7 @@ def _entry_matches(entries: List[str], target: str) -> bool:
     normalized_target = str(target).strip().lower()
     for entry in entries:
         normalized = _normalize_entry(entry).lower()
-        if normalized == "*" or normalized == normalized_target:
+        if hmac.compare_digest(normalized, "*") or hmac.compare_digest(normalized, normalized_target):
             return True
     return False
 
@@ -317,7 +318,8 @@ class WeComAdapter(BasePlatformAdapter):
                     continue
                 if payload.get("cmd") == APP_CMD_PING:
                     continue
-                if self._payload_req_id(payload) == req_id:
+                payload_req_id = self._payload_req_id(payload)
+                if isinstance(payload_req_id, str) and hmac.compare_digest(payload_req_id, req_id):
                     return payload
                 logger.debug("[%s] Ignoring pre-auth payload: %s", self.name, payload.get("cmd"))
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:

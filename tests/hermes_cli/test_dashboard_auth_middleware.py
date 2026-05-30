@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.routes import _validate_post_login_target
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -243,6 +244,33 @@ def test_invalid_cookie_redirects_on_html(gated_app):
     assert r.status_code == 302
     # Phase 6: gate carries a ``next=`` so post-login bounces back to /.
     assert r.headers["location"] in ("/login", "/login?next=%2F")
+
+
+def test_https_gated_mode_rejects_valid_bare_fallback_cookie(gated_app):
+    """A valid token in the legacy bare name must not authenticate HTTPS gated mode."""
+    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
+    state = r1.headers["location"].split("state=")[1]
+    r2 = gated_app.get(
+        f"/auth/callback?code=stub_code&state={state}",
+        follow_redirects=False,
+    )
+    token = gated_app.cookies.get(f"__Host-{SESSION_AT_COOKIE}")
+    assert r2.status_code == 302
+    assert token
+
+    gated_app.cookies.clear()
+    gated_app.cookies.set(SESSION_AT_COOKIE, token, domain="fly-app.fly.dev", path="/")
+
+    r = gated_app.get("/api/sessions")
+    assert r.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "target",
+    [r"/\\evil.example/path", "/%5C%5Cevil.example/path", "/%255C%255Cevil.example/path"],
+)
+def test_post_login_target_rejects_backslash_open_redirects(target):
+    assert _validate_post_login_target(target) == ""
 
 
 def test_logout_clears_cookies_and_redirects_to_login(gated_app):

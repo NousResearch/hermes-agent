@@ -212,15 +212,55 @@ def _read_with_fallback(
     return None
 
 
-def read_session_cookies(request: Request) -> Tuple[Optional[str], Optional[str]]:
-    """Returns (access_token, refresh_token), either may be None."""
-    at = _read_with_fallback(request, SESSION_AT_COOKIE)
-    rt = _read_with_fallback(request, SESSION_RT_COOKIE)
+def _read_resolved(
+    request: Request,
+    bare_name: str,
+    *,
+    use_https: bool,
+    prefix: str,
+) -> Optional[str]:
+    """Read only the cookie name variant this request shape should emit."""
+    return request.cookies.get(
+        _resolved_name(bare_name, use_https=use_https, prefix=prefix)
+    )
+
+
+def read_session_cookies(
+    request: Request,
+    *,
+    use_https: bool | None = None,
+    prefix: str = "",
+) -> Tuple[Optional[str], Optional[str]]:
+    """Returns (access_token, refresh_token), either may be None.
+
+    If ``use_https`` is provided, only the request-shape-specific cookie
+    name is accepted. Gated HTTPS paths use this strict mode so a stale
+    bare fallback cookie cannot authenticate where a ``__Host-`` or
+    ``__Secure-`` cookie should be required. Leaving ``use_https`` unset
+    preserves compatibility for loopback/dev tests and non-auth callers.
+    """
+    if use_https is None:
+        at = _read_with_fallback(request, SESSION_AT_COOKIE)
+        rt = _read_with_fallback(request, SESSION_RT_COOKIE)
+    else:
+        at = _read_resolved(
+            request, SESSION_AT_COOKIE, use_https=use_https, prefix=prefix
+        )
+        rt = _read_resolved(
+            request, SESSION_RT_COOKIE, use_https=use_https, prefix=prefix
+        )
     return at, rt
 
 
-def read_pkce_cookie(request: Request) -> Optional[str]:
-    return _read_with_fallback(request, PKCE_COOKIE)
+def read_pkce_cookie(
+    request: Request,
+    *,
+    use_https: bool | None = None,
+    prefix: str = "",
+) -> Optional[str]:
+    if use_https is None:
+        return _read_with_fallback(request, PKCE_COOKIE)
+    return _read_resolved(request, PKCE_COOKIE, use_https=use_https, prefix=prefix)
 
 
 def detect_https(request: Request) -> bool:

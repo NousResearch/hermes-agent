@@ -91,6 +91,7 @@ from gateway.platforms.yuanbao_proto import (
     next_seq_no,
 )
 from gateway.session import build_session_key
+from tools.url_safety import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,42 @@ _INDICATOR_RE = re.compile(r'\s*\(\d+/\d+\)$')
 OBSERVED_MEDIA_BACKFILL_LOOKBACK = 50
 # Max number of resource references to resolve per inbound turn
 OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN = 12
+
+_YUANBAO_MEDIA_ALLOWED_HOSTS = frozenset({
+    "yuanbao.tencent.com",
+    "bot.yuanbao.tencent.com",
+    "hunyuan.tencent.com",
+})
+_YUANBAO_MEDIA_ALLOWED_SUFFIXES = (
+    ".yuanbao.tencent.com",
+    ".hunyuan.tencent.com",
+    ".myqcloud.com",
+    ".tencentcos.cn",
+)
+
+
+def _is_allowed_yuanbao_media_url(url: str) -> bool:
+    """Return True for safe Yuanbao/Tencent/COS media URLs.
+
+    The inbound payload is untrusted: enforce http(s), an explicit Yuanbao/COS
+    host allowlist, DNS/IP safety, and re-use this predicate for redirect
+    targets in yuanbao_media.download_url().
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").strip().lower().rstrip(".")
+    except Exception:
+        return False
+
+    if parsed.scheme.lower() not in {"http", "https"} or not host:
+        return False
+    if host not in _YUANBAO_MEDIA_ALLOWED_HOSTS and not host.endswith(_YUANBAO_MEDIA_ALLOWED_SUFFIXES):
+        logger.warning("Blocked Yuanbao inbound media URL with disallowed host: %s", host)
+        return False
+    if not is_safe_url(url):
+        logger.warning("Blocked unsafe Yuanbao inbound media URL: %s", url)
+        return False
+    return True
 
 class MarkdownProcessor:
     """Encapsulates all Markdown-related utilities for the Yuanbao platform.
@@ -2385,7 +2422,9 @@ class MediaResolveMiddleware(InboundMiddleware):
 
         try:
             file_bytes, content_type = await media_download_url(
-                fetch_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
+                fetch_url,
+                max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
+                url_validator=_is_allowed_yuanbao_media_url,
             )
         except Exception as exc:
             logger.warning(

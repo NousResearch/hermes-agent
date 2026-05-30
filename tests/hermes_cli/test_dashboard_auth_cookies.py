@@ -198,6 +198,38 @@ def test_read_session_cookies_from_request_secure_prefix():
     assert rt == "rt_value"
 
 
+def test_read_session_cookies_strict_https_direct_rejects_bare_fallback():
+    """HTTPS direct deploys must authenticate only the __Host- variant."""
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(
+            b"cookie",
+            f"{SESSION_AT_COOKIE}=bare_at; __Host-{SESSION_AT_COOKIE}=host_at".encode(),
+        )],
+    }
+    req = Request(scope)
+    at, rt = read_session_cookies(req, use_https=True, prefix="")
+    assert at == "host_at"
+    assert rt is None
+
+
+def test_read_session_cookies_strict_https_proxied_rejects_bare_fallback():
+    """HTTPS prefix deploys must authenticate only the __Secure- variant."""
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(
+            b"cookie",
+            f"{SESSION_AT_COOKIE}=bare_at; __Host-{SESSION_AT_COOKIE}=host_at".encode(),
+        )],
+    }
+    req = Request(scope)
+    assert read_session_cookies(req, use_https=True, prefix="/hermes") == (None, None)
+
+
 def test_read_session_cookies_missing_returns_none():
     req = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
     assert read_session_cookies(req) == (None, None)

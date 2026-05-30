@@ -125,6 +125,19 @@ class TestBrowseShSource(unittest.TestCase):
             self.assertIsNotNone(bundle)
             self.assertEqual(bundle.files["SKILL.md"], "# Fallback content")
 
+    @patch("tools.skills_hub.is_safe_url", side_effect=[True, False])
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
+    def test_fetch_blocks_unsafe_skill_md_url(self, _mock_catalog, mock_get, _mock_safe):
+        blob_url = "http://169.254.169.254/latest/meta-data"
+        mock_get.return_value = _MockResponse(status_code=200, json_data={"skillMdUrl": blob_url})
+
+        bundle = self.src.fetch("browse-sh/airbnb.com/search-listings-ddgioa")
+
+        self.assertIsNone(bundle)
+        # Detail endpoint is fetched, but the unsafe skillMdUrl is blocked before fetch.
+        self.assertEqual(mock_get.call_count, 1)
+
     @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
     def test_fetch_missing_slug_returns_none(self, _mock_catalog):
         result = self.src.fetch("browse-sh/nonexistent.com/no-such-skill")

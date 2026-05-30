@@ -37,6 +37,7 @@ import logging
 import os
 import random
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -68,6 +69,17 @@ HEALTH_CHECK_STALE_THRESHOLD = 120.0
 
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
 _CORR_PREFIX = "hermes-"
+
+
+def _safe_simplex_attachment_name(file_name: Any) -> Optional[str]:
+    """Return a confined SimpleX attachment basename, or None if unsafe."""
+    name = str(file_name or "file")
+    if not name or any(ch in name for ch in ("\x00", "\r", "\n", "/", "\\")):
+        return None
+    path = Path(name)
+    if path.is_absolute() or ".." in path.parts or path.name != name:
+        return None
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +458,11 @@ class SimplexAdapter(BasePlatformAdapter):
         # for simplicity we just wait briefly and rely on the daemon's default path.
         await asyncio.sleep(2)
 
+        safe_name = _safe_simplex_attachment_name(file_name)
+        if safe_name is None:
+            logger.warning("SimpleX: refusing unsafe attachment filename %r", file_name)
+            return None
+
         # simplex-chat stores received files in ~/Downloads or a configured path.
         # We try common locations.
         for search_dir in (
@@ -453,8 +470,14 @@ class SimplexAdapter(BasePlatformAdapter):
             os.path.expanduser("~/.simplex/files"),
             "/tmp/simplex_files",
         ):
-            candidate = os.path.join(search_dir, file_name)
-            if os.path.exists(candidate):
+            base = Path(search_dir).expanduser().resolve()
+            candidate = (base / safe_name).resolve()
+            try:
+                candidate.relative_to(base)
+            except ValueError:
+                logger.warning("SimpleX: refusing attachment path outside search dir: %s", candidate)
+                continue
+            if candidate.exists():
                 with open(candidate, "rb") as f:
                     data = f.read()
                 ext = _guess_extension(data)
@@ -463,7 +486,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 elif _is_audio_ext(ext):
                     return cache_audio_from_bytes(data, ext)
                 else:
-                    return cache_document_from_bytes(data, file_name)
+                    return cache_document_from_bytes(data, safe_name)
         return None
 
     # ------------------------------------------------------------------

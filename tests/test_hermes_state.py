@@ -688,6 +688,12 @@ class TestFTS5Search:
         assert db.search_messages("") == []
         assert db.search_messages("   ") == []
 
+    def test_search_messages_rejects_excessive_limit(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="pagination clamp test keyword")
+        results = db.search_messages("pagination", limit=9999)
+        assert len(results) <= 200
+
     def test_search_with_source_filter(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="CLI question about Python")
@@ -1144,6 +1150,20 @@ class TestCJKSearchFallback:
 # Session search and listing
 # =========================================================================
 
+class TestPaginationBounds:
+    def test_clamp_pagination_invalid_values(self):
+        from hermes_state import _clamp_pagination
+        limit, offset = _clamp_pagination("bad", "also-bad", default_limit=20)
+        assert limit == 20
+        assert offset == 0
+
+    def test_clamp_pagination_caps_excessive_limit(self):
+        from hermes_state import _clamp_pagination
+        limit, offset = _clamp_pagination(9999, -5)
+        assert limit == 200
+        assert offset == 0
+
+
 class TestSearchSessions:
     def test_list_all_sessions(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -1169,6 +1189,18 @@ class TestSearchSessions:
         assert len(page1) == 2
         assert len(page2) == 2
         assert page1[0]["id"] != page2[0]["id"]
+
+    def test_search_sessions_zero_limit_clamped(self, db):
+        for i in range(3):
+            db.create_session(session_id=f"s{i}", source="cli")
+        sessions = db.search_sessions(limit=0)
+        assert len(sessions) == 1
+
+    def test_search_sessions_excessive_limit_capped(self, db):
+        for i in range(3):
+            db.create_session(session_id=f"s{i}", source="cli")
+        sessions = db.search_sessions(limit=9999)
+        assert len(sessions) == 3
 
 
 # =========================================================================

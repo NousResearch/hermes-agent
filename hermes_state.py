@@ -29,6 +29,30 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+_SESSION_QUERY_MAX_LIMIT = 200
+
+
+def _clamp_pagination(
+    limit: int,
+    offset: int,
+    *,
+    default_limit: int = 20,
+    max_limit: int = _SESSION_QUERY_MAX_LIMIT,
+) -> Tuple[int, int]:
+    """Return safe LIMIT/OFFSET values for session DB list/search queries."""
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        parsed_limit = default_limit
+    try:
+        parsed_offset = int(offset)
+    except (TypeError, ValueError):
+        parsed_offset = 0
+    safe_limit = max(1, min(max_limit, parsed_limit))
+    safe_offset = max(0, parsed_offset)
+    return safe_limit, safe_offset
+
+
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
@@ -1425,6 +1449,7 @@ class SessionDB:
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
         """
+        limit, offset = _clamp_pagination(limit, offset)
         where_clauses = []
         params = []
 
@@ -2381,6 +2406,8 @@ class SessionDB:
         else:
             sort_norm = None
 
+        limit, offset = _clamp_pagination(limit, offset)
+
         # ORDER BY shared across the main FTS5 path and trigram CJK path.
         # With sort set, timestamp is primary and rank is the tiebreaker.
         if sort_norm == "newest":
@@ -2645,6 +2672,7 @@ class SessionDB:
         message timestamp for the session, falling back to ``started_at``),
         ordered by most-recently-used first.
         """
+        limit, offset = _clamp_pagination(limit, offset)
         select_with_last_active = (
             "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
             "FROM sessions s "

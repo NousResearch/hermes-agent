@@ -120,6 +120,9 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+_current_user_identity: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "tui_current_user_identity", default=None
+)
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -462,19 +465,71 @@ def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     return rid, method, params
 
 
-def handle_request(req: dict) -> dict | None:
-    normalized = _normalize_request(req)
-    if isinstance(normalized, dict):
-        return normalized
+def _identity_user_id(identity: Any = None) -> str:
+    """Return the authenticated dashboard user id for the current RPC, if any.
 
-    rid, method, params = normalized
-    fn = _methods.get(method)
-    if not fn:
-        return _err(rid, -32601, f"unknown method: {method}")
-    return fn(rid, params)
+    Stdio/local TUI has no authenticated user identity; in that mode this
+    returns an empty string and ownership checks preserve the historical
+    single-user behavior.
+    """
+    if identity is None:
+        identity = _current_user_identity.get()
+    if isinstance(identity, dict):
+        return str(identity.get("user_id") or identity.get("sub") or "").strip()
+    return str(identity or "").strip()
 
 
-def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
+def _identity_payload(identity: dict | str | None) -> dict | None:
+    if identity is None:
+        return None
+    return identity if isinstance(identity, dict) else {"user_id": str(identity)}
+
+
+def _owner_matches(owner_user_id: Any) -> bool:
+    current_user_id = _identity_user_id()
+    if not current_user_id:
+        return True
+    return str(owner_user_id or "").strip() == current_user_id
+
+
+def _session_visible_to_current_user(session: dict | None) -> bool:
+    return bool(session) and _owner_matches((session or {}).get("owner_user_id"))
+
+
+def _db_row_visible_to_current_user(row: dict | None) -> bool:
+    return bool(row) and _owner_matches((row or {}).get("user_id"))
+
+
+def _visible_db_rows(rows: list[dict]) -> list[dict]:
+    if not _identity_user_id():
+        return rows
+    return [row for row in rows if _db_row_visible_to_current_user(row)]
+
+
+def handle_request(req: dict, user_identity: dict | str | None = None) -> dict | None:
+    identity_token = None
+    if user_identity is not None:
+        identity_token = _current_user_identity.set(_identity_payload(user_identity))
+    try:
+        normalized = _normalize_request(req)
+        if isinstance(normalized, dict):
+            return normalized
+
+        rid, method, params = normalized
+        fn = _methods.get(method)
+        if not fn:
+            return _err(rid, -32601, f"unknown method: {method}")
+        return fn(rid, params)
+    finally:
+        if identity_token is not None:
+            _current_user_identity.reset(identity_token)
+
+
+def dispatch(
+    req: dict,
+    transport: Optional[Transport] = None,
+    user_identity: dict | str | None = None,
+) -> dict | None:
     """Route inbound RPCs — long handlers to the pool, everything else inline.
 
     Returns a response dict when handled inline. Returns None when the
@@ -488,6 +543,9 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """
     t = transport or _stdio_transport
     token = bind_transport(t)
+    identity_token = None
+    if user_identity is not None:
+        identity_token = _current_user_identity.set(_identity_payload(user_identity))
     try:
         normalized = _normalize_request(req)
         if isinstance(normalized, dict):
@@ -512,6 +570,8 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 
         return None
     finally:
+        if identity_token is not None:
+            _current_user_identity.reset(identity_token)
         reset_transport(token)
 
 
@@ -619,7 +679,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
-    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+    return (s, None) if _session_visible_to_current_user(s) else (None, _err(rid, 4001, "session not found"))
 
 
 def _sess(params, rid):
@@ -2054,6 +2114,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        user_id=_identity_user_id(),
         **_agent_cbs(sid),
     )
 
@@ -2063,6 +2124,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     _sessions[sid] = {
         "agent": agent,
         "session_key": key,
+        "owner_user_id": _identity_user_id(),
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
@@ -2316,6 +2378,7 @@ def _(rid, params: dict) -> dict:
         "inflight_turn": None,
         "last_active": now,
         "pending_title": None,
+        "owner_user_id": _identity_user_id(),
         "running": False,
         "session_key": key,
         "show_reasoning": _load_show_reasoning(),
@@ -2375,11 +2438,13 @@ def _(rid, params: dict) -> dict:
         # short; the compression-tip projection in ``list_sessions_rich``
         # can also merge rows.
         fetch_limit = max(limit * 2, 200)
-        rows = [
-            s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
-            if (s.get("source") or "").strip().lower() not in deny
-        ][:limit]
+        rows = _visible_db_rows(
+            [
+                s
+                for s in db.list_sessions_rich(source=None, limit=fetch_limit)
+                if (s.get("source") or "").strip().lower() not in deny
+            ]
+        )[:limit]
         return _ok(
             rid,
             {
@@ -2429,6 +2494,8 @@ def _(rid, params: dict) -> dict:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
                 continue
+            if not _db_row_visible_to_current_user(row):
+                continue
             return _ok(
                 rid,
                 {
@@ -2459,6 +2526,8 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    if not _db_row_visible_to_current_user(found):
+        return _err(rid, 4007, "session not found")
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:
@@ -2582,7 +2651,11 @@ def _(rid, params: dict) -> dict:
     # Keep the natural creation/insertion order from ``_sessions``.  The
     # frontend marks the focused session with ``current``; it should not jump to
     # the top just because the user switched to it.
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    rows = [
+        _session_live_item(sid, session, current)
+        for sid, session in snapshot
+        if _session_visible_to_current_user(session)
+    ]
     return _ok(rid, {"sessions": rows})
 
 
@@ -2653,6 +2726,13 @@ def _(rid, params: dict) -> dict:
     active = {s.get("session_key") for s in snapshot if s.get("session_key")}
     if target in active:
         return _err(rid, 4023, "cannot delete an active session")
+    if _identity_user_id():
+        try:
+            found = db.get_session(target)
+        except Exception as e:
+            return _err(rid, 5036, f"delete failed: {e}")
+        if not _db_row_visible_to_current_user(found):
+            return _err(rid, 4007, "session not found")
     sessions_dir = get_hermes_home() / "sessions"
     try:
         deleted = db.delete_session(target, sessions_dir=sessions_dir)
@@ -2975,6 +3055,9 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
+    session = _sessions.get(sid)
+    if not _session_visible_to_current_user(session):
+        return _ok(rid, {"closed": False})
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
@@ -3026,7 +3109,11 @@ def _(rid, params: dict) -> dict:
                 else f"{current} (branch)"
             )
         db.create_session(
-            new_key, source="tui", model=_resolve_model(), parent_session_id=old_key
+            new_key,
+            source="tui",
+            model=_resolve_model(),
+            parent_session_id=old_key,
+            user_id=_identity_user_id() or None,
         )
         for msg in history:
             db.append_message(

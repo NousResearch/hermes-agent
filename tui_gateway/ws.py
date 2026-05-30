@@ -113,7 +113,7 @@ class WSTransport:
         self._closed = True
 
 
-async def handle_ws(ws: Any) -> None:
+async def handle_ws(ws: Any, user_identity: dict | str | None = None) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     await ws.accept()
 
@@ -160,7 +160,7 @@ async def handle_ws(ws: Any) -> None:
             # the transport we pass in (a separate thread, so transport.write
             # is the safe path there). For inline handlers it returns the
             # response dict, which we write here from the loop.
-            resp = await asyncio.to_thread(server.dispatch, req, transport)
+            resp = await asyncio.to_thread(server.dispatch, req, transport, user_identity)
             if resp is not None and not await transport.write_async(resp):
                 break
     finally:

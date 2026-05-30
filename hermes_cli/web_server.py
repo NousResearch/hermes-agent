@@ -3424,37 +3424,21 @@ def _ws_request_is_allowed(ws: "WebSocket") -> bool:
     return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
 
 
-def _ws_auth_ok(ws: "WebSocket") -> bool:
-    """Validate WS-upgrade auth in either loopback or gated mode.
-
-    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
-    parameter, constant-time compared.
-
-    Gated (public bind, no ``--insecure``): ``?ticket=<single-use>`` query
-    parameter consumed against the dashboard-auth ticket store. The legacy
-    token path is unconditionally rejected in this mode (the SPA bundle
-    isn't carrying the token any longer).
-
-    Returns True if the WS should be accepted; callers close with the
-    appropriate WS code (4401) on False. Audit-logs the rejection so
-    operators can debug "WS keeps closing" issues from the log.
-    """
+def _ws_auth_identity(ws: "WebSocket") -> Optional[dict]:
+    """Return authenticated WS identity payload, or None when denied."""
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
-            return False
-        # Lazy import — keeps this function importable in test harnesses
-        # that don't bring in the dashboard_auth layer.
+            return None
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
         from hermes_cli.dashboard_auth.ws_tickets import (
             TicketInvalid,
             consume_ticket,
         )
-
         try:
-            consume_ticket(ticket)
-            return True
+            info = consume_ticket(ticket)
+            return info if isinstance(info, dict) else {}
         except TicketInvalid as exc:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
@@ -3462,10 +3446,15 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
                 ip=(ws.client.host if ws.client else ""),
                 path=ws.url.path,
             )
-            return False
+            return None
 
     token = ws.query_params.get("token", "")
-    return hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+    return {} if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()) else None
+
+
+def _ws_auth_ok(ws: "WebSocket") -> bool:
+    """Validate WS-upgrade auth in either loopback or gated mode."""
+    return _ws_auth_identity(ws) is not None
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -3584,7 +3573,8 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    if not _ws_auth_ok(ws):
+    _ws_identity = _ws_auth_identity(ws)
+    if _ws_identity is None:
         await ws.close(code=4401)
         return
 
@@ -3702,7 +3692,8 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    _ws_identity = _ws_auth_identity(ws)
+    if _ws_identity is None:
         await ws.close(code=4401)
         return
 
@@ -3712,7 +3703,7 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    await handle_ws(ws, user_identity=_ws_identity)
 
 
 # ---------------------------------------------------------------------------

@@ -307,7 +307,8 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
 
 
 def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
-    """blocked tasks with all parents done should be promoted to ready."""
+    """blocked tasks with all parents done should be promoted to ready,
+    unless the circuit-breaker failure limit has been reached."""
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="a")
         child = kb.create_task(
@@ -316,16 +317,16 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         # Complete the parent
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        # Manually block the child (simulates a worker that failed
-        # after the parent finished)
+        # Manually block the child with zero failures (simulates a
+        # dependency block, not a circuit-breaker block).
         conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
-            "last_failure_error='persistent error' WHERE id=?",
+            "UPDATE tasks SET status='blocked', consecutive_failures=0, "
+            "last_failure_error=NULL WHERE id=?",
             (child,),
         )
         conn.commit()
         assert kb.get_task(conn, child).status == "blocked"
-        # recompute_ready should promote blocked → ready and reset failures
+        # recompute_ready should promote blocked → ready
         promoted = kb.recompute_ready(conn)
         assert promoted == 1
         task = kb.get_task(conn, child)
@@ -813,6 +814,82 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.status == "ready"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+
+
+def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
+    """recompute_ready must not auto-recover tasks whose consecutive_failures
+    has reached the circuit-breaker limit (#35072).
+
+    Without this guard, a task that repeatedly exhausts its iteration
+    budget would cycle forever: block → auto-recover (counter reset)
+    → respawn → budget exhausted → block → …
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(conn, title="child", assignee="a",
+                               parents=[parent])
+        # Complete the parent so the child's dependencies are satisfied.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, summary="done")
+
+        # Simulate the child having exhausted its budget twice,
+        # hitting the default failure limit (2).
+        kb.claim_task(conn, child)
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 2",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, child)
+        assert task.status == "blocked"
+        assert task.consecutive_failures >= 2
+
+        # recompute_ready must NOT promote this task — the circuit
+        # breaker has tripped and it should stay blocked.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Explicit unblock should still work and reset the counter.
+        assert kb.unblock_task(conn, child)
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+
+def test_recompute_ready_recovers_below_limit(kanban_home):
+    """recompute_ready auto-recovers blocked tasks that haven't hit the
+    failure limit yet — the counter is preserved across recovery."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task", assignee="a")
+        kb.claim_task(conn, t)
+        # One failure, below the default limit of 2.
+        kb._record_task_failure(
+            conn, t, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+        # Simulate being blocked by something else (not circuit breaker).
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked' WHERE id = ?", (t,),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        # Counter must be preserved, not reset.
+        assert task.consecutive_failures == 1
 
 
 # ---------------------------------------------------------------------------

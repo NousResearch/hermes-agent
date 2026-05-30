@@ -285,6 +285,50 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+
+_CLIENT_VISIBLE_MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+_CLIENT_VISIBLE_LOCAL_PATH_RE = re.compile(
+    r'''(?<![/:\w.])(?:~/|/)(?:[\w .()\-]+/)*[\w .()\-]+\.(?:png|jpe?g|gif|webp|bmp|tiff|svg|mp4|mov|avi|mkv|webm|mp3|wav|ogg|m4a|flac|pdf|docx?|odt|rtf|txt|md|xlsx?|ods|csv|tsv|json|xml|ya?ml|pptx?|odp|key|zip|tar|gz|tgz|bz2|xz|7z|rar|html?)\b''',
+    re.IGNORECASE,
+)
+_CLIENT_VISIBLE_TOOL_XML_RE = re.compile(
+    r'''<\s*tool_(?:use|call|result)\b.*?(?:</\s*tool_(?:use|call|result)\s*>|$)''',
+    re.IGNORECASE | re.DOTALL,
+)
+_CLIENT_VISIBLE_EXCEPTION_RE = re.compile(
+    r"Traceback \(most recent call last\)|⚠️\s*[\'\"]?NoneType[\'\"]? object is not iterable|"
+    r"[\'\"]?NoneType[\'\"]? object is not iterable|\b[A-Za-z_]*(?:Error|Exception):\s",
+    re.IGNORECASE,
+)
+_CLIENT_VISIBLE_SYSTEM_NUDGE_RE = re.compile(
+    r"^\s*(?:Observed unresolved work|Observed closure|\[SYSTEM\] There may be unfinished work|There may be unfinished work)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_client_visible_internals(text: str) -> str:
+    body = str(text or "")
+    if not body:
+        return body
+    if _CLIENT_VISIBLE_EXCEPTION_RE.search(body) or _CLIENT_VISIBLE_TOOL_XML_RE.search(body):
+        return "I hit a tool/runtime issue on that turn. Please retry, or I can continue from the last clean step."
+    if _CLIENT_VISIBLE_SYSTEM_NUDGE_RE.search(body):
+        body = re.sub(
+            r"(?im)^\s*(?:Observed unresolved work|Observed closure|\[SYSTEM\] There may be unfinished work|There may be unfinished work).*?(?:\n\n|$)",
+            "",
+            body,
+        ).strip()
+        if not body:
+            return "I found pending context in this thread and will continue from the last concrete instruction."
+    body = body.replace("[[audio_as_voice]]", "")
+    body = _CLIENT_VISIBLE_MEDIA_RE.sub("", body)
+    body = _CLIENT_VISIBLE_LOCAL_PATH_RE.sub("", body)
+    body = re.sub(r"(?im)^\s*\[gateway: prior media.*?(?:\n\s*- .*?)*\s*$", "", body)
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    body = re.sub(r"[ \t]{2,}", " ", body)
+    return body.strip()
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
@@ -298,6 +342,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _sanitize_client_visible_internals(redacted)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
@@ -16942,6 +16987,16 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+
+            client_visible_contract = (
+                "Client-visible delivery contract: never expose raw MEDIA tags, local filesystem paths, "
+                "tool XML, tracebacks, or internal system-note wording to the user. "
+                "Never claim an email/message/file was sent unless a send/upload tool result in this turn explicitly succeeded; "
+                "if delivery is unverified, say it is drafted/prepared or state the exact blocker. "
+                "If the user asks for status and there is active task context, continue the task or explain the concrete blocker; "
+                "do not answer with only generic presence such as 'I'm here.'"
+            )
+            combined_ephemeral = (combined_ephemeral + "\n\n" + client_visible_contract).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart). Keep config.yaml authoritative for

@@ -653,6 +653,14 @@ class GatewayStreamConsumer:
     # Streaming and non-streaming paths share the same regex, so a tag is
     # treated identically whichever path delivered the text.
     _MEDIA_RE = MEDIA_TAG_CLEANUP_RE
+    _LOCAL_PATH_RE = re.compile(
+        r'''(?<![/:\w.])(?:~/|/)(?:[\w .()\-]+/)*[\w .()\-]+\.(?:png|jpe?g|gif|webp|bmp|tiff|svg|mp4|mov|avi|mkv|webm|mp3|wav|ogg|m4a|flac|pdf|docx?|odt|rtf|txt|md|xlsx?|ods|csv|tsv|json|xml|ya?ml|pptx?|odp|key|zip|tar|gz|tgz|bz2|xz|7z|rar|html?)\b''',
+        re.IGNORECASE,
+    )
+    _TOOL_XML_RE = re.compile(
+        r'''<\s*tool_(?:use|call|result)\b.*?(?:</\s*tool_(?:use|call|result)\s*>|$)''',
+        re.IGNORECASE | re.DOTALL,
+    )
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
@@ -665,10 +673,17 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        if (
+            "MEDIA:" not in text
+            and "[[audio_as_voice]]" not in text
+            and "/" not in text
+            and "<tool_" not in text
+        ):
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = GatewayStreamConsumer._TOOL_XML_RE.sub("", cleaned)
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+        cleaned = GatewayStreamConsumer._LOCAL_PATH_RE.sub("", cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         # Strip trailing whitespace/newlines but preserve leading content

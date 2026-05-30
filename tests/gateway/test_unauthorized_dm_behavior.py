@@ -276,6 +276,26 @@ def test_telegram_group_chat_allowlist_authorizes_group_chat_without_user_allowl
     assert runner._is_user_authorized(source) is True
 
 
+def test_telegram_group_chat_allowlist_authorizes_anonymous_group_message(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-1001878443972")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="-1001878443972",
+        user_name="anonymous",
+        chat_type="channel",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
 def test_telegram_group_users_legacy_chat_ids_still_authorize(monkeypatch):
     """Backward-compat: PR #15027 shipped TELEGRAM_GROUP_ALLOWED_USERS as a
     chat-ID allowlist. PR #17686 renamed it to sender IDs and added

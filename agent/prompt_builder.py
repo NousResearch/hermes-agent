@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # SOUL.md before they get injected into the system prompt.
 # ---------------------------------------------------------------------------
 
-_CONTEXT_THREAT_PATTERNS = [
+_CONTEXT_BLOCK_PATTERNS = [
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
@@ -42,6 +42,9 @@ _CONTEXT_THREAT_PATTERNS = [
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
+]
+
+_CONTEXT_REDACT_LINE_PATTERNS = [
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
 ]
@@ -61,14 +64,36 @@ def _scan_context_content(content: str, filename: str) -> str:
         if char in content:
             findings.append(f"invisible unicode U+{ord(char):04X}")
 
-    # Check threat patterns
-    for pattern, pid in _CONTEXT_THREAT_PATTERNS:
+    # Check threat patterns that are unsafe as system-prompt context anywhere
+    # in the file. These are instruction-level attacks, not shell examples.
+    for pattern, pid in _CONTEXT_BLOCK_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             findings.append(pid)
 
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
+
+    redacted = []
+    redacted_findings = []
+    for line in content.splitlines(keepends=True):
+        line_findings = [
+            pid for pattern, pid in _CONTEXT_REDACT_LINE_PATTERNS
+            if re.search(pattern, line, re.IGNORECASE)
+        ]
+        if line_findings:
+            redacted_findings.extend(line_findings)
+            newline = "\n" if line.endswith("\n") else ""
+            redacted.append(
+                f"[REDACTED: removed context line matching {', '.join(line_findings)}]{newline}"
+            )
+        else:
+            redacted.append(line)
+
+    if redacted_findings:
+        unique_findings = sorted(set(redacted_findings))
+        logger.warning("Context file %s redacted: %s", filename, ", ".join(unique_findings))
+        return "".join(redacted)
 
     return content
 
@@ -151,8 +176,9 @@ MEMORY_GUIDANCE = (
     "User preferences and recurring corrections matter more than procedural task details.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
     "state to memory; use session_search to recall those from past transcripts. "
-    "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool."
+    "Do not create skills automatically. Skills are user-reviewed procedural assets. "
+    "When a reusable workflow seems worth preserving, mention it as a candidate in "
+    "the final response or wait for an explicit user request."
 )
 
 SESSION_SEARCH_GUIDANCE = (
@@ -162,12 +188,13 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
-    "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "Skills are reviewed procedural assets, not an automatic transcript sink. "
+    "Create or update skills only when the user explicitly asks, or when the "
+    "current task is specifically about maintaining skills. "
+    "If a complex task reveals a durable workflow, propose it as a candidate "
+    "rather than writing it automatically.\n"
+    "When using a skill and finding it outdated, incomplete, or wrong, report "
+    "the specific issue. Patch it only when the user approves that maintenance."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
@@ -775,27 +802,26 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
+            "## Skills\n"
+            "Before replying, scan the skills below. If a skill clearly matches "
+            "the user's task, load it with skill_view(name) and follow its instructions. "
+            "Do not load skills merely because they are partially related. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
+            "and proven workflows that outperform general-purpose approaches. "
             "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
+            "for tasks like code review, planning, and testing.\n"
+            "If a skill has issues, call out the issue. Patch it only when the user "
+            "has asked you to maintain skills or explicitly approves the repair.\n"
+            "After difficult or iterative tasks, you may mention that the workflow "
+            "could become a skill, but do not save it automatically. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "pitfalls you discovered, report the maintenance candidate before finishing.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Proceed without loading a skill when none clearly match the task."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

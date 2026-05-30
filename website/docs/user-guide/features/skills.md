@@ -232,14 +232,14 @@ All four skills appear in your skill index. If you create a new skill called `my
 
 ## Agent-Managed Skills (skill_manage tool)
 
-The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.
+The agent can create, update, and delete skills via the `skill_manage` tool when you explicitly ask it to maintain skills. Skills are reviewed procedural assets, not an automatic transcript sink.
 
-### When the Agent Creates Skills
+### When to Create Skills
 
-- After completing a complex task (5+ tool calls) successfully
-- When it hit errors or dead ends and found the working path
-- When the user corrected its approach
-- When it discovered a non-trivial workflow
+- The procedure is durable and expected to recur
+- The commands, authorities, and verification steps are stable
+- The workflow belongs in reusable procedure docs instead of project state
+- The user explicitly asks Hermes to save or update the skill
 
 ### Actions
 

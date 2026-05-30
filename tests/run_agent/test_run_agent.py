@@ -2546,10 +2546,12 @@ class TestRetryExhaustion:
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        status_messages = []
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=status_messages.append),
             patch("run_agent.time", self._make_fast_time_mock()),
         ):
             result = agent.run_conversation("hello")
@@ -2557,6 +2559,8 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+        assert not any("trying fallback" in msg.lower() for msg in status_messages)
+        assert any("no fallback providers configured" in msg.lower() for msg in status_messages)
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
@@ -3249,6 +3253,46 @@ class TestAnthropicImageFallback:
 
 class TestFallbackAnthropicProvider:
     """Bug fix: _try_activate_fallback had no case for anthropic provider."""
+
+    def test_approval_gated_pro_is_filtered_from_fallback_chain(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                fallback_model=[
+                    {"provider": "openrouter", "model": "openai/gpt-5.4-pro"},
+                    {"provider": "openrouter", "model": "openai/gpt-5.4"},
+                ],
+            )
+
+        assert a._fallback_chain == [{"provider": "openrouter", "model": "openai/gpt-5.4"}]
+        assert a._fallback_model == {"provider": "openrouter", "model": "openai/gpt-5.4"}
+
+    def test_approval_gated_pro_is_skipped_during_fallback_activation(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "openai/gpt-5.4-pro"},
+            {"provider": "openrouter", "model": "openai/gpt-5.4"},
+        ]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "sk-or-test"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)) as mock_resolve:
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.model == "openai/gpt-5.4"
+        assert agent._fallback_index == 2
+        mock_resolve.assert_called_once()
 
     def test_fallback_to_anthropic_sets_api_mode(self, agent):
         agent._fallback_activated = False

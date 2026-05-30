@@ -345,7 +345,7 @@ DEFAULT_CONFIG = {
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
-        "max_turns": 90,
+        "max_turns": 240,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -371,18 +371,6 @@ DEFAULT_CONFIG = {
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
         "gateway_notify_interval": 600,
-        # Optional second-pass human summary for busy operators. When armed via
-        # a trailing /sum4xyra suffix, Hermes asks an auxiliary model to rewrite
-        # the final response into a compact state/risk/next-move recap.
-        "xyra_summary": {
-            "enabled": False,
-            "opt_in_token": "/sum4xyra",
-            "opt_in_required": True,
-            "two_pass": True,
-            "max_context_messages": 8,
-            "max_chars_per_message": 1200,
-            "heading": "Xyra summary",
-        },
     },
     
     "terminal": {
@@ -549,13 +537,6 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
         },
-        "xyra_summary": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 120,
-        },
     },
     
     "display": {
@@ -681,7 +662,7 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
+        "max_iterations": 180,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
@@ -1649,7 +1630,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 90)",
+        "description": "Maximum tool-calling iterations per conversation (default: 240)",
         "prompt": "Max iterations",
         "url": None,
         "password": False,

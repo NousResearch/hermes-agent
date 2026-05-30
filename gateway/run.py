@@ -80,14 +80,6 @@ from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
-from agent.xyra_summary import (
-    DEFAULT_BARE_SUMMARY_REQUEST,
-    SummaryDirective,
-    format_summary_block,
-    gateway_summary_help_lines,
-    parse_summary_directive,
-    summarize_for_xyra_async,
-)
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -717,21 +709,6 @@ class GatewayRunner:
             str(_opt_in_token_raw) if _opt_in_required and _opt_in_token_raw is not None else ""
         )
         self._auto_steward_armed: Dict[str, bool] = {}
-
-        _xyra_summary_cfg = (_as_cfg.get("agent") or {}).get("xyra_summary", {}) or {}
-        _xyra_summary_enabled = _xyra_summary_cfg.get("enabled", False)
-        self._xyra_summary_enabled = str(_xyra_summary_enabled).strip().lower() in (
-            "1", "true", "yes", "y", "on"
-        )
-        _xyra_summary_token = _xyra_summary_cfg.get("opt_in_token", "/sum4xyra")
-        self._xyra_summary_opt_in_token = str(_xyra_summary_token) if _xyra_summary_token is not None else ""
-        self._xyra_summary_opt_in_required = bool(_xyra_summary_cfg.get("opt_in_required", True))
-        self._xyra_summary_two_pass = bool(_xyra_summary_cfg.get("two_pass", True))
-        self._xyra_summary_max_context_messages = max(1, int(_xyra_summary_cfg.get("max_context_messages", 8) or 8))
-        self._xyra_summary_max_chars_per_message = max(200, int(_xyra_summary_cfg.get("max_chars_per_message", 1200) or 1200))
-        self._xyra_summary_heading = str(_xyra_summary_cfg.get("heading", "Xyra summary") or "Xyra summary")
-        self._xyra_summary_armed: Dict[str, bool] = {}
-        self._xyra_summary_directives: Dict[str, SummaryDirective] = {}
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
@@ -903,89 +880,6 @@ class GatewayRunner:
             return False
         return True
 
-    def _ensure_xyra_summary_runtime_state(self) -> None:
-        if not hasattr(self, "_xyra_summary_enabled"):
-            self._xyra_summary_enabled = False
-        if not hasattr(self, "_xyra_summary_opt_in_token"):
-            self._xyra_summary_opt_in_token = "/sum4xyra"
-        if not hasattr(self, "_xyra_summary_two_pass"):
-            self._xyra_summary_two_pass = True
-        if not hasattr(self, "_xyra_summary_opt_in_required"):
-            self._xyra_summary_opt_in_required = True
-        if not hasattr(self, "_xyra_summary_max_context_messages"):
-            self._xyra_summary_max_context_messages = 8
-        if not hasattr(self, "_xyra_summary_max_chars_per_message"):
-            self._xyra_summary_max_chars_per_message = 1200
-        if not hasattr(self, "_xyra_summary_heading"):
-            self._xyra_summary_heading = "Xyra summary"
-        if not isinstance(getattr(self, "_xyra_summary_armed", None), dict):
-            self._xyra_summary_armed = {}
-        if not isinstance(getattr(self, "_xyra_summary_directives", None), dict):
-            self._xyra_summary_directives = {}
-
-    def _parse_xyra_summary_directive(self, text: Any) -> SummaryDirective:
-        self._ensure_xyra_summary_runtime_state()
-        token = getattr(self, "_xyra_summary_opt_in_token", "/sum4xyra") or "/sum4xyra"
-        return parse_summary_directive(
-            text,
-            token=token,
-            opt_in_required=getattr(self, "_xyra_summary_opt_in_required", True),
-        )
-
-    def _should_generate_xyra_summary(self, decision: Any = None, *, session_key: str = "") -> bool:
-        self._ensure_xyra_summary_runtime_state()
-        if not self._xyra_summary_enabled:
-            return False
-        if not self._xyra_summary_armed.get(session_key, False):
-            return False
-        if decision and getattr(getattr(decision, "kind", None), "value", "") in {"continue", "redirect", "review"}:
-            return False
-        return True
-
-    async def _build_xyra_summary_block(self, user_message: Any, response: str, history: Sequence[dict[str, Any]] | None, decision: Any = None, result: Optional[Dict[str, Any]] = None, *, session_key: str = "") -> str:
-        if not self._should_generate_xyra_summary(decision, session_key=session_key):
-            return ""
-        if not response or not str(response).strip():
-            return ""
-        if result and (result.get("failed") or result.get("partial") or result.get("interrupted")):
-            return ""
-        try:
-            summary = await summarize_for_xyra_async(
-                user_message=user_message,
-                assistant_response=response,
-                conversation_history=history or [],
-                max_context_messages=getattr(self, "_xyra_summary_max_context_messages", 8),
-                max_chars_per_message=getattr(self, "_xyra_summary_max_chars_per_message", 1200),
-                two_pass=getattr(self, "_xyra_summary_two_pass", True),
-            )
-        except Exception as e:
-            logger.debug("Gateway Xyra summary generation failed: %s", e)
-            return ""
-        return format_summary_block(summary, heading=getattr(self, "_xyra_summary_heading", "Xyra summary"))
-
-    async def _build_direct_xyra_summary(self, history: Sequence[dict[str, Any]] | None, user_message: Any = None) -> str:
-        transcript = list(history or [])
-        assistant_messages = [m for m in transcript if isinstance(m, dict) and m.get("role") == "assistant"]
-        if not assistant_messages:
-            return "There is no prior assistant output in this chat to summarize yet."
-        assistant_response = str(assistant_messages[-1].get("content") or "").strip()
-        if not assistant_response:
-            return "There is no prior assistant output in this chat to summarize yet."
-        request = user_message or DEFAULT_BARE_SUMMARY_REQUEST
-        try:
-            summary = await summarize_for_xyra_async(
-                user_message=request,
-                assistant_response=assistant_response,
-                conversation_history=transcript,
-                max_context_messages=getattr(self, "_xyra_summary_max_context_messages", 8),
-                max_chars_per_message=getattr(self, "_xyra_summary_max_chars_per_message", 1200),
-                two_pass=getattr(self, "_xyra_summary_two_pass", True),
-            )
-        except Exception as e:
-            logger.debug("Gateway direct Xyra summary generation failed: %s", e)
-            return "Xyra summary generation failed."
-        return summary.strip() or "Xyra summary generation returned no content."
-
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
@@ -1013,7 +907,7 @@ class GatewayRunner:
         old_session_id: str,
         session_key: Optional[str] = None,
     ):
-        """Prompt the agent to save memories/skills before context is lost.
+        """Prompt the agent to save memories before context is lost.
 
         Synchronous worker — meant to be called via run_in_executor from
         an async context so it doesn't block the event loop.
@@ -1042,7 +936,7 @@ class GatewayRunner:
                 max_iterations=8,
                 quiet_mode=True,
                 skip_memory=True,  # Flush agent — no memory provider
-                enabled_toolsets=["memory", "skills"],
+                enabled_toolsets=["memory"],
                 session_id=old_session_id,
             )
             try:
@@ -1084,8 +978,8 @@ class GatewayRunner:
                     "Review the conversation above and:\n"
                     "1. Save any important facts, preferences, or decisions to memory "
                     "(user profile or your notes) that would be useful in future sessions.\n"
-                    "2. If you discovered a reusable workflow or solved a non-trivial "
-                    "problem, consider saving it as a skill.\n"
+                    "2. Do not create or modify skills during this background flush. "
+                    "Skill promotion is manual and requires an explicit user request.\n"
                     "3. If nothing is worth saving, that's fine — just skip.\n\n"
                 )
 
@@ -1101,8 +995,8 @@ class GatewayRunner:
                     )
 
                 flush_prompt += (
-                    "Do NOT respond to the user. Just use the memory and skill_manage "
-                    "tools if needed, then stop.]"
+                    "Do NOT respond to the user. Just use the memory tools if needed, "
+                    "then stop. Do not call skill_manage.]"
                 )
 
                 tmp_agent.run_conversation(
@@ -3269,9 +3163,6 @@ class GatewayRunner:
 
         # Check for commands
         command = event.get_command()
-        _summary_directive_preview = self._parse_xyra_summary_directive(getattr(event, "text", "") or "") if command else None
-        if command and _summary_directive_preview and _summary_directive_preview.armed:
-            command = None
         
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
@@ -3740,17 +3631,6 @@ class GatewayRunner:
                 self._auto_steward_armed[session_key] = True
             else:
                 self._auto_steward_armed.pop(session_key, None)
-            summary_directive = self._parse_xyra_summary_directive(getattr(event, "text", "") or "")
-            self._xyra_summary_directives[session_key] = summary_directive
-            if summary_directive.armed:
-                self._xyra_summary_armed[session_key] = True
-            else:
-                self._xyra_summary_armed.pop(session_key, None)
-            if summary_directive.armed and not (summary_directive.sanitized_message or "").strip() and summary_directive.raw_directive:
-                history = self.session_store.load_transcript(session_entry.session_id) or []
-                return await self._build_direct_xyra_summary(history, DEFAULT_BARE_SUMMARY_REQUEST)
-            if summary_directive.armed and isinstance(getattr(event, "text", None), str):
-                event.text = summary_directive.sanitized_message or getattr(event, "text", None)
 
         if self._should_drop_unarmed_auto_steward_message(getattr(event, "text", "") or "", session_key=session_key):
             logger.warning(
@@ -4465,23 +4345,6 @@ class GatewayRunner:
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            summary_block = await self._build_xyra_summary_block(
-                getattr(event, "text", "") or "",
-                response,
-                history,
-                None,
-                agent_result,
-                session_key=session_key,
-            )
-            if summary_block and not _already_sent:
-                response = f"{response}{summary_block}" if response else summary_block.lstrip()
-            elif summary_block and _already_sent:
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    try:
-                        await adapter.send(source.chat_id, summary_block.strip(), metadata=getattr(event, "metadata", None))
-                    except Exception as e:
-                        logger.warning("Failed to send Xyra summary block: %s", e)
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
@@ -4883,17 +4746,6 @@ class GatewayRunner:
             *gateway_help_lines(),
         ]
         try:
-            xyra_lines = gateway_summary_help_lines(
-                token=getattr(self, "_xyra_summary_opt_in_token", "/sum4xyra"),
-                enabled=getattr(self, "_xyra_summary_enabled", False),
-                opt_in_required=getattr(self, "_xyra_summary_opt_in_required", True),
-            )
-            if xyra_lines:
-                lines.append("\n🧭 **Xyra Summary**:")
-                lines.extend(xyra_lines)
-        except Exception:
-            pass
-        try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
@@ -4920,18 +4772,8 @@ class GatewayRunner:
                 return "Usage: `/commands [page]`"
         else:
             requested_page = 1
-
-        # Build combined entry list: Xyra summary + built-in commands + skill commands
+        # Build combined entry list: built-in commands + skill commands
         entries: list[str] = []
-        xyra_lines = gateway_summary_help_lines(
-            token=getattr(self, "_xyra_summary_opt_in_token", "/sum4xyra"),
-            enabled=getattr(self, "_xyra_summary_enabled", False),
-            opt_in_required=getattr(self, "_xyra_summary_opt_in_required", True),
-        )
-        if xyra_lines:
-            entries.append("🧭 **Xyra Summary**:")
-            entries.extend(xyra_lines)
-            entries.append("")
         entries.extend(gateway_help_lines())
         try:
             from agent.skill_commands import get_skill_commands
@@ -6062,7 +5904,7 @@ class GatewayRunner:
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "240"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -8811,7 +8653,7 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "240"))
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.

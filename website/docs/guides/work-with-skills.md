@@ -237,7 +237,7 @@ hermes chat -q "/my-skill help me with the thing"
 The skill appears automatically — no registration needed. Drop it in `~/.hermes/skills/` and it's live.
 
 :::info
-The agent can also create and update skills itself using `skill_manage`. After solving a complex problem, Hermes may offer to save the approach as a skill for next time.
+The agent can create and update skills with `skill_manage` when you explicitly ask it to maintain skills. By default, solved tasks are not promoted into skills automatically.
 :::
 
 ---
@@ -265,7 +265,7 @@ Both are persistent across sessions, but they serve different purposes:
 | **Size** | Can be large (hundreds of lines) | Should be compact (key facts only) |
 | **Cost** | Zero tokens until loaded | Small but constant token cost |
 | **Examples** | "How to deploy to Kubernetes" | "User prefers dark mode, lives in PST" |
-| **Who creates** | You, the agent, or installed from Hub | The agent, based on conversations |
+| **Who creates** | You, or the agent when explicitly asked | The agent, based on conversations |
 
 **Rule of thumb:** If you'd put it in a reference document, it's a skill. If you'd put it on a sticky note, it's memory.
 
@@ -275,7 +275,7 @@ Both are persistent across sessions, but they serve different purposes:
 
 **Keep skills focused.** A skill that tries to cover "all of DevOps" will be too long and too vague. A skill that covers "deploy a Python app to Fly.io" is specific enough to be genuinely useful.
 
-**Let the agent create skills.** After a complex multi-step task, Hermes will often offer to save the approach as a skill. Say yes — these agent-authored skills capture the exact workflow including pitfalls that were discovered along the way.
+**Promote deliberately.** Create or update a skill when a procedure is durable, reusable, and worth reviewing. Keep one-off task state in transcripts, docs, issues, or the codebase authority that owns it.
 
 **Use categories.** Organize skills into subdirectories (`~/.hermes/skills/devops/`, `~/.hermes/skills/research/`, etc.). This keeps the list manageable and helps the agent find relevant skills faster.
 

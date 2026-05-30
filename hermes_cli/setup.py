@@ -1425,8 +1425,8 @@ def setup_terminal_backend(config: dict):
 
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
-    config.setdefault("agent", {})["max_turns"] = 90
-    save_env_value("HERMES_MAX_ITERATIONS", "90")
+    config.setdefault("agent", {})["max_turns"] = 240
+    save_env_value("HERMES_MAX_ITERATIONS", "240")
 
     config.setdefault("display", {})["tool_progress"] = "all"
 

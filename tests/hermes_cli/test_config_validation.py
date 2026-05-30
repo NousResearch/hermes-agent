@@ -136,6 +136,45 @@ class TestFallbackModelValidation:
         fb_issues = [i for i in issues if "fallback" in i.message.lower()]
         assert len(fb_issues) == 0
 
+    def test_approval_gated_pro_rejected_in_fallback_model(self):
+        issues = validate_config_structure({
+            "fallback_model": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5.4-pro",
+            },
+        })
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("gpt-5.4-pro" in i.message and "approval-gated" in i.message for i in errors)
+
+
+class TestFallbackProvidersValidation:
+    """fallback_providers should stay safe for automatic fallback."""
+
+    def test_approval_gated_pro_rejected_in_fallback_providers(self):
+        issues = validate_config_structure({
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "openai/gpt-5.4"},
+                {"provider": "openrouter", "model": "openai/gpt-5.4-pro"},
+            ],
+        })
+        errors = [i for i in issues if i.severity == "error"]
+        assert any(
+            "fallback_providers[1]" in i.message
+            and "gpt-5.4-pro" in i.message
+            and "approval-gated" in i.message
+            for i in errors
+        )
+
+    def test_valid_fallback_providers(self):
+        issues = validate_config_structure({
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "openai/gpt-5.4"},
+                {"provider": "openrouter", "model": "openai/gpt-5.4-mini"},
+            ],
+        })
+        fb_issues = [i for i in issues if "fallback" in i.message.lower()]
+        assert len(fb_issues) == 0
+
 
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""

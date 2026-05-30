@@ -5000,7 +5000,7 @@ For more help on a command:
         type=int,
         default=None,
         metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)"
+        help="Maximum tool-calling iterations per conversation turn (default: 240, or agent.max_turns in config)"
     )
     chat_parser.add_argument(
         "--yolo",

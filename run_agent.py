@@ -109,6 +109,16 @@ from agent.trajectory import (
 from utils import atomic_json_write, env_var_enabled
 
 
+_APPROVAL_GATED_AUTOMATIC_FALLBACK_MODELS = {
+    "gpt-5.4-pro",
+    "openai/gpt-5.4-pro",
+}
+
+
+def _is_approval_gated_automatic_fallback(model: Any) -> bool:
+    return str(model or "").strip().lower() in _APPROVAL_GATED_AUTOMATIC_FALLBACK_MODELS
+
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -617,7 +627,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 90)
+            max_iterations (int): Maximum number of tool calling iterations (default: 240)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -1064,13 +1074,21 @@ class AIAgent:
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
         # new list ``fallback_providers`` format.
+        def _valid_fallback_entry(f: Any) -> bool:
+            if not isinstance(f, dict) or not f.get("provider") or not f.get("model"):
+                return False
+            if _is_approval_gated_automatic_fallback(f.get("model")):
+                logging.error(
+                    "Skipping approval-gated automatic fallback model %s; explicit local approval is required.",
+                    f.get("model"),
+                )
+                return False
+            return True
+
         if isinstance(fallback_model, list):
-            self._fallback_chain = [
-                f for f in fallback_model
-                if isinstance(f, dict) and f.get("provider") and f.get("model")
-            ]
+            self._fallback_chain = [f for f in fallback_model if _valid_fallback_entry(f)]
         elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-            self._fallback_chain = [fallback_model]
+            self._fallback_chain = [fallback_model] if _valid_fallback_entry(fallback_model) else []
         else:
             self._fallback_chain = []
         self._fallback_index = 0
@@ -1327,11 +1345,12 @@ class AIAgent:
                     self.valid_tool_names.add(_tname)
                     _existing_tool_names.add(_tname)
 
-        # Skills config: nudge interval for skill creation reminders
-        self._skill_nudge_interval = 10
+        # Skills are manually promoted. A positive config value can re-enable the
+        # legacy review counter, but the default is no automatic skill creation.
+        self._skill_nudge_interval = 0
         try:
             skills_config = _agent_cfg.get("skills", {})
-            self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+            self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 0))
         except Exception:
             pass
 
@@ -2320,7 +2339,7 @@ class AIAgent:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
     # ------------------------------------------------------------------
-    # Background memory/skill review
+    # Background memory review
     # ------------------------------------------------------------------
 
     _MEMORY_REVIEW_PROMPT = (
@@ -2335,13 +2354,9 @@ class AIAgent:
     )
 
     _SKILL_REVIEW_PROMPT = (
-        "Review the conversation above and consider saving or updating a skill if appropriate.\n\n"
-        "Focus on: was a non-trivial approach used to complete a task that required trial "
-        "and error, or changing course due to experiential findings along the way, or did "
-        "the user expect or desire a different method or outcome?\n\n"
-        "If a relevant skill already exists, update it with what you learned. "
-        "Otherwise, create a new skill if the approach is reusable.\n"
-        "If nothing is worth saving, just say 'Nothing to save.' and stop."
+        "Do not create or update skills during background review. "
+        "Skill promotion is manual and requires an explicit user request. "
+        "Say 'Nothing to save.' and stop."
     )
 
     _COMBINED_REVIEW_PROMPT = (
@@ -2350,10 +2365,8 @@ class AIAgent:
         "desires, preferences, or personal details? Has the user expressed expectations "
         "about how you should behave, their work style, or ways they want you to operate? "
         "If so, save using the memory tool.\n\n"
-        "**Skills**: Was a non-trivial approach used to complete a task that required trial "
-        "and error, or changing course due to experiential findings along the way, or did "
-        "the user expect or desire a different method or outcome? If a relevant skill "
-        "already exists, update it. Otherwise, create a new one if the approach is reusable.\n\n"
+        "**Skills**: Do not create or update skills during background review. "
+        "Skill promotion is manual and requires an explicit user request.\n\n"
         "Only act if there's something genuinely worth saving. "
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
@@ -2364,11 +2377,11 @@ class AIAgent:
         review_memory: bool = False,
         review_skills: bool = False,
     ) -> None:
-        """Spawn a background thread to review the conversation for memory/skill saves.
+        """Spawn a background thread to review the conversation for memory saves.
 
         Creates a full AIAgent fork with the same model, tools, and context as the
         main session. The review prompt is appended as the next user turn in the
-        forked conversation. Writes directly to the shared memory/skill stores.
+        forked conversation. Writes directly to the shared memory store.
         Never modifies the main conversation history or produces user-visible output.
         """
         import threading
@@ -2394,6 +2407,7 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        enabled_toolsets=["memory"],
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -2445,7 +2459,7 @@ class AIAgent:
                             pass
 
             except Exception as e:
-                logger.debug("Background memory/skill review failed: %s", e)
+                logger.debug("Background memory review failed: %s", e)
             finally:
                 # Close all resources (httpx client, subprocesses, etc.) so
                 # GC doesn't try to clean them up on a dead asyncio event
@@ -5945,6 +5959,12 @@ class AIAgent:
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
+        if _is_approval_gated_automatic_fallback(fb_model):
+            logging.error(
+                "Skipping approval-gated automatic fallback model %s; explicit local approval is required.",
+                fb_model,
+            )
+            return self._try_activate_fallback()
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -8765,7 +8785,12 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            # Bumped 3 → 6 to ride out bursty server_error intermittency
+            # on chatgpt.com/backend-api/codex (Apr 2026). Paired with a
+            # longer base_delay below so total retry window is ~3-4 min
+            # instead of ~35s, which is enough to outlast a typical bad
+            # backend minute without materially hurting fast-fail cases.
+            max_retries = 6
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
@@ -9080,8 +9105,10 @@ class AIAgent:
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Backoff before retry — jittered exponential: 5s base, 120s cap
-                        wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                        # Backoff before retry — jittered exponential: 10s base, 120s cap.
+                        # Base bumped 5 → 10 so 6 retries span ~3-4 min, enough
+                        # to outlast bursty codex backend server_error minutes.
+                        wait_time = jittered_backoff(retry_count, base_delay=10.0, max_delay=120.0)
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
@@ -10097,12 +10124,16 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            compression_attempts = 0
-                            primary_recovery_attempted = False
-                            continue
+                        if self._fallback_index < len(self._fallback_chain):
+                            self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                            self._emit_status("⚠️ Fallback chain exhausted or unavailable.")
+                        else:
+                            self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}); no fallback providers configured.")
                         if api_kwargs is not None:
                             self._dump_api_request_debug(
                                 api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -10163,13 +10194,18 @@ class AIAgent:
                             primary_recovery_attempted = True
                             retry_count = 0
                             continue
-                        # Try fallback before giving up entirely
-                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            compression_attempts = 0
-                            primary_recovery_attempted = False
-                            continue
+                        # Try fallback before giving up entirely, but do not
+                        # announce fallback when the configured chain is empty.
+                        if self._fallback_index < len(self._fallback_chain):
+                            self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                            self._emit_status("⚠️ Fallback chain exhausted or unavailable.")
+                        else:
+                            self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted; no fallback providers configured.")
                         _final_summary = self._summarize_api_error(api_error)
                         if is_rate_limited:
                             self._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
@@ -11284,7 +11320,7 @@ class AIAgent:
             except Exception:
                 pass
 
-        # Background memory/skill review — runs AFTER the response is delivered
+        # Background memory review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.
         if final_response and not interrupted and (_should_review_memory or _should_review_skills):
             try:

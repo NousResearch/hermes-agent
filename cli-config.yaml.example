@@ -435,14 +435,13 @@ streaming:
 # =============================================================================
 # Skills Configuration
 # =============================================================================
-# Skills are reusable procedures the agent can load and follow. The agent can
-# also create new skills after completing complex tasks.
+# Skills are reusable procedures the agent can load and follow. Skill creation
+# is manual by default so session state does not drift into hidden procedures.
 #
 skills:
-  # Nudge the agent to create skills after complex tasks.
-  # Every N tool-calling iterations, remind the model to consider saving a skill.
-  # Set to 0 to disable.
-  creation_nudge_interval: 15
+  # Automatic skill-creation nudges are disabled by default.
+  # Set a positive value to re-enable the legacy reminder interval.
+  creation_nudge_interval: 0
 
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})

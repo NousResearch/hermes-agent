@@ -88,6 +88,17 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _wrapper_invokes_entrypoint(wrapper_path: Path, expected_entrypoint: Path) -> bool:
+    """Return True when a command shim execs the active venv entry point."""
+    if not wrapper_path.is_file():
+        return False
+    try:
+        text = wrapper_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return str(expected_entrypoint) in text or str(expected_entrypoint.resolve()) in text
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -576,6 +587,11 @@ def run_doctor(args):
                 _expected = _venv_bin.resolve()
                 if _target == _expected:
                     check_ok(f"{_cmd_link_display}/hermes → correct target")
+                elif _wrapper_invokes_entrypoint(_target, _expected):
+                    check_ok(
+                        f"{_cmd_link_display}/hermes → wrapper for active entry point",
+                        f"(wrapper: {_target})",
+                    )
                 else:
                     check_warn(
                         f"{_cmd_link_display}/hermes points to wrong target",

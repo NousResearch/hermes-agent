@@ -759,3 +759,166 @@ class TestProfileToolsetsAliasing:
             "config dict's list. Pre-fix code assigns `toolsets = profile_toolsets` "
             "(reference); the fix is `toolsets = list(profile_toolsets)`."
         )
+
+
+# ---------------------------------------------------------------------------
+# TestInheritMcpToolsetsProfileGuard
+# Security hardening: _preserve_parent_mcp_toolsets must NOT run when a named
+# profile is in use.  The profile's declared toolsets are authoritative — the
+# parent's MCP toolsets must not bleed in via the inherit_mcp_toolsets path.
+#
+# Scenario: parent has mcp-nextcloud-files AND mcp-fastmail in its toolsets.
+# Profile "documents" declares only ["mcp-nextcloud-files"].
+# With inherit_mcp_toolsets=True (default), the pre-fix code calls
+# _preserve_parent_mcp_toolsets unconditionally, which appends mcp-fastmail
+# (a parent MCP toolset missing from the child list) to the resolved profile
+# toolsets — violating the invariant that the profile is authoritative.
+#
+# These tests FAIL on pre-fix code (mcp-fastmail bleeds in) and PASS after
+# the fix (guard `and not profile_name` prevents _preserve_parent_mcp_toolsets
+# from running when a profile is set).
+# ---------------------------------------------------------------------------
+
+_PROFILES_DOCUMENTS_NEXTCLOUD_ONLY = {
+    "documents": {
+        "toolsets": ["mcp-nextcloud-files"],
+    },
+}
+
+
+def _make_mcp_rich_parent():
+    """Parent agent that carries two MCP toolsets: nextcloud-files AND fastmail.
+
+    Why: Simulates an orchestrator that has loaded both domain MCP servers.
+    The profile "documents" only declares mcp-nextcloud-files, so mcp-fastmail
+    is the parent-only MCP toolset that must NOT bleed into the child when a
+    profile is named.
+
+    What: enabled_toolsets includes both mcp-nextcloud-files and mcp-fastmail
+    so that _preserve_parent_mcp_toolsets would normally append mcp-fastmail.
+
+    Test: Use as the parent arg in _build_child_agent calls below.
+    """
+    parent = MagicMock()
+    parent.enabled_toolsets = ["mcp-nextcloud-files", "mcp-fastmail", "delegation"]
+    parent._delegate_depth = 0
+    parent._credential_pool = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent._print_fn = None
+    parent.api_key = None
+    parent._client_kwargs = {}
+    parent.model = "test-model"
+    parent._subagent_id = None
+    parent.valid_tool_names = []
+    return parent
+
+
+class TestInheritMcpToolsetsProfileGuard:
+    """inherit_mcp_toolsets=True must NOT add parent MCP toolsets when a profile is named.
+
+    The profile's declared toolsets are authoritative.  _preserve_parent_mcp_toolsets
+    must be skipped entirely when profile_name is set so that parent-only MCP toolsets
+    cannot bleed into the child.
+
+    FAIL before fix: mcp-fastmail (parent-only) appears in child toolsets.
+    PASS after fix:  child toolsets are EXACTLY the profile's (mcp-nextcloud-files only).
+    """
+
+    @patch("tools.delegate_tool._get_inherit_mcp_toolsets", return_value=True)
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_parent_mcp_bleed_blocked_under_profile(self, _mock_cfg, _mock_inherit):
+        """CRITICAL: profile toolsets are authoritative — parent MCP toolsets must not bleed.
+
+        Why: Pre-fix, _preserve_parent_mcp_toolsets runs unconditionally when
+        inherit_mcp_toolsets=True, appending every parent MCP toolset absent from
+        the child list.  With a profile that declares only mcp-nextcloud-files,
+        the parent's mcp-fastmail gets added — a silent scope expansion that
+        violates the "profile declares exactly which MCP servers the child needs"
+        invariant.
+
+        What: _build_child_agent with profile_name="documents" (declares only
+        mcp-nextcloud-files) and a parent that has BOTH mcp-nextcloud-files and
+        mcp-fastmail.  Child toolsets must be exactly ["mcp-nextcloud-files"]
+        (after stripping delegation); mcp-fastmail must NOT appear.
+
+        Test: Assert "mcp-nextcloud-files" in child toolsets and
+        "mcp-fastmail" NOT in child toolsets.  FAILS pre-fix (mcp-fastmail
+        bleeds in via _preserve_parent_mcp_toolsets), PASSES post-fix (guard
+        `and not profile_name` skips the bleed path).
+        """
+        parent = _make_mcp_rich_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Manage documents",
+                context=None,
+                toolsets=["mcp-nextcloud-files"],
+                model=None,
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                profile_name="documents",
+            )
+
+        child_toolsets = MockAgent.call_args[1]["enabled_toolsets"]
+
+        assert "mcp-nextcloud-files" in child_toolsets, (
+            f"Profile-declared mcp-nextcloud-files must be present, got {child_toolsets!r}"
+        )
+        assert "mcp-fastmail" not in child_toolsets, (
+            f"SECURITY: mcp-fastmail (parent-only) must NOT bleed into the child when "
+            f"profile_name is set, but got {child_toolsets!r}. "
+            "Pre-fix: _preserve_parent_mcp_toolsets runs unconditionally, appending "
+            "every parent MCP toolset not in the child list. "
+            "Fix: add `and not profile_name` guard to the inherit_mcp_toolsets check "
+            "at line ~980 of delegate_tool.py."
+        )
+
+    @patch("tools.delegate_tool._get_inherit_mcp_toolsets", return_value=True)
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_non_profile_inheritance_unchanged(self, _mock_cfg, _mock_inherit):
+        """Non-profile delegation with inherit_mcp_toolsets=True still inherits parent MCP.
+
+        Why: Regression baseline — the profile guard must not break the existing
+        behavior for ad-hoc (no profile) delegation.  When no profile is named,
+        _preserve_parent_mcp_toolsets should still run and add parent MCP toolsets
+        to a narrowed child that requests only a subset.
+
+        What: parent has mcp-nextcloud-files + mcp-fastmail; child requests only
+        mcp-nextcloud-files with NO profile.  After the fix, mcp-fastmail must
+        still appear in child toolsets (non-profile path is unchanged).
+
+        Test: Assert BOTH mcp-nextcloud-files and mcp-fastmail are present in the
+        child toolsets, proving that the guard is scoped to the profile case only.
+        """
+        parent = _make_mcp_rich_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Ad-hoc file management",
+                context=None,
+                toolsets=["mcp-nextcloud-files"],
+                model=None,
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                profile_name=None,  # no profile — inheritance must still work
+            )
+
+        child_toolsets = MockAgent.call_args[1]["enabled_toolsets"]
+
+        assert "mcp-nextcloud-files" in child_toolsets, (
+            f"Requested mcp-nextcloud-files must be present, got {child_toolsets!r}"
+        )
+        assert "mcp-fastmail" in child_toolsets, (
+            f"mcp-fastmail must be inherited from parent when no profile is named "
+            f"(non-profile inheritance must be unchanged), got {child_toolsets!r}. "
+            "If this fails the profile guard is too broad."
+        )

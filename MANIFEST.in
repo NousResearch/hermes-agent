@@ -11,3 +11,4 @@ recursive-include plugins plugin.yaml plugin.yml
 recursive-include gateway/assets *
 global-exclude __pycache__
 global-exclude *.py[cod]
+recursive-include tests conftest.py

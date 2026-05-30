@@ -295,6 +295,37 @@ class TestBlueBubblesGuidResolution:
         assert result is None
 
 
+class _MockStreamResponse:
+    def __init__(self, chunks, headers=None):
+        self._chunks = list(chunks)
+        self.headers = headers or {}
+        self.iterated = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    async def aiter_bytes(self):
+        self.iterated = True
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _MockStreamClient:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def stream(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self.response
+
+
 class TestBlueBubblesAttachmentDownload:
     """Verify _download_attachment routes to the correct cache helper."""
 
@@ -303,18 +334,9 @@ class TestBlueBubblesAttachmentDownload:
         adapter = _make_adapter(monkeypatch)
         import asyncio
 
-        # Mock the HTTP client response
-        class MockResponse:
-            status_code = 200
-            content = b"\x89PNG\r\n\x1a\n"
-
-            def raise_for_status(self):
-                pass
-
-        async def mock_get(*args, **kwargs):
-            return MockResponse()
-
-        adapter.client = type("MockClient", (), {"get": mock_get})()
+        adapter.client = _MockStreamClient(
+            _MockStreamResponse([b"\x89PNG\r\n\x1a\n"])
+        )
 
         cached_path = None
 
@@ -339,17 +361,9 @@ class TestBlueBubblesAttachmentDownload:
         adapter = _make_adapter(monkeypatch)
         import asyncio
 
-        class MockResponse:
-            status_code = 200
-            content = b"fake-audio-data"
-
-            def raise_for_status(self):
-                pass
-
-        async def mock_get(*args, **kwargs):
-            return MockResponse()
-
-        adapter.client = type("MockClient", (), {"get": mock_get})()
+        adapter.client = _MockStreamClient(
+            _MockStreamResponse([b"fake-audio-data"])
+        )
 
         cached_path = None
 
@@ -374,17 +388,9 @@ class TestBlueBubblesAttachmentDownload:
         adapter = _make_adapter(monkeypatch)
         import asyncio
 
-        class MockResponse:
-            status_code = 200
-            content = b"fake-doc-data"
-
-            def raise_for_status(self):
-                pass
-
-        async def mock_get(*args, **kwargs):
-            return MockResponse()
-
-        adapter.client = type("MockClient", (), {"get": mock_get})()
+        adapter.client = _MockStreamClient(
+            _MockStreamResponse([b"fake-doc-data"])
+        )
 
         cached_path = None
 
@@ -414,6 +420,70 @@ class TestBlueBubblesAttachmentDownload:
             adapter._download_attachment("att-guid", {"mimeType": "image/png"})
         )
         assert result is None
+
+    def test_download_skips_attachment_when_metadata_size_exceeds_cap(
+        self, monkeypatch
+    ):
+        """Known-oversized attachments should not be requested at all."""
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setenv("HERMES_MAX_INBOUND_MEDIA_BYTES", "4")
+        response = _MockStreamResponse([b"not-used"])
+        adapter.client = _MockStreamClient(response)
+        import asyncio
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid-large",
+                {"mimeType": "image/png", "size": 5},
+            )
+        )
+
+        assert result is None
+        assert adapter.client.calls == []
+        assert response.iterated is False
+
+    def test_download_rejects_oversized_content_length(self, monkeypatch):
+        """Content-Length above cap should abort before reading the body."""
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setenv("HERMES_MAX_INBOUND_MEDIA_BYTES", "4")
+        response = _MockStreamResponse([b"not-used"], headers={"content-length": "5"})
+        adapter.client = _MockStreamClient(response)
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            lambda *_args, **_kwargs: pytest.fail("oversized body was cached"),
+        )
+        import asyncio
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment("att-guid-large", {"mimeType": "image/png"})
+        )
+
+        assert result is None
+        assert len(adapter.client.calls) == 1
+        assert response.iterated is False
+
+    def test_download_rejects_chunked_overflow(self, monkeypatch):
+        """Chunked responses without Content-Length should still enforce cap."""
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setenv("HERMES_MAX_INBOUND_MEDIA_BYTES", "4")
+        response = _MockStreamResponse([b"abc", b"de"])
+        adapter.client = _MockStreamClient(response)
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_document_from_bytes",
+            lambda *_args, **_kwargs: pytest.fail("oversized body was cached"),
+        )
+        import asyncio
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid-large",
+                {"mimeType": "application/octet-stream", "transferName": "big.bin"},
+            )
+        )
+
+        assert result is None
+        assert len(adapter.client.calls) == 1
+        assert response.iterated is True
 
 
 # ---------------------------------------------------------------------------

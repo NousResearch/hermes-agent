@@ -42,6 +42,8 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
+DEFAULT_MAX_INBOUND_MEDIA_BYTES = 128 * 1024 * 1024
+MAX_INBOUND_MEDIA_BYTES_ENV = "HERMES_MAX_INBOUND_MEDIA_BYTES"
 
 # Tapback reaction codes (BlueBubbles associatedMessageType values)
 _TAPBACK_ADDED = {
@@ -66,6 +68,43 @@ def _redact(text: str) -> str:
     text = _PHONE_RE.sub("[REDACTED]", text)
     text = _EMAIL_RE.sub("[REDACTED]", text)
     return text
+
+
+def _max_inbound_media_bytes() -> int:
+    raw = os.getenv(MAX_INBOUND_MEDIA_BYTES_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_INBOUND_MEDIA_BYTES
+    try:
+        parsed = int(raw)
+    except ValueError:
+        logger.warning(
+            "[bluebubbles] invalid %s=%r; using default %d",
+            MAX_INBOUND_MEDIA_BYTES_ENV,
+            raw,
+            DEFAULT_MAX_INBOUND_MEDIA_BYTES,
+        )
+        return DEFAULT_MAX_INBOUND_MEDIA_BYTES
+    if parsed <= 0:
+        logger.warning(
+            "[bluebubbles] non-positive %s=%r; using default %d",
+            MAX_INBOUND_MEDIA_BYTES_ENV,
+            raw,
+            DEFAULT_MAX_INBOUND_MEDIA_BYTES,
+        )
+        return DEFAULT_MAX_INBOUND_MEDIA_BYTES
+    return parsed
+
+
+def _attachment_size_hint(att_meta: Dict[str, Any]) -> Optional[int]:
+    for key in ("size", "fileSize", "file_size", "totalBytes", "total_bytes", "byteSize"):
+        raw = att_meta.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -703,14 +742,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not self.client:
             return None
         try:
+            max_bytes = _max_inbound_media_bytes()
+            size_hint = _attachment_size_hint(att_meta)
+            if size_hint is not None and size_hint > max_bytes:
+                logger.warning(
+                    "[bluebubbles] skipping attachment %s: size %d exceeds cap %d",
+                    _redact(att_guid),
+                    size_hint,
+                    max_bytes,
+                )
+                return None
+
             encoded = quote(att_guid, safe="")
-            resp = await self.client.get(
+            data = await self._download_attachment_bytes(
                 self._api_url(f"/api/v1/attachment/{encoded}/download"),
-                timeout=60,
-                follow_redirects=True,
+                max_bytes=max_bytes,
             )
-            resp.raise_for_status()
-            data = resp.content
 
             mime = (att_meta.get("mimeType") or "").lower()
             transfer_name = att_meta.get("transferName", "")
@@ -752,6 +799,36 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 exc,
             )
             return None
+
+    async def _download_attachment_bytes(self, url: str, *, max_bytes: int) -> bytes:
+        """Stream an attachment with a hard byte cap before caching."""
+        total = 0
+        chunks = bytearray()
+        async with self.client.stream(
+            "GET",
+            url,
+            timeout=60,
+            follow_redirects=True,
+        ) as resp:
+            resp.raise_for_status()
+            content_length = resp.headers.get("content-length")
+            if content_length:
+                try:
+                    declared = int(content_length)
+                except ValueError:
+                    declared = None
+                if declared is not None and declared > max_bytes:
+                    raise ValueError(
+                        f"Attachment content-length {declared} exceeds cap {max_bytes}"
+                    )
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(
+                        f"Attachment download exceeded cap {max_bytes}"
+                    )
+                chunks.extend(chunk)
+        return bytes(chunks)
 
     # ------------------------------------------------------------------
     # Webhook handling

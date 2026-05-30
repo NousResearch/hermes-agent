@@ -32,11 +32,18 @@ class AccountUsageSnapshot:
     plan: Optional[str] = None
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
+    credits_balance: Optional[float] = None
+    credits_unlimited: bool = False
     unavailable_reason: Optional[str] = None
 
     @property
     def available(self) -> bool:
-        return bool(self.windows or self.details) and not self.unavailable_reason
+        return bool(
+            self.windows
+            or self.details
+            or self.credits_unlimited
+            or self.credits_balance is not None
+        ) and not self.unavailable_reason
 
 
 def _title_case_slug(value: Optional[str]) -> Optional[str]:
@@ -156,11 +163,15 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         )
     details: list[str] = []
     credits = payload.get("credits") or {}
+    credits_balance: Optional[float] = None
+    credits_unlimited = False
     if credits.get("has_credits"):
         balance = credits.get("balance")
         if isinstance(balance, (int, float)):
-            details.append(f"Credits balance: ${float(balance):.2f}")
+            credits_balance = float(balance)
+            details.append(f"Credits balance: ${credits_balance:.2f}")
         elif credits.get("unlimited"):
+            credits_unlimited = True
             details.append("Credits balance: unlimited")
     return AccountUsageSnapshot(
         provider="openai-codex",
@@ -169,6 +180,8 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         plan=_title_case_slug(payload.get("plan_type")),
         windows=tuple(windows),
         details=tuple(details),
+        credits_balance=credits_balance,
+        credits_unlimited=credits_unlimited,
     )
 
 

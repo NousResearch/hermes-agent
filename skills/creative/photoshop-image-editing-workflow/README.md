@@ -13,10 +13,11 @@ This skill makes the workflow more systematic:
 1. Preserve the original image.
 2. Measure the original design before editing.
 3. Extract typography and layout criteria.
-4. Generate or edit candidate images.
-5. Compare candidates against the source with a QA sheet and report.
-6. Open the final candidate in Windows Photoshop from WSL.
-7. Record the production result in Obsidian or another project log.
+4. For simple edits, generate or edit a candidate image.
+5. For complex images, decompose the design into background, main object, cards, icons, CTA, proof assets, and editable text layers.
+6. Compare candidates against the source with a QA sheet and report.
+7. Open the final candidate in Windows Photoshop from WSL.
+8. Record the production result in Obsidian or another project log.
 
 ## Key idea
 
@@ -57,6 +58,8 @@ Hermes can convert file paths with `wslpath`, open the image via PowerShell, and
 
 ## Workflow summary
 
+### Simple edit path
+
 ```text
 source image
   ↓
@@ -72,6 +75,28 @@ verify file/process state
   ↓
 record result in Obsidian/project log
 ```
+
+### Complex composite path
+
+```text
+benchmark/source image
+  ↓
+Director: define scope and complexity level
+  ↓
+Reference Analyst + Layout Architect + Typography Agent
+  ↓
+Asset Decomposer: split background, main object, icons, cards, CTA, proof assets, text
+  ↓
+Prompt Engineer + Image Generation Worker: generate only independent visual assets
+  ↓
+Photoshop Compositor: assemble named PSD layers
+  ↓
+QA Agent: inspect generated assets, final composite, mobile readability, and claim risk
+  ↓
+Ops Logger: save prompts, files, QA report, and production log
+```
+
+For complex work, the key rule is: GPT Image models create visual components, Photoshop owns exact Korean text, numbers, CTA, cards, proof assets, and final alignment.
 
 ## Files
 

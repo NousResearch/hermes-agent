@@ -124,6 +124,35 @@ line_weight_ratio = line_2_filled_pixel_density / line_1_filled_pixel_density
 
 Use the original ratio as the target. The edited image does not need to match numerically with mathematical perfection, but it should preserve the same hierarchy: lighter first line, heavier second line, similar placement and visual energy.
 
+## Complex GPT Image + Photoshop Composites
+
+When a benchmark or target image is complex, do not force a one-shot GPT Image generation. Use an element-decomposition workflow: generate or source the background, main object, icons, decorations, cards, proof assets, and text-safe blank areas separately, then assemble them in Photoshop as named layers.
+
+Use this path when the design includes many dependent parts, exact Korean text, prices, reviews, proof screenshots, product fidelity, multiple cards, or a benchmark layout that needs close detail control.
+
+Core rule:
+
+```text
+GPT Image model = mood, background, visual objects, decorative elements
+Photoshop = composition, text, cards, CTA, numbers, proof assets, final alignment
+Hermes = orchestration, measurement, prompt assets, QA, documentation
+```
+
+For complex assets, Hermes should run a small multi-agent/role workflow:
+
+1. **Director** — define scope, complexity level, deliverables, and pass criteria.
+2. **Reference Analyst** — analyze benchmark layout, color, spacing, text zones, and risky elements.
+3. **Layout Architect** — create coordinate-based canvas and Photoshop guide plan.
+4. **Asset Decomposer** — decide which elements are generated, sourced, Photoshop shapes, SVGs, or editable text.
+5. **Prompt Engineer** — write one prompt per generated asset with strict no-text rules.
+6. **Image Generation Worker** — generate/regenerate only individual assets, not the whole final design.
+7. **Photoshop Compositor** — assemble selected assets into a layered PSD.
+8. **Typography Agent** — apply exact Korean copy as editable Photoshop text layers.
+9. **QA Agent** — check generated assets and final composite for breakage, readability, product fidelity, and claim risk.
+10. **Ops Logger** — save prompts, output paths, QA sheet/report, and production log.
+
+Keep only independent work parallel. Serialize anything that edits the same PSD or final output. See `references/complex-image-element-decomposition.md` for the full decision rule, master-layout template, agent deliverables, folder structure, gates, prompts, and QA checklist.
+
 ## Step 3 — Font and Typography Matching
 
 Use installed Windows fonts first. Search under:

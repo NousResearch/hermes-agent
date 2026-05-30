@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     """``call_<sha256(name:args:index)[:12]>`` — stable id keeps the prompt cache
     warm. Mirrors agent/codex_responses_adapter.py (copied to keep this a leaf)."""
-    digest = hashlib.sha256(f"{fn_name}:{arguments}:{index}".encode(errors="replace")).hexdigest()
+    digest = hashlib.sha256(
+        f"{fn_name}:{arguments}:{index}".encode(errors="replace")
+    ).hexdigest()
     return f"call_{digest[:12]}"
 
 
@@ -55,7 +57,9 @@ def _loads_lenient(raw: str) -> Any | None:
         return None
 
 
-_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL | re.IGNORECASE)
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL | re.IGNORECASE
+)
 
 
 def find_tool_call_json(content: str) -> list[RawCall]:
@@ -63,7 +67,13 @@ def find_tool_call_json(content: str) -> list[RawCall]:
     for m in _TOOL_CALL_BLOCK_RE.finditer(content):
         obj = _loads_lenient(m.group(1))
         if isinstance(obj, dict) and isinstance(obj.get("name"), str):
-            out.append(RawCall(name=obj["name"], arguments=obj.get("arguments", {}), span=m.group(0)))
+            out.append(
+                RawCall(
+                    name=obj["name"],
+                    arguments=obj.get("arguments", {}),
+                    span=m.group(0),
+                )
+            )
     return out
 
 
@@ -92,7 +102,9 @@ def find_bare_json_object(content: str) -> list[RawCall]:
 FORMATS.append(ContentFormat("bare_json_object", find_bare_json_object))
 
 
-_KIMI_SECTION_RE = re.compile(r"<\|tool_calls?_section_begin\|>(.*?)<\|tool_calls?_section_end\|>", re.DOTALL)
+_KIMI_SECTION_RE = re.compile(
+    r"<\|tool_calls?_section_begin\|>(.*?)<\|tool_calls?_section_end\|>", re.DOTALL
+)
 _KIMI_CALL_RE = re.compile(
     r"<\|tool_call_begin\|>\s*(?P<id>.*?)\s*<\|tool_call_argument_begin\|>(?P<args>.*?)<\|tool_call_end\|>",
     re.DOTALL,
@@ -120,8 +132,14 @@ def find_kimi_k2(content: str) -> list[RawCall]:
 FORMATS.append(ContentFormat("kimi_k2", find_kimi_k2))
 
 
-_INVOKE_RE = re.compile(r'<invoke\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</invoke>', re.DOTALL | re.IGNORECASE)
-_PARAM_RE = re.compile(r'<parameter\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter>', re.DOTALL | re.IGNORECASE)
+_INVOKE_RE = re.compile(
+    r'<invoke\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</invoke>',
+    re.DOTALL | re.IGNORECASE,
+)
+_PARAM_RE = re.compile(
+    r'<parameter\b[^>]*\bname\s*=\s*"([^"]+)"[^>]*>(.*?)</parameter>',
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def find_minimax_invoke(content: str) -> list[RawCall]:
@@ -142,9 +160,9 @@ FORMATS.append(ContentFormat("minimax_invoke", find_minimax_invoke))
 # Boundary+attribute gated so prose ("Use <function> in JS") is not matched.
 # Ported gate from agent/agent_runtime_helpers.py strip_think_blocks (openclaw#67318).
 _GEMMA_FUNC_RE = re.compile(
-    r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+    r"(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*"
     r'<function\b[^>]*\bname\s*=\s*"(?P<name>[^"]+)"[^>]*>'
-    r'(?P<body>(?:(?!</function>).)*)</function>',
+    r"(?P<body>(?:(?!</function>).)*)</function>",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -154,8 +172,83 @@ def find_gemma_function(content: str) -> list[RawCall]:
     for m in _GEMMA_FUNC_RE.finditer(content):
         obj = _loads_lenient(m.group("body").strip())
         if isinstance(obj, dict):
-            out.append(RawCall(name=m.group("name").strip(), arguments=obj, span=m.group(0)))
+            out.append(
+                RawCall(name=m.group("name").strip(), arguments=obj, span=m.group(0))
+            )
     return out
 
 
 FORMATS.append(ContentFormat("gemma_function", find_gemma_function))
+
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _env_on(name: str) -> bool:
+    return os.getenv(name, "true").lower() in _TRUTHY
+
+
+def _find_all(content: str) -> list[RawCall]:
+    out: list[RawCall] = []
+    for fmt in FORMATS:
+        if fmt.name == "bare_json_object" and not _env_on(
+            "HERMES_PROMOTE_BARE_JSON_TOOLCALL"
+        ):
+            continue
+        try:
+            out.extend(fmt.find_calls(content))
+        except Exception:
+            logger.warning(
+                "content tool-call parser %s raised", fmt.name, exc_info=True
+            )
+    return out
+
+
+def _dedupe_overlapping(raws: list[RawCall], content: str) -> list[RawCall]:
+    """Drop any RawCall whose span overlaps an already-accepted span's byte range."""
+    taken: list[tuple[int, int]] = []
+    kept: list[RawCall] = []
+    for rc in raws:
+        start = content.find(rc.span)
+        if start < 0:
+            continue
+        end = start + len(rc.span)
+        if any(start < t_end and t_start < end for t_start, t_end in taken):
+            continue
+        taken.append((start, end))
+        kept.append(rc)
+    return kept
+
+
+def _residual(content: str, spans: list[str]) -> str:
+    for span in spans:
+        content = content.replace(span, "", 1)
+    return content
+
+
+def extract_content_tool_calls(
+    content: str, valid_tool_names: set[str]
+) -> tuple[list[ToolCall], str]:
+    """Promote content-embedded tool calls whose name EXACTLY matches an active
+    tool. Returns (promoted ToolCalls, residual content with consumed markup
+    removed). Strict fallback: caller invokes only when structured tool_calls
+    is empty. Promoted names are exact members, so the loop's fuzzy
+    _repair_tool_call never touches them (native calls keep repair)."""
+    if not content or not _env_on("HERMES_PROMOTE_TOOLCALLS"):
+        return [], content
+    raws = _dedupe_overlapping(_find_all(content), content)
+    promoted: list[ToolCall] = []
+    consumed: list[str] = []
+    for i, rc in enumerate(raws):
+        consumed.append(rc.span)  # remove markup whether or not it promotes
+        if rc.name not in valid_tool_names:  # EXACT match, no fuzzy repair
+            continue
+        args_str = (
+            json.dumps(rc.arguments, ensure_ascii=False)
+            if isinstance(rc.arguments, dict)
+            else str(rc.arguments)
+        )
+        cid = _deterministic_call_id(rc.name, args_str, i)
+        promoted.append(build_tool_call(id=cid, name=rc.name, arguments=args_str))
+        logger.info("promoted content tool call: tool=%s id=%s", rc.name, cid)
+    return promoted, _residual(content, consumed)

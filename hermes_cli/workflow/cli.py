@@ -133,6 +133,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         codex_plan=codex_plan,
         contest=contest,
         cross_review=cross_review,
+        progress_callback=_progress_callback(args, dry_run),
         run_id=resume_run_id,
         resume=bool(resume_run_id),
     )
@@ -152,6 +153,7 @@ def _cmd_script(args: argparse.Namespace) -> int:
         codex_plan=bool(getattr(args, "codex_plan", False)),
         contest=bool(getattr(args, "contest", False)),
         cross_review=bool(getattr(args, "cross_review", False)),
+        progress_callback=_progress_callback(args, bool(getattr(args, "dry_run", False))),
     )
     result = runtime.run_script(
         getattr(args, "path"),
@@ -240,6 +242,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         codex_plan=bool(record["codex_plan"]),
         contest=bool(record["contest"]),
         cross_review=bool(record["cross_review"]),
+        progress_callback=_progress_callback(args, bool(record["dry_run"])),
         run_id=run_id,
         resume=True,
     )
@@ -307,6 +310,69 @@ def _add_execution_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Have reviewer/tester workers adversarially review contest candidates.",
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable foreground progress messages on stderr.",
+    )
+
+
+def _progress_callback(args: argparse.Namespace, dry_run: bool):
+    if dry_run:
+        return None
+    if getattr(args, "internal_background_worker", False):
+        return None
+    if getattr(args, "background", False):
+        return None
+    if getattr(args, "no_progress", False):
+        return None
+
+    def emit(event: str, payload: dict) -> None:
+        message = _progress_message(event, payload)
+        if message:
+            print(message, file=sys.stderr, flush=True)
+
+    return emit
+
+
+def _progress_message(event: str, payload: dict) -> str:
+    if event == "planned":
+        count = len(payload.get("subtasks") or [])
+        mode = payload.get("mode", "workflow")
+        return f"[workflow] planned {count} subtask(s), mode={mode}"
+    if event == "worker_selected":
+        return (
+            f"[workflow] {payload.get('subtask_id')}: "
+            f"worker={payload.get('selected_worker')} "
+            f"model={payload.get('model')}"
+        )
+    if event == "contest_candidate":
+        return (
+            f"[workflow] {payload.get('subtask_id')}: candidate "
+            f"{payload.get('worker_type')} score={payload.get('score')}"
+        )
+    if event == "cross_review_result":
+        return (
+            f"[workflow] {payload.get('subtask_id')}: cross-review "
+            f"{payload.get('reviewer')} score={payload.get('score')}"
+        )
+    if event == "contest_selected":
+        return (
+            f"[workflow] {payload.get('subtask_id')}: winner "
+            f"{payload.get('winner_worker')} score={payload.get('winner_score')}"
+        )
+    if event == "worker_result":
+        return f"[workflow] {payload.get('subtask_id')}: worker result saved"
+    if event == "evaluation":
+        return (
+            f"[workflow] {payload.get('subtask_id')}: evaluator "
+            f"score={payload.get('evaluator_score')} passed={payload.get('passed')}"
+        )
+    if event == "final":
+        return "[workflow] final response ready"
+    if event == "error":
+        return f"[workflow] error: {payload.get('error')}"
+    return ""
 
 
 def _store(args: argparse.Namespace) -> RunStore:

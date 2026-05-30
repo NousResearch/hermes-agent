@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -352,6 +352,7 @@ def run_workflow(
     codex_plan: bool = False,
     contest: bool = False,
     cross_review: bool = False,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
     run_id: str | None = None,
     resume: bool = False,
 ) -> WorkflowRun:
@@ -365,6 +366,7 @@ def run_workflow(
         codex_plan=codex_plan,
         contest=contest,
         cross_review=cross_review,
+        progress_callback=progress_callback,
     )
     if resume:
         if not run_id:

@@ -424,6 +424,7 @@ class WorkflowRuntime:
         codex_plan: bool = False,
         contest: bool = False,
         cross_review: bool = False,
+        progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         self.config = config
         self.dry_run = dry_run
@@ -434,6 +435,7 @@ class WorkflowRuntime:
         self.codex_plan = bool(codex_plan)
         self.contest = bool(contest)
         self.cross_review = bool(cross_review)
+        self.progress_callback = progress_callback
         self.analyzer = TaskAnalyzer()
         self.planner = Planner(max_subtasks=self.max_subtasks)
         self.router = Router(config)
@@ -611,6 +613,11 @@ class WorkflowRuntime:
         except WorkflowPaused:
             self._record(run_id, "status", {"status": "paused"})
             return self._build_run_from_store(self.store.get_run(run_id) or record)
+        except KeyboardInterrupt:
+            self.store.update_run(run_id, status="cancelled", error="Interrupted by user.")
+            self._record(run_id, "status", {"status": "cancelled"})
+            self._record(run_id, "error", {"error": "Interrupted by user."})
+            raise
         except Exception as exc:
             self.store.update_run(run_id, status="failed", error=str(exc))
             self._record(run_id, "error", {"error": str(exc)})
@@ -786,6 +793,8 @@ class WorkflowRuntime:
     def _record(self, run_id: str, event: str, payload: dict[str, Any]) -> None:
         self.logger.log(run_id, event, payload)
         self.store.append_event(run_id, event, payload)
+        if self.progress_callback:
+            self.progress_callback(event, payload)
 
 
 def _codex_plan_response(

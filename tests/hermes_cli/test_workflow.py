@@ -272,6 +272,7 @@ def test_workflow_parser_accepts_contest_flags():
             "--dry-run",
             "--contest",
             "--cross-review",
+            "--no-progress",
             "choose",
             "best",
         ]
@@ -280,3 +281,4 @@ def test_workflow_parser_accepts_contest_flags():
     assert args.workflow_command == "run"
     assert args.contest is True
     assert args.cross_review is True
+    assert args.no_progress is True

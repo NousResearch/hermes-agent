@@ -67,6 +67,9 @@ hermes workflow run --contest --cross-review --codex-plan \
   "Choose the best next plan for the multi-role login rollout"
 ```
 
+Model-backed foreground runs print progress to stderr so `--json` stdout stays
+machine-readable. Use `--no-progress` to suppress those messages.
+
 Run a reusable Python workflow script:
 
 ```python

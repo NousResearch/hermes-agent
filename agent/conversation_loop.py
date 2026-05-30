@@ -2850,6 +2850,47 @@ def run_conversation(
                     }
 
                 if retry_count >= max_retries:
+                    # Large resumed sessions can trip provider-side 5xx
+                    # pressure before Hermes' normal 50% context threshold.
+                    # Before surfacing a dead-end Telegram alert, compact once
+                    # and rebuild the request if there is enough context to
+                    # make compaction meaningful.
+                    _pressure_tokens = max(approx_tokens, approx_request_tokens)
+                    _pressure_threshold = min(
+                        agent.context_compressor.threshold_tokens,
+                        max(
+                            80_000,
+                            int(agent.context_compressor.context_length * 0.30),
+                        ),
+                    )
+                    if (
+                        agent.compression_enabled
+                        and classified.reason == FailoverReason.server_error
+                        and compression_attempts < max_compression_attempts
+                        and _pressure_tokens >= _pressure_threshold
+                        and len(messages) > agent.context_compressor.protect_first_n
+                                            + agent.context_compressor.protect_last_n + 1
+                    ):
+                        compression_attempts += 1
+                        original_len = len(messages)
+                        agent._emit_status(
+                            f"🗜️ Provider server error on large context "
+                            f"(~{_pressure_tokens:,} tokens) — compacting "
+                            f"and retrying ({compression_attempts}/{max_compression_attempts})..."
+                        )
+                        messages, active_system_prompt = agent._compress_context(
+                            messages, system_message,
+                            approx_tokens=_pressure_tokens,
+                            task_id=effective_task_id,
+                        )
+                        conversation_history = None
+                        if len(messages) < original_len:
+                            retry_count = 0
+                            primary_recovery_attempted = False
+                            time.sleep(2)
+                            restart_with_compressed_messages = True
+                            break
+
                     # Before falling back, try rebuilding the primary
                     # client once for transient transport errors (stale
                     # connection pool, TCP reset).  Only attempted once

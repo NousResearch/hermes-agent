@@ -813,11 +813,22 @@ class _CodexCompletionsAdapter:
                 _check_cancelled()
                 final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
+            # Backfill empty/missing output from collected stream events.
+            # The Codex Responses SDK can expose ``output=None`` on the final
+            # response; iterating that directly raises "'NoneType' object is
+            # not iterable" from helper properties like ``output_text``.
             _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
+            if _output is None:
+                _output = []
+            elif not isinstance(_output, list):
+                try:
+                    _output = list(_output)
+                except TypeError:
+                    _output = []
+            if not _output:
                 if collected_output_items:
-                    final.output = list(collected_output_items)
+                    _output = list(collected_output_items)
+                    final.output = _output
                     logger.debug(
                         "Codex auxiliary: backfilled %d output items from stream events",
                         len(collected_output_items),
@@ -827,10 +838,11 @@ class _CodexCompletionsAdapter:
                     # a function_call response with incidental text should not
                     # be collapsed into a plain-text message.
                     assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
+                    _output = [SimpleNamespace(
                         type="message", role="assistant", status="completed",
                         content=[SimpleNamespace(type="output_text", text=assembled)],
                     )]
+                    final.output = _output
                     logger.debug(
                         "Codex auxiliary: synthesized from %d deltas (%d chars)",
                         len(collected_text_deltas), len(assembled),
@@ -845,7 +857,7 @@ class _CodexCompletionsAdapter:
                     val = obj.get(key, default)
                 return val if val is not None else default
 
-            for item in getattr(final, "output", []):
+            for item in _output:
                 item_type = _item_get(item, "type")
                 if item_type == "message":
                     for part in (_item_get(item, "content") or []):

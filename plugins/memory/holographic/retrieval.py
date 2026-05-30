@@ -106,6 +106,8 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
+        # Track retrieval for usage metrics
+        self.store.touch_facts([f["fact_id"] for f in results])
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
@@ -147,9 +149,11 @@ class FactRetriever:
                 bank_vec = hrr.bytes_to_phases(bank_row["vector"])
                 extracted = hrr.unbind(bank_vec, probe_key)
                 # Use extracted signal to score individual facts
-                return self._score_facts_by_vector(
+                results = self._score_facts_by_vector(
                     extracted, category=category, limit=limit
                 )
+                self.store.touch_facts([f["fact_id"] for f in results])
+                return results
 
         # Score against individual fact vectors directly
         where = "WHERE hrr_vector IS NOT NULL"
@@ -187,7 +191,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self.store.touch_facts([f["fact_id"] for f in results])
+        return results
 
     def related(
         self,
@@ -255,7 +261,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self.store.touch_facts([f["fact_id"] for f in results])
+        return results
 
     def reason(
         self,
@@ -333,7 +341,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self.store.touch_facts([f["fact_id"] for f in results])
+        return results
 
     def contradict(
         self,

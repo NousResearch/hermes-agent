@@ -391,6 +391,23 @@ class MemoryStore:
                 "helpful_count": row["helpful_count"] + helpful_increment,
             }
 
+    def touch_facts(self, fact_ids: list[int]) -> None:
+        """Increment retrieval_count for the given fact IDs (usage tracking).
+
+        Called by FactRetriever after each successful retrieval so that
+        trust scoring and usage metrics reflect actual access patterns.
+        """
+        if not fact_ids:
+            return
+        with self._lock:
+            placeholders = ",".join("?" * len(fact_ids))
+            self._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 "
+                f"WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            self._conn.commit()
+
     # ------------------------------------------------------------------
     # Entity helpers
     # ------------------------------------------------------------------

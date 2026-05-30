@@ -385,6 +385,18 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
     return True
 
 
+def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect") -> None:
+    """On transport disconnect, reap the sessions that opted into close_on_disconnect
+    (sidecar) and re-point the rest back to stdio so later emits don't hit a dead socket."""
+    with _sessions_lock:
+        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+    for sid, session in owned:
+        if session.get("close_on_disconnect"):
+            _close_session_by_id(sid, end_reason=end_reason)
+        else:
+            session["transport"] = _stdio_transport
+
+
 def _shutdown_sessions() -> None:
     for sid in list(_sessions):
         _close_session_by_id(sid, end_reason="tui_shutdown")
@@ -2783,6 +2795,7 @@ def _(rid, params: dict) -> dict:
         "agent_error": None,
         "agent_ready": ready,
         "attached_images": [],
+        "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
         "cols": cols,
         "created_at": now,
         "edit_snapshots": {},

@@ -5432,6 +5432,40 @@ def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
     assert seen == [("s9", "tui_close")]
 
 
+def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+    )
+    transport = object()  # the disconnecting transport
+    server._sessions.clear()
+    server._sessions["a"] = {"transport": transport, "close_on_disconnect": True}
+    server._sessions["b"] = {"transport": transport, "close_on_disconnect": False}
+    try:
+        server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
+        assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
+        assert server._sessions["b"]["transport"] is server._stdio_transport  # re-pointed
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_records_close_on_disconnect_flag(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        on = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"close_on_disconnect": True}}
+        )["result"]["session_id"]
+        off = server.handle_request(
+            {"id": "2", "method": "session.create", "params": {}}
+        )["result"]["session_id"]
+        assert server._sessions[on]["close_on_disconnect"]
+        assert not server._sessions[off]["close_on_disconnect"]
+    finally:
+        server._sessions.clear()
+
+
 def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
     seen = []
     monkeypatch.setattr(

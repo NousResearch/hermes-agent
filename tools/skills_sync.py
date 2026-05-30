@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
@@ -34,6 +35,17 @@ from typing import Dict, List, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
+
+
+def _rmtree_readonly(path):
+    """Remove tree even if files are read-only (e.g. Nix store files)."""
+    def _handle_remove_readonly(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, onerror=_handle_remove_readonly)
 
 
 HERMES_HOME = get_hermes_home()
@@ -517,7 +529,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         if not quiet:
                             print(f"  ↑ {skill_name} (updated)")
                         # Remove backup after successful copy
-                        shutil.rmtree(backup, ignore_errors=True)
+                        _rmtree_readonly(backup)
                     except (OSError, IOError):
                         # Restore from backup
                         if backup.exists() and not dest.exists():

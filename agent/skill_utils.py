@@ -175,6 +175,16 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Read disabled skill names from config.yaml.
 
+    Supports two modes:
+
+    1. **Denylist (default)** — ``skills.disabled`` lists which skills to
+       block.  Everything else is allowed.
+
+    2. **Allowlist** — ``skills.enabled`` lists which skills to allow.
+       Everything else is blocked.  When both ``enabled`` and ``disabled``
+       are present, ``enabled`` takes precedence.  ``platform_disabled``
+       still applies on top of either mode.
+
     Args:
         platform: Explicit platform name (e.g. ``"telegram"``).  When
             *None*, resolves from ``HERMES_PLATFORM`` or
@@ -205,6 +215,24 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         or os.getenv("HERMES_PLATFORM")
         or get_session_env("HERMES_SESSION_PLATFORM")
     )
+
+    # ── Allowlist mode ──────────────────────────────────────────────────
+    # If `skills.enabled` is set, everything NOT in that list is disabled.
+    enabled = skills_cfg.get("enabled")
+    if enabled is not None:
+        enabled_set = _normalize_string_set(enabled)
+        all_names = _collect_all_skill_names()
+        disabled = all_names - enabled_set
+        # Platform-specific overrides still apply on top
+        if resolved_platform:
+            plat_disabled = (skills_cfg.get("platform_disabled") or {}).get(
+                resolved_platform
+            )
+            if plat_disabled is not None:
+                disabled |= _normalize_string_set(plat_disabled)
+        return disabled
+
+    # ── Denylist mode (original) ────────────────────────────────────────
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
             resolved_platform
@@ -212,6 +240,32 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         if platform_disabled is not None:
             return _normalize_string_set(platform_disabled)
     return _normalize_string_set(skills_cfg.get("disabled"))
+
+
+def _collect_all_skill_names() -> Set[str]:
+    """Scan all skill directories for available skill names."""
+    names: Set[str] = set()
+    skills_dir = get_skills_dir()
+    if skills_dir and skills_dir.exists():
+        for skill_md in iter_skill_index_files(skills_dir, "SKILL.md"):
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:2000]
+                frontmatter, _ = parse_frontmatter(content)
+                name = frontmatter.get("name", skill_md.parent.name)
+                names.add(str(name).strip())
+            except Exception:
+                continue
+    for ext_dir in get_external_skills_dirs():
+        if ext_dir.exists():
+            for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
+                try:
+                    content = skill_md.read_text(encoding="utf-8")[:2000]
+                    frontmatter, _ = parse_frontmatter(content)
+                    name = frontmatter.get("name", skill_md.parent.name)
+                    names.add(str(name).strip())
+                except Exception:
+                    continue
+    return names
 
 
 def _normalize_string_set(values) -> Set[str]:

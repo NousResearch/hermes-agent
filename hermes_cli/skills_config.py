@@ -25,8 +25,35 @@ PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
-    """Return disabled skill names. Platform-specific list falls back to global."""
+    """Return disabled skill names.
+
+    Supports two modes:
+    1. **Allowlist** — ``skills.enabled``: only those skills are allowed.
+    2. **Denylist (default)** — ``skills.disabled``: those skills are blocked.
+
+    Platform-specific list falls back to global in denylist mode; in
+    allowlist mode, ``platform_disabled`` is applied on top.
+    """
     skills_cfg = config.get("skills", {})
+
+    # Allowlist mode
+    enabled = skills_cfg.get("enabled")
+    if enabled is not None:
+        try:
+            from tools.skills_tool import _find_all_skills
+            all_skills = _find_all_skills(skip_disabled=True)
+            enabled_set = set(str(s.get("name", "")) for s in all_skills if s.get("name"))
+            all_names: set = enabled_set  # all skill names discovered
+            disabled = all_names - set(str(e).strip() for e in enabled if str(e).strip())
+        except Exception:
+            disabled = set()
+        if platform:
+            plat_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
+            if plat_disabled is not None:
+                disabled |= set(plat_disabled)
+        return disabled
+
+    # Denylist mode (original)
     global_disabled = set(skills_cfg.get("disabled", []))
     if platform is None:
         return global_disabled

@@ -2370,3 +2370,50 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestChatPrefix:
+    def test_extracts_first_five_segments(self):
+        key = "agent:main:telegram:private:12345:user:thread1"
+        assert approval_module._chat_prefix(key) == "agent:main:telegram:private:12345"
+
+    def test_returns_full_key_when_fewer_than_five_segments(self):
+        key = "agent:main:telegram"
+        assert approval_module._chat_prefix(key) == key
+
+    def test_exactly_five_segments(self):
+        key = "agent:main:discord:guild:99"
+        assert approval_module._chat_prefix(key) == key
+
+
+class TestResolveQueueKey:
+    def setup_method(self):
+        self._saved = dict(approval_module._gateway_queues)
+        approval_module._gateway_queues.clear()
+
+    def teardown_method(self):
+        approval_module._gateway_queues.clear()
+        approval_module._gateway_queues.update(self._saved)
+
+    def test_exact_match(self):
+        key = "agent:main:telegram:private:12345"
+        approval_module._gateway_queues[key] = []
+        assert approval_module._resolve_queue_key(key) == key
+
+    def test_prefix_fallback(self):
+        queue_key = "agent:main:telegram:private:12345:user42"
+        approval_module._gateway_queues[queue_key] = []
+        lookup = "agent:main:telegram:private:12345:user99"
+        assert approval_module._resolve_queue_key(lookup) == queue_key
+
+    def test_multi_prefix_collision_prefers_exact_prefix(self):
+        exact_prefix = "agent:main:telegram:private:12345"
+        suffixed = "agent:main:telegram:private:12345:user42"
+        approval_module._gateway_queues[exact_prefix] = []
+        approval_module._gateway_queues[suffixed] = []
+        lookup = "agent:main:telegram:private:12345:user99"
+        assert approval_module._resolve_queue_key(lookup) == exact_prefix
+
+    def test_no_match_returns_none(self):
+        approval_module._gateway_queues["agent:main:discord:guild:99"] = []
+        assert approval_module._resolve_queue_key("agent:main:telegram:private:1") is None

@@ -1435,10 +1435,16 @@ def _resolve_queue_key(session_key: str) -> Optional[str]:
     if session_key in _gateway_queues:
         return session_key
     prefix = _chat_prefix(session_key)
+    first_match = None
     for key in _gateway_queues:
         if _chat_prefix(key) == prefix:
-            return key
-    return None
+            if key == prefix:
+                return key
+            if first_match is None:
+                first_match = key
+    if first_match is not None:
+        logger.debug("[approval] Prefix fallback: %s -> %s", session_key, first_match)
+    return first_match
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -1478,6 +1484,8 @@ def has_blocking_approval(session_key: str) -> bool:
     with _lock:
         if _gateway_queues.get(session_key):
             return True
+        # O(n) scan over queue keys — acceptable since practical queue sizes
+        # are single-digit; lock-hold time is negligible.
         prefix = _chat_prefix(session_key)
         return any(
             _chat_prefix(key) == prefix

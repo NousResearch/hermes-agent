@@ -197,7 +197,8 @@
     # Default: /var/lib/hermes/workspace → /data/workspace.
     # Custom paths outside stateDir pass through unchanged (user must add extraVolumes).
     containerWorkDir =
-      if lib.hasPrefix "${cfg.stateDir}/" cfg.workingDirectory
+      if cfg.workingDirectory == cfg.stateDir then containerDataDir
+      else if lib.hasPrefix "${cfg.stateDir}/" cfg.workingDirectory
       then "${containerDataDir}/${lib.removePrefix "${cfg.stateDir}/" cfg.workingDirectory}"
       else cfg.workingDirectory;
 
@@ -242,7 +243,11 @@
         type = types.str;
         default = "${cfg.stateDir}/workspace";
         defaultText = literalExpression ''"''${cfg.stateDir}/workspace"'';
-        description = "Working directory for the agent.";
+        description = ''
+          Working directory for the agent. Also seeds settings.terminal.cwd in
+          config.yaml, so changes here are reasserted on the on-disk config on
+          every deploy.
+        '';
       };
 
       # ── Declarative config ───────────────────────────────────────────────

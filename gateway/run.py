@@ -1750,6 +1750,10 @@ class GatewayRunner:
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
 
+        # Per-session text-based model picker state (for platforms without interactive pickers).
+        # Key: session_key, Value: {"step": "provider"|"model", "providers": [...], ...}
+        self._model_menu_state: Dict[str, Dict[str, Any]] = {}
+
         # Slash-confirm state lives in tools.slash_confirm (module-level),
         # so platform adapters can resolve callbacks without a backref to
         # this runner.  Keep a local counter for confirm_id generation so
@@ -6812,6 +6816,17 @@ class GatewayRunner:
                     # itself will produce the next user-facing message.
                     return ""
 
+        # Intercept digit replies to the text-based /model numbered menu
+        # (for platforms without inline-button pickers, e.g. WhatsApp).
+        _model_menu = getattr(self, "_model_menu_state", {})
+        if _model_menu.get(_quick_key):
+            _raw_menu_reply = (event.text or "").strip()
+            if _raw_menu_reply and not _raw_menu_reply.startswith("/"):
+                return await self._handle_model_menu_reply(event, _quick_key, _raw_menu_reply)
+            elif _raw_menu_reply.startswith("/"):
+                # User issued a slash command while the menu is open — clear it.
+                _model_menu.pop(_quick_key, None)
+
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
         # /approve, /always, /cancel (plus short aliases).  Anything else
@@ -10235,10 +10250,9 @@ class GatewayRunner:
                     if result.success:
                         return None  # Picker sent — adapter handles the response
 
-            # Fallback: text list (for platforms without picker or if picker failed)
+            # Fallback: numbered menu (for platforms without inline-button pickers).
+            # Step 1 — show a numbered list of providers so the user can reply with a digit.
             provider_label = get_label(current_provider)
-            lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
-
             try:
                 providers = list_authenticated_providers(
                     current_provider=current_provider,
@@ -10248,23 +10262,43 @@ class GatewayRunner:
                     custom_providers=custom_provs,
                     max_models=5,
                 )
-                for p in providers:
-                    tag = t("gateway.model.current_tag") if p["is_current"] else ""
-                    lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
-                    if p["models"]:
-                        model_strs = ", ".join(f"`{m}`" for m in p["models"])
-                        extra = t("gateway.model.more_models_suffix", count=p["total_models"] - len(p["models"])) if p["total_models"] > len(p["models"]) else ""
-                        lines.append(f"  {model_strs}{extra}")
-                    elif p.get("api_url"):
-                        lines.append(f"  `{p['api_url']}`")
-                    lines.append("")
             except Exception:
-                pass
+                providers = []
 
-            lines.append(t("gateway.model.usage_switch_model"))
-            lines.append(t("gateway.model.usage_switch_provider"))
-            lines.append(t("gateway.model.usage_persist"))
-            return "\n".join(lines)
+            if providers:
+                # Save state so the next digit reply can advance to step 2.
+                self._model_menu_state[session_key] = {
+                    "step": "provider",
+                    "providers": providers,
+                    "current_model": current_model,
+                    "current_provider": current_provider,
+                    "current_base_url": current_base_url,
+                    "current_api_key": current_api_key,
+                    "user_provs": user_provs,
+                    "custom_provs": custom_provs,
+                }
+                lines = [
+                    t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label),
+                    "",
+                    "Select a provider:",
+                ]
+                for i, p in enumerate(providers, 1):
+                    tag = " ✓" if p["is_current"] else ""
+                    preview = ""
+                    if p["models"]:
+                        preview = " — " + ", ".join(p["models"][:3])
+                        if p["total_models"] > 3:
+                            preview += f" +{p['total_models'] - 3}"
+                    lines.append(f"{i}. {p['name']}{tag}{preview}")
+                lines.append("")
+                lines.append("Reply with a number, or `/model <name>` to set directly.")
+                return "\n".join(lines)
+            else:
+                lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
+                lines.append(t("gateway.model.usage_switch_model"))
+                lines.append(t("gateway.model.usage_switch_provider"))
+                lines.append(t("gateway.model.usage_persist"))
+                return "\n".join(lines)
 
         # Perform the switch
         result = _switch_model(
@@ -10397,6 +10431,163 @@ class GatewayRunner:
             lines.append(t("gateway.model.session_only_hint"))
 
         return "\n".join(lines)
+
+    async def _handle_model_menu_reply(
+        self, event: MessageEvent, session_key: str, raw_reply: str
+    ) -> str:
+        """Handle a digit (or 'cancel') reply to the text-based /model numbered menu.
+
+        Step 1 (provider selection): user replies with a provider number → show models.
+        Step 2 (model selection): user replies with a model number → switch model.
+        """
+        from hermes_cli.model_switch import (
+            switch_model as _switch_model,
+            resolve_display_context_length,
+        )
+
+        state = self._model_menu_state.get(session_key)
+        if state is None:
+            return ""
+
+        # Allow "cancel" / "0" to exit the menu at any step.
+        if raw_reply.strip().lower() in {"cancel", "exit", "quit", "0"}:
+            self._model_menu_state.pop(session_key, None)
+            return "Model selection cancelled."
+
+        # Parse the reply as an integer.
+        try:
+            choice = int(raw_reply.strip())
+        except ValueError:
+            # Non-numeric reply while menu is active — prompt for a number.
+            step = state.get("step")
+            if step == "provider":
+                n = len(state.get("providers", []))
+            else:
+                n = len(state.get("selected_provider", {}).get("models", []))
+            return f"Please reply with a number (1\u2013{n}) or /model to restart."
+
+        step = state.get("step")
+
+        if step == "provider":
+            providers = state["providers"]
+            if choice < 1 or choice > len(providers):
+                return f"Please reply with a number between 1 and {len(providers)}, or /model to restart."
+
+            selected = providers[choice - 1]
+            models = selected.get("models", [])
+            total = selected.get("total_models", len(models))
+
+            if not models and not selected.get("api_url"):
+                # No discoverable models for this provider.
+                self._model_menu_state.pop(session_key, None)
+                return (
+                    f"No models found for {selected['name']}. "
+                    f"Try `/model <name> --provider {selected['slug']}` to set directly."
+                )
+
+            # Advance to step 2: show numbered model list.
+            state["step"] = "model"
+            state["selected_provider"] = selected
+            lines = [f"*{selected['name']} models*"]
+            if total > len(models):
+                lines[0] += f" (showing {len(models)} of {total})"
+            lines.append("")
+            cur_model = state.get("current_model", "")
+            for i, m in enumerate(models, 1):
+                marker = " \u2713" if (selected["is_current"] and m == cur_model) else ""
+                lines.append(f"{i}. {m}{marker}")
+            lines.append("")
+            lines.append("Reply with a number to switch, or /model to restart.")
+            return "\n".join(lines)
+
+        elif step == "model":
+            selected_provider = state.get("selected_provider", {})
+            models = selected_provider.get("models", [])
+            if choice < 1 or choice > len(models):
+                return f"Please reply with a number between 1 and {len(models)}, or /model to restart."
+
+            model_id = models[choice - 1]
+            provider_slug = selected_provider.get("slug", "")
+
+            # Execute the switch — same logic as the Telegram picker callback.
+            result = _switch_model(
+                raw_input=model_id,
+                current_provider=state.get("current_provider", ""),
+                current_model=state.get("current_model", ""),
+                current_base_url=state.get("current_base_url", ""),
+                current_api_key=state.get("current_api_key", ""),
+                is_global=False,
+                explicit_provider=provider_slug,
+                user_providers=state.get("user_provs"),
+                custom_providers=state.get("custom_provs"),
+            )
+
+            # Always clear the menu state after an attempt.
+            self._model_menu_state.pop(session_key, None)
+
+            if not result.success:
+                return t("gateway.model.error_prefix", error=result.error_message)
+
+            # Update cached agent in-place (best effort).
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached_entry = _cache.get(session_key)
+                if cached_entry and cached_entry[0] is not None:
+                    try:
+                        cached_entry[0].switch_model(
+                            new_model=result.new_model,
+                            new_provider=result.target_provider,
+                            api_key=result.api_key,
+                            base_url=result.base_url,
+                            api_mode=result.api_mode,
+                        )
+                    except Exception as exc:
+                        logger.warning("Text menu model switch failed for cached agent: %s", exc)
+
+            # Store model-switch note so the model knows about the change.
+            if not hasattr(self, "_pending_model_notes"):
+                self._pending_model_notes = {}
+            self._pending_model_notes[session_key] = (
+                f"[Note: model was just switched from {state.get('current_model')} to {result.new_model} "
+                f"via {result.provider_label or result.target_provider}. "
+                f"Adjust your self-identification accordingly.]"
+            )
+
+            # Store session override for the next agent creation.
+            self._session_model_overrides[session_key] = {
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "api_key": result.api_key,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+            }
+            self._evict_cached_agent(session_key)
+
+            # Build confirmation message.
+            plabel = result.provider_label or result.target_provider
+            lines = [t("gateway.model.switched", model=result.new_model)]
+            lines.append(t("gateway.model.provider_label", provider=plabel))
+            mi = result.model_info
+            ctx = resolve_display_context_length(
+                result.new_model,
+                result.target_provider,
+                base_url=result.base_url or state.get("current_base_url") or "",
+                api_key=result.api_key or state.get("current_api_key") or "",
+                model_info=mi,
+                custom_providers=state.get("custom_provs"),
+            )
+            if ctx:
+                lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
+            if mi and mi.max_output:
+                lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
+            lines.append(t("gateway.model.session_only_hint"))
+            return "\n".join(lines)
+
+        # Unknown step — clear and bail.
+        self._model_menu_state.pop(session_key, None)
+        return ""
 
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.

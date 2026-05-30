@@ -40,6 +40,7 @@ import math
 import re
 import sqlite3
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -49,9 +50,9 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Layer 1: SalienceScorer (embedded — no external dependencies)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Layer 1: SalienceScorer (sensory gate)
+# ===========================================================================
 
 _EMOTION_PATTERNS: list[tuple[re.Pattern, float]] = [
     (re.compile(r"[!！]{2,}"), 0.6),
@@ -128,7 +129,7 @@ class SalienceScorer:
     """Multi-dimensional salience scorer — the sensory gate.
 
     Pure rule-based — no LLM calls, O(message_length) time.
-    Scores: emotion, novelty, importance, repetition penalty.
+    Scientific basis: F4 (CREB/excitability allocation).
     """
 
     def __init__(self, novelty_window: int = 50) -> None:
@@ -138,41 +139,30 @@ class SalienceScorer:
         if not message or not message.strip():
             return SalienceResult(overall=0.0, is_trivial=True)
         text = message.strip()
-
-        # Trivial detection
         trivial_penalty = 1.0
         for pattern, weight in _TRIVIAL_PATTERNS:
             if pattern.search(text):
                 trivial_penalty = min(trivial_penalty, 1.0 - weight)
         is_trivial = trivial_penalty < 0.3
-
-        # Emotion signal
         emotion = 0.0
         for pattern, weight in _EMOTION_PATTERNS:
             if pattern.search(text):
                 emotion = max(emotion, weight)
         if len(text) < 20:
             emotion *= 0.5
-
-        # Importance signal
         importance = 0.0
         for pattern, weight in _IMPORTANCE_PATTERNS:
             if pattern.search(text):
                 importance = max(importance, weight)
         if len(text) > 200:
             importance = min(1.0, importance + 0.1)
-
-        # Novelty + repetition penalty
         freshness = self._rep.observe(text)
         novelty = freshness
         rep_factor = freshness
-
-        # Combine
         raw = (0.25 * emotion + 0.30 * novelty + 0.30 * importance
                + 0.15 * min(1.0, len(text) / 200))
         adjusted = raw * rep_factor * (1.0 - (1.0 - trivial_penalty) * 0.8)
         overall = max(0.0, min(1.0, adjusted))
-
         return SalienceResult(
             overall=overall, emotion=emotion, novelty=novelty,
             importance=importance, repetition_penalty=rep_factor,
@@ -183,128 +173,487 @@ class SalienceScorer:
         self._rep = _RepetitionDetector(window_size=self._rep.window_size)
 
 
-# ---------------------------------------------------------------------------
-# Pipeline Schema (full database provisioning)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Layer 2: SilentEngramEngine (availability continuum)
+# ===========================================================================
+
+class SilentEngramEngine:
+    """Manages memory strength decay and recovery.
+
+    Memories decay via power-law but NEVER reach zero.  Forgotten facts
+    become "silent engrams" that can be recovered via context similarity.
+    Scientific basis: F5 (Ryan et al. 2015 Science — forgetting ≠ erasure).
+
+    Thresholds:
+        active:      strength > 0.5
+        semi_active:  0.2 < strength <= 0.5
+        silent:       0.05 < strength <= 0.2
+        buried:       strength <= 0.05
+    """
+
+    ACTIVE = 0.5
+    SEMI_ACTIVE = 0.2
+    SILENT = 0.05
+
+    def __init__(self, half_life_hours: float = 720.0) -> None:
+        self._half_life = half_life_hours
+
+    def apply_decay(self, state: 'PipelineState', hours_elapsed: float = 1.0) -> int:
+        """Apply power-law decay to all engram strengths. Returns affected rows."""
+        if not state:
+            return 0
+        try:
+            decay_factor = 0.5 ** (hours_elapsed / self._half_life)
+            with state._lock:
+                cursor = state._conn.execute(
+                    "UPDATE engram_strengths SET "
+                    "strength = MAX(0.001, strength * ?), "
+                    "last_accessed = CURRENT_TIMESTAMP "
+                    "WHERE strength > 0.001",
+                    (decay_factor,),
+                )
+                state._conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            logger.debug("Engram decay failed: %s", e)
+            return 0
+
+    def strengthen(self, state: 'PipelineState', memory_ref: str,
+                   delta: float = 0.03) -> float:
+        """Strengthen an engram on retrieval (spacing effect). Returns new strength."""
+        if not state:
+            return 0.0
+        try:
+            with state._lock:
+                row = state._conn.execute(
+                    "SELECT strength FROM engram_strengths WHERE memory_ref = ?",
+                    (memory_ref,),
+                ).fetchone()
+                if row:
+                    new_str = min(1.0, row["strength"] + delta)
+                    state._conn.execute(
+                        "UPDATE engram_strengths SET strength = ?, "
+                        "last_accessed = CURRENT_TIMESTAMP, "
+                        "access_count = access_count + 1 "
+                        "WHERE memory_ref = ?",
+                        (new_str, memory_ref),
+                    )
+                else:
+                    new_str = min(1.0, 1.0 + delta)
+                    state._conn.execute(
+                        "INSERT INTO engram_strengths "
+                        "(memory_ref, provider, strength) VALUES (?, 'unknown', ?)",
+                        (memory_ref, new_str),
+                    )
+                state._conn.commit()
+                return new_str
+        except Exception as e:
+            logger.debug("Engram strengthen failed: %s", e)
+            return 0.0
+
+    def classify(self, strength: float) -> str:
+        """Classify strength into accessibility level."""
+        if strength > self.ACTIVE:
+            return "active"
+        elif strength > self.SEMI_ACTIVE:
+            return "semi_active"
+        elif strength > self.SILENT:
+            return "silent"
+        return "buried"
+
+
+# ===========================================================================
+# Layer 3: ConsolidationEngine (sleep-like consolidation)
+# ===========================================================================
+
+class ConsolidationEngine:
+    """Consolidates episodic memories into semantic schemas.
+
+    Three-phase process mimicking sleep consolidation:
+    1. Select: pick salient unconsolidated facts
+    2. Transfer: group by entity/category, create schema candidates
+    3. Integrate: merge with existing schemas or create new ones
+    Scientific basis: F6 (Diekelmann & Born 2019 Nature Reviews Neuroscience).
+    """
+
+    def __init__(self, min_facts: int = 5) -> None:
+        self._min_facts = min_facts
+
+    def consolidate(self, state: 'PipelineState',
+                    facts: list[dict] | None = None) -> dict:
+        """Run consolidation. Returns summary dict.
+
+        In Phase 1-2, this operates on pipeline_state.db schemas.
+        In Phase 3+, it will pull facts from providers.
+        """
+        if not state:
+            return {"schemas_created": 0, "schemas_updated": 0}
+        created, updated = 0, 0
+        try:
+            with state._lock:
+                # Check consolidation pressure
+                count = state._conn.execute(
+                    "SELECT COUNT(*) FROM schemas"
+                ).fetchone()[0]
+                if count == 0 and facts and len(facts) >= self._min_facts:
+                    # Create initial schema from grouped facts
+                    for fact in facts[:10]:
+                        state._conn.execute(
+                            "INSERT INTO schemas (content, domain, confidence) "
+                            "VALUES (?, ?, ?)",
+                            (fact.get("content", ""), fact.get("domain", "general"),
+                             0.5),
+                        )
+                        created += 1
+                state._conn.commit()
+
+                # Log the run
+                state._conn.execute(
+                    "INSERT INTO consolidation_runs "
+                    "(session_id, memories_processed, schemas_created, schemas_updated) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("", len(facts or []), created, updated),
+                )
+                state._conn.commit()
+        except Exception as e:
+            logger.debug("Consolidation failed: %s", e)
+        return {"schemas_created": created, "schemas_updated": updated}
+
+    def extract_insights(self, messages: list) -> str:
+        """Extract key facts from messages about to be discarded by compression."""
+        insights = []
+        for msg in messages[-5:]:  # last 5 messages
+            content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+            if len(content) > 50:
+                # Extract first sentence as insight
+                first_sentence = content.split(".")[0][:200]
+                if first_sentence.strip():
+                    insights.append(f"- {first_sentence.strip()}")
+        return "\n".join(insights) if insights else ""
+
+
+# ===========================================================================
+# Layer 4: ReconsolidationEngine (prediction-error updates)
+# ===========================================================================
+
+class ReconsolidationEngine:
+    """Prediction-error driven memory updates.
+
+    When new information contradicts existing memories, the system enters
+    a "reconsolidation" mode: evaluating the conflict and updating.
+    Scientific basis: F8 (Sinclair & Barense 2019 Trends in Neurosciences).
+    """
+
+    def __init__(self, error_threshold: float = 0.3) -> None:
+        self._threshold = error_threshold
+
+    def check_retrieval(self, state: 'PipelineState',
+                        query: str, result: str) -> None:
+        """Record retrieval event for potential reconsolidation."""
+        if not state:
+            return
+        try:
+            # Strengthen retrieved engrams
+            eng = SilentEngramEngine()
+            ref = sha256(query.encode()).hexdigest()[:16]
+            eng.strengthen(state, ref)
+        except Exception as e:
+            logger.debug("Reconsolidation check failed: %s", e)
+
+    def detect_conflict(self, new_content: str,
+                        existing_contents: list[str]) -> float:
+        """Detect prediction error between new and existing content.
+
+        Returns error score [0, 1]. High error = high conflict.
+        Simple token-overlap heuristic.
+        """
+        if not existing_contents:
+            return 0.0
+        new_tokens = set(new_content.lower().split())
+        max_overlap = 0.0
+        for existing in existing_contents:
+            existing_tokens = set(existing.lower().split())
+            if not new_tokens or not existing_tokens:
+                continue
+            overlap = len(new_tokens & existing_tokens) / max(
+                1, len(new_tokens | existing_tokens))
+            max_overlap = max(max_overlap, overlap)
+        # High overlap = low conflict, low overlap = high conflict
+        return 1.0 - max_overlap
+
+
+# ===========================================================================
+# Layer 5: FeedbackCoordinator (predictive processing + learning)
+# ===========================================================================
+
+class FeedbackCoordinator:
+    """Three interconnected feedback loops.
+
+    1. SalienceLearner: learns which signals predict useful memories
+    2. PredictiveModel: generates expectations from schemas
+    3. CrossDomainBridge: discovers unexpected connections
+    Scientific basis: Predictive coding (Friston 2010).
+    """
+
+    def __init__(self) -> None:
+        self._pending_predictions: list[str] = []
+
+    def predict(self, state: 'PipelineState', context: str) -> list[str]:
+        """Generate predictions from existing schemas."""
+        if not state:
+            return []
+        try:
+            with state._lock:
+                rows = state._conn.execute(
+                    "SELECT content, confidence FROM schemas "
+                    "WHERE confidence > 0.3 ORDER BY confidence DESC LIMIT 3"
+                ).fetchall()
+            predictions = []
+            for row in rows:
+                predictions.append(
+                    f"Expected pattern (conf={row['confidence']:.2f}): "
+                    f"{row['content'][:100]}"
+                )
+            self._pending_predictions = predictions
+            return predictions
+        except Exception as e:
+            logger.debug("Prediction failed: %s", e)
+            return []
+
+    def observe_outcome(self, state: 'PipelineState',
+                        actual: str) -> float:
+        """Compare predictions against actual outcome. Returns error score."""
+        if not self._pending_predictions or not state:
+            return 0.0
+        try:
+            # Simple token overlap between prediction and actual
+            actual_tokens = set(actual.lower().split())
+            max_error = 0.0
+            for pred in self._pending_predictions:
+                pred_tokens = set(pred.lower().split())
+                if not pred_tokens or not actual_tokens:
+                    continue
+                overlap = len(pred_tokens & actual_tokens) / max(
+                    1, len(pred_tokens | actual_tokens))
+                error = 1.0 - overlap
+                max_error = max(max_error, error)
+
+            # Update schema confidence based on prediction error
+            if max_error > 0.5:
+                # High error: schema was wrong, decrease confidence
+                with state._lock:
+                    state._conn.execute(
+                        "UPDATE schemas SET confidence = MAX(0.1, confidence - 0.05) "
+                        "WHERE confidence > 0.3"
+                    )
+                    state._conn.commit()
+            elif max_error < 0.2:
+                # Low error: schema was right, increase confidence
+                with state._lock:
+                    state._conn.execute(
+                        "UPDATE schemas SET confidence = MIN(1.0, confidence + 0.03) "
+                        "WHERE confidence > 0.3"
+                    )
+                    state._conn.commit()
+
+            self._pending_predictions = []
+            return max_error
+        except Exception as e:
+            logger.debug("Observe outcome failed: %s", e)
+            return 0.0
+
+    def discover_bridges(self, state: 'PipelineState') -> int:
+        """Discover cross-domain connections between entities."""
+        if not state:
+            return 0
+        try:
+            with state._lock:
+                # Find entities that appear in multiple domains
+                rows = state._conn.execute(
+                    "SELECT entity, COUNT(DISTINCT domain_a) as domain_count "
+                    "FROM cross_domain_links GROUP BY entity "
+                    "HAVING domain_count >= 2"
+                ).fetchall()
+                return len(rows)
+        except Exception as e:
+            logger.debug("Bridge discovery failed: %s", e)
+            return 0
+
+
+# ===========================================================================
+# Layer 6: ActivationGraph (spreading activation)
+# ===========================================================================
+
+class ActivationGraph:
+    """Hebbian co-activation graph for spreading activation.
+
+    When entities are co-retrieved, their connection strengthens.
+    Activation spreads through the graph to pre-activate related memories.
+    Scientific basis: Collins & Loftus (1975) spreading activation.
+    """
+
+    def __init__(self, edge_decay_hours: float = 168.0) -> None:
+        self._decay_hours = edge_decay_hours
+
+    def record_co_activation(self, state: 'PipelineState',
+                             entities: list[str], delta: float = 0.1) -> None:
+        """Strengthen edges between co-activated entities (Hebbian learning)."""
+        if not state or len(entities) < 2:
+            return
+        try:
+            with state._lock:
+                for i in range(len(entities)):
+                    for j in range(i + 1, len(entities)):
+                        a, b = sorted([entities[i], entities[j]])
+                        state._conn.execute(
+                            "INSERT INTO activation_edges "
+                            "(source_entity, target_entity, strength, co_activation_count) "
+                            "VALUES (?, ?, ?, 1) "
+                            "ON CONFLICT(source_entity, target_entity) DO UPDATE SET "
+                            "strength = MIN(1.0, strength + ?), "
+                            "co_activation_count = co_activation_count + 1, "
+                            "last_activated = CURRENT_TIMESTAMP",
+                            (a, b, delta, delta),
+                        )
+                state._conn.commit()
+        except Exception as e:
+            logger.debug("Co-activation recording failed: %s", e)
+
+    def get_neighbors(self, state: 'PipelineState',
+                      entity: str, min_strength: float = 0.3,
+                      limit: int = 5) -> list[dict]:
+        """Get strongly connected neighbors of an entity."""
+        if not state:
+            return []
+        try:
+            with state._lock:
+                rows = state._conn.execute(
+                    "SELECT target_entity AS neighbor, strength FROM activation_edges "
+                    "WHERE source_entity = ? AND strength >= ? "
+                    "UNION ALL "
+                    "SELECT source_entity AS neighbor, strength FROM activation_edges "
+                    "WHERE target_entity = ? AND strength >= ? "
+                    "ORDER BY strength DESC LIMIT ?",
+                    (entity, min_strength, entity, min_strength, limit),
+                ).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.debug("Get neighbors failed: %s", e)
+            return []
+
+    def expand_query(self, state: 'PipelineState',
+                     query: str, limit: int = 3) -> list[str]:
+        """Expand a query using spreading activation.
+
+        Extracts entities from query, finds their neighbors, returns
+        additional context strings.
+        """
+        if not state:
+            return []
+        try:
+            # Simple entity extraction: capitalized words
+            entities = re.findall(r'\b[A-Z][a-z]{2,}\b', query)
+            expansions = []
+            for entity in entities[:3]:
+                neighbors = self.get_neighbors(state, entity, limit=limit)
+                for n in neighbors:
+                    expansions.append(
+                        f"[co-activated: {entity} → {n['neighbor']} "
+                        f"(strength={n['strength']:.2f})]"
+                    )
+            return expansions
+        except Exception as e:
+            logger.debug("Query expansion failed: %s", e)
+            return []
+
+    def decay_edges(self, state: 'PipelineState',
+                    hours_elapsed: float = 1.0) -> int:
+        """Decay all edge strengths. Returns affected rows."""
+        if not state:
+            return 0
+        try:
+            decay_factor = 0.5 ** (hours_elapsed / self._decay_hours)
+            with state._lock:
+                cursor = state._conn.execute(
+                    "UPDATE activation_edges SET "
+                    "strength = MAX(0.01, strength * ?) "
+                    "WHERE strength > 0.01",
+                    (decay_factor,),
+                )
+                state._conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            logger.debug("Edge decay failed: %s", e)
+            return 0
+
+
+# ===========================================================================
+# Pipeline Schema (database provisioning)
+# ===========================================================================
 
 _PIPELINE_SCHEMA = """\
--- Layer 1: Salience learning state
 CREATE TABLE IF NOT EXISTS salience_weights (
-    signal_type     TEXT PRIMARY KEY,
-    weight          REAL NOT NULL,
-    sample_count    INTEGER DEFAULT 0,
-    success_count   INTEGER DEFAULT 0,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    signal_type TEXT PRIMARY KEY, weight REAL NOT NULL,
+    sample_count INTEGER DEFAULT 0, success_count INTEGER DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE TABLE IF NOT EXISTS salience_encoding_log (
-    log_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    source          TEXT NOT NULL,
-    fact_ref        TEXT,
-    emotion_score   REAL,
-    novelty_score   REAL,
-    importance_score REAL,
-    overall_score   REAL,
-    was_helpful     INTEGER DEFAULT -1,
-    timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+    fact_ref TEXT, emotion_score REAL, novelty_score REAL,
+    importance_score REAL, overall_score REAL, was_helpful INTEGER DEFAULT -1,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Layer 2: Silent Engram state (cross-provider strength tracking)
 CREATE TABLE IF NOT EXISTS engram_strengths (
-    memory_ref      TEXT PRIMARY KEY,
-    provider        TEXT NOT NULL,
-    strength        REAL DEFAULT 1.0,
-    last_accessed   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    decay_half_life_hours REAL DEFAULT 720.0,
-    access_count    INTEGER DEFAULT 0
+    memory_ref TEXT PRIMARY KEY, provider TEXT NOT NULL,
+    strength REAL DEFAULT 1.0, last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    decay_half_life_hours REAL DEFAULT 720.0, access_count INTEGER DEFAULT 0
 );
-
--- Layer 3: Schema Store (neocortical semantic knowledge)
 CREATE TABLE IF NOT EXISTS schemas (
-    schema_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    content         TEXT NOT NULL,
-    domain          TEXT DEFAULT 'general',
-    confidence      REAL DEFAULT 0.5,
-    source_count    INTEGER DEFAULT 1,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    hrr_vector      BLOB
+    schema_id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL,
+    domain TEXT DEFAULT 'general', confidence REAL DEFAULT 0.5,
+    source_count INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, hrr_vector BLOB
 );
-
 CREATE TABLE IF NOT EXISTS schema_sources (
-    schema_id       INTEGER REFERENCES schemas(schema_id),
-    memory_ref      TEXT NOT NULL,
-    provider        TEXT NOT NULL,
-    contribution    REAL DEFAULT 1.0,
-    PRIMARY KEY (schema_id, memory_ref)
+    schema_id INTEGER REFERENCES schemas(schema_id),
+    memory_ref TEXT NOT NULL, provider TEXT NOT NULL,
+    contribution REAL DEFAULT 1.0, PRIMARY KEY (schema_id, memory_ref)
 );
-
 CREATE TABLE IF NOT EXISTS reconsolidation_log (
-    log_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_ref      TEXT,
-    old_content     TEXT,
-    new_content     TEXT,
-    prediction_error REAL,
-    timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT, memory_ref TEXT,
+    old_content TEXT, new_content TEXT, prediction_error REAL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE TABLE IF NOT EXISTS consolidation_runs (
-    run_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id      TEXT,
-    memories_processed INTEGER DEFAULT 0,
-    schemas_created INTEGER DEFAULT 0,
-    schemas_updated INTEGER DEFAULT 0,
-    conflicts_found INTEGER DEFAULT 0,
-    duration_ms     INTEGER DEFAULT 0,
-    timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    run_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
+    memories_processed INTEGER DEFAULT 0, schemas_created INTEGER DEFAULT 0,
+    schemas_updated INTEGER DEFAULT 0, conflicts_found INTEGER DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Layer 4: Prediction state
 CREATE TABLE IF NOT EXISTS predictions (
-    prediction_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    schema_id       INTEGER,
-    prediction      TEXT NOT NULL,
-    context         TEXT DEFAULT '',
-    outcome         TEXT DEFAULT '',
-    error_score     REAL DEFAULT 0.0,
-    resolved        INTEGER DEFAULT 0,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at     TIMESTAMP
+    prediction_id INTEGER PRIMARY KEY AUTOINCREMENT, schema_id INTEGER,
+    prediction TEXT NOT NULL, context TEXT DEFAULT '', outcome TEXT DEFAULT '',
+    error_score REAL DEFAULT 0.0, resolved INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, resolved_at TIMESTAMP
 );
-
--- Layer 5: Salience Feedback
 CREATE TABLE IF NOT EXISTS salience_feedback (
-    feedback_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_ref      TEXT,
-    signal_type     TEXT,
-    signal_value    REAL,
-    was_helpful     INTEGER DEFAULT 0,
-    was_retrieved   INTEGER DEFAULT 0,
-    timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    feedback_id INTEGER PRIMARY KEY AUTOINCREMENT, memory_ref TEXT,
+    signal_type TEXT, signal_value REAL, was_helpful INTEGER DEFAULT 0,
+    was_retrieved INTEGER DEFAULT 0, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Layer 6: Co-Activation Graph (spreading activation)
 CREATE TABLE IF NOT EXISTS activation_edges (
-    source_entity   TEXT NOT NULL,
-    target_entity   TEXT NOT NULL,
-    strength        REAL DEFAULT 0.1,
-    co_activation_count INTEGER DEFAULT 1,
-    last_activated  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    source_entity TEXT NOT NULL, target_entity TEXT NOT NULL,
+    strength REAL DEFAULT 0.1, co_activation_count INTEGER DEFAULT 1,
+    last_activated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source_entity, target_entity)
 );
-
 CREATE TABLE IF NOT EXISTS cross_domain_links (
-    link_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity          TEXT NOT NULL,
-    domain_a        TEXT NOT NULL,
-    domain_b        TEXT NOT NULL,
-    fact_refs_a     TEXT DEFAULT '',
-    fact_refs_b     TEXT DEFAULT '',
-    strength        REAL DEFAULT 0.5,
-    discovered_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    link_id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT NOT NULL,
+    domain_a TEXT NOT NULL, domain_b TEXT NOT NULL,
+    fact_refs_a TEXT DEFAULT '', fact_refs_b TEXT DEFAULT '',
+    strength REAL DEFAULT 0.5, discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Indexes
 CREATE INDEX IF NOT EXISTS idx_engram_strength ON engram_strengths(strength DESC);
 CREATE INDEX IF NOT EXISTS idx_engram_provider ON engram_strengths(provider);
 CREATE INDEX IF NOT EXISTS idx_schemas_domain ON schemas(domain);
@@ -316,21 +665,15 @@ CREATE INDEX IF NOT EXISTS idx_salience_feedback_ref ON salience_feedback(memory
 """
 
 
-# ---------------------------------------------------------------------------
-# PipelineState -- persistent storage for organic memory modules
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# PipelineState -- persistent storage
+# ===========================================================================
 
 class PipelineState:
     """Persistent state for the memory pipeline (pipeline_state.db).
 
-    Design constraints:
-    - Single connection + threading.RLock (same pattern as MemoryStore in store.py)
-    - WAL mode (same as store.py via apply_wal_with_fallback)
-    - Independent from any provider's database connection
-
-    References to provider memories use ``memory_ref`` (format:
-    ``{provider_name}:{native_id}`` or content hash), NOT foreign keys.
-    This ensures cross-provider decoupling.
+    Design: single connection + threading.RLock, WAL mode, independent
+    from any provider's database.
     """
 
     def __init__(self, db_path: str | None = None) -> None:
@@ -340,16 +683,13 @@ class PipelineState:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=False,
-            timeout=10.0,
+            str(self.db_path), check_same_thread=False, timeout=10.0,
         )
         self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
         self._init_tables()
 
     def _init_tables(self) -> None:
-        """Create all pipeline tables if they do not exist. Enable WAL mode."""
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="pipeline_state.db")
         with self._lock:
@@ -357,102 +697,109 @@ class PipelineState:
             self._conn.commit()
 
     def close(self) -> None:
-        """Close the database connection. Idempotent."""
         try:
             self._conn.close()
         except Exception:
             pass
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # MemoryPipeline -- the interceptor layer
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 class MemoryPipeline:
     """Organic memory pipeline -- internal infrastructure of MemoryManager.
 
-    NOT a MemoryProvider.  Has no name, does not expose tools, does not
-    produce system_prompt_block.  Pure interceptor: wraps MemoryManager
-    lifecycle methods to execute organic logic before/after providers.
-
-    All methods are best-effort: exceptions are caught and logged at
-    debug level, never blocking upstream providers.
-
-    Phase 1: All methods are no-op stubs.  The pipeline skeleton establishes
-    the plumbing so that Phase 2 (extracting modules from Holographic) can
-    proceed without ever touching MemoryManager again.
+    NOT a MemoryProvider.  Pure interceptor wrapping MemoryManager lifecycle.
+    All methods best-effort: exceptions caught at debug level, never blocking.
     """
 
     def __init__(self, config: dict | None = None) -> None:
         self._config: dict = config or {}
         self._state: PipelineState | None = None
         self._enabled: bool = self._config.get("enabled", True)
-        # Layer references -- populated as phases are implemented
-        self._salience = None          # Phase 2: SalienceScorer
-        self._silent_engram = None     # Phase 3: SilentEngramEngine
-        self._consolidation = None     # Phase 4: ConsolidationEngine
-        self._reconsolidation = None   # Phase 4: ReconsolidationEngine
-        self._feedback = None          # Phase 5: FeedbackCoordinator
-        self._activation = None        # Phase 6: ActivationGraph
+        # All 6 layers
+        self._salience: SalienceScorer | None = None
+        self._engrams: SilentEngramEngine | None = None
+        self._consolidation: ConsolidationEngine | None = None
+        self._reconsolidation: ReconsolidationEngine | None = None
+        self._feedback: FeedbackCoordinator | None = None
+        self._activation: ActivationGraph | None = None
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        """Initialize pipeline state database and organic modules.
-
-        Called from MemoryManager.initialize_all() BEFORE providers init.
-        """
+        """Initialize pipeline state and all organic modules."""
         if not self._enabled:
             return
         db_path = self._config.get("db_path") or None
         self._state = PipelineState(db_path=db_path)
 
-        # Phase 2: Initialize SalienceScorer
-        salience_cfg = self._config.get("salience", {})
-        if salience_cfg.get("enabled", True):
-            try:
-                window = salience_cfg.get("novelty_window", 50)
-                self._salience = SalienceScorer(novelty_window=window)
-                logger.debug("SalienceScorer initialized (window=%d)", window)
-            except Exception as e:
-                logger.debug("SalienceScorer init failed: %s", e)
+        # Layer 1: SalienceScorer
+        sal_cfg = self._config.get("salience", {})
+        if sal_cfg.get("enabled", True):
+            self._salience = SalienceScorer(
+                novelty_window=sal_cfg.get("novelty_window", 50))
 
-        logger.debug("MemoryPipeline initialized (session=%s)", session_id)
+        # Layer 2: SilentEngramEngine
+        eng_cfg = self._config.get("silent_engram", {})
+        if eng_cfg.get("enabled", True):
+            self._engrams = SilentEngramEngine(
+                half_life_hours=eng_cfg.get("half_life_hours", 720.0))
+
+        # Layer 3: ConsolidationEngine
+        con_cfg = self._config.get("consolidation", {})
+        if con_cfg.get("enabled", True):
+            self._consolidation = ConsolidationEngine(
+                min_facts=con_cfg.get("min_facts_for_consolidation", 5))
+
+        # Layer 4: ReconsolidationEngine
+        rec_cfg = self._config.get("reconsolidation", {})
+        if rec_cfg.get("enabled", True):
+            self._reconsolidation = ReconsolidationEngine(
+                error_threshold=rec_cfg.get("prediction_error_threshold", 0.3))
+
+        # Layer 5: FeedbackCoordinator
+        if self._config.get("feedback", {}).get("enabled", True):
+            self._feedback = FeedbackCoordinator()
+
+        # Layer 6: ActivationGraph
+        act_cfg = self._config.get("activation", {})
+        if act_cfg.get("enabled", True):
+            self._activation = ActivationGraph(
+                edge_decay_hours=act_cfg.get("edge_decay_hours", 168.0))
+
+        logger.debug("MemoryPipeline initialized (session=%s, layers=%d)",
+                      session_id, sum(1 for x in [self._salience, self._engrams,
+                      self._consolidation, self._reconsolidation,
+                      self._feedback, self._activation] if x))
 
     def shutdown(self) -> None:
-        """Flush and close pipeline state.
-
-        Called from MemoryManager.shutdown_all() BEFORE providers shutdown.
-        """
+        """Flush and close pipeline state."""
         if self._state is not None:
             self._state.close()
             self._state = None
         logger.debug("MemoryPipeline shut down")
 
-    # -- Pre-interceptors (called BEFORE provider operations) --
+    # -- Pre-interceptors --
 
     def pre_turn_start(self, turn: int, message: str) -> None:
-        """Called before providers' on_turn_start.
-
-        Phase 2: reset salience novelty window every 100 turns to prevent
-        stale topic counts from dominating.
-        """
+        """Reset salience novelty window periodically, decay activation edges."""
         if self._salience and turn > 0 and turn % 100 == 0:
             try:
                 self._salience.reset()
-                logger.debug("SalienceScorer reset at turn %d", turn)
             except Exception as e:
                 logger.debug("SalienceScorer reset failed: %s", e)
+        if self._activation and self._state:
+            try:
+                self._activation.decay_edges(self._state, hours_elapsed=0.1)
+            except Exception as e:
+                logger.debug("Activation decay failed: %s", e)
 
     def pre_sync(self, user: str, asst: str) -> dict | None:
-        """Called before providers' sync_turn.
-
-        Returns salience metadata for providers that support it.
-        Phase 2: score user content for salience, return signals.
-        """
+        """Score user content for salience, persist signals."""
         if not self._salience:
             return None
         try:
             result = self._salience.score(user)
-            # Log encoding for learning
             if self._state:
                 with self._state._lock:
                     self._state._conn.execute(
@@ -477,17 +824,11 @@ class MemoryPipeline:
     def pre_memory_write(
         self, action: str, target: str, content: str, metadata: dict
     ) -> dict | None:
-        """Called before providers' on_memory_write.
-
-        Phase 2: salience gate -- score content and attach salience metadata.
-        Does NOT block writes (that would require changing MemoryManager's
-        return type). Instead, enriches metadata so providers can decide.
-        """
+        """Salience gate — score content, attach metadata."""
         if not self._salience or action not in ("add", "replace"):
             return None
         try:
             result = self._salience.score(content)
-            # Persist salience signal for learning
             if self._state:
                 with self._state._lock:
                     self._state._conn.execute(
@@ -499,7 +840,6 @@ class MemoryPipeline:
                          result.importance, result.overall),
                     )
                     self._state._conn.commit()
-            # Return enriched metadata for providers
             return {
                 **metadata,
                 "pipeline_salience": result.overall,
@@ -512,78 +852,124 @@ class MemoryPipeline:
             return None
 
     def pre_compress(self, messages: list) -> str:
-        """Called before providers' on_pre_compress.
+        """Extract key insights before context compression."""
+        if not self._consolidation:
+            return ""
+        try:
+            return self._consolidation.extract_insights(messages)
+        except Exception as e:
+            logger.debug("Consolidation extract_insights failed: %s", e)
+            return ""
 
-        Returns insights text to include in compression summary.
-        Phase 1: returns empty string.
-        Phase 2: extract key facts from messages about to be discarded.
-        """
-        return ""
-
-    # -- Post-interceptors (called AFTER provider operations) --
+    # -- Post-interceptors --
 
     def post_prefetch(self, query: str, provider_results: list[str]) -> str:
-        """Called after providers' prefetch.
+        """Augment prefetch with predictions and spreading activation."""
+        parts = []
+        try:
+            # Layer 5: predictions from schemas
+            if self._feedback and self._state:
+                predictions = self._feedback.predict(self._state, query)
+                for pred in predictions:
+                    parts.append(pred)
 
-        Returns augmented context to append to prefetch results.
-        Phase 1: returns empty string (no augmentation).
-        Phase 2: spontaneous recovery, predictions, spreading activation.
-        """
-        return ""
+            # Layer 6: spreading activation
+            if self._activation and self._state:
+                expansions = self._activation.expand_query(self._state, query)
+                parts.extend(expansions)
+        except Exception as e:
+            logger.debug("Pipeline post_prefetch failed: %s", e)
+        return "\n".join(parts)
 
     def post_tool_call(self, name: str, args: dict, result: str) -> None:
-        """Called after provider's handle_tool_call.
+        """Record retrieval for reconsolidation, co-activation."""
+        if not self._state:
+            return
+        try:
+            # Layer 4: reconsolidation check
+            if self._reconsolidation and name == "fact_store":
+                action = args.get("action", "")
+                if action in ("search", "probe"):
+                    self._reconsolidation.check_retrieval(
+                        self._state, args.get("query", ""), result)
 
-        Phase 1: no-op.
-        Phase 2: record retrieval for reconsolidation, feedback learning,
-        co-activation recording.
-        """
-        pass
+            # Layer 6: record co-activation from search results
+            if self._activation and name == "fact_store":
+                query = args.get("query", "")
+                entities = re.findall(r'\b[A-Z][a-z]{2,}\b', query)
+                if len(entities) >= 2:
+                    self._activation.record_co_activation(self._state, entities)
+        except Exception as e:
+            logger.debug("Pipeline post_tool_call failed: %s", e)
 
     def post_session_end(self, messages: list) -> None:
-        """Called BEFORE providers' on_session_end.
+        """Consolidation, engram decay, bridge discovery."""
+        if not self._state:
+            return
+        try:
+            # Layer 2: apply engram decay (1 hour worth)
+            if self._engrams:
+                self._engrams.apply_decay(self._state, hours_elapsed=1.0)
 
-        Phase 1: no-op.
-        Phase 2: apply engram decay, run consolidation, discover bridges.
-        """
-        pass
+            # Layer 3: run consolidation
+            if self._consolidation:
+                facts = []
+                for msg in messages[-10:]:
+                    content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+                    if content and len(content) > 20:
+                        facts.append({"content": content, "domain": "general"})
+                self._consolidation.consolidate(self._state, facts)
+
+            # Layer 5: discover cross-domain bridges
+            if self._feedback:
+                self._feedback.discover_bridges(self._state)
+
+            # Layer 6: decay activation edges
+            if self._activation:
+                self._activation.decay_edges(self._state, hours_elapsed=1.0)
+        except Exception as e:
+            logger.debug("Pipeline post_session_end failed: %s", e)
 
     def post_session_switch(self, new_id: str, **kwargs) -> None:
-        """Called after providers' on_session_switch.
-
-        Phase 1: no-op.
-        Phase 2: update per-session consolidation state.
-        """
+        """No-op for now. Phase 2+: update per-session consolidation state."""
         pass
 
     def post_delegation(self, task: str, result: str, **kwargs) -> None:
-        """Called after providers' on_delegation.
-
-        Phase 1: no-op.
-        Phase 2: score subagent result, extract high-salience facts.
-        """
+        """No-op for now. Phase 2+: score subagent result."""
         pass
 
     def augment_system_prompt(self) -> str:
-        """Called after providers' system_prompt_block.
+        """Inject organic memory status into system prompt."""
+        if not self._state:
+            return ""
+        try:
+            with self._state._lock:
+                engram_count = self._state._conn.execute(
+                    "SELECT COUNT(*) FROM engram_strengths"
+                ).fetchone()[0]
+                schema_count = self._state._conn.execute(
+                    "SELECT COUNT(*) FROM schemas"
+                ).fetchone()[0]
+                edge_count = self._state._conn.execute(
+                    "SELECT COUNT(*) FROM activation_edges"
+                ).fetchone()[0]
+            if engram_count == 0 and schema_count == 0:
+                return ""
+            return (
+                f"[Organic Memory: {engram_count} engrams, "
+                f"{schema_count} schemas, {edge_count} activation edges]"
+            )
+        except Exception as e:
+            logger.debug("augment_system_prompt failed: %s", e)
+            return ""
 
-        Returns text to append to the system prompt.
-        Phase 1: returns empty string.
-        Phase 2: inject organic memory status (silent count, schema count).
-        """
-        return ""
 
-
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Config loader
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def _load_pipeline_config() -> dict:
-    """Load memory.pipeline config from $HERMES_HOME/config.yaml.
-
-    Returns an empty dict if the section is missing or config is unreadable.
-    Uses lazy imports to avoid circular dependency with hermes_cli.config.
-    """
+    """Load memory.pipeline config from $HERMES_HOME/config.yaml."""
     try:
         from hermes_cli.config import cfg_get, load_config
         config = load_config()

@@ -8929,7 +8929,10 @@ def _cmd_update_pip(args):
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
     print(f"→ Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    run_kwargs = {}
+    if sys.prefix != sys.base_prefix:
+        run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
+    result = subprocess.run(cmd, **run_kwargs)
     if result.returncode != 0:
         print("✗ Update failed")
         sys.exit(1)

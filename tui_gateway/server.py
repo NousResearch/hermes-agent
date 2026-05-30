@@ -15446,9 +15446,15 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             from agent.conversation_compression import (
                 finalize_context_engine_compression_notification,
             )
+            from hermes_cli.partial_compress import (
+                parse_partial_compress_args,
+                rejoin_compressed_head_and_tail,
+                split_history_for_partial_compress,
+            )
 
             with session["history_lock"]:
                 _before_messages = list(session.get("history", []))
+                _hv = int(session.get("history_version", 0))
             _before_count = len(_before_messages)
             _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
             _tools = getattr(agent, "tools", None) or None
@@ -15460,7 +15466,31 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 else 0
             )
 
-            _compress_session_history(session, arg)
+            # Boundary-aware forms (here [N], up to here, --keep N) split the
+            # history and compress only the head, keeping the most recent
+            # exchanges verbatim — mirroring cli.py and gateway/run.py's
+            # /compress here implementation (PR #35252). Before this fix the
+            # raw argument was passed straight through as a focus topic, so
+            # "/compress here 3" silently did a FULL compress focused on the
+            # literal text "here 3".
+            partial, keep_last, focus_topic = parse_partial_compress_args(arg or "")
+            if partial:
+                head, tail = split_history_for_partial_compress(
+                    _before_messages, keep_last
+                )
+                if not tail:
+                    partial = False  # degenerate split — fall back to full compress
+                else:
+                    _compressed_head, _ = agent._compress_context(
+                        head, None, approx_tokens=_before_tokens, focus_topic=None
+                    )
+                    _rejoined = rejoin_compressed_head_and_tail(_compressed_head, tail)
+                    with session["history_lock"]:
+                        if int(session.get("history_version", 0)) == _hv:
+                            session["history"] = _rejoined
+                            session["history_version"] = _hv + 1
+            if not partial:
+                _compress_session_history(session, focus_topic)
             _sync_session_key_after_compress(sid, session)
 
             with session["history_lock"]:

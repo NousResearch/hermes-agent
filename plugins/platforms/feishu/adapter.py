@@ -185,6 +185,64 @@ _FEISHU_DOC_UPLOAD_TYPES = {
     ".ppt": "ppt",
     ".pptx": "ppt",
 }
+
+# Feishu audio messages render as voice bubbles only when the payload includes
+# a positive ``duration`` in milliseconds. Without it the client falls back to
+# a generic file attachment with a music-note icon. (#16524)
+_FEISHU_AUDIO_DURATION_FALLBACK_MS = 1000  # 1s — minimum positive value
+# Approx bytes-per-second for the size-based heuristic when no metadata reader
+# is available. Mirrors discord.py's voice-message fallback (16 kbps Opus).
+_FEISHU_AUDIO_BYTES_PER_SECOND_HEURISTIC = 2000
+
+
+def _get_audio_duration_ms(file_path: str) -> int:
+    """Best-effort duration probe for Feishu voice messages.
+
+    Tries mutagen (transitive dep via ``discord.py[voice]``) first, then
+    falls back to ``ffprobe`` if it's on PATH, then to a size-based heuristic.
+    Always returns a positive integer so the caller can populate the audio
+    payload's required ``duration`` field. Returns
+    ``_FEISHU_AUDIO_DURATION_FALLBACK_MS`` if every probe fails.
+    """
+    try:
+        import mutagen  # type: ignore[import-not-found]
+
+        mf = mutagen.File(file_path)  # type: ignore[attr-defined]
+        length = getattr(getattr(mf, "info", None), "length", None) if mf else None
+        if length and length > 0:
+            return max(1, int(round(float(length) * 1000)))
+    except Exception:  # pragma: no cover - mutagen optional
+        pass
+
+    try:
+        import shutil
+        import subprocess
+
+        if shutil.which("ffprobe"):
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    file_path,
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            stdout = (result.stdout or "").strip()
+            if stdout:
+                return max(1, int(round(float(stdout) * 1000)))
+    except Exception:  # pragma: no cover - ffprobe optional
+        pass
+
+    try:
+        size = os.path.getsize(file_path)
+        if size > 0:
+            estimate_secs = max(1.0, size / _FEISHU_AUDIO_BYTES_PER_SECOND_HEURISTIC)
+            return int(round(estimate_secs * 1000))
+    except Exception:  # pragma: no cover - filesystem error
+        pass
+
+    return _FEISHU_AUDIO_DURATION_FALLBACK_MS
 # ---------------------------------------------------------------------------
 # Connection, retry and batching tuning
 # ---------------------------------------------------------------------------
@@ -4589,10 +4647,18 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
             else:
+                message_payload: Dict[str, Any] = {"file_key": file_key}
+                # Audio messages need a ``duration`` field (ms) to render as a
+                # voice bubble; without it Feishu shows a generic file
+                # attachment with a music-note icon. (#16524)
+                if resolved_message_type == "audio":
+                    message_payload["duration"] = await asyncio.to_thread(
+                        _get_audio_duration_ms, file_path,
+                    )
                 message_response = await self._feishu_send_with_retry(
                     chat_id=chat_id,
                     msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                    payload=json.dumps(message_payload, ensure_ascii=False),
                     reply_to=reply_to,
                     metadata=metadata,
                 )

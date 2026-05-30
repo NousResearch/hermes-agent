@@ -2641,7 +2641,63 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(captured["upload_request"].request_body.file_type, "opus")
         self.assertEqual(captured["message_request"].request_body.msg_type, "audio")
-        self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_audio_123"}')
+        # Voice messages must include a positive ``duration`` (ms) — without
+        # it Feishu renders the audio as a file attachment instead of a
+        # voice bubble. (#16524)
+        audio_payload = json.loads(captured["message_request"].request_body.content)
+        self.assertEqual(audio_payload["file_key"], "file_audio_123")
+        self.assertIn("duration", audio_payload)
+        self.assertIsInstance(audio_payload["duration"], int)
+        self.assertGreater(audio_payload["duration"], 0)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_does_not_inject_audio_duration_field(self):
+        """Video messages route through ``_send_uploaded_file_message`` too;
+        only the audio branch should add ``duration``. (#16524)"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_video_xyz"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["message_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_video_msg"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(file=_FileAPI(), message=_MessageAPI())
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".mp4", delete=False) as tmp:
+            tmp.write(b"\x00\x00\x00\x18ftypmp42")
+            video_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
+        finally:
+            os.unlink(video_path)
+
+        self.assertTrue(result.success)
+        body = json.loads(captured["message_request"].request_body.content)
+        self.assertEqual(body, {"file_key": "file_video_xyz"})
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_extracts_title_and_links(self):
@@ -5120,3 +5176,72 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuAudioDurationProbe(unittest.TestCase):
+    """Regression coverage for #16524.
+
+    Audio messages must include a positive ``duration`` (ms) so Feishu
+    renders them as voice bubbles. The probe must be best-effort and never
+    raise — falling back to a size-based heuristic and finally a fixed
+    minimum so the field is always populated.
+    """
+
+    def test_returns_positive_int_for_real_audio_file(self):
+        from plugins.platforms.feishu.adapter import _get_audio_duration_ms
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".opus", delete=False) as tmp:
+            # 8 KB → ~4s under the 2000 B/s heuristic
+            tmp.write(b"\x00" * 8000)
+            path = tmp.name
+
+        try:
+            ms = _get_audio_duration_ms(path)
+        finally:
+            os.unlink(path)
+
+        self.assertIsInstance(ms, int)
+        self.assertGreater(ms, 0)
+
+    def test_falls_back_to_minimum_when_file_is_missing(self):
+        from plugins.platforms.feishu.adapter import (
+            _FEISHU_AUDIO_DURATION_FALLBACK_MS,
+            _get_audio_duration_ms,
+        )
+
+        ms = _get_audio_duration_ms("/nonexistent/path/voice.opus")
+        # Either heuristic-from-zero-size or fallback returns a positive int.
+        self.assertIsInstance(ms, int)
+        self.assertGreaterEqual(ms, _FEISHU_AUDIO_DURATION_FALLBACK_MS)
+
+    def test_size_heuristic_scales_with_file_bytes(self):
+        from plugins.platforms.feishu.adapter import _get_audio_duration_ms
+
+        # Force the size-heuristic branch by making mutagen + ffprobe both
+        # unavailable. ``builtins.__import__`` blocks mutagen; PATH-stripping
+        # blocks ffprobe.
+        original_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+        def _block_mutagen(name, *args, **kwargs):
+            if name == "mutagen" or name.startswith("mutagen."):
+                raise ImportError("blocked for test")
+            return original_import(name, *args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".opus", delete=False) as small:
+            small.write(b"\x00" * 2000)
+            small_path = small.name
+        with tempfile.NamedTemporaryFile("wb", suffix=".opus", delete=False) as large:
+            large.write(b"\x00" * 20000)
+            large_path = large.name
+
+        try:
+            with patch("builtins.__import__", side_effect=_block_mutagen), \
+                 patch("shutil.which", return_value=None):
+                small_ms = _get_audio_duration_ms(small_path)
+                large_ms = _get_audio_duration_ms(large_path)
+        finally:
+            os.unlink(small_path)
+            os.unlink(large_path)
+
+        # Larger file → larger duration estimate under the heuristic.
+        self.assertGreater(large_ms, small_ms)

@@ -256,27 +256,6 @@ def _clean_text_for_capture(text: str) -> str:
     return text.strip()
 
 
-def _format_session_document(turns: List[Dict[str, str]], session_id: str) -> str:
-    """Format a list of turns into a single document payload for the whole session."""
-    if not turns:
-        return ""
-    lines = [f"Full conversation session: {session_id}", ""]
-    for turn in turns:
-        user = turn.get("user", "").strip()
-        assistant = turn.get("assistant", "").strip()
-        if user:
-            lines.append("[role: user]")
-            lines.append(user)
-            lines.append("[user:end]")
-            lines.append("")
-        if assistant:
-            lines.append("[role: assistant]")
-            lines.append(assistant)
-            lines.append("[assistant:end]")
-            lines.append("")
-    return "\n".join(lines).strip()
-
-
 def _is_trivial_message(text: str) -> bool:
     return bool(_TRIVIAL_RE.match((text or "").strip()))
 
@@ -381,15 +360,18 @@ class _SupermemoryClient:
         preview = (target.get("memory") or "")[:100]
         return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
 
-    def ingest_conversation(self, session_id: str, messages: list[dict]) -> None:
-        payload = json.dumps({
+    def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
+        payload: dict = {
             "conversationId": session_id,
             "messages": messages,
             "containerTags": [self._container_tag],
-        }).encode("utf-8")
+        }
+        if metadata:
+            payload["metadata"] = self._merge_metadata(metadata)
+
         req = urllib.request.Request(
             _CONVERSATIONS_URL,
-            data=payload,
+            data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
@@ -623,44 +605,23 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if len(cleaned) == 1 and len(cleaned[0].get("content", "")) < 20:
             return
         try:
-            self._client.ingest_conversation(self._session_id, cleaned)
+            self._client.ingest_conversation(
+                self._session_id,
+                cleaned,
+                metadata={
+                    "type": "full_session",
+                    "sm_capture_mode": "session",
+                    "session_id": self._session_id or session_id,
+                    "message_count": len(cleaned),
+                },
+            )
         except urllib.error.HTTPError:
             logger.warning("Supermemory session ingest failed", exc_info=True)
         except Exception:
             logger.warning("Supermemory session ingest failed", exc_info=True)
 
-        # Write the full session as a single document
-        if cleaned:
-            paired: List[Dict[str, str]] = []
-            i = 0
-            while i < len(cleaned):
-                turn: Dict[str, str] = {"user": "", "assistant": ""}
-                if cleaned[i]["role"] == "user":
-                    turn["user"] = cleaned[i]["content"]
-                    i += 1
-                    if i < len(cleaned) and cleaned[i]["role"] == "assistant":
-                        turn["assistant"] = cleaned[i]["content"]
-                        i += 1
-                elif cleaned[i]["role"] == "assistant":
-                    turn["assistant"] = cleaned[i]["content"]
-                    i += 1
-                if turn["user"] or turn["assistant"]:
-                    paired.append(turn)
-            doc_content = _format_session_document(paired, self._session_id or session_id)
-            if doc_content:
-                try:
-                    self._client.add_memory(
-                        doc_content,
-                        metadata={
-                            "type": "full_session",
-                            "sm_capture_mode": "session",
-                            "session_id": self._session_id or session_id,
-                            "message_count": len(cleaned),
-                        },
-                        entity_context=self._entity_context,
-                    )
-                except Exception:
-                    logger.debug("Supermemory session document write failed", exc_info=True)
+        # Clear buffer so shutdown() doesn't duplicate on normal exit
+        self._session_turns = []
 
     def on_session_switch(
         self,
@@ -679,24 +640,29 @@ class SupermemoryMemoryProvider(MemoryProvider):
         old_session_id = self._session_id
         old_turns = list(self._session_turns)
 
-        # Flush previous session as a single document
+        # Flush previous session via conversations ingest (with metadata)
         if old_turns and old_session_id:
-            doc_content = _format_session_document(old_turns, old_session_id)
-            if doc_content:
-                try:
-                    self._client.add_memory(
-                        doc_content,
-                        metadata={
-                            "type": "full_session",
-                            "sm_capture_mode": "session",
-                            "session_id": old_session_id,
-                            "message_count": len(old_turns) * 2,
-                            "partial": not reset,
-                        },
-                        entity_context=self._entity_context,
-                    )
-                except Exception:
-                    logger.debug("Supermemory session-switch document flush failed", exc_info=True)
+            messages: list[dict] = []
+            for turn in old_turns:
+                if turn.get("user"):
+                    messages.append({"role": "user", "content": turn["user"]})
+                if turn.get("assistant"):
+                    messages.append({"role": "assistant", "content": turn["assistant"]})
+
+            try:
+                self._client.ingest_conversation(
+                    old_session_id,
+                    messages,
+                    metadata={
+                        "type": "full_session",
+                        "sm_capture_mode": "session",
+                        "session_id": old_session_id,
+                        "message_count": len(old_turns) * 2,
+                        "partial": not reset,
+                    },
+                )
+            except Exception:
+                logger.debug("Supermemory session-switch ingest failed", exc_info=True)
 
         # Reset for new session
         self._session_id = str(new_session_id or "").strip() or old_session_id
@@ -726,24 +692,31 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._write_thread.start()
 
     def shutdown(self) -> None:
-        # Best-effort: flush any remaining buffered turns as one session document
+        # Emergency fallback (crashes only). Buffer is cleared on normal on_session_end().
         if self._active and self._write_enabled and self._client and self._session_turns and self._session_id:
+            logger.warning("Supermemory: Saving session via shutdown (session=%s, turns=%d)", self._session_id, len(self._session_turns))
+
+            messages: list[dict] = []
+            for turn in self._session_turns:
+                if turn.get("user"):
+                    messages.append({"role": "user", "content": turn["user"]})
+                if turn.get("assistant"):
+                    messages.append({"role": "assistant", "content": turn["assistant"]})
+
             try:
-                doc_content = _format_session_document(list(self._session_turns), self._session_id)
-                if doc_content:
-                    self._client.add_memory(
-                        doc_content,
-                        metadata={
-                            "type": "full_session",
-                            "sm_capture_mode": "session",
-                            "session_id": self._session_id,
-                            "message_count": len(self._session_turns) * 2,
-                            "partial": True,
-                        },
-                        entity_context=self._entity_context,
-                    )
+                self._client.ingest_conversation(
+                    self._session_id,
+                    messages,
+                    metadata={
+                        "type": "full_session",
+                        "sm_capture_mode": "session",
+                        "session_id": self._session_id,
+                        "message_count": len(self._session_turns) * 2,
+                        "partial": True,
+                    },
+                )
             except Exception:
-                logger.debug("Supermemory shutdown session document flush failed", exc_info=True)
+                logger.debug("Supermemory shutdown ingest failed", exc_info=True)
 
         for attr_name in ("_prefetch_thread", "_sync_thread", "_write_thread"):
             thread = getattr(self, attr_name, None)

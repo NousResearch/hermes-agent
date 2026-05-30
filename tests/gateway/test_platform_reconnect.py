@@ -294,19 +294,20 @@ class TestPlatformReconnectWatcher:
         assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 2
 
     @pytest.mark.asyncio
-    async def test_reconnect_pauses_after_circuit_breaker_threshold(self):
-        """After enough consecutive retryable failures, the watcher should
-        *pause* the platform (keep it in the queue but stop hammering it),
-        not drop it. The user resumes via /platform resume.
+    async def test_reconnect_never_auto_pauses_retryable_failures(self):
+        """Retryable failures (network/DNS) must keep retrying indefinitely —
+        the watcher must NOT auto-pause them. Auto-pausing a transiently-failed
+        platform left bots silently dead after a DNS blip (#35284). The pause
+        circuit breaker remains available for manual /platform pause only.
         """
         runner = _make_runner()
 
         platform_config = PlatformConfig(enabled=True, token="test")
-        # 9 prior attempts — the next failure will be the 10th and should
-        # trip the circuit breaker.
+        # Far past the old circuit-breaker threshold (10): even after many
+        # consecutive retryable failures the platform must stay unpaused.
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": platform_config,
-            "attempts": 9,
+            "attempts": 25,
             "next_retry": time.monotonic() - 1,
         }
 
@@ -332,12 +333,15 @@ class TestPlatformReconnectWatcher:
 
             await run_one_iteration()
 
-        # Platform stays in queue — paused, not dropped
+        # Platform stays in queue and keeps retrying — never auto-paused.
         assert Platform.TELEGRAM in runner._failed_platforms
         info = runner._failed_platforms[Platform.TELEGRAM]
-        assert info["paused"] is True
-        assert info["attempts"] == 10
-        assert "pause_reason" in info
+        assert info.get("paused") is not True
+        assert "pause_reason" not in info
+        assert info["attempts"] == 26
+        # next_retry is pushed out by the backoff (capped at 300s), not inf.
+        assert info["next_retry"] != float("inf")
+        assert info["next_retry"] > time.monotonic()
 
     @pytest.mark.asyncio
     async def test_reconnect_skips_paused_platforms(self):

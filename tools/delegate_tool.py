@@ -2115,7 +2115,14 @@ def delegate_task(
                 # the batch path (below) can enforce them per-task without
                 # allowing model-supplied per-task toolsets to override.
                 resolved_profile_name = profile
-                toolsets = profile_toolsets
+                # Copy, not reference: profile_toolsets is the list stored
+                # inside the config dict returned by _load_agent_profiles().
+                # Assigning the reference directly means any later in-place
+                # mutation (e.g. .append() / .clear()) of the working
+                # `toolsets` variable would corrupt the config for the entire
+                # process lifetime.  list() gives us an independent shallow
+                # copy of the string items, which is all we need.
+                toolsets = list(profile_toolsets)
             else:
                 # Profile declares no toolsets — granting the bypass here
                 # would activate the mcp-* exception in _build_child_agent
@@ -2138,7 +2145,12 @@ def delegate_task(
     # them as authoritative, ignoring any per-task toolsets the model supplies.
     # When no profile was resolved this is None and the batch loop falls through
     # to the per-task / top-level toolsets (existing behaviour unchanged).
-    profile_resolved_toolsets: Optional[list[str]] = toolsets if resolved_profile_name else None
+    #
+    # Take an independent copy (list()) even though `toolsets` was already
+    # copied from profile_toolsets above.  This keeps profile_resolved_toolsets
+    # stable against any future code that mutates `toolsets` in-place between
+    # here and the batch loop — defence-in-depth.
+    profile_resolved_toolsets: Optional[list[str]] = list(toolsets) if resolved_profile_name else None
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()

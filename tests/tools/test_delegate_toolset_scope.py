@@ -660,3 +660,102 @@ class TestBatchToolsetInjectionBlocked:
             f"got profile_name={kwargs.get('profile_name')!r}. "
             "Pre-fix: resolved_profile_name was set regardless of toolsets presence."
         )
+
+
+# ---------------------------------------------------------------------------
+# TestProfileToolsetsAliasing
+# Regression guard for the config-aliasing vulnerability: toolsets must be
+# copied (list()) from the config dict, not assigned by reference.
+#
+# Without the copy, any in-place mutation of the working `toolsets` variable
+# (or of `profile_resolved_toolsets`, which is derived from it) silently
+# corrupts the agent_profiles config dict for the entire process lifetime.
+# On the next delegate_task call the now-mutated list would be used as the
+# authoritative profile declaration, bypassing the intended toolset scope.
+# ---------------------------------------------------------------------------
+
+class TestProfileToolsetsAliasing:
+    """Profile toolsets assignment must copy, not reference, the config list.
+
+    Why: profile_cfg["toolsets"] lives inside the dict returned by
+    _load_agent_profiles() and may be cached for the process lifetime.
+    Assigning it directly to the working variable means any in-place
+    mutation (e.g., .append(), .clear(), .pop()) of that variable would
+    corrupt the config — all subsequent delegate_task calls in the same
+    process would see the mutated toolsets as the 'official' profile
+    declaration.  This is a privilege-escalation / DoS vector.
+
+    The fix (list(profile_toolsets) at line ~2082 and
+    list(toolsets) at line ~2110) ensures the working variable and the
+    authoritative capture are independent copies.
+    """
+
+    @patch("tools.delegate_tool._load_agent_profiles")
+    @patch("tools.delegate_tool._load_config", return_value=_BARE_DELEGATION_CFG)
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_profile_toolsets_copy_prevents_config_corruption(
+        self, mock_build, _mock_cfg, mock_load_profiles
+    ):
+        """Mutating the toolsets list passed to _build_child_agent must NOT
+        corrupt the original agent_profiles config entry.
+
+        Why: Pre-fix code did ``toolsets = profile_toolsets`` (reference), so
+        mutating the kwarg received by _build_child_agent also mutated
+        profiles["documents"]["toolsets"] — corrupting it for every future call.
+        What: After delegate_task resolves a profile, capture the toolsets list
+        that was passed to _build_child_agent, mutate it in-place, then verify
+        profiles["documents"]["toolsets"] is unchanged.
+        Test: Assert that appending a sentinel to the captured child toolsets
+        list does NOT appear in the original config dict, proving list() copy.
+        """
+        # Hold a direct reference to the config list so we can inspect it after
+        # delegate_task has run and after we mutate the captured child toolsets.
+        original_toolsets_list = ["mcp-nextcloud-files", "mcp-knowledge"]
+        profiles_cfg = {
+            "documents": {
+                "toolsets": original_toolsets_list,
+            },
+        }
+        mock_load_profiles.return_value = profiles_cfg
+
+        fake_child = MagicMock()
+        fake_child._delegate_saved_tool_names = []
+        mock_build.return_value = fake_child
+
+        parent = _make_no_mcp_parent()
+
+        with patch(
+            "tools.delegate_tool._run_single_child",
+            return_value=_make_fake_child_result(0),
+        ):
+            delegate_task(
+                goal="Fetch documents",
+                profile="documents",
+                parent_agent=parent,
+            )
+
+        # Retrieve the toolsets list that was handed to _build_child_agent.
+        mock_build.assert_called_once()
+        _, kwargs = mock_build.call_args
+        child_toolsets_arg: list = kwargs.get("toolsets") or []
+
+        # Sanity: the profile toolsets made it through correctly.
+        assert "mcp-nextcloud-files" in child_toolsets_arg, (
+            f"Profile toolsets must be forwarded; got {child_toolsets_arg!r}"
+        )
+
+        # Now mutate the list that _build_child_agent received.
+        sentinel = "mcp-INJECTED-SENTINEL"
+        child_toolsets_arg.append(sentinel)
+        child_toolsets_arg.clear()
+
+        # CRITICAL ASSERTION: the original config list must be untouched.
+        # Pre-fix (reference): original_toolsets_list would now be empty.
+        # Post-fix (copy):     original_toolsets_list is still the original.
+        assert original_toolsets_list == ["mcp-nextcloud-files", "mcp-knowledge"], (
+            f"Config corruption detected: profiles['documents']['toolsets'] was mutated "
+            f"to {original_toolsets_list!r}. "
+            "The toolsets working variable must be a list() copy, not a reference to the "
+            "config dict's list. Pre-fix code assigns `toolsets = profile_toolsets` "
+            "(reference); the fix is `toolsets = list(profile_toolsets)`."
+        )

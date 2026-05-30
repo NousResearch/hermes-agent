@@ -284,10 +284,36 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # message triggers a separate agent invocation, wasting tokens and
         # flooding the user with reply fragments.  Default 5s delay /
         # 10s split delay are conservative for WhatsApp's delivery cadence.
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS", "5.0"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS", "10.0"))
+        # Tunable via config.yaml under
+        # ``gateway.platforms.whatsapp.extra.text_batch_delay_seconds`` /
+        # ``text_batch_split_delay_seconds``.
+        self._text_batch_delay_seconds = self._coerce_float_extra(
+            "text_batch_delay_seconds", 5.0
+        )
+        self._text_batch_split_delay_seconds = self._coerce_float_extra(
+            "text_batch_split_delay_seconds", 10.0
+        )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+
+    def _coerce_float_extra(self, key: str, default: float) -> float:
+        """Read a float from ``config.extra``, guarding against bad/non-finite values.
+
+        The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
+        unparseable values fall back to ``default``.
+        """
+        import math
+
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return float(default)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not math.isfinite(parsed) or parsed < 0:
+            return float(default)
+        return parsed
 
     def _effective_reply_prefix(self) -> str:
         """Return the prefix the Node bridge will add in self-chat mode."""

@@ -191,11 +191,15 @@ def run_oneshot(
         except Exception:
             pass
 
-    if response:
-        real_stdout.write(response)
-        if not response.endswith("\n"):
-            real_stdout.write("\n")
-        real_stdout.flush()
+    if not (response or "").strip():
+        sys.stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
+        sys.stderr.flush()
+        return 1
+
+    real_stdout.write(response)
+    if not response.endswith("\n"):
+        real_stdout.write("\n")
+    real_stdout.flush()
     return 0
 
 

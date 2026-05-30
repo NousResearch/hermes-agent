@@ -2000,6 +2000,16 @@ def delegate_task(
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
+    The 'profile' parameter names an entry in the top-level
+    ``agent_profiles`` config mapping.  When set, the profile's declared
+    toolsets are used as the effective toolset list for the child, and
+    ``profile_name`` is forwarded to ``_build_child_agent`` so that
+    MCP toolsets declared by the profile bypass the parent's toolset
+    intersection.  This is the mechanism that lets fat sub-agents receive
+    their full MCP toolsets even when the orchestrator runs under a
+    ``no_mcp`` platform toolset.  See NousResearch/hermes-agent#32668 and
+    #32727.
+
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
@@ -2085,6 +2095,16 @@ def delegate_task(
     # parent model when neither config nor profile specify one.
     if not creds.get("model") and _profile_overrides.get("model"):
         creds["model"] = _profile_overrides["model"]
+
+    # NOTE: The named-profile MCP-bypass name is threaded to _build_child_agent
+    # solely via ``_task_profile_names`` below (the strict per-task resolution).
+    # A second, lenient resolver block used to live here: it re-read the profile
+    # via _load_agent_profiles() and, on an unknown name, *warned and fell back*
+    # to an unrestricted toolset — directly contradicting the strict resolver
+    # above (which returns an "Unknown agent profile" error and refuses the
+    # delegation). Unknown profile is now a hard error on the SINGLE strict path,
+    # so that lenient block is removed; an unknown profile can never silently run
+    # with an unintended toolset. See #32668/#32727.
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2649,6 +2669,25 @@ def _load_profiles() -> dict:
         return {}
 
 
+def _load_agent_profiles() -> dict:
+    """Deprecated alias for :func:`_load_profiles` (single source of truth).
+
+    Why: Two loaders (`_load_profiles` strict + this lenient one) drifted apart
+    and let an unknown profile fall back to an unrestricted toolset on one path
+    while the other hard-failed — a security split. Collapsing to one loader
+    guarantees every `delegate_task` profile lookup goes through the same strict
+    resolver, so an unknown profile fails closed everywhere.
+
+    What: Returns the root ``agent_profiles`` mapping by delegating to
+    ``_load_profiles()``; retained only so external/legacy patch targets keep
+    resolving. New code must call ``_load_profiles`` directly.
+
+    Test: Patch ``hermes_cli.config.load_config`` to return
+    {"agent_profiles": {"docs": {...}}} and assert this returns the inner dict.
+    """
+    return _load_profiles()
+
+
 def _resolve_profile(name: str, profiles: dict) -> dict:
     """Validate profile name and resolve system_prompt_file -> system_prompt_text.
 
@@ -3002,6 +3041,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Arguments for the ACP command (default: ['--acp', '--stdio']). "
                     "Only used when acp_command is set. "
                     "Leave empty unless acp_command is explicitly provided."
+                ),
+            },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Named agent_profiles entry whose toolsets (and optionally model "
+                    "and system prompt) the sub-agent should use. When set, the "
+                    "profile's declared MCP toolsets are forwarded to the child even "
+                    "when the orchestrator runs under a no_mcp platform_toolset that "
+                    "has no MCP servers of its own. Leave unset to use ad-hoc "
+                    "toolsets or inherit from the parent. Example: 'documents'."
                 ),
             },
         },

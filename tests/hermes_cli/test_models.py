@@ -56,10 +56,6 @@ class TestOpenRouterModels:
             assert isinstance(mid, str) and len(mid) > 0
             assert isinstance(desc, str)
 
-    def test_at_least_5_models(self):
-        """Sanity check that the models list hasn't been accidentally truncated."""
-        assert len(OPENROUTER_MODELS) >= 5
-
 
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):

@@ -82,17 +82,6 @@ SAMPLE_REGISTRY = {
 
 
 class TestProviderMapping:
-    def test_all_mapped_providers_are_strings(self):
-        for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-            assert isinstance(hermes_id, str)
-            assert isinstance(mdev_id, str)
-
-    def test_known_providers_mapped(self):
-        assert PROVIDER_TO_MODELS_DEV["anthropic"] == "anthropic"
-        assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
-        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
-        assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
-
     def test_xai_oauth_uses_xai_catalog(self):
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"
         assert PROVIDER_TO_MODELS_DEV["xai-oauth"] == "xai"

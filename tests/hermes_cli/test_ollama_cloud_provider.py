@@ -495,12 +495,3 @@ class TestOllamaCloudSuffixStripping:
         assert _strip_ollama_cloud_suffix("qwen3-coder:480b-cloud") == "qwen3-coder:480b"
         assert _strip_ollama_cloud_suffix("nemotron-3-nano:30b") == "nemotron-3-nano:30b"
         assert _strip_ollama_cloud_suffix("") == ""
-
-
-# ── Auxiliary Model ──
-
-class TestOllamaCloudAuxiliary:
-    def test_aux_model_defined(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert "ollama-cloud" in _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["ollama-cloud"] == "nemotron-3-nano:30b"

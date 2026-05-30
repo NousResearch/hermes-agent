@@ -14,7 +14,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner, _parse_session_key
+from gateway.run import (
+    GatewayRunner,
+    _format_background_process_user_notification,
+    _parse_session_key,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +238,21 @@ async def test_finished_notification_strips_ansi_and_bounds_output(monkeypatch, 
     assert "line 18" in sent_message
     assert "line 0" not in sent_message
     assert len(sent_message) < 1200
+
+
+def test_finished_notification_redacts_and_escapes_user_facing_tail():
+    sent_message = _format_background_process_user_notification(
+        "proc_test",
+        1,
+        "leak sk-testSECRET1234567890 and @everyone\n```\nbreakout\n```\n",
+    )
+
+    assert "sk-testSECRET" not in sent_message
+    assert "[REDACTED]" in sent_message
+    assert "@everyone" not in sent_message
+    assert "@\u200beveryone" in sent_message
+    assert "\n```\nbreakout" not in sent_message
+    assert "`\u200b``" in sent_message
 
 
 @pytest.mark.asyncio

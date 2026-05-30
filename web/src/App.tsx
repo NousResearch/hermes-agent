@@ -68,6 +68,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import MissionControlPage from "@/pages/MissionControlPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -108,6 +109,7 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/mission-control": MissionControlPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -481,8 +483,14 @@ export default function App() {
 
       <PluginSlot name="header-banner" />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+          isMissionControlRoute ? "pt-0" : "pt-14 lg:pt-0",
+        )}
+      >
         <div className="flex min-h-0 min-w-0 flex-1">
+          {!isMissionControlRoute && (
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
@@ -594,15 +602,18 @@ export default function App() {
             <AuthWidget />
             <SidebarFooter />
           </aside>
+          )}
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
-                showPersistentChat
-                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
+                isMissionControlRoute ? "px-0" : "px-3 sm:px-6",
+                isMissionControlRoute
+                  ? "p-0"
+                  : showPersistentChat
+                    ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
+                    : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
                 isDocsRoute && "min-h-0 flex-1",
                 isMissionControlRoute && "min-h-0 flex-1",
               )}
@@ -613,7 +624,7 @@ export default function App() {
                   "w-full min-w-0",
                   !showPersistentChat &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || showPersistentChat) &&
+                  (isDocsRoute || showPersistentChat || isMissionControlRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >

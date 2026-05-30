@@ -394,6 +394,18 @@ def _format_background_process_user_notification(
         omission_parts.append(f"{omitted_lines} earlier line{'s' if omitted_lines != 1 else ''}")
     if omitted_chars:
         omission_parts.append(f"{omitted_chars} earlier char{'s' if omitted_chars != 1 else ''}")
+    # This text is sent directly to messaging platforms, not back through the
+    # model. Keep it inert: redact common secret shapes, prevent markdown code
+    # fence breakout, and neutralize mass/ping mentions.
+    tail = _redact_gateway_user_facing_secrets(tail)
+    tail = tail.replace("```", "`\u200b``")
+    tail = re.sub(
+        r"@(everyone|here)\b",
+        lambda match: f"@\u200b{match.group(1)}",
+        tail,
+        flags=re.IGNORECASE,
+    )
+
     omission_note = f" ({', '.join(omission_parts)} omitted)" if omission_parts else ""
     return f"{summary}\nLast output{omission_note}:\n```text\n{tail}\n```"
 

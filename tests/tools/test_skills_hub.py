@@ -1034,6 +1034,66 @@ class TestUrlSource:
         assert bundle.metadata["awaiting_name"] is False
 
     @patch("tools.skills_hub.httpx.get")
+    def test_fetch_github_raw_url_downloads_support_files(self, mock_get):
+        skill_md = "---\nname: demo-skill\ndescription: Demo.\n---\n\n# Demo\n"
+
+        def fake_get(url, *args, **kwargs):
+            if url == "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/SKILL.md":
+                return MagicMock(status_code=200, text=skill_md)
+            if url == "https://api.github.com/repos/acme/agent-skills/contents/skills/demo":
+                return MagicMock(status_code=200, json=lambda: [
+                    {
+                        "type": "file",
+                        "name": "SKILL.md",
+                        "path": "skills/demo/SKILL.md",
+                        "download_url": "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/SKILL.md",
+                    },
+                    {"type": "dir", "name": "references", "path": "skills/demo/references"},
+                    {"type": "dir", "name": "templates", "path": "skills/demo/templates"},
+                ])
+            if url == "https://api.github.com/repos/acme/agent-skills/contents/skills/demo/references":
+                return MagicMock(status_code=200, json=lambda: [
+                    {
+                        "type": "file",
+                        "name": "guide.md",
+                        "path": "skills/demo/references/guide.md",
+                        "download_url": "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/references/guide.md",
+                    }
+                ])
+            if url == "https://api.github.com/repos/acme/agent-skills/contents/skills/demo/templates":
+                return MagicMock(status_code=200, json=lambda: [
+                    {
+                        "type": "file",
+                        "name": "prompt.txt",
+                        "path": "skills/demo/templates/prompt.txt",
+                        "download_url": "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/templates/prompt.txt",
+                    }
+                ])
+            if url == "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/references/guide.md":
+                return MagicMock(status_code=200, text="# Guide\n")
+            if url == "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/templates/prompt.txt":
+                return MagicMock(status_code=200, text="Prompt body\n")
+            raise AssertionError(url)
+
+        mock_get.side_effect = fake_get
+
+        bundle = self._source().fetch(
+            "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/SKILL.md"
+        )
+
+        assert bundle is not None
+        assert bundle.name == "demo-skill"
+        assert bundle.files == {
+            "SKILL.md": skill_md,
+            "references/guide.md": "# Guide\n",
+            "templates/prompt.txt": "Prompt body\n",
+        }
+        assert bundle.metadata["url"] == "https://raw.githubusercontent.com/acme/agent-skills/main/skills/demo/SKILL.md"
+        assert bundle.metadata["github_repo"] == "acme/agent-skills"
+        assert bundle.metadata["github_ref"] == "main"
+        assert bundle.metadata["github_path"] == "skills/demo"
+
+    @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_url_directory_name(self, mock_get):
         # Frontmatter has no ``name:`` — we slug from the URL directory.
         mock_get.return_value = MagicMock(

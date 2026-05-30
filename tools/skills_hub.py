@@ -1120,12 +1120,13 @@ class WellKnownSkillSource(SkillSource):
 # ---------------------------------------------------------------------------
 
 class UrlSource(SkillSource):
-    """Fetch a single-file SKILL.md skill directly from an HTTP(S) URL.
+    """Fetch a SKILL.md skill directly from an HTTP(S) URL.
 
     The identifier IS the URL (e.g. ``https://example.com/path/SKILL.md``).
-    Only single-file skills are supported — multi-file skills with
-    ``references/`` or ``scripts/`` subfolders need a manifest we can't
-    discover from a bare URL.
+    Generic URLs are installed as single-file skills. GitHub raw/blob URLs are
+    also resolved through the Contents API so sibling ``references/``,
+    ``templates/``, and ``scripts/`` files are preserved when the URL points at
+    a skill directory's ``SKILL.md``.
 
     The skill name is read from the ``name:`` field in the SKILL.md YAML
     frontmatter (with a URL-slug fallback). Trust level is always
@@ -1218,14 +1219,123 @@ class UrlSource(SkillSource):
                 logger.warning("URL skill %s produced unsafe skill name: %r", url, name)
                 return None
 
+        files: Dict[str, Union[str, bytes]] = {"SKILL.md": text}
+        metadata: Dict[str, Any] = {"url": url, "awaiting_name": not skill_name}
+
+        github_skill = self._parse_github_skill_url(url)
+        if github_skill is not None:
+            repo, ref, skill_path = github_skill
+            github_files = self._download_github_directory(repo, ref, skill_path)
+            if github_files and "SKILL.md" in github_files:
+                files = github_files
+                # Preserve the originally fetched URL content as authoritative:
+                # it has already passed URL safety checks and is what the user
+                # explicitly asked to install.
+                files["SKILL.md"] = text
+                metadata.update({
+                    "github_repo": repo,
+                    "github_ref": ref,
+                    "github_path": skill_path,
+                })
+
         return SkillBundle(
             name=skill_name,
-            files={"SKILL.md": text},
+            files=files,
             source="url",
             identifier=url,
             trust_level="community",
-            metadata={"url": url, "awaiting_name": not skill_name},
+            metadata=metadata,
         )
+
+    @staticmethod
+    def _parse_github_skill_url(url: str) -> Optional[Tuple[str, str, str]]:
+        """Return ``(repo, ref, skill_dir)`` for common GitHub SKILL.md URLs."""
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return None
+
+        host = parsed.netloc.lower()
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) < 5 or parts[-1].lower() != "skill.md":
+            return None
+
+        if host == "raw.githubusercontent.com":
+            owner, repo_name, ref = parts[0], parts[1], parts[2]
+            skill_parts = parts[3:-1]
+        elif host == "github.com" and len(parts) >= 6 and parts[2] in {"blob", "raw"}:
+            owner, repo_name, ref = parts[0], parts[1], parts[3]
+            skill_parts = parts[4:-1]
+        else:
+            return None
+
+        if not owner or not repo_name or not ref or not skill_parts:
+            return None
+        if any(part in {".", ".."} or not part for part in skill_parts):
+            return None
+        return f"{owner}/{repo_name}", ref, "/".join(skill_parts)
+
+    @classmethod
+    def _download_github_directory(cls, repo: str, ref: str, path: str) -> Optional[Dict[str, Union[str, bytes]]]:
+        """Download text files from a GitHub directory via the Contents API."""
+        files: Dict[str, Union[str, bytes]] = {}
+
+        def visit(api_path: str, rel_prefix: str = "") -> bool:
+            api_url = f"https://api.github.com/repos/{repo}/contents/{api_path}"
+            try:
+                resp = httpx.get(
+                    api_url,
+                    params={"ref": ref},
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                    timeout=15,
+                    follow_redirects=True,
+                )
+            except (httpx.HTTPError, ValueError):
+                return False
+            if resp.status_code != 200:
+                return False
+            try:
+                entries = resp.json()
+            except ValueError:
+                return False
+            if isinstance(entries, dict):
+                entries = [entries]
+            if not isinstance(entries, list):
+                return False
+
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name") or "")
+                entry_path = str(entry.get("path") or "")
+                entry_type = entry.get("type")
+                if not name or name in {".", ".."}:
+                    continue
+                rel_path = f"{rel_prefix}/{name}" if rel_prefix else name
+                try:
+                    rel_path = _validate_bundle_rel_path(rel_path)
+                except ValueError:
+                    logger.debug("Skipped unsafe GitHub skill file path: %s", rel_path)
+                    continue
+
+                if entry_type == "dir":
+                    if entry_path:
+                        visit(entry_path, rel_path)
+                    continue
+                if entry_type != "file":
+                    continue
+
+                download_url = entry.get("download_url")
+                if not isinstance(download_url, str) or not download_url:
+                    continue
+                content = cls._fetch_text(download_url)
+                if content is not None:
+                    files[rel_path] = content
+            return True
+
+        if not visit(path):
+            return None
+        return files if "SKILL.md" in files else None
 
     @staticmethod
     def _fetch_text(url: str) -> Optional[str]:

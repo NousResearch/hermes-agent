@@ -292,6 +292,15 @@ def is_blocked_ip_address(ip: str) -> bool:
         return True
 
 
+def is_valid_ip_address(ip: str) -> bool:
+    """Return True if an IP string can be parsed by ``ipaddress``."""
+    try:
+        ipaddress.ip_address(str(ip).strip())
+        return True
+    except ValueError:
+        return False
+
+
 def is_always_blocked_ip_address(ip: str) -> bool:
     """Return True if an IP string is in the always-blocked security floor."""
     try:

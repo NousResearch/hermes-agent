@@ -116,6 +116,7 @@ try:
         normalize_url_for_request as _normalize_url_for_request,
         sensitive_query_param_name as _sensitive_query_param_name,
         is_blocked_ip_address as _is_blocked_ip_address,
+        is_valid_ip_address as _is_valid_ip_address,
         is_always_blocked_ip_address as _is_always_blocked_ip_address,
     )
 except Exception:
@@ -124,6 +125,7 @@ except Exception:
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
     _sensitive_query_param_name = lambda url: None  # noqa: E731 — best-effort fallback
     _is_blocked_ip_address = lambda ip: True  # noqa: E731 — fail-closed on observed peers
+    _is_valid_ip_address = lambda ip: False  # noqa: E731 — fail-closed on observed peers
     _is_always_blocked_ip_address = lambda ip: True  # noqa: E731 — fail-closed on observed peers
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
@@ -1404,6 +1406,9 @@ def _recent_unsafe_network_response(
             continue
         url = str(getattr(record, "url", "") or "")
 
+        if not _is_valid_ip_address(remote_ip):
+            logger.warning("Blocked browser navigation after CDP reported invalid peer IP: %s", remote_ip)
+            return ("malformed remote IP address", remote_ip, url)
         if _is_always_blocked_ip_address(remote_ip):
             return ("cloud metadata endpoint", remote_ip, url)
         if not allow_private_networks and _is_blocked_ip_address(remote_ip):

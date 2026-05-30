@@ -461,6 +461,44 @@ class TestPostRedirectSsrf:
         assert cleared == [True]
         assert ("imds", "open", ["about:blank"]) in calls
 
+    def test_cloud_blocks_malformed_observed_peer_even_with_private_allowed(
+        self, monkeypatch, _common_patches
+    ):
+        """Malformed CDP peer IPs fail closed even when private URLs are allowed."""
+        calls = []
+        cleared = []
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            return _make_browser_result(url=self.PUBLIC_URL)
+
+        record = SimpleNamespace(
+            ts=101.0,
+            url=self.PUBLIC_URL,
+            remote_ip="not an ip",
+        )
+        fake_supervisor = SimpleNamespace(
+            snapshot=lambda: SimpleNamespace(network_responses=(record,)),
+            clear_network_responses=lambda: cleared.append(True),
+        )
+
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: True)
+        monkeypatch.setattr(browser_tool, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: fake_supervisor)
+
+        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL, task_id="bad-ip"))
+
+        assert result["success"] is False
+        assert "browser connected to a malformed remote IP address" in result["error"]
+        assert cleared == [True]
+        assert ("bad-ip", "open", ["about:blank"]) in calls
+
 
 class TestAllowPrivateUrlsConfig:
     @pytest.fixture(autouse=True)

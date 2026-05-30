@@ -462,6 +462,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:
         return name
 
+    # --- Yandex AI Studio: gpt://<folder>/<model> URIs ---
+    if provider == "yandex":
+        from plugins.model_providers.yandex import normalize_yandex_model
+
+        return normalize_yandex_model(name)
+
     # --- Custom & all others: pass through as-is ---
     return name
 

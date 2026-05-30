@@ -1,0 +1,5 @@
+name: yandex
+kind: model-provider
+version: 1.0.0
+description: Yandex Cloud AI Studio (OpenAI-compatible Model Gallery)
+author: pamnard

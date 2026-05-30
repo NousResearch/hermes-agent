@@ -26,6 +26,7 @@ model:
   #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
   #   "nvidia"       - NVIDIA NIM / build.nvidia.com (requires: NVIDIA_API_KEY)
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
+  #   "yandex"       - Yandex AI Studio (requires: YANDEX_API_KEY, YANDEX_FOLDER_ID)
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)

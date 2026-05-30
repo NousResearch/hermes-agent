@@ -432,6 +432,55 @@ class TestScopedLocks:
         ]
         assert lock_path.read_text(encoding="utf-8") == "\n"
 
+    @staticmethod
+    def _seed_lock(tmp_path, monkeypatch, record, scope="telegram", identity="tok"):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        path = status._get_scope_lock_path(scope, identity)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path
+
+    def test_acquire_scoped_lock_evicts_reused_pid_via_start_time_us(self, tmp_path, monkeypatch):
+        # Record left by a dead gateway (start_time_us=111); the PID is now a
+        # different LIVE process (start_time_us=999). Differ -> stale -> acquire.
+        path = self._seed_lock(tmp_path, monkeypatch, {
+            "pid": 4321, "kind": status._GATEWAY_KIND,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": None, "start_time_us": 111,
+        })
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
+        acquired, _ = status.acquire_scoped_lock("telegram", "tok")
+        assert acquired is True
+        assert json.loads(path.read_text())["pid"] == os.getpid()
+
+    def test_acquire_scoped_lock_keeps_lock_for_same_incarnation(self, tmp_path, monkeypatch):
+        self._seed_lock(tmp_path, monkeypatch, {
+            "pid": 4321, "kind": status._GATEWAY_KIND,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": None, "start_time_us": 555,
+        })
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 555)
+        acquired, existing = status.acquire_scoped_lock("telegram", "tok")
+        assert acquired is False
+        assert existing["pid"] == 4321
+
+    def test_acquire_scoped_lock_legacy_record_uses_oracle_not_false_evict(self, tmp_path, monkeypatch):
+        # Pre-fix record (no start_time_us) + psutil unavailable -> incomparable.
+        # The live PID still looks like a gateway, so the oracle keeps the lock.
+        self._seed_lock(tmp_path, monkeypatch, {
+            "pid": 4321, "kind": status._GATEWAY_KIND,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": None,
+        })
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+        acquired, existing = status.acquire_scoped_lock("telegram", "tok")
+        assert acquired is False
+        assert existing["pid"] == 4321
+
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"

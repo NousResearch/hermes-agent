@@ -619,7 +619,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         except (KeyError, TypeError, ValueError):
             existing_pid = None
 
-        if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
+        if existing_pid == os.getpid() and existing.get("start_time_us") == record.get("start_time_us"):
             _write_json_file(lock_path, record)
             return True, existing
 
@@ -628,26 +628,18 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             if not _pid_exists(existing_pid):
                 stale = True
             else:
+                existing_start = existing.get("start_time_us")
                 current_start = _get_process_start_time(existing_pid)
-                if (
-                    existing.get("start_time") is not None
-                    and current_start is not None
-                    and current_start != existing.get("start_time")
-                ):
-                    stale = True
-                # When start_time comparison is unavailable (macOS / Windows
-                # have no /proc, so both sides are None), fall back to
-                # checking the live process command line.  When cmdline is
-                # also unreadable (Windows has no ps), consult the lock
-                # record's own argv — the gateway writes it at startup and
-                # it's the only identity signal on platforms without ps.
-                # Both oracles must indicate "not a gateway" to mark stale.
-                if (
-                    not stale
-                    and existing.get("start_time") is None
-                    and current_start is None
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
+                if existing_start is not None and current_start is not None:
+                    # Both incarnations have a comparable start time: a mismatch
+                    # means the PID was reused by a different process.
+                    stale = current_start != existing_start
+                elif not _looks_like_gateway_process(existing_pid):
+                    # start_time_us unavailable on one/both sides (legacy record
+                    # or psutil could not read the live process). Fall back to the
+                    # cmdline/argv oracle: when cmdline is also unreadable (Windows
+                    # has no ps), consult the record's own argv. Both oracles must
+                    # say "not a gateway" before we mark the lock stale.
                     live_cmdline = _read_process_cmdline(existing_pid)
                     if live_cmdline is not None or not _record_looks_like_gateway(existing):
                         stale = True

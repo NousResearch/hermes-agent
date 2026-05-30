@@ -105,6 +105,7 @@ _PREFIX_PATTERNS = [
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
+    r"nsec1[02-9ac-hj-np-z]{58}",       # Nostr private key (NIP-19, bech32; irreversible if leaked)
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name

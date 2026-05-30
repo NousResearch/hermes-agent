@@ -270,18 +270,14 @@ class TestRunToolCleanupOnBaseException:
             f"_tool_worker_threads not cleaned up: {agent._tool_worker_threads}"
         )
 
-        # Verify no stale tid is left in the global interrupt set
-        # (the worker thread is recycled by ThreadPoolExecutor, so any
-        # leftover tid would poison the next task on that thread).
-        # We can't predict the tid, but we know the worker thread is done
-        # (the call returned), so the set should be empty for this test's
-        # tid range.  Check that no tid from our agent's tracking leaked.
+        # Verify no stale tid is left in the global interrupt set.  The
+        # worker thread is recycled by ThreadPoolExecutor, so a leaked tid
+        # would poison the next task on that thread.  We cleared the set at
+        # the start and never set any interrupt ourselves, so a leak from
+        # _run_tool is the only way an entry could land here.
         with _lock:
-            # The only tids that should be in _interrupted_threads are
-            # ones we explicitly set — we didn't set any, so it should
-            # be empty (modulo other test interference, hence the
-            # per-agent tracking assertion above).
-            pass
+            leaked = set(_interrupted_threads)
+        assert leaked == set(), f"leaked tids in _interrupted_threads: {leaked}"
 
 
 # ---------------------------------------------------------------------------

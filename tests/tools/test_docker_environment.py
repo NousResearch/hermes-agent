@@ -302,6 +302,40 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     assert "value_from_dotenv" not in args_str
 
 
+def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
+    """A transient empty-string in the live env must fall back to .env, not win.
+
+    Regression: the disk fallback used to fire only on `value is None`, so a
+    present-but-empty `MY_SECRET=""` skipped it and was forwarded as `-e
+    MY_SECRET=`, clobbering the correct value sitting in ~/.hermes/.env.
+    """
+    env = _make_execute_only_env(["MY_SECRET"])
+
+    monkeypatch.setenv("MY_SECRET", "")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"MY_SECRET": "value_from_dotenv"})
+
+    args = env._build_init_env_args()
+
+    # Assert on the resolved value, not the printed -e flag: the disk value
+    # must win and a blank "MY_SECRET=" flag must never be emitted.
+    assert "MY_SECRET=value_from_dotenv" in args
+    assert "MY_SECRET=" not in args
+
+
+def test_init_env_args_never_forwards_blank_secret(monkeypatch):
+    """A legitimately-empty key with no disk value is not forwarded as -e KEY=."""
+    env = _make_execute_only_env(["MY_SECRET"])
+
+    monkeypatch.setenv("MY_SECRET", "")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+
+    args = env._build_init_env_args()
+
+    # The key must not appear at all — not even as an empty -e MY_SECRET= flag.
+    assert not any(a.startswith("MY_SECRET=") for a in args)
+    assert "MY_SECRET" not in " ".join(args)
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 

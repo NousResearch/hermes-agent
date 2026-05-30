@@ -980,7 +980,7 @@ def _build_child_agent(
         else:
             child_toolsets = [t for t in toolsets if t in expanded_parent]
 
-        if _get_inherit_mcp_toolsets():
+        if _get_inherit_mcp_toolsets() and not profile_name:
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )

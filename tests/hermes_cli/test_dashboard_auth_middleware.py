@@ -23,6 +23,7 @@ import pytest
 # files that gate the app.
 pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi.testclient import TestClient
+from fastapi.responses import Response
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
@@ -142,6 +143,80 @@ def test_gated_static_asset_path_is_public(gated_app):
     # 404 not 401 — proves middleware let the request through to the
     # static-files mount, which then 404'd because the file isn't there.
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_gate_uses_scope_path_for_auth_decision():
+    """Path auth gates must follow ASGI dispatch, not URL reconstruction."""
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+
+    class FakeState:
+        auth_required = True
+
+    class FakeApp:
+        state = FakeState()
+
+    class FakeURL:
+        # A vulnerable implementation that trusts request.url.path would
+        # treat this as public and skip the gate.
+        path = "/login"
+        query = ""
+
+    class FakeClient:
+        host = "203.0.113.10"
+
+    class FakeRequest:
+        app = FakeApp()
+        url = FakeURL()
+        scope = {"path": "/api/sessions"}
+        headers = {}
+        cookies = {}
+        client = FakeClient()
+
+    called = False
+
+    async def call_next(_request):
+        nonlocal called
+        called = True
+        return Response("bypassed")
+
+    response = await gated_auth_middleware(FakeRequest(), call_next)
+
+    assert response.status_code == 401
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_legacy_token_gate_uses_scope_path_for_api_decision():
+    """Loopback token gate must also use the ASGI-dispatched path."""
+
+    class FakeState:
+        auth_required = False
+
+    class FakeApp:
+        state = FakeState()
+
+    class FakeURL:
+        path = "/"
+        query = ""
+
+    class FakeRequest:
+        app = FakeApp()
+        url = FakeURL()
+        scope = {"path": "/api/sessions"}
+        headers = {}
+
+    called = False
+
+    async def call_next(_request):
+        nonlocal called
+        called = True
+        return Response("bypassed")
+
+    response = await web_server.auth_middleware(FakeRequest(), call_next)
+
+    assert response.status_code == 401
+    assert called is False
 
 
 # ---------------------------------------------------------------------------

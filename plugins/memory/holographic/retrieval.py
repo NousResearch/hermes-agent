@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import struct
+import time
 import json
 import logging
 import sqlite3
@@ -159,6 +160,10 @@ class FactRetriever:
         self.hrr_weight = weights["hrr"]
         self.embedding_weight = weights["embedding"]
 
+        # --- Pipeline DB connection cache for _engram_boost ---
+        self._pipeline_conn_cache = None
+        self._pipeline_conn_cache_time = 0.0
+
     def search(
         self,
         query: str,
@@ -266,6 +271,9 @@ class FactRetriever:
         'fact:<fact_id>' and returns a mapping of fact_id to strength value.
         Falls back to 1.0 for any fact not found.  Returns an empty dict
         (all defaults) if pipeline_state.db or the table is unavailable.
+
+        Uses a cached connection with a 60-second TTL to avoid repeated
+        open/close overhead on every search() call.
         """
         if not fact_ids:
             return {}
@@ -273,32 +281,114 @@ class FactRetriever:
             pipeline_db = self.store.db_path.parent / "pipeline_state.db"
             if not pipeline_db.exists():
                 return {}
-            conn = sqlite3.connect(str(pipeline_db), timeout=5.0)
-            conn.row_factory = sqlite3.Row
-            try:
-                placeholders = ",".join("?" for _ in fact_ids)
-                refs = [f"fact:{fid}" for fid in fact_ids]
-                rows = conn.execute(
-                    f"SELECT memory_ref, strength FROM engram_strengths "
-                    f"WHERE memory_ref IN ({placeholders})",
-                    refs,
-                ).fetchall()
-                # Map back: 'fact:<id>' -> int id -> strength
-                result: dict[int, float] = {}
-                for row in rows:
-                    ref = row["memory_ref"]
-                    if ref.startswith("fact:"):
-                        try:
-                            fid = int(ref[5:])
-                            result[fid] = row["strength"]
-                        except (ValueError, KeyError):
-                            pass
-                return result
-            finally:
-                conn.close()
+
+            conn = self._get_pipeline_conn(pipeline_db)
+            if conn is None:
+                return {}
+
+            placeholders = ",".join("?" for _ in fact_ids)
+            refs = [f"fact:{fid}" for fid in fact_ids]
+            rows = conn.execute(
+                f"SELECT memory_ref, strength FROM engram_strengths "
+                f"WHERE memory_ref IN ({placeholders})",
+                refs,
+            ).fetchall()
+            # Map back: 'fact:<id>' -> int id -> strength
+            result: dict[int, float] = {}
+            for row in rows:
+                ref = row["memory_ref"]
+                if ref.startswith("fact:"):
+                    try:
+                        fid = int(ref[5:])
+                        result[fid] = row["strength"]
+                    except (ValueError, KeyError):
+                        pass
+            return result
         except Exception as e:
+            # On any failure, invalidate the cached connection and retry once
+            # with a fresh connection before giving up entirely.
+            try:
+                self._pipeline_conn_cache = None
+                self._pipeline_conn_cache_time = 0.0
+                pipeline_db = self.store.db_path.parent / "pipeline_state.db"
+                if pipeline_db.exists():
+                    conn = sqlite3.connect(str(pipeline_db), timeout=5.0)
+                    conn.row_factory = sqlite3.Row
+                    try:
+                        placeholders = ",".join("?" for _ in fact_ids)
+                        refs = [f"fact:{fid}" for fid in fact_ids]
+                        rows = conn.execute(
+                            f"SELECT memory_ref, strength FROM engram_strengths "
+                            f"WHERE memory_ref IN ({placeholders})",
+                            refs,
+                        ).fetchall()
+                        result: dict[int, float] = {}
+                        for row in rows:
+                            ref = row["memory_ref"]
+                            if ref.startswith("fact:"):
+                                try:
+                                    fid = int(ref[5:])
+                                    result[fid] = row["strength"]
+                                except (ValueError, KeyError):
+                                    pass
+                        return result
+                    finally:
+                        conn.close()
+            except Exception as e2:
+                logger.debug("Engram boost fallback also failed: %s", e2)
             logger.debug("Engram boost lookup failed (graceful skip): %s", e)
             return {}
+
+    def _get_pipeline_conn(self, pipeline_db_path) -> "sqlite3.Connection | None":
+        """Return a cached SQLite connection to pipeline_state.db.
+
+        The connection is cached for 60 seconds.  If the cache is expired or
+        missing, a new connection is opened and cached.  Returns None if the
+        connection cannot be opened.
+        """
+        _CACHE_TTL = 60.0  # seconds
+        now = time.monotonic()
+
+        try:
+            # Reuse cached connection if it exists and is fresh
+            if (self._pipeline_conn_cache is not None
+                    and (now - self._pipeline_conn_cache_time) < _CACHE_TTL):
+                # Verify the connection is still usable with a lightweight query
+                try:
+                    self._pipeline_conn_cache.execute("SELECT 1")
+                    return self._pipeline_conn_cache
+                except Exception:
+                    # Connection is stale/broken; fall through to open a new one
+                    self._pipeline_conn_cache = None
+
+            # Close old cached connection if any
+            if self._pipeline_conn_cache is not None:
+                try:
+                    self._pipeline_conn_cache.close()
+                except Exception:
+                    pass
+
+            conn = sqlite3.connect(str(pipeline_db_path), timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            self._pipeline_conn_cache = conn
+            self._pipeline_conn_cache_time = now
+            return conn
+        except Exception as e:
+            logger.debug("Could not open pipeline_state.db connection: %s", e)
+            return None
+
+    def close_cache(self) -> None:
+        """Close and discard the cached pipeline_state.db connection.
+
+        Call this during shutdown or when the connection is no longer needed.
+        """
+        if self._pipeline_conn_cache is not None:
+            try:
+                self._pipeline_conn_cache.close()
+            except Exception:
+                pass
+            self._pipeline_conn_cache = None
+            self._pipeline_conn_cache_time = 0.0
 
     def embedding_search(
         self,

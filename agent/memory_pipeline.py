@@ -515,7 +515,69 @@ class ConsolidationEngine:
                             "VALUES (?, ?, ?)",
                             (content, domain, base_conf),
                         )
+                        schema_id = state._conn.execute(
+                            "SELECT last_insert_rowid()"
+                        ).fetchone()[0]
+                        mem_ref = sha256(
+                            content.encode()
+                        ).hexdigest()[:16]
+                        state._conn.execute(
+                            "INSERT OR IGNORE INTO "
+                            "schema_sources "
+                            "(schema_id, memory_ref, "
+                            " provider) "
+                            "VALUES (?, ?, ?)",
+                            (schema_id, mem_ref,
+                             "pipeline"),
+                        )
                         created += 1
+
+                    # OPT 6: Write cross-domain links for new schemas
+                    _new_schemas = []
+                    for _fact in facts_sorted[:10]:
+                        _c = _fact.get('content', '')
+                        _d = _fact.get('domain', 'general')
+                        if (_c and len(_c) >= 10
+                                and _c[:50] not in existing_contents):
+                            _new_schemas.append((_c, _d))
+
+                    if _new_schemas:
+                        _entity_domains: dict[str, set[str]] = {}
+                        for _c, _d in _new_schemas:
+                            _ents = set(
+                                re.findall(r'[A-Z][a-z]{2,}', _c))
+                            _ents.update(
+                                e for e in re.findall(
+                                    r'[一-鿿]{2,6}', _c)
+                                if e not in _ZH_STOPWORDS)
+                            for _e in _ents:
+                                _entity_domains.setdefault(
+                                    _e, set()).add(_d)
+
+                        for _e, _doms in _entity_domains.items():
+                            _ph = ','.join('?' for _ in _doms)
+                            _rows = state._conn.execute(
+                                'SELECT DISTINCT domain FROM schemas '
+                                f'WHERE domain NOT IN ({_ph}) '
+                                'AND content LIKE ?',
+                                list(_doms) + [f'%{_e}%'],
+                            ).fetchall()
+                            _all_doms = _doms | {
+                                r['domain'] for r in _rows}
+                            if len(_all_doms) >= 2:
+                                _sorted = sorted(_all_doms)
+                                for _i in range(len(_sorted)):
+                                    for _j in range(
+                                            _i + 1, len(_sorted)):
+                                        state._conn.execute(
+                                            'INSERT INTO '
+                                            'cross_domain_links '
+                                            '(entity, domain_a, '
+                                            'domain_b, strength) '
+                                            'VALUES (?, ?, ?, 0.5)',
+                                            (_e, _sorted[_i],
+                                             _sorted[_j]),
+                                        )
 
                 # Log the run (single commit for atomicity)
                 state._conn.execute(
@@ -944,6 +1006,30 @@ class FeedbackCoordinator:
             except Exception as e:
                 logger.debug(
                     "Consolidated schema prediction failed: %s", e)
+            # Insert predictions into predictions table
+            try:
+                for pred_text in predictions:
+                    row = state._conn.execute(
+                        "SELECT schema_id FROM schemas "
+                        "WHERE ? LIKE '%' || "
+                        "substr(content, 1, 50) || '%' "
+                        "ORDER BY confidence DESC "
+                        "LIMIT 1",
+                        (pred_text,),
+                    ).fetchone()
+                    sid = (row["schema_id"]
+                           if row else None)
+                    state._conn.execute(
+                        "INSERT INTO predictions "
+                        "(schema_id, prediction, "
+                        " context) "
+                        "VALUES (?, ?, ?)",
+                        (sid, pred_text, context),
+                    )
+                state._conn.commit()
+            except Exception as e:
+                logger.debug(
+                    "Prediction insert failed: %s", e)
             with self._lock:
                 self._pending_predictions = predictions
             return predictions
@@ -1589,6 +1675,7 @@ class MemoryPipeline:
         self._activation: ActivationGraph | None = None
         self._episodic = None   # EpisodicTimeline (from holographic plugin)
         self._dreaming = None   # DreamEngine (from holographic plugin)
+        self._evolution = None  # SelfEvolution (from holographic plugin)
         self._scheduler: SleepScheduler | None = None
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -1687,6 +1774,19 @@ class MemoryPipeline:
                         "mode3_min_schema_conf", 0.7),
                 )
                 self._dreaming.init_tables()
+
+        # Layer 8b: SelfEvolution (homeostatic self-regulation)
+        evo_cfg = self._config.get('self_evolution', {})
+        if evo_cfg.get('self_evolution_enabled', False):
+            _mod = self._load_holographic_plugin(
+                'self_evolution', 'self_evolution.py')
+            if _mod:
+                self._evolution = _mod.SelfEvolution(
+                    self._state._conn, self._state._lock,
+                    evo_cfg,
+                    pipeline_conn=self._state._conn,
+                )
+                self._evolution.init_tables()
 
         # Layer 9a: HippocampalIndex (sparse index for pattern completion)
         hippo_cfg = self._config.get("hippocampal_index", {})
@@ -2229,6 +2329,14 @@ class MemoryPipeline:
                         ).start()
                 except Exception as e:
                     logger.debug("Dream cycle failed: %s", e)
+
+            # Layer 8b: run self-evolution cycle if conditions met
+            if self._evolution:
+                import threading as _t2
+                _t2.Thread(
+                    target=self._evolution.run_evolution_cycle,
+                    daemon=True,
+                ).start()
         except Exception as e:
             logger.debug("Pipeline post_session_end failed: %s", e)
 

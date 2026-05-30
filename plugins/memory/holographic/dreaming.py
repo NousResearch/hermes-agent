@@ -201,6 +201,11 @@ class DreamEngine:
                     (self._mode1_top_k,),
                 ).fetchall()
 
+                all_schemas = self._conn.execute(
+                    "SELECT schema_id, content, confidence "
+                    "FROM schemas WHERE confidence > 0.3"
+                ).fetchall()
+
             for ep in episodes:
                 ep_id = ep["episode_id"]
                 result.episodes_used += 1
@@ -219,12 +224,7 @@ class DreamEngine:
                         result.facts_replayed += 1
                         content = fact["content"]
 
-                        schemas = self._conn.execute(
-                            "SELECT schema_id, content, confidence "
-                            "FROM schemas WHERE confidence > 0.3"
-                        ).fetchall()
-
-                        for schema in schemas:
+                        for schema in all_schemas:
                             overlap = self._entity_overlap(
                                 content, schema["content"])
                             if overlap > 0.3:
@@ -273,6 +273,13 @@ class DreamEngine:
                     ep_ids,
                 ).fetchall()
 
+
+                # Pre-load all schema content for existence checks
+                all_schema_contents = self._conn.execute(
+                    "SELECT content FROM schemas"
+                ).fetchall()
+                schema_content_set = {r["content"] for r in all_schema_contents}
+
                 for entity_row in shared_entities:
                     entity = entity_row["name"]
 
@@ -294,13 +301,7 @@ class DreamEngine:
                         contents = [f["content"][:100] for f in facts[:3]]
                         combined = f"[Cross-episode: {entity}] " + " | ".join(contents)
 
-                        existing = self._conn.execute(
-                            "SELECT schema_id FROM schemas "
-                            "WHERE content LIKE ? LIMIT 1",
-                            (f"%{entity}%",),
-                        ).fetchone()
-
-                        if not existing:
+                        if not any(entity in sc for sc in schema_content_set):
                             self._conn.execute(
                                 "INSERT INTO schemas "
                                 "(content, domain, confidence, source_count) "
@@ -329,6 +330,13 @@ class DreamEngine:
                     (self._mode3_min_conf,),
                 ).fetchall()
 
+
+                # Pre-load all hypothesis content for existence checks
+                all_hyp_contents = self._conn.execute(
+                    "SELECT content FROM dream_hypotheses"
+                ).fetchall()
+                hyp_content_set = {r["content"] for r in all_hyp_contents}
+
                 for schema in schemas:
                     entities = set(re.findall(
                         r'\b[A-Z][a-z]{2,}\b', schema["content"]))
@@ -351,13 +359,7 @@ class DreamEngine:
                         ).fetchall()
 
                         for fact in facts:
-                            existing = self._conn.execute(
-                                "SELECT hypothesis_id FROM dream_hypotheses "
-                                "WHERE content LIKE ? LIMIT 1",
-                                (f"%{entity}%",),
-                            ).fetchone()
-
-                            if not existing:
+                            if not any(entity in hc for hc in hyp_content_set):
                                 hypothesis_content = (
                                     f"[Hypothesis from schema '{schema['content'][:50]}'] "
                                     f"Entity '{entity}' may relate to: "

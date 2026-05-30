@@ -439,6 +439,21 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_MAX_MEDIA_BYTES` | Maximum Matrix media upload/download size in bytes (default: `104857600`) |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |
+| `NOSTR_PRIVATE_KEY` | Bot identity key. Accepts `nsec1...` (NIP-19 bech32) or 64-character hex. |
+| `NOSTR_RELAYS` | Comma-separated `wss://` relay URLs. At least one is required. |
+| `NOSTR_ALLOWED_NPUBS` | Comma-separated npubs or hex pubkeys allowed to DM the bot. `*` allows all senders; empty denies all. |
+| `NOSTR_ALLOW_ALL_USERS` | Allow all senders without an allowlist (`true`/`false`). Synonym for `NOSTR_ALLOWED_NPUBS=*`. |
+| `NOSTR_HOME_CHANNEL` | Default recipient (npub or hex pubkey) for cron delivery and proactive messages. |
+| `NOSTR_HOME_CHANNEL_NAME` | Display name for the Nostr home channel. |
+| `NOSTR_BOT_NAME` | Kind-0 profile name. Defaults to the bot's npub. |
+| `NOSTR_BOT_ABOUT` | Kind-0 profile "about" text. |
+| `NOSTR_BOT_PICTURE` | HTTP(S) URL for the kind-0 profile picture. |
+| `NOSTR_NIP05` | NIP-05 verification identifier in `local@domain` form. |
+| `NOSTR_LUD16` | Lightning address in `local@domain` form (for zaps). |
+| `NOSTR_BOT_WEBSITE` | NIP-24 website field. |
+| `NOSTR_EXPIRATION_MINUTES` | NIP-40 TTL for outbound DMs in minutes (default: `10080`, 7 days). |
+| `NOSTR_LOOKBACK_MINUTES` | Subscription replay window in minutes (default: `2880`, 48h; minimum recommended by NIP-59). |
+| `NOSTR_SEEN_MAX` | Inbound gift-wrap dedup cache size (default: `1000`). |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |

@@ -3,12 +3,18 @@
 import json
 from unittest.mock import patch, MagicMock
 
+import pytest
 
 from agent.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
     _refresh_oauth_token,
 )
+
+
+# This module exercises the reader itself with explicit platform and subprocess
+# mocks, so it opts out of the suite-wide guard without touching a real Keychain.
+pytestmark = pytest.mark.allow_macos_keychain
 
 
 class TestReadClaudeCodeCredentialsFromKeychain:
@@ -334,4 +340,3 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         assert result == "newly-minted"
         # Prefers the live source's refresh token over the caller's stale copy.
         assert captured["refresh_token"] == "live-refresh"
-

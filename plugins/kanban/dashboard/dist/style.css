@@ -1537,3 +1537,23 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ---- Mobile viewport responsiveness & safe area spacing (Issue #35324) - */
+@media (max-width: 1023px) {
+  .hermes-kanban-drawer {
+    /* Offset height by the height of the mobile top bar (3.5rem) and safe area insets */
+    height: calc(100vh - 3.5rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    height: calc(100dvh - 3.5rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    margin-top: calc(3.5rem + env(safe-area-inset-top, 0px));
+    border-top: 1px solid var(--color-border);
+  }
+  .hermes-kanban-drawer-body {
+    /* Safe-area awareness and breathing room for scrollable drawer content */
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+  }
+  .hermes-kanban-drawer-comment-row {
+    /* Extra padding at the bottom for iOS Home indicator / browser bottom bars */
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+

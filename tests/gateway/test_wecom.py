@@ -559,7 +559,7 @@ class TestInboundMessages:
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
-        adapter._extract_media = AsyncMock(return_value=(["/tmp/test.png"], ["image/png"]))
+        adapter._extract_media = AsyncMock(return_value=([], []))
 
         payload = {
             "cmd": "aibot_msg_callback",
@@ -581,8 +581,8 @@ class TestInboundMessages:
         assert event.text == "hello"
         assert event.source.chat_id == "group-1"
         assert event.source.user_id == "user-1"
-        assert event.media_urls == ["/tmp/test.png"]
-        assert event.media_types == ["image/png"]
+        assert event.media_urls == []
+        assert event.media_types == []
 
     @pytest.mark.asyncio
     async def test_on_message_preserves_quote_context(self):
@@ -641,6 +641,391 @@ class TestInboundMessages:
 
         await adapter._on_message(payload)
         adapter.handle_message.assert_not_awaited()
+
+
+class TestWeComTwoPhaseIngestion:
+    def _adapter(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="reply-1"))
+        return adapter
+
+    def _payload(self, body):
+        merged = {
+            "msgid": "msg-1",
+            "chatid": "group-1",
+            "chattype": "group",
+            "from": {"userid": "user-1"},
+        }
+        merged.update(body)
+        return {"cmd": "aibot_msg_callback", "headers": {"req_id": "req-1"}, "body": merged}
+
+    def _pending(self, adapter, chat_id="group-1"):
+        return adapter.pending_wecom_ingestion[chat_id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "项目资料.pdf",
+            "合作方案.docx",
+            "预算表.xlsx",
+            "路演材料.pptx",
+            "归档材料.zip",
+            "readme.txt",
+        ],
+    )
+    async def test_file_material_starts_pending_confirmation(self, filename):
+        from gateway.platforms.wecom import WECOM_INGESTION_CONFIRMATION_TEMPLATE
+
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        await adapter._on_message(self._payload({"msgtype": "file", "file": {"filename": filename}}))
+
+        adapter.handle_message.assert_not_awaited()
+        pending = self._pending(adapter)
+        assert pending["source_type"] == "file"
+        assert pending["chat_id"] == "group-1"
+        assert pending["message_id"] == "msg-1"
+        assert pending["confidence"] == "UNKNOWN"
+        assert pending["suggested_path"].startswith(
+            "projects/_staging/materials/"
+        )
+        assert pending["created_at"].endswith("+08:00")
+        sent = adapter.send.await_args.kwargs["content"]
+        assert sent == WECOM_INGESTION_CONFIRMATION_TEMPLATE.format(
+            source_label="文件",
+            topic_label="未确定",
+            suggested_path=pending["suggested_path"],
+            future_location="待确认",
+        )
+        assert "1. 进入知识库自动处理工作流" in sent
+        assert "2. 暂不处理" in sent
+        assert "3. 仅保存原始资料，稍后人工判断" in sent
+
+    @pytest.mark.asyncio
+    async def test_image_material_starts_pending_confirmation(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=(["/tmp/wecom.png"], ["image/png"]))
+
+        await adapter._on_message(self._payload({"msgtype": "image", "image": {"filename": "现场照片.png"}}))
+
+        adapter.handle_message.assert_not_awaited()
+        assert self._pending(adapter)["source_type"] == "image"
+        assert self._pending(adapter)["predicted_topic"] == "undetermined"
+        assert "资料类型：图片" in adapter.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_url_material_starts_pending_confirmation(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        await adapter._on_message(
+            self._payload(
+                {
+                    "msgtype": "text",
+                    "text": {"content": "请存一下 https://example.com/reports/q1"},
+                }
+            )
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert self._pending(adapter)["source_type"] == "url"
+        assert "资料类型：链接" in adapter.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_obvious_long_material_text_starts_pending_confirmation(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        long_text = "季度经营分析报告\n" + ("这是本季度项目进展、风险、预算和下一步计划。" * 60)
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": long_text}}))
+
+        adapter.handle_message.assert_not_awaited()
+        assert self._pending(adapter)["source_type"] == "text"
+        assert self._pending(adapter)["predicted_topic"] == "undetermined"
+        assert "资料类型：文本" in adapter.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_notice_text_starts_pending_confirmation(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        notice = "项目申报通知：" + ("请各部门按要求提交资料，逾期不再受理。" * 5)
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": notice}}))
+
+        adapter.handle_message.assert_not_awaited()
+        assert self._pending(adapter)["source_type"] == "text"
+
+    @pytest.mark.asyncio
+    async def test_pending_ingestion_is_isolated_per_chat_and_same_chat_overwrites(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        await adapter._on_message(
+            self._payload(
+                {
+                    "chatid": "chat-a",
+                    "msgid": "a-1",
+                    "msgtype": "file",
+                    "file": {"filename": "A资料.pdf"},
+                }
+            )
+        )
+        await adapter._on_message(
+            self._payload(
+                {
+                    "chatid": "chat-b",
+                    "msgid": "b-1",
+                    "msgtype": "file",
+                    "file": {"filename": "B资料.pdf"},
+                }
+            )
+        )
+        await adapter._on_message(
+            self._payload(
+                {
+                    "chatid": "chat-a",
+                    "msgid": "a-2",
+                    "msgtype": "file",
+                    "file": {"filename": "A新资料.pdf"},
+                }
+            )
+        )
+
+        assert set(adapter.pending_wecom_ingestion) == {"chat-a", "chat-b"}
+        assert adapter.pending_wecom_ingestion["chat-a"]["message_id"] == "a-2"
+        assert adapter.pending_wecom_ingestion["chat-b"]["message_id"] == "b-1"
+
+    @pytest.mark.asyncio
+    async def test_chat_a_reply_one_consumes_only_chat_a_pending(self):
+        from gateway.platforms.wecom import WECOM_INGESTION_QUEUED_TEXT
+
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        pending_a = {
+            "chat_id": "chat-a",
+            "message_id": "a-source",
+            "source_type": "file",
+            "predicted_topic": "competition_aild",
+            "confidence": "HIGH",
+            "suggested_path": "projects/_staging/materials/competition_aild/a-source",
+            "created_at": "2026-05-30T12:00:00+08:00",
+        }
+        pending_b = {
+            "chat_id": "chat-b",
+            "message_id": "b-source",
+            "source_type": "url",
+            "predicted_topic": "undetermined",
+            "confidence": "UNKNOWN",
+            "suggested_path": "projects/_staging/materials/undetermined/b-source",
+            "created_at": "2026-05-30T12:01:00+08:00",
+        }
+        adapter.pending_wecom_ingestion = {"chat-a": pending_a, "chat-b": pending_b}
+
+        await adapter._on_message(
+            self._payload(
+                {
+                    "chatid": "chat-a",
+                    "msgid": "a-reply",
+                    "msgtype": "text",
+                    "text": {"content": "1"},
+                }
+            )
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter.pending_wecom_ingestion == {"chat-b": pending_b}
+        assert adapter.confirmed_ingestion["queue_manifest"]["pending"] == pending_a
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat-a",
+            content=WECOM_INGESTION_QUEUED_TEXT,
+            reply_to="a-reply",
+        )
+
+    @pytest.mark.asyncio
+    async def test_aild_material_maps_to_competition_aild(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        text = "AILD 智能设计大赛资料通知 aild.caa.org.cn：" + ("请整理参赛指南和问答材料。" * 5)
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": text}}))
+
+        assert self._pending(adapter)["predicted_topic"] == "competition_aild"
+        assert self._pending(adapter)["confidence"] == "HIGH"
+        assert "可能主题：AILD" in adapter.send.await_args.kwargs["content"]
+        assert "projects/competition-consulting-qa/aild/" in adapter.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_legal_ai_text_no_longer_maps_to_aild(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        text = "人工智能法律资料通知：" + ("请整理法规、案例和问答材料。" * 5)
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": text}}))
+
+        assert self._pending(adapter)["predicted_topic"] == "undetermined"
+        assert self._pending(adapter)["confidence"] == "UNKNOWN"
+
+
+    @pytest.mark.asyncio
+    async def test_emergency_safety_material_maps_to_competition_emergency_safety(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        text = "应急安全竞赛资料报告：" + ("包含消防、突发事件处置和安全生产方案。" * 5)
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": text}}))
+
+        assert self._pending(adapter)["predicted_topic"] == "competition_emergency_safety"
+        assert self._pending(adapter)["confidence"] == "HIGH"
+        assert "可能主题：应急安全" in adapter.send.await_args.kwargs["content"]
+        assert "projects/competition-consulting-qa/emergency-safety/" in adapter.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_chuangqingchun_material_maps_to_chuangqingchun(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        text = "创青春 项目申报通知：" + ("请保存报名材料、商业计划书和答辩安排。" * 5)
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": text}}))
+
+        assert self._pending(adapter)["predicted_topic"] == "chuangqingchun"
+        assert self._pending(adapter)["confidence"] == "MEDIUM"
+        assert "可能主题：创青春" in adapter.send.await_args.kwargs["content"]
+        assert "后续可能归入：待确认" in adapter.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_normal_chat_does_not_trigger_ingestion(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": "你好"}}))
+
+        adapter.handle_message.assert_awaited_once()
+        adapter.send.assert_not_awaited()
+        assert adapter.pending_wecom_ingestion == {}
+
+    @pytest.mark.asyncio
+    async def test_reply_one_consumes_pending_and_marks_confirmed(self):
+        from gateway.platforms.wecom import WECOM_INGESTION_QUEUED_TEXT
+
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        pending = {
+            "chat_id": "group-1",
+            "message_id": "source-msg",
+            "source_type": "file",
+            "predicted_topic": "competition_aild",
+            "confidence": "HIGH",
+            "suggested_path": "projects/_staging/materials/competition_aild/source-msg",
+            "created_at": "2026-05-30T12:00:00+08:00",
+        }
+        adapter.pending_wecom_ingestion = {"group-1": pending}
+
+        await adapter._on_message(self._payload({"msgid": "reply-msg", "msgtype": "text", "text": {"content": "1"}}))
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter.pending_wecom_ingestion == {}
+        assert adapter.confirmed_ingestion["message_id"] == "source-msg"
+        assert adapter.confirmed_ingestion["confirmed_message_id"] == "reply-msg"
+        assert adapter.confirmed_ingestion["queue_manifest"]["pending"] == pending
+        adapter.send.assert_awaited_once_with(
+            chat_id="group-1",
+            content=WECOM_INGESTION_QUEUED_TEXT,
+            reply_to="reply-msg",
+        )
+
+    @pytest.mark.asyncio
+    async def test_reply_one_without_pending_is_normal_chat(self):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        await adapter._on_message(self._payload({"msgtype": "text", "text": {"content": "1"}}))
+
+        adapter.handle_message.assert_awaited_once()
+        adapter.send.assert_not_awaited()
+        assert adapter.pending_wecom_ingestion == {}
+        assert adapter.confirmed_ingestion is None
+
+    @pytest.mark.asyncio
+    async def test_reply_two_cancels_pending_with_exact_text(self):
+        from gateway.platforms.wecom import WECOM_INGESTION_CANCELLED_TEXT
+
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter.pending_wecom_ingestion = {"group-1": {
+            "chat_id": "group-1",
+            "message_id": "source-msg",
+            "source_type": "url",
+            "predicted_topic": "undetermined",
+            "confidence": "UNKNOWN",
+            "suggested_path": "projects/_staging/materials/undetermined/source-msg",
+            "created_at": "2026-05-30T12:00:00+08:00",
+        }}
+
+        await adapter._on_message(self._payload({"msgid": "reply-msg", "msgtype": "text", "text": {"content": "2"}}))
+
+        assert adapter.pending_wecom_ingestion == {}
+        adapter.send.assert_awaited_once_with(
+            chat_id="group-1",
+            content=WECOM_INGESTION_CANCELLED_TEXT,
+            reply_to="reply-msg",
+        )
+
+    @pytest.mark.asyncio
+    async def test_reply_three_records_raw_candidate_with_exact_text(self):
+        from gateway.platforms.wecom import WECOM_INGESTION_RAW_RECORDED_TEXT
+
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        pending = {
+            "chat_id": "group-1",
+            "message_id": "source-msg",
+            "source_type": "text",
+            "predicted_topic": "undetermined",
+            "confidence": "UNKNOWN",
+            "suggested_path": "projects/_staging/materials/undetermined/source-msg",
+            "created_at": "2026-05-30T12:00:00+08:00",
+        }
+        adapter.pending_wecom_ingestion = {"group-1": pending}
+
+        await adapter._on_message(self._payload({"msgid": "reply-msg", "msgtype": "text", "text": {"content": "3"}}))
+
+        assert adapter.pending_wecom_ingestion == {}
+        assert adapter.raw_candidate_ingestion["message_id"] == "source-msg"
+        assert adapter.raw_candidate_ingestion["recorded_message_id"] == "reply-msg"
+        assert adapter.raw_candidate_ingestion["queue_manifest"]["pending"] == pending
+        adapter.send.assert_awaited_once_with(
+            chat_id="group-1",
+            content=WECOM_INGESTION_RAW_RECORDED_TEXT,
+            reply_to="reply-msg",
+        )
+
+    @pytest.mark.asyncio
+    async def test_ingestion_logs_are_privacy_safe(self, caplog):
+        adapter = self._adapter()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        secret_url = "https://example.com/private/full/path"
+        full_text = f"请保存 {secret_url}"
+
+        with caplog.at_level("INFO", logger="gateway.platforms.wecom"):
+            await adapter._on_message(
+                self._payload({"msgtype": "text", "text": {"content": full_text}})
+            )
+
+        log_output = "\n".join(record.getMessage() for record in caplog.records)
+        assert "platform=wecom" in log_output
+        assert "chat_id=group-1" in log_output
+        assert "message_id=msg-1" in log_output
+        assert "source_type=url" in log_output
+        assert "action=pending" in log_output
+        assert "pending_state=created" in log_output
+        assert secret_url not in log_output
+        assert full_text not in log_output
 
 
 class TestWeComZombieSessionFix:
@@ -702,7 +1087,7 @@ class TestWeComZombieSessionFix:
         adapter._cleanup_ws = _fake_cleanup
         adapter._wait_for_handshake = _fake_handshake
 
-        with patch("gateway.platforms.wecom.aiohttp.ClientSession", _FakeSession):
+        with patch("gateway.platforms.wecom.aiohttp", SimpleNamespace(ClientSession=_FakeSession)):
             await adapter._open_connection()
 
         assert len(sent_payloads) == 1

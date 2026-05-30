@@ -39,7 +39,7 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -103,6 +103,48 @@ ABSOLUTE_MAX_BYTES = FILE_MAX_BYTES
 UPLOAD_CHUNK_SIZE = 512 * 1024
 MAX_UPLOAD_CHUNKS = 100
 VOICE_SUPPORTED_MIMES = {"audio/amr"}
+
+WECOM_INGESTION_CONFIRMATION_TEMPLATE = (
+    "已检测到一份可能需要进入知识库处理的资料。\n\n"
+    "初步判断：\n"
+    "1. 资料类型：{source_label}\n"
+    "2. 可能主题：{topic_label}\n"
+    "3. 建议暂存位置：{suggested_path}\n"
+    "4. 后续可能归入：{future_location}\n\n"
+    "请选择：\n"
+    "1. 进入知识库自动处理工作流\n"
+    "2. 暂不处理\n"
+    "3. 仅保存原始资料，稍后人工判断"
+)
+WECOM_INGESTION_CANCELLED_TEXT = "已取消处理，本资料不会进入知识库流程。"
+WECOM_INGESTION_RAW_RECORDED_TEXT = "已记录为原始候选资料，暂不进入自动处理，等待人工判断。"
+WECOM_INGESTION_QUEUED_TEXT = "已进入待处理队列，请等待侯方明审核"
+
+WECOM_INGESTION_TOPIC_MAP = {
+    "competition_aild": {
+        "label": "AILD",
+        "existing_path": "projects/competition-consulting-qa/aild/",
+        "duplicate_policy": "reuse_existing",
+    },
+    "competition_emergency_safety": {
+        "label": "应急安全",
+        "existing_path": "projects/competition-consulting-qa/emergency-safety/",
+        "duplicate_policy": "reuse_existing",
+    },
+    "chuangqingchun": {
+        "label": "创青春",
+        "existing_path": "待确认",
+        "duplicate_policy": "require_user_confirmation",
+    },
+}
+WECOM_INGESTION_UNDETERMINED_TOPIC = "undetermined"
+WECOM_INGESTION_SOURCE_LABELS = {
+    "file": "文件",
+    "image": "图片",
+    "url": "链接",
+    "text": "文本",
+    "unknown": "未知",
+}
 
 
 def check_wecom_requirements() -> bool:
@@ -184,6 +226,9 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+        self.pending_wecom_ingestion: Dict[str, Dict[str, Any]] = {}
+        self.confirmed_ingestion: Optional[Dict[str, Any]] = None
+        self.raw_candidate_ingestion: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -527,8 +572,45 @@ class WeComAdapter(BasePlatformAdapter):
         if not text and reply_text and not media_urls:
             text = reply_text
 
-        if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
+        ingestion_candidate = self._detect_wecom_ingestion_candidate(
+            body=body,
+            text=text,
+            media_urls=media_urls,
+            media_types=media_types,
+            message_id=msg_id,
+        )
+
+        if not text and not media_urls and not ingestion_candidate:
+            return
+
+        if await self._handle_wecom_ingestion_reply(chat_id, msg_id, text):
+            return
+
+        if ingestion_candidate:
+            pending = {
+                "chat_id": chat_id,
+                "message_id": msg_id,
+                "source_type": ingestion_candidate["source_type"],
+                "predicted_topic": ingestion_candidate["predicted_topic"],
+                "confidence": ingestion_candidate["confidence"],
+                "suggested_path": ingestion_candidate["suggested_path"],
+                "created_at": self._utc8_now_iso(),
+            }
+            self.pending_wecom_ingestion[chat_id] = pending
+            self._log_wecom_ingestion(
+                chat_id=chat_id,
+                message_id=msg_id,
+                source_type=ingestion_candidate["source_type"],
+                predicted_topic=ingestion_candidate["predicted_topic"],
+                confidence=ingestion_candidate["confidence"],
+                action="pending",
+                pending_state="created",
+            )
+            await self.send(
+                chat_id=chat_id,
+                content=self._format_wecom_ingestion_confirmation(pending),
+                reply_to=msg_id,
+            )
             return
 
         source = self.build_source(
@@ -842,6 +924,289 @@ class WeComAdapter(BasePlatformAdapter):
         if str(body.get("msgtype") or "").lower() == "voice":
             return MessageType.VOICE
         return MessageType.TEXT
+
+    async def _handle_wecom_ingestion_reply(self, chat_id: str, msg_id: str, text: str) -> bool:
+        """Handle 1/2/3 replies for a pending two-phase ingestion candidate."""
+        normalized = str(text or "").strip()
+        if normalized not in {"1", "2", "3"}:
+            return False
+
+        pending = self.pending_wecom_ingestion.get(chat_id)
+        if not pending:
+            return False
+
+        if normalized == "1":
+            confirmed = self._build_wecom_ingestion_manifest(
+                pending=pending,
+                action_message_id=msg_id,
+                action_at_key="confirmed_at",
+                action_message_id_key="confirmed_message_id",
+                queue_name="confirmed_ingestion",
+                status="queued_for_review",
+            )
+            self.confirmed_ingestion = confirmed
+            self.pending_wecom_ingestion.pop(chat_id, None)
+            self._log_wecom_ingestion_action(confirmed, "confirmed", "consumed")
+            await self.send(chat_id=chat_id, content=WECOM_INGESTION_QUEUED_TEXT, reply_to=msg_id)
+            return True
+
+        if normalized == "2":
+            self.pending_wecom_ingestion.pop(chat_id, None)
+            self._log_wecom_ingestion_action(pending, "cancelled", "cleared")
+            await self.send(chat_id=chat_id, content=WECOM_INGESTION_CANCELLED_TEXT, reply_to=msg_id)
+            return True
+
+        raw_candidate = self._build_wecom_ingestion_manifest(
+            pending=pending,
+            action_message_id=msg_id,
+            action_at_key="recorded_at",
+            action_message_id_key="recorded_message_id",
+            queue_name="raw_candidate_ingestion",
+            status="raw_recorded_for_review",
+        )
+        self.raw_candidate_ingestion = raw_candidate
+        self.pending_wecom_ingestion.pop(chat_id, None)
+        self._log_wecom_ingestion_action(raw_candidate, "raw_recorded", "cleared")
+        await self.send(chat_id=chat_id, content=WECOM_INGESTION_RAW_RECORDED_TEXT, reply_to=msg_id)
+        return True
+
+    @classmethod
+    def _detect_wecom_ingestion_candidate(
+        cls,
+        body: Dict[str, Any],
+        text: str,
+        media_urls: List[str],
+        media_types: List[str],
+        message_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        source_type = cls._predict_wecom_source_type(body, text, media_urls, media_types)
+        if not source_type:
+            return None
+
+        topic, confidence = cls._predict_wecom_topic(body, text)
+        return {
+            "source_type": source_type,
+            "predicted_topic": topic,
+            "confidence": confidence,
+            "suggested_path": cls._wecom_staging_path(topic, message_id),
+        }
+
+    @classmethod
+    def _predict_wecom_source_type(
+        cls,
+        body: Dict[str, Any],
+        text: str,
+        media_urls: List[str],
+        media_types: List[str],
+    ) -> Optional[str]:
+        msgtype = str(body.get("msgtype") or "").lower()
+        if cls._extract_first_url(text):
+            return "url"
+
+        if msgtype == "image" or (media_urls and any(mtype.startswith("image/") for mtype in media_types)):
+            return "image"
+
+        filenames = cls._wecom_candidate_filenames(body, text, include_text_urls=False)
+        for filename in filenames:
+            by_name = cls._source_type_from_filename(filename)
+            if by_name:
+                return by_name
+
+        for media_type in media_types:
+            by_mime = cls._source_type_from_mime(media_type)
+            if by_mime:
+                return by_mime
+
+        if msgtype in {"file", "appmsg"} or media_urls:
+            return "file"
+        if cls._looks_like_material_text(text):
+            return "text"
+        return None
+
+    @staticmethod
+    def _source_type_from_mime(media_type: str) -> Optional[str]:
+        normalized = str(media_type or "").split(";", 1)[0].strip().lower()
+        if normalized.startswith("image/"):
+            return "image"
+        if normalized in {
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/zip",
+            "application/x-rar-compressed",
+            "application/x-7z-compressed",
+        }:
+            return "file"
+        if normalized.startswith(("application/", "text/")):
+            return "file"
+        return None
+
+    @staticmethod
+    def _source_type_from_filename(filename: str) -> Optional[str]:
+        suffix = Path(str(filename or "")).suffix.lower()
+        if suffix:
+            return "file"
+        return None
+
+    @classmethod
+    def _wecom_candidate_filenames(
+        cls,
+        body: Dict[str, Any],
+        text: str,
+        include_text_urls: bool = True,
+    ) -> List[str]:
+        names: List[str] = []
+
+        def collect(block: Any) -> None:
+            if not isinstance(block, dict):
+                return
+            for key in ("filename", "file_name", "name", "title"):
+                value = str(block.get(key) or "").strip()
+                if value:
+                    names.append(value)
+            for nested_key in ("file", "image"):
+                nested = block.get(nested_key)
+                if isinstance(nested, dict):
+                    collect(nested)
+
+        collect(body.get("file"))
+        collect(body.get("image"))
+        collect(body.get("appmsg"))
+        if include_text_urls:
+            for url in re.findall(r"https?://[^\s<>()]+", text or ""):
+                name = Path(urlparse(url).path).name
+                if name:
+                    names.append(unquote(name))
+        return names
+
+    @staticmethod
+    def _extract_first_url(text: str) -> Optional[str]:
+        match = re.search(r"https?://[^\s<>()]+", text or "")
+        return match.group(0) if match else None
+
+    @staticmethod
+    def _looks_like_material_text(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text or "")
+        if len(normalized) >= 800:
+            return True
+        if len(normalized) < 60:
+            return False
+        material_keywords = (
+            "通知",
+            "公告",
+            "报告",
+            "周报",
+            "月报",
+            "纪要",
+            "方案",
+            "制度",
+            "材料",
+            "总结",
+            "项目申报",
+        )
+        return any(keyword in normalized for keyword in material_keywords)
+
+    @classmethod
+    def _predict_wecom_topic(cls, body: Dict[str, Any], text: str) -> Tuple[str, str]:
+        haystack = "\n".join(cls._wecom_candidate_filenames(body, text) + [text or ""]).lower()
+        if any(keyword in haystack for keyword in ("aild", "智能设计大赛", "aild.caa.org.cn")):
+            return "competition_aild", "HIGH"
+        if any(keyword in haystack for keyword in ("应急", "安全生产", "应急安全", "消防", "突发事件")):
+            return "competition_emergency_safety", "HIGH"
+        if "创青春" in haystack or "挑战杯" in haystack:
+            return "chuangqingchun", "MEDIUM"
+        return WECOM_INGESTION_UNDETERMINED_TOPIC, "UNKNOWN"
+
+    @staticmethod
+    def _format_wecom_ingestion_confirmation(pending: Dict[str, Any]) -> str:
+        topic = str(pending.get("predicted_topic") or WECOM_INGESTION_UNDETERMINED_TOPIC)
+        topic_info = WECOM_INGESTION_TOPIC_MAP.get(topic, {})
+        return WECOM_INGESTION_CONFIRMATION_TEMPLATE.format(
+            source_label=WECOM_INGESTION_SOURCE_LABELS.get(str(pending.get("source_type")), "未知"),
+            topic_label=str(topic_info.get("label") or "未确定"),
+            suggested_path=pending["suggested_path"],
+            future_location=str(topic_info.get("existing_path") or "待确认"),
+        )
+
+    @staticmethod
+    def _wecom_staging_path(topic: str, message_id: str) -> str:
+        normalized_topic = topic or WECOM_INGESTION_UNDETERMINED_TOPIC
+        normalized_message_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(message_id or "message")).strip("-")
+        return f"projects/_staging/materials/{normalized_topic}/{normalized_message_id or 'message'}"
+
+    @staticmethod
+    def _utc8_now_iso() -> str:
+        return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).isoformat()
+
+    def _build_wecom_ingestion_manifest(
+        self,
+        pending: Dict[str, Any],
+        action_message_id: str,
+        action_at_key: str,
+        action_message_id_key: str,
+        queue_name: str,
+        status: str,
+    ) -> Dict[str, Any]:
+        action_at = self._utc8_now_iso()
+        pending_snapshot = dict(pending)
+        manifest = {
+            "platform": "wecom",
+            "queue": queue_name,
+            "status": status,
+            "chat_id": pending_snapshot.get("chat_id"),
+            "source_message_id": pending_snapshot.get("message_id"),
+            "action_message_id": action_message_id,
+            "action_at": action_at,
+            "pending": pending_snapshot,
+        }
+        return {
+            **pending_snapshot,
+            action_message_id_key: action_message_id,
+            action_at_key: action_at,
+            "queue_manifest": manifest,
+        }
+
+    def _log_wecom_ingestion_action(
+        self,
+        pending: Dict[str, Any],
+        action: str,
+        pending_state: str,
+    ) -> None:
+        self._log_wecom_ingestion(
+            chat_id=str(pending.get("chat_id") or ""),
+            message_id=str(pending.get("message_id") or ""),
+            source_type=str(pending.get("source_type") or ""),
+            predicted_topic=str(pending.get("predicted_topic") or ""),
+            confidence=str(pending.get("confidence") or "UNKNOWN"),
+            action=action,
+            pending_state=pending_state,
+        )
+
+    @staticmethod
+    def _log_wecom_ingestion(
+        chat_id: str,
+        message_id: str,
+        source_type: str,
+        predicted_topic: str,
+        confidence: str,
+        action: str,
+        pending_state: str,
+    ) -> None:
+        logger.info(
+            "platform=wecom chat_id=%s message_id=%s source_type=%s "
+            "predicted_topic=%s confidence=%s action=%s pending_state=%s",
+            chat_id,
+            message_id,
+            source_type,
+            predicted_topic,
+            confidence,
+            action,
+            pending_state,
+        )
 
     # ------------------------------------------------------------------
     # Policy helpers

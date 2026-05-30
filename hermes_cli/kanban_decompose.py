@@ -89,6 +89,13 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - For software/product work, TaskMaster is the requirements/planning layer;
+    Kanban is the execution layer. Prefer TaskMaster PRD/task output before
+    implementation cards, and preserve traceability in every child body:
+    source: taskmaster, taskmaster_id, prd_path, and plan_path. Use explicit
+    values when present; otherwise use placeholders and make the first card
+    generate or normalize the TaskMaster artifacts under .taskmaster/,
+    docs/prds/, and docs/plans/ before downstream implementation begins.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:

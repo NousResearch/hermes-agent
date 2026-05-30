@@ -112,6 +112,34 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+def test_specify_task_software_prompt_prefers_taskmaster_artifacts(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Build dashboard auth feature",
+            body="Next.js app needs login and session handling.",
+            triage=True,
+        )
+
+    content = jsonlib.dumps({
+        "title": "Plan dashboard auth feature",
+        "body": "**Goal**\nCreate a TaskMaster-backed software plan.",
+    })
+    p, client = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    create_kwargs = client.chat.completions.create.call_args.kwargs
+    messages = create_kwargs["messages"]
+    prompt = "\n\n".join(m["content"] for m in messages)
+    assert "TaskMaster" in prompt
+    assert "PRD" in prompt
+    assert ".taskmaster" in prompt
+    assert "docs/prds" in prompt
+    assert "source: taskmaster" in prompt
+
+
 def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="keep title", triage=True)

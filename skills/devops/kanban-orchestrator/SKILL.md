@@ -65,10 +65,23 @@ Ask clarifying questions if the goal is ambiguous. Cheap to ask; expensive to sp
 Before creating anything, draft the graph out loud (in your response to the user). Treat every concrete workstream as a candidate card:
 
 1. Extract the lanes from the request.
-2. Map each lane to one of the profiles you discovered in Step 0. If a lane doesn't fit any existing profile, ask the user which to use or create.
-3. Decide whether each lane is independent or gated by another lane.
-4. Create independent lanes as parallel cards with no parent links.
-5. Create synthesis/review/integration cards with parent links to the lanes they depend on. A child created with unfinished parents starts in `todo`; the dispatcher promotes it to `ready` only after every parent is done.
+2. For software/product work, check whether a TaskMaster PRD/task breakdown already exists. If not, make the first lane a TaskMaster planning/normalization card that creates or refines portable artifacts under `.taskmaster/`, `docs/prds/`, and `docs/plans/`. Hermes Kanban should execute those requirements, not replace them.
+3. Map each lane to one of the profiles you discovered in Step 0. If a lane doesn't fit any existing profile, ask the user which to use or create.
+4. Decide whether each lane is independent or gated by another lane.
+5. Create independent lanes as parallel cards with no parent links.
+6. Create synthesis/review/integration cards with parent links to the lanes they depend on. A child created with unfinished parents starts in `todo`; the dispatcher promotes it to `ready` only after every parent is done.
+
+For software cards, preserve traceability in the body whenever TaskMaster is involved:
+
+```yaml
+Planning source:
+  source: taskmaster
+  taskmaster_id: <TaskMaster task/subtask id or TBD>
+  prd_path: docs/prds/<feature>.md
+  plan_path: docs/plans/<feature>.md
+```
+
+Small bugs can go straight to Kanban. Medium/large features should usually be `TaskMaster PRD/task breakdown → Kanban execution cards → QA/review`.
 
 Examples of prompts that should fan out (using placeholder profile names — substitute whatever exists on the user's setup):
 

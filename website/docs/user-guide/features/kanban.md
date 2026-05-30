@@ -69,6 +69,25 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
+## Requirements flow for software work: TaskMaster first, Kanban second
+
+For software/product work, Hermes Kanban is the durable **execution/orchestration** layer. It should not be the only place where requirements live. Prefer this flow for medium or large software changes:
+
+1. Capture/refine the PRD with TaskMaster CLI.
+2. Break the PRD into TaskMaster tasks/subtasks.
+3. Normalize those tasks into Kanban execution cards routed to the right Hermes profiles.
+4. Preserve traceability on each card body and completion metadata:
+
+```yaml
+Planning source:
+  source: taskmaster
+  taskmaster_id: <TaskMaster task/subtask id>
+  prd_path: docs/prds/<feature>.md
+  plan_path: docs/plans/<feature>.md
+```
+
+Small one-off bugs can still go straight to Kanban. When a triage task looks like software work and no TaskMaster artifact is referenced, `hermes kanban specify` / `decompose` prompts the auxiliary model to create a planning/normalization card instead of inventing product requirements.
+
 ## Boards (multi-project)
 
 Boards let you separate unrelated streams of work — one per project, repo,

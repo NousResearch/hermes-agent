@@ -32,6 +32,19 @@ If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading
 
 ## Good summary + metadata shapes
 
+If a software task body includes a TaskMaster planning source, keep that thread intact in comments, summaries, and metadata. The goal is PRD → TaskMaster task → Kanban card → implementation/QA/PR traceability across tools and machines.
+
+Example metadata fields to preserve:
+
+```json
+{
+  "source": "taskmaster",
+  "taskmaster_id": "12.3",
+  "prd_path": "docs/prds/dashboard-auth.md",
+  "plan_path": "docs/plans/dashboard-auth.md"
+}
+```
+
 The `kanban_complete(summary=..., metadata=...)` handoff is how downstream workers read what you did. Patterns that work:
 
 **Coding task:**

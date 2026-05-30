@@ -114,6 +114,52 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_task_software_prompt_preserves_taskmaster_traceability(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Implement dashboard auth feature",
+            body=(
+                "Software feature. Source planning should use TaskMaster PRDs "
+                "before Hermes execution cards."
+            ),
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Implement dashboard auth feature",
+        "body": "**Goal**\nExecute a TaskMaster-traced implementation card.",
+        "assignee": "engineer",
+    })
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    client = _mock_client_returning(llm_payload)
+    try:
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(client, "test-model"),
+        ), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "engineer"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    create_kwargs = client.chat.completions.create.call_args.kwargs
+    prompt = "\n\n".join(m["content"] for m in create_kwargs["messages"])
+    assert "TaskMaster" in prompt
+    assert "PRD" in prompt
+    assert "taskmaster_id" in prompt
+    assert "prd_path" in prompt
+    assert "Kanban is the execution layer" in prompt
+
+
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)

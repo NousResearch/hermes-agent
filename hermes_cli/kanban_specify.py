@@ -64,10 +64,24 @@ The body MUST include these sections, each prefixed with a bold markdown
 heading, in this order:
 
   **Goal** — one sentence, user-facing outcome.
+  **Planning source** — if this is software/product work, say whether the
+      card should come from TaskMaster PRD/task output before execution;
+      include source: taskmaster plus taskmaster_id, prd_path, and plan_path
+      placeholders when the exact IDs/paths are not already present.
   **Approach** — 2-5 bullets on how a worker should tackle it.
   **Acceptance criteria** — checklist of concrete, verifiable conditions.
   **Out of scope** — short list of things NOT to touch (omit if nothing
       obvious; never invent scope creep).
+
+Software planning process:
+  - For software work, TaskMaster is the requirements/planning layer and
+    Hermes Kanban is the execution layer.
+  - Prefer TaskMaster-generated/refined PRDs and tasks before seeding agent
+    execution cards. Preserve portable artifacts under .taskmaster/,
+    docs/prds/, and docs/plans/ when referenced or obviously needed.
+  - Do not invent detailed product requirements; if no TaskMaster artifact is
+    referenced yet, make the card a planning/normalization card that asks for
+    TaskMaster PRD/task output before implementation.
 
 Rules:
   - Keep the tightened title close in meaning to the original idea — do

@@ -4077,13 +4077,19 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def list_sessions_rich(self, **kwargs):
+            self.calls.append(kwargs)
             return [
-                {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
-                {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
+                {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100, "message_count": 1},
+                {"id": "empty-parent", "source": "tui", "title": "shell", "started_at": 100, "message_count": 0},
+                {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99, "message_count": 3},
             ]
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    db = _DB()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.most_recent", "params": {}}
@@ -4092,12 +4098,18 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     assert resp["result"]["session_id"] == "tui-1"
     assert resp["result"]["title"] == "real"
     assert resp["result"]["source"] == "tui"
+    assert db.calls[0] == {
+        "limit": 200,
+        "include_children": True,
+        "project_compression_tips": False,
+        "order_by_last_active": True,
+    }
 
 
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
-            return [{"id": "tool-1", "source": "tool", "started_at": 1}]
+        def list_sessions_rich(self, **kwargs):
+            return [{"id": "tool-1", "source": "tool", "started_at": 1, "message_count": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
@@ -4114,7 +4126,7 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     'no answer' (Copilot review on #17130)."""
 
     class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, **kwargs):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())

@@ -25,7 +25,7 @@ class _StubDB:
 
     def list_sessions_rich(self, **kwargs):
         self.calls.append(kwargs)
-        return list(self.rows)
+        return [{"message_count": 1, **row} for row in self.rows]
 
 
 def _call(limit: int | None = None):
@@ -86,6 +86,26 @@ def test_session_list_respects_explicit_limit(monkeypatch):
     _call(limit=10)
     # fetch_limit = max(limit * 2, 200) = 200 when limit is small.
     assert db.calls[0].get("limit") == 200, db.calls[0]
+
+
+def test_session_list_asks_for_child_message_rows_without_projection(monkeypatch):
+    """Child transcripts should be visible while empty shell rows stay hidden."""
+    db = _StubDB([
+        {"id": "empty-parent", "source": "tui", "message_count": 0, "started_at": 3},
+        {"id": "child-transcript", "source": "tui", "message_count": 4, "started_at": 2},
+        {"id": "tool-child", "source": "tool", "message_count": 3, "started_at": 1},
+    ])
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=10)
+
+    assert db.calls[0] == {
+        "limit": 200,
+        "include_children": True,
+        "project_compression_tips": False,
+        "order_by_last_active": True,
+    }
+    assert [s["id"] for s in resp["result"]["sessions"]] == ["child-transcript"]
 
 
 def test_session_list_preserves_ordering_after_filter(monkeypatch):

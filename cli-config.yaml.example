@@ -163,7 +163,7 @@ model:
 # -----------------------------------------------------------------------------
 # Working directory behavior:
 #   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
-#   - Messaging (Telegram/Discord): Uses MESSAGING_CWD from .env (default: home)
+#   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.

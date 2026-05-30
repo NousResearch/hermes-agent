@@ -112,8 +112,13 @@ class TestCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        # other kwargs preserved
-        assert retry_kwargs["max_tokens"] == 500
+        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
+        # (#34530) — auxiliary calls let the model max out its own output — so
+        # it must be absent in BOTH the first and retry kwargs. Use a kwarg that
+        # actually survives (model) to prove the retry preserves the rest.
+        assert "max_tokens" not in first_kwargs
+        assert "max_tokens" not in retry_kwargs
+        assert retry_kwargs["model"] == first_kwargs["model"]
 
     def test_non_temperature_400_does_not_retry_as_temperature(self):
         """Unrelated 400s (e.g. bad tool role) must not silently drop temp."""
@@ -207,7 +212,11 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        assert retry_kwargs["max_tokens"] == 500
+        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
+        # (#34530); assert it's absent and that model survives the retry.
+        assert "max_tokens" not in first_kwargs
+        assert "max_tokens" not in retry_kwargs
+        assert retry_kwargs["model"] == first_kwargs["model"]
 
     @pytest.mark.asyncio
     async def test_async_non_temperature_400_does_not_retry(self):

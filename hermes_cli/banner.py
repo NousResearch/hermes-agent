@@ -50,17 +50,6 @@ def _skin_color(key: str, fallback: str) -> str:
         return get_active_skin().get_color(key, fallback)
     except Exception:
         return fallback
-
-
-def _skin_branding(key: str, fallback: str) -> str:
-    """Get a branding string from the active skin, or return fallback."""
-    try:
-        from hermes_cli.skin_engine import get_active_skin
-        return get_active_skin().get_branding(key, fallback)
-    except Exception:
-        return fallback
-
-
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -232,7 +221,11 @@ def check_for_updates() -> Optional[int]:
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    # Read cache — invalidate if the embedded rev OR installed version has
+    # changed since the last check. The version guard matters for pip installs:
+    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
+    # changes VERSION but leaves rev unchanged (both None), and without this
+    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
     now = time.time()
     try:
         if cache_file.exists():
@@ -240,6 +233,7 @@ def check_for_updates() -> Optional[int]:
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
+                and cached.get("ver") == VERSION
             ):
                 return cached.get("behind")
     except Exception:
@@ -260,7 +254,9 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+        )
     except Exception:
         pass
 
@@ -701,6 +697,21 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 right_lines.append(line)
     except Exception:
         pass  # Never break the banner over an update check
+
+    # Pip-install warning — `pip install hermes-agent` is not the supported
+    # install path (it exists on PyPI for internal/CI reasons, not end users).
+    # Such installs miss the git checkout + installer-managed deps, so updates,
+    # self-update, and issue triage don't behave correctly. Warn, don't block.
+    try:
+        from hermes_cli.config import detect_install_method
+        if detect_install_method() == "pip":
+            right_lines.append(
+                "[bold yellow]⚠ pip install not officially supported[/]"
+                "[dim yellow] — exists for reasons other than user install; "
+                "expect instability and an inability to support issues[/]"
+            )
+    except Exception:
+        pass  # Never break the banner over the install-method check
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

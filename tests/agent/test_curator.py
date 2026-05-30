@@ -7,7 +7,6 @@ tests run fully offline and the curator module doesn't need real credentials.
 from __future__ import annotations
 
 import importlib
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

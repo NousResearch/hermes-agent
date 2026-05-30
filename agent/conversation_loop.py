@@ -27,8 +27,6 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from agent.anthropic_adapter import _is_oauth_token
-from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -53,20 +51,13 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length,
 )
-from agent.nous_rate_guard import (
-    clear_nous_rate_limit,
-    is_genuine_nous_rate_limit,
-    nous_rate_limit_remaining,
-    record_nous_rate_limit,
-)
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
+from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
-from tools.schema_sanitizer import strip_pattern_and_format
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
@@ -212,15 +203,13 @@ def _print_billing_or_entitlement_guidance(
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
-        from hermes_cli.auth import NOUS_INFERENCE_AUTH_MODE_LEGACY
         from hermes_cli.nous_account import get_nous_portal_account_info
 
         account_info = get_nous_portal_account_info(force_fresh=True)
         if account_info.paid_service_access is not True:
             return False
         return agent._try_refresh_nous_client_credentials(
-            force=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+            force=True,
         )
     except Exception:
         return False
@@ -409,7 +398,6 @@ def run_conversation(
 
     # Tag all log records on this thread with the session ID so
     # ``hermes logs --session <id>`` can filter a single conversation.
-    from hermes_logging import set_session_context
     set_session_context(agent.session_id)
 
     # Bind the skill write-origin ContextVar for this thread so tool
@@ -418,7 +406,6 @@ def run_conversation(
     # a foreground user-directed turn. Set at the top of each call;
     # the review fork runs on its own thread with a fresh context,
     # so the foreground value here does not leak into it.
-    from tools.skill_provenance import set_current_write_origin
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
     # If the previous turn activated fallback, restore the primary
@@ -613,18 +600,50 @@ def run_conversation(
             system_prompt=active_system_prompt or "",
             tools=agent.tools or None,
         )
+        _compressor = agent.context_compressor
+        _defer_preflight = getattr(
+            _compressor,
+            "should_defer_preflight_to_real_usage",
+            lambda _tokens: False,
+        )
+        _preflight_deferred = _defer_preflight(_preflight_tokens)
 
-        if agent.context_compressor.should_compress(_preflight_tokens):
+        if not _preflight_deferred:
+            # Keep the CLI/ACP context display in sync with what preflight
+            # actually measured.  The status bar reads
+            # ``compressor.last_prompt_tokens``, which otherwise only updates
+            # from a *successful* API response.  When the conversation has grown
+            # since the last successful call — or when compression then fails
+            # (e.g. the auxiliary summary model times out) and no fresh usage
+            # arrives — the bar stays stuck at the old, smaller value while
+            # preflight reports a much larger number, looking out of sync.
+            # Seed it with the fresh estimate (only ever revising upward; a real
+            # ``update_from_response`` will correct it after the next API call).
+            # Skipped when deferring — a deferred estimate is known to over-count
+            # vs the last real provider prompt, so trusting it for the display
+            # would re-introduce the very desync we're avoiding.
+            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+                _compressor.last_prompt_tokens = _preflight_tokens
+
+        if _preflight_deferred:
+            logger.info(
+                "Skipping preflight compression: rough estimate ~%s >= %s, "
+                "but last real provider prompt was %s after compression",
+                f"{_preflight_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
+                f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
-                f"{agent.context_compressor.threshold_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
                 agent.model,
-                f"{agent.context_compressor.context_length:,}",
+                f"{_compressor.context_length:,}",
             )
             agent._emit_status(
                 f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {agent.context_compressor.threshold_tokens:,} threshold. "
+                f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
             # May need multiple passes for very large sessions with small
@@ -659,8 +678,8 @@ def run_conversation(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if _preflight_tokens < agent.context_compressor.threshold_tokens:
-                    break  # Under threshold
+                if not _compressor.should_compress(_preflight_tokens):
+                    break  # Under threshold or anti-thrash guard stopped it
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
@@ -3875,6 +3894,11 @@ def run_conversation(
                     # inflate completion_tokens with reasoning,
                     # causing premature compression.  (#12026)
                     _real_tokens = _compressor.last_prompt_tokens
+                elif _compressor.last_prompt_tokens == -1:
+                    # Compression just ran and no API-reported prompt count
+                    # has arrived yet. Avoid treating a schema-heavy rough
+                    # post-compression estimate as real context pressure.
+                    _real_tokens = 0
                 else:
                     # Include tool schemas — with 50+ tools enabled
                     # these add 20-30K tokens the messages-only
@@ -4314,36 +4338,54 @@ def run_conversation(
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
 
-        # If running as a kanban worker, block the task so the dispatcher
-        # knows the worker could not complete (rather than treating it as a
+        # If running as a kanban worker, signal the dispatcher that the
+        # worker could not complete (rather than treating it as a
         # protocol violation).  The agent loop strips tools before calling
         # _handle_max_iterations, so the model cannot call kanban_block
         # itself — we must do it on its behalf.
+        #
+        # We route through ``_record_task_failure(outcome="timed_out")``
+        # rather than ``kanban_block`` so this counts toward the
+        # ``consecutive_failures`` counter and the dispatcher's
+        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without this,
+        # a task whose worker keeps exhausting its budget would block
+        # silently each run, get auto-promoted by the operator (or never
+        # surface), and re-block in an endless loop with no signal.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
-                _ra().handle_function_call(
-                    "kanban_block",
-                    {
-                        "task_id": _kanban_task,
-                        "reason": (
+                from hermes_cli import kanban_db as _kb
+                _conn = _kb.connect()
+                try:
+                    _kb._record_task_failure(
+                        _conn,
+                        _kanban_task,
+                        error=(
                             f"Iteration budget exhausted "
                             f"({api_call_count}/{agent.max_iterations}) — "
                             "task could not complete within the allowed "
                             "iterations"
                         ),
-                    },
-                    task_id=effective_task_id,
-                )
-                logger.info(
-                    "kanban_block called for task %s after iteration "
-                    "exhaustion (%d/%d)",
-                    _kanban_task, api_call_count, agent.max_iterations,
-                )
+                        outcome="timed_out",
+                        release_claim=True,
+                        end_run=True,
+                        event_payload_extra={
+                            "budget_used": api_call_count,
+                            "budget_max": agent.max_iterations,
+                        },
+                    )
+                    logger.info(
+                        "recorded budget-exhausted failure for task %s (%d/%d)",
+                        _kanban_task, api_call_count, agent.max_iterations,
+                    )
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
             except Exception:
                 logger.warning(
-                    "Failed to call kanban_block after iteration "
-                    "exhaustion for task %s",
+                    "Failed to record budget-exhausted failure for task %s",
                     _kanban_task,
                     exc_info=True,
                 )
@@ -4437,6 +4479,55 @@ def run_conversation(
                     final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
+
+    # Turn-completion explainer.
+    # When a turn ends abnormally after substantive work — empty content
+    # after retries, a partial/truncated stream, a still-pending tool
+    # result, or an iteration/budget limit — the user otherwise gets a
+    # blank or fragmentary response box with no consolidated reason why
+    # the agent stopped (#34452).  Surface a single user-visible
+    # explanation derived from ``_turn_exit_reason``, mirroring the
+    # file-mutation verifier footer pattern above.
+    #
+    # Gate carefully so healthy turns stay quiet:
+    #   - ``text_response(...)`` exits never produce an explanation
+    #     (handled inside the formatter), so a terse ``Done.`` is silent.
+    #   - We only ACT when there is no genuinely usable reply this turn:
+    #     an empty response, the "(empty)" terminal sentinel, or a
+    #     suspiciously short partial fragment with no terminating
+    #     punctuation (e.g. "The").  A real short answer keeps its text.
+    if not interrupted:
+        try:
+            if agent._turn_completion_explainer_enabled():
+                _stripped = (final_response or "").strip()
+                _is_empty_terminal = _stripped == "" or _stripped == "(empty)"
+                # A short fragment that is not a normal text_response exit
+                # and lacks sentence-ending punctuation is treated as a
+                # truncated partial (the "The" case from #34452).
+                _is_partial_fragment = (
+                    not _is_empty_terminal
+                    and not str(_turn_exit_reason).startswith("text_response")
+                    and len(_stripped) <= 24
+                    and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
+                )
+                if _is_empty_terminal or _is_partial_fragment:
+                    _explanation = agent._format_turn_completion_explanation(
+                        _turn_exit_reason
+                    )
+                    if _explanation:
+                        if _is_empty_terminal:
+                            # Replace the bare "(empty)"/blank sentinel with
+                            # the actionable explanation.
+                            final_response = _explanation
+                        else:
+                            # Keep the partial fragment, append the reason so
+                            # the user sees both what arrived and why it
+                            # stopped.
+                            final_response = (
+                                _stripped + "\n\n" + _explanation
+                            )
+        except Exception as _exp_err:
+            logger.debug("turn-completion explainer failed: %s", _exp_err)
 
     _response_transformed = False
 

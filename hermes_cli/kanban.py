@@ -548,6 +548,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
+    p_unblock.add_argument(
+        "--reason",
+        default=None,
+        help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
+    )
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_promote = sub.add_parser(
@@ -1978,14 +1983,20 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        reason = reason.strip() or None
+    author = _profile_author() if reason else None
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            if reason:
+                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
-                print(f"Unblocked {tid}")
+                print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 
 
@@ -2088,31 +2099,48 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee as the fallback for unassigned ready
-    # tasks (#27145) and kanban.max_in_progress_per_profile as the
-    # per-profile concurrency cap (#21582). Same semantics as the
-    # gateway dispatch path.
+    # tasks (#27145), kanban.max_in_progress as the global concurrency cap
+    # (#33488), kanban.max_in_progress_per_profile as the per-profile
+    # cap (#21582), and kanban.max_spawn as the per-tick spawn limit
+    # (#28805). Same semantics as the gateway dispatch path so behavior
+    # matches whether the user runs the CLI directly or relies on the
+    # gateway-embedded dispatcher.
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
-        _raw_per_profile = _kanban_cfg.get("max_in_progress_per_profile", None)
-        try:
-            max_in_progress_per_profile = (
-                int(_raw_per_profile) if _raw_per_profile is not None else None
-            )
-            if max_in_progress_per_profile is not None and max_in_progress_per_profile < 1:
-                max_in_progress_per_profile = None
-        except (TypeError, ValueError):
-            max_in_progress_per_profile = None
+
+        def _coerce_positive_int(value):
+            if value is None:
+                return None
+            try:
+                ival = int(value)
+            except (TypeError, ValueError):
+                return None
+            return ival if ival >= 1 else None
+
+        max_in_progress_per_profile = _coerce_positive_int(
+            _kanban_cfg.get("max_in_progress_per_profile")
+        )
+        max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+        # CLI --max overrides config kanban.max_spawn when both are present;
+        # CLI is the more explicit signal so it wins.
+        cli_max = getattr(args, "max", None)
+        max_spawn = cli_max if cli_max is not None else _coerce_positive_int(
+            _kanban_cfg.get("max_spawn")
+        )
     except Exception:
         default_assignee = None
         max_in_progress_per_profile = None
+        max_in_progress = None
+        max_spawn = getattr(args, "max", None)
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
             dry_run=args.dry_run,
-            max_spawn=args.max,
+            max_spawn=max_spawn,
+            max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,

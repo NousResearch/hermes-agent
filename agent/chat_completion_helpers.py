@@ -952,6 +952,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if preserved:
             msg["reasoning_details"] = preserved
 
+    # Anthropic interleaved-thinking replay: when a turn interleaves signed
+    # thinking blocks with tool_use, the parallel reasoning_details +
+    # tool_calls fields lose the cross-type ordering, and reconstruction
+    # front-loads thinking — reordering signed blocks and triggering HTTP 400
+    # ("thinking ... blocks in the latest assistant message cannot be
+    # modified"). Carry the verbatim ordered block list so the adapter can
+    # replay the latest assistant message unchanged. See
+    # agent/transports/anthropic.py and agent/anthropic_adapter.py.
+    ordered_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
+    if ordered_blocks:
+        msg["anthropic_content_blocks"] = ordered_blocks
+
     # Codex Responses API: preserve encrypted reasoning items for
     # multi-turn continuity. These get replayed as input on the next turn.
     codex_items = getattr(assistant_message, "codex_reasoning_items", None)

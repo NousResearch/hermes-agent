@@ -7933,39 +7933,6 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    # Build a set of PIDs to exclude: the Python process itself plus its
-    # entire parent chain. On Windows the setuptools-generated hermes.exe
-    # launcher is a separate native process that spawns python.exe (the
-    # interpreter that runs our code).  os.getpid() returns the Python PID,
-    # but the launcher (which holds the file lock) is the parent.  Without
-    # walking the parent chain, every ``hermes update`` reports its own
-    # launcher as a concurrent instance — a false positive.
-    if exclude_pid is not None:
-        exclude_pids: set[int] = {exclude_pid}
-    else:
-        exclude_pids = {os.getpid()}
-    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
-    # AccessDenied) we stop walking and use whatever we've collected so far.
-    # Broader Exception catch on the outer block guards against partially-
-    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
-    # NoSuchProcess) — the surrounding update flow documents this helper as
-    # "never raises".
-    try:
-        current = psutil.Process(next(iter(exclude_pids)))
-        while True:
-            try:
-                parent = current.parent()
-            except Exception:
-                break
-            if parent is None or parent.pid <= 0:
-                break
-            if parent.pid in exclude_pids:
-                break  # loop detected
-            exclude_pids.add(parent.pid)
-            current = parent
-    except Exception:
-        pass
-
     # Resolve every shim path to its canonical form once for cheap comparison.
     shim_paths: set[str] = set()
     for shim in _hermes_exe_shims(scripts_dir):
@@ -7975,6 +7942,56 @@ def _detect_concurrent_hermes_instances(
             shim_paths.add(str(shim).lower())
     if not shim_paths:
         return []
+
+    # Build a set of PIDs to exclude: the Python process itself plus every
+    # ancestor whose executable is one of our shims. On Windows the
+    # setuptools-generated hermes.exe launcher is a separate native process
+    # that spawns python.exe (the interpreter that runs our code).
+    # os.getpid() returns the Python PID, but the launcher (which holds the
+    # file lock) is the parent. Without excluding it, every ``hermes update``
+    # reports its own launcher as a concurrent instance — a false positive
+    # (issues #29341, #34795).
+    #
+    # Two robustness points learned from the field:
+    #   1. Use ``proc.parents()`` — it returns the WHOLE ancestor list in one
+    #      call. The earlier per-hop ``current.parent()`` loop bailed on the
+    #      first psutil error (AccessDenied/NoSuchProcess is common on Windows
+    #      across session/elevation boundaries), leaving the launcher shim in
+    #      the candidate set and re-triggering the false positive.
+    #   2. Only exclude ancestors whose exe is itself a shim. A genuine second
+    #      hermes.exe sitting *under* a non-Hermes parent (e.g. a Hermes
+    #      Desktop backend child) must still be flagged, so we don't blanket-
+    #      exclude unrelated ancestors like the shell or terminal.
+    # Broad ``except Exception`` guards against partially-stubbed psutil in
+    # unit tests; this helper is documented as "never raises".
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {int(exclude_pid)}
+    else:
+        exclude_pids = {os.getpid()}
+    try:
+        seed = next(iter(exclude_pids))
+        try:
+            ancestors = psutil.Process(seed).parents()
+        except Exception:
+            ancestors = []
+        for ancestor in ancestors:
+            try:
+                anc_exe = ancestor.exe()
+            except Exception:
+                continue
+            if not anc_exe:
+                continue
+            try:
+                anc_norm = str(Path(anc_exe).resolve()).lower()
+            except (OSError, ValueError):
+                anc_norm = str(anc_exe).lower()
+            if anc_norm in shim_paths:
+                try:
+                    exclude_pids.add(int(ancestor.pid))
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
     matches: list[tuple[int, str]] = []
     try:
@@ -8016,6 +8033,13 @@ def _format_concurrent_instances_message(
     lines.append("")
     lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
     lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
+    lines.append("")
+    if matches:
+        pid_args = " ".join(f"/PID {pid}" for pid, _ in matches)
+        lines.append("  If you've already closed everything and these PIDs are")
+        lines.append("  stale, terminate them directly, then retry the update:")
+        lines.append(f"      taskkill {pid_args} /F")
+        lines.append("")
     lines.append("  Override with `hermes update --force` if you've already")
     lines.append("  confirmed those processes will not write to the venv.")
     return "\n".join(lines)

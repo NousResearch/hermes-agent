@@ -159,9 +159,9 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     """Host file is absent/unreadable. Read the bytes inside the container.
 
     The agent can already ``cat`` any container file (file_operations.py reads
-    root-owned mode-600 files this way); this reads a strict subset bounded by
-    the same sandbox, so it introduces no new exposure. ``base64 -w0`` is
-    GNU-only, so pipe through ``tr -d`` for BusyBox/Alpine.
+    root-owned mode-600 files this way), so this stays within the same sandbox
+    boundary. ``--`` stops a leading-dash path from being parsed as a ``base64``
+    option; ``base64 -w0`` is GNU-only, so pipe through ``tr -d`` for BusyBox.
     """
     import shlex
 
@@ -171,7 +171,7 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
             f"'{p}' is not reachable on the host and no active sandbox is available "
             f"to read it", src=src, origin="container")
 
-    res = env.execute(f"base64 {shlex.quote(str(p))} | tr -d '\\n'")
+    res = env.execute(f"base64 -- {shlex.quote(str(p))} | tr -d '\\n'")
     if res.get("returncode", 1) != 0:
         raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
     try:

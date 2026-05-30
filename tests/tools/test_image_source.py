@@ -1,5 +1,6 @@
 """Unified vision image-source resolver."""
 import base64
+import shlex
 
 import pytest
 
@@ -116,9 +117,11 @@ class _FakeEnv:
         self.files = files
 
     def execute(self, command, cwd=None, **kw):
-        path = command.split()[1]  # base64 <path> | tr -d '\n'
-        if path.strip("'\"") in self.files:
-            return {"output": base64.b64encode(self.files[path.strip("'\"")]).decode(), "returncode": 0}
+        # base64 -- <path> | tr -d '\n'
+        tokens = shlex.split(command)
+        path = tokens[tokens.index("--") + 1]
+        if path in self.files:
+            return {"output": base64.b64encode(self.files[path]).decode(), "returncode": 0}
         return {"output": "", "returncode": 1}
 
 
@@ -143,6 +146,32 @@ async def test_container_fallback_fails_closed_without_env(monkeypatch):
     monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
     with pytest.raises(SourceNotFound):
         await resolve_image_source("/workspace/x.png", ResolveContext(task_id="t1"))
+
+
+class _RecordingEnv:
+    def __init__(self):
+        self.commands = []
+
+    def execute(self, command, cwd=None, **kw):
+        self.commands.append(command)
+        return {"output": "", "returncode": 1}
+
+
+@pytest.mark.asyncio
+async def test_exec_read_guards_against_dash_flag_injection(monkeypatch):
+    # A leading-dash path must not be parsed as a base64 option (argument
+    # injection); `--` must terminate option parsing before the quoted path.
+    from tools import image_source
+
+    env = _RecordingEnv()
+    monkeypatch.setattr(image_source, "_get_active_env", lambda tid: env)
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    with pytest.raises(SourceNotFound):
+        await resolve_image_source("./-i/etc/shadow", ResolveContext(task_id="t1"))
+    assert env.commands
+    cmd = env.commands[0]
+    assert " -- " in cmd
+    assert cmd.index(" -- ") < cmd.index("-i/etc/shadow")
 
 
 @pytest.mark.asyncio

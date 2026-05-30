@@ -435,8 +435,30 @@ def _chat_messages_to_responses_input(
                             "status": _normalize_responses_message_status(raw_item.get("status")),
                             "content": normalized_content_parts,
                         }
+                        # Server-issued message ids are sealed to the
+                        # Responses endpoint that minted them (same
+                        # principle as reasoning.encrypted_content).
+                        # Replaying a Copilot-issued ``msg_*``/``fc_*`` id
+                        # against OpenAI's /v1/responses fails with
+                        # HTTP 400 ``Invalid input[N].id: string too long``
+                        # (Copilot ids commonly exceed OpenAI''s 64-char
+                        # cap). Cross-issuer guard: when the active
+                        # endpoint differs from the issuer that minted
+                        # this item, drop the id and let the API assign
+                        # a fresh one. Mirrors the reasoning-item guard
+                        # earlier in this function.
                         item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
+                        item_issuer = raw_item.get("_issuer_kind")
+                        cross_issuer = (
+                            current_issuer_kind is not None
+                            and item_issuer is not None
+                            and item_issuer != current_issuer_kind
+                        )
+                        if (
+                            isinstance(item_id, str)
+                            and item_id.strip()
+                            and not cross_issuer
+                        ):
                             replay_item["id"] = item_id.strip()
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():
@@ -691,7 +713,25 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             }
             item_id = item.get("id")
             if isinstance(item_id, str) and item_id.strip():
-                normalized_item["id"] = item_id.strip()
+                stripped_id = item_id.strip()
+                # OpenAI Responses API rejects input[N].id strings longer
+                # than 64 chars with HTTP 400 (string_above_max_length).
+                # Copilot/GitHub Responses ids routinely exceed this cap
+                # (200-400+ chars). When a session falls back from
+                # Copilot to OpenAI mid-conversation, replayed message
+                # items carry Copilot ids that would poison every
+                # subsequent turn. Drop oversize ids defensively — the
+                # API will mint a fresh id for this item.
+                if len(stripped_id) <= 64:
+                    normalized_item["id"] = stripped_id
+                else:
+                    logger.debug(
+                        "Dropping oversize input message id (len=%d > 64) "
+                        "— likely a cross-issuer Responses replay "
+                        "(e.g. Copilot -> OpenAI fallback). The API will "
+                        "assign a new id.",
+                        len(stripped_id),
+                    )
             phase = item.get("phase")
             if isinstance(phase, str) and phase.strip():
                 normalized_item["phase"] = phase.strip()
@@ -1107,6 +1147,13 @@ def _normalize_codex_response(
                     "status": _normalize_responses_message_status(item_status),
                     "content": [{"type": "output_text", "text": message_text}],
                 }
+                # Stamp the issuer so a later cross-provider fallback can
+                # detect that this message item (and its server-issued id)
+                # belongs to a different Responses endpoint. Mirrors the
+                # reasoning-item stamping below; consumed by the
+                # cross-issuer guard in _chat_messages_to_responses_input.
+                if issuer_kind:
+                    raw_message_item["_issuer_kind"] = issuer_kind
                 item_id = getattr(item, "id", None)
                 if isinstance(item_id, str) and item_id:
                     raw_message_item["id"] = item_id

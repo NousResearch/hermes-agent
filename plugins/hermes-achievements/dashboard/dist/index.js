@@ -50,6 +50,9 @@
 
   async function api(path, options) {
     const url = "/api/plugins/hermes-achievements" + path;
+    if (SDK.fetchJSON) {
+      return SDK.fetchJSON(url, options || {});
+    }
     const token = window.__HERMES_SESSION_TOKEN__ || "";
     const headers = { ...((options && options.headers) || {}) };
     if (token) headers["X-Hermes-Session-Token"] = token;
@@ -568,16 +571,21 @@
   }
 
   function AchievementsPage() {
-    const { t } = useI18n();
+    const { t, locale } = useI18n();
     const [data, setData] = hooks.useState(null);
     const [loading, setLoading] = hooks.useState(true);
     const [error, setError] = hooks.useState(null);
     const [category, setCategory] = hooks.useState("All");
     const [visibility, setVisibility] = hooks.useState("all");
 
+    function localizedPath(path) {
+      const sep = path.indexOf("?") === -1 ? "?" : "&";
+      return path + sep + "locale=" + encodeURIComponent(locale || "en");
+    }
+
     function load() {
       setLoading(true);
-      api("/achievements")
+      api(localizedPath("/achievements"))
         .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
         .catch(function (err) { setError(String(err)); })
         .finally(function () { setLoading(false); });
@@ -586,11 +594,14 @@
     // auto-poller during an in-progress background scan so the page updates
     // with growing unlock counts instead of flashing the loading skeleton.
     function refresh() {
-      api("/achievements")
+      api(localizedPath("/achievements"))
         .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
         .catch(function (err) { setError(String(err)); });
     }
-    hooks.useEffect(load, []);
+    hooks.useEffect(function () {
+      setCategory("All");
+      load();
+    }, [locale]);
 
     // Auto-poll while the backend is still scanning. scan_meta.mode is
     // "pending" on the very first request (no cache yet) and "in_progress"

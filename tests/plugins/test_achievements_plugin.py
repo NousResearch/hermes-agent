@@ -376,3 +376,39 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_achievements_locale_applies_names_descriptions_and_criteria(plugin_api):
+    """zh-CN locale should translate achievement data, not just dashboard chrome."""
+    definition = next(a for a in plugin_api.ACHIEVEMENTS if a["id"] == "let_him_cook")
+    item = plugin_api.display_achievement({**definition, "state": "discovered", "unlocked": False}, "zh-CN")
+
+    assert item["name"] == "放手一搏"
+    assert item["description"] == "让 Hermes 在一次会话中自主执行一套完整的工具链。"
+    assert item["category"] == "自主代理"
+    assert "要求" in item["criteria"]
+    assert "单次会话工具调用次数" in item["criteria"]
+    assert "青铜 200" in item["criteria"]
+
+
+def test_achievements_locale_keeps_secret_cards_hidden(plugin_api):
+    """Localized secret achievements still hide trigger/name until discovered."""
+    definition = next(a for a in plugin_api.ACHIEVEMENTS if a.get("secret"))
+    item = plugin_api.display_achievement({**definition, "state": "secret", "unlocked": False}, "zh-CN")
+
+    assert item["name"] == "???"
+    assert item["icon"] == "secret"
+    assert "秘密成就" in item["description"]
+    assert "秘密成就" in item["criteria"]
+
+
+def test_achievements_locale_resolution_accepts_query_and_header(plugin_api):
+    class Req:
+        def __init__(self, query=None, header=""):
+            self.query_params = query or {}
+            self.headers = {"accept-language": header}
+
+    assert plugin_api._resolve_locale_from_request(Req({"locale": "zh"})) == "zh-CN"
+    assert plugin_api._resolve_locale_from_request(Req(header="zh-CN,zh;q=0.9,en;q=0.8")) == "zh-CN"
+    assert plugin_api._resolve_locale_from_request(Req({"locale": "en"}, "zh-CN")) == "en"
+    assert plugin_api._resolve_locale_from_request(Req(header="fr,en;q=0.8")) == "en"

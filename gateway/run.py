@@ -18645,6 +18645,12 @@ def _run_planned_stop_watcher(
 
 from gateway.status import write_cron_ticker_status, _utc_now_iso
 
+CRON_TICK_INTERVAL = 60          # ticker interval (seconds)
+SUPERVISOR_CHECK_INTERVAL = 30   # how often the supervisor checks liveness
+HEARTBEAT_STALE_SECONDS = 1800   # alive but no tick for this long → HUNG (log only)
+_CRON_BACKOFF_BASE = 30          # first respawn delay (seconds)
+_CRON_BACKOFF_CAP = 120          # max respawn delay (≈2 ticks)
+
 _cron_last_tick_monotonic: float = 0.0
 _cron_heartbeat_lock = threading.Lock()
 
@@ -18799,6 +18805,60 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
         write_cron_ticker_status(state="stopped")
     except Exception:
         pass
+
+
+def _spawn_cron_worker(cron_stop, adapters, loop, interval):
+    """Start a fresh cron-ticker worker thread and return it."""
+    thread = threading.Thread(
+        target=_start_cron_ticker,
+        args=(cron_stop,),
+        kwargs={"adapters": adapters, "loop": loop, "interval": interval},
+        daemon=True,
+        name="cron-ticker",
+    )
+    thread.start()
+    return thread
+
+
+def _cron_supervisor_loop(sup_stop, state):
+    """Daemon supervisor: respawn a DEAD worker (retry forever, capped
+    exponential backoff) and surface a HUNG one.
+
+    A hung worker (alive but heartbeat stale) is logged, never killed or
+    respawned — CPython cannot force-kill a thread, and the ``.tick.lock``
+    backstops double-fire. There is deliberately no terminal give-up state:
+    alerting is log-only, so giving up would silently recreate the very
+    indefinite-outage bug this exists to fix. Backoff resets once healthy.
+    """
+    consecutive_deaths = 0
+    while not sup_stop.wait(SUPERVISOR_CHECK_INTERVAL):
+        worker = state["worker"]
+        if not worker.is_alive():
+            consecutive_deaths += 1
+            backoff = min(_CRON_BACKOFF_BASE * 2 ** (consecutive_deaths - 1), _CRON_BACKOFF_CAP)
+            logger.critical("Cron ticker thread is DEAD; jobs are NOT firing. "
+                            "Respawn #%d in %ds.", consecutive_deaths, backoff)
+            try:
+                write_cron_ticker_status(state="stopped",
+                                         last_error=f"thread died; respawn #{consecutive_deaths}")
+            except Exception:
+                pass
+            if sup_stop.wait(backoff):
+                break
+            state["worker"] = _spawn_cron_worker(state["cron_stop"], state["adapters"],
+                                                 state["loop"], state["interval"])
+            continue
+
+        age = _cron_heartbeat_age()
+        if age is not None and age >= HEARTBEAT_STALE_SECONDS:
+            logger.error("Cron ticker alive but no tick for %.0fs (>%ds) — possible "
+                         "hang; jobs may not be firing.", age, HEARTBEAT_STALE_SECONDS)
+            try:
+                write_cron_ticker_status(state="stalled", last_error=f"no tick for {age:.0f}s")
+            except Exception:
+                pass
+        elif age is not None:
+            consecutive_deaths = 0  # healthy → reset backoff
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:

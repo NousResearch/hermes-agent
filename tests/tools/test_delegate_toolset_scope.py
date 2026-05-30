@@ -7,6 +7,7 @@ arbitrary toolsets.
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import _build_child_agent, _strip_blocked_tools
 

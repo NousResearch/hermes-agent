@@ -474,6 +474,13 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
+    # ".") pre-send. These are model hallucinations emitted when a persona has
+    # nothing actionable to say; in bot-to-bot channels they mirror back and
+    # forth, burning tokens and crashing models. Substrate-level guard that
+    # survives SOUL.md/prompt drift across providers. Opt out with False for
+    # raw passthrough.
+    filter_silence_narration: bool = True
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
@@ -582,6 +589,7 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
@@ -650,6 +658,9 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
+            filter_silence_narration=_coerce_bool(
+                data.get("filter_silence_narration"), True
+            ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
@@ -757,21 +768,32 @@ def load_gateway_config() -> GatewayConfig:
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
 
+            if "filter_silence_narration" in yaml_cfg:
+                gw_data["filter_silence_narration"] = yaml_cfg[
+                    "filter_silence_narration"
+                ]
+
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
 
-            # Merge platforms section from config.yaml into gw_data so that
-            # nested keys like platforms.webhook.extra.routes are loaded.
-            yaml_platforms = yaml_cfg.get("platforms")
+            # Merge platform config into gw_data so runtime-only settings under
+            # ``gateway.platforms`` are loaded the same way as top-level
+            # ``platforms``. Merge nested first so top-level config keeps
+            # precedence, matching the existing gateway.streaming fallback.
+            gateway_cfg = yaml_cfg.get("gateway")
+            gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
                 gw_data["platforms"] = platforms_data
-            if isinstance(yaml_platforms, dict):
-                for plat_name, plat_block in yaml_platforms.items():
+
+            def _merge_platform_map(source_platforms: Any) -> None:
+                if not isinstance(source_platforms, dict):
+                    return
+                for plat_name, plat_block in source_platforms.items():
                     if not isinstance(plat_block, dict):
                         continue
                     existing = platforms_data.get(plat_name, {})
@@ -785,6 +807,10 @@ def load_gateway_config() -> GatewayConfig:
                     if merged_extra:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
+
+            _merge_platform_map(gateway_platforms)
+            _merge_platform_map(yaml_cfg.get("platforms"))
+            if platforms_data:
                 gw_data["platforms"] = platforms_data
             # Iterate built-in platforms plus any registered plugin platforms
             # so plugin authors get the same shared-key bridging (#24836).
@@ -890,6 +916,18 @@ def load_gateway_config() -> GatewayConfig:
                     if entry.apply_yaml_config_fn is None:
                         continue
                     platform_cfg = yaml_cfg.get(entry.name)
+                    # Fall back to the platform's block under ``platforms`` /
+                    # ``gateway.platforms`` so adapter hooks still run when the
+                    # user configured the platform only under those nested paths
+                    # (e.g. ``platforms.discord.extra.allow_from``) and not via a
+                    # top-level ``discord:`` block.
+                    if not isinstance(platform_cfg, dict):
+                        for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                            if isinstance(_src, dict):
+                                _candidate = _src.get(entry.name)
+                                if isinstance(_candidate, dict):
+                                    platform_cfg = _candidate
+                                    break
                     if not isinstance(platform_cfg, dict):
                         continue
                     try:

@@ -467,6 +467,7 @@ Default taps (browsable without any setup):
 - [openai/skills](https://github.com/openai/skills)
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [huggingface/skills](https://github.com/huggingface/skills)
+- [NVIDIA/skills](https://github.com/NVIDIA/skills) — NVIDIA-verified skills (signed `skill.oms.sig` + governance `skill-card.md`)
 - [garrytan/gstack](https://github.com/garrytan/gstack)
 
 - Example:
@@ -474,6 +475,25 @@ Default taps (browsable without any setup):
 ```bash
 hermes skills install openai/skills/k8s
 hermes skills tap add myorg/skills-repo
+```
+
+**Category groupings (`skills.sh.json`).** A GitHub tap may ship a
+`skills.sh.json` file at its repo root following the
+[skills.sh schema](https://skills.sh/schemas/skills.sh.schema.json). Its
+`groupings` (each with a `title` and a list of skill names) are read at index
+time and become the category labels shown in the
+[Skills Hub](https://hermes-agent.nousresearch.com/docs) page — instead of a
+tag-derived guess. This is generic: any tap that ships the file gets real
+categorization, no Hermes-side changes required.
+
+```json
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "groupings": [
+    { "title": "Inference AI", "skills": ["dynamo-recipe-runner", "dynamo-router-sla"] },
+    { "title": "Decision Optimization", "skills": ["cuopt-developer", "cuopt-install"] }
+  ]
+}
 ```
 
 #### 5. ClawHub (`clawhub`)
@@ -577,7 +597,7 @@ Important behavior:
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
 | `official` | `optional-skills/` in the repo | Built-in trust, no third-party warning |
-| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills` | More permissive policy than community sources |
+| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills`, `NVIDIA/skills` | More permissive policy than community sources |
 | `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
 
 ### Update lifecycle

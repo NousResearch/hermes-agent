@@ -1704,7 +1704,12 @@ class TestSystemUnitPathRemapping:
         assert str(root_home) not in unit
         # Target user paths should be present
         assert "/home/alice" in unit
-        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit
+        # WorkingDirectory is anchored at the target user's HERMES_HOME (stable,
+        # always exists) — NOT the source checkout under it. Pinning cwd to the
+        # checkout is the rot bug fixed alongside this: a relocated/removed
+        # checkout would crash-loop the unit on CHDIR (status=200).
+        assert "WorkingDirectory=/home/alice/.hermes" in unit
+        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" not in unit
 
 
 class TestDockerAwareGateway:
@@ -2531,3 +2536,46 @@ class TestGatewayCommandCatchesSystemScopeError:
         # Renders the message, NOT the ``('msg', 'action')`` tuple repr
         assert "System gateway start requires root. Re-run with sudo." in out
         assert "('" not in out  # no tuple repr leaking through
+
+
+class TestServiceWorkingDirIsStable:
+    """The gateway service must anchor WorkingDirectory at a stable path
+    (HERMES_HOME), never the source checkout / worktree, so a relocated or
+    deleted checkout can't crash-loop the unit on CHDIR (status=200).
+    """
+
+    def test_stable_working_dir_uses_hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        assert Path(gateway_cli._stable_service_working_dir()) == home.resolve()
+
+    def test_stable_working_dir_falls_back_to_project_root(self, tmp_path, monkeypatch):
+        # HERMES_HOME points somewhere that does not exist -> fall back.
+        missing = tmp_path / "does-not-exist" / ".hermes"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: missing)
+        assert gateway_cli._stable_service_working_dir() == str(gateway_cli.PROJECT_ROOT)
+
+    def test_user_unit_workingdirectory_is_hermes_home_not_checkout(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        wd = [l for l in unit.splitlines() if l.startswith("WorkingDirectory=")]
+        assert wd, "unit has no WorkingDirectory line"
+        value = wd[0].split("=", 1)[1]
+        assert Path(value).resolve() == home.resolve()
+        # The bug class: never pin cwd inside a transient worktree checkout.
+        assert "/.worktrees/" not in value
+
+    def test_launchd_workingdirectory_is_hermes_home(self, tmp_path, monkeypatch):
+        import re
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+        m = re.search(r"<key>WorkingDirectory</key>\s*<string>(.*?)</string>", plist)
+        assert m, "plist has no WorkingDirectory entry"
+        assert Path(m.group(1)).resolve() == home.resolve()
+        assert "/.worktrees/" not in m.group(1)

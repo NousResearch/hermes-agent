@@ -32,6 +32,24 @@ logger = logging.getLogger(__name__)
 HOST = "hermes"
 
 
+def profile_host_key(profile: str | None) -> str:
+    """Return the safe Honcho host key for a Hermes profile."""
+    if not profile or profile in {"default", "custom"}:
+        return HOST
+    sanitized = "".join(c if c.isalnum() or c in "_-" else "_" for c in profile).strip("_")
+    return f"{HOST}_{sanitized or 'profile'}"
+
+
+def _host_block(raw: dict, host: str) -> dict:
+    """Return host config, accepting legacy dot-form profile host keys."""
+    hosts = raw.get("hosts") or {}
+    block = hosts.get(host, {})
+    if block or not host.startswith(f"{HOST}_"):
+        return block
+    legacy = f"{HOST}.{host[len(HOST) + 1:]}"
+    return hosts.get(legacy, {})
+
+
 def resolve_active_host() -> str:
     """Derive the Honcho host key from the active Hermes profile.
 
@@ -47,8 +65,7 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        if profile and profile not in {"default", "custom"}:
-            return f"{HOST}.{profile}"
+        return profile_host_key(profile)
     except Exception:
         pass
     return HOST
@@ -406,7 +423,7 @@ class HonchoClientConfig:
             logger.warning("Failed to read %s: %s, falling back to env", path, e)
             return cls.from_env(host=resolved_host)
 
-        host_block = (raw.get("hosts") or {}).get(resolved_host, {})
+        host_block = _host_block(raw, resolved_host)
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
@@ -811,13 +828,28 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         or "::1" in resolved_base_url
     )
     if _is_local:
-        # Check if the host block has its own apiKey (explicit local auth)
+        # Check if the host block has its own apiKey (explicit local auth).
+        # Auth-skipping is loopback-only: a stored key is likely a cloud key
+        # that would break a no-auth local server, so we substitute the SDK's
+        # required-non-empty placeholder unless the host block opts in.
         _raw = config.raw or {}
         _host_block = (_raw.get("hosts") or {}).get(config.host, {})
         _host_has_key = bool(_host_block.get("apiKey"))
         effective_api_key = config.api_key if _host_has_key else "local"
     else:
         effective_api_key = config.api_key
+
+    # The Honcho SDK's route builders (e.g. routes.workspaces()) already
+    # include the version prefix (e.g. "/v3/workspaces").  When a user-supplied
+    # base_url already ends in a version segment (e.g.
+    # "http://localhost:38000/v3", "https://honcho.my.ts.net/v3"), concatenating
+    # the two produces "/v3/v3/workspaces" → 404 on every call.  This is a pure
+    # routing concern independent of host, so strip a trailing version segment
+    # from ANY base_url — loopback, LAN, custom domain, or cloud alike.  The
+    # SDK then appends its own versioned paths correctly.
+    if resolved_base_url:
+        import re as _re
+        resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
 
     kwargs: dict = {
         "workspace_id": config.workspace_id,

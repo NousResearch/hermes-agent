@@ -231,3 +231,93 @@ def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
     assert "web" in has_direct
     assert "web" not in already_managed
     assert set(unconfigured) == {"image_gen", "video_gen", "tts", "browser"}
+
+
+def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
+    """apply_nous_managed_defaults must write video_gen.provider and
+    video_gen.use_gateway when a Nous subscriber selects video_gen
+    without a direct FAL_KEY."""
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+
+    config = {"model": {"provider": "nous"}}
+    changed = ns.apply_nous_managed_defaults(
+        config, enabled_toolsets=["video_gen"],
+    )
+
+    assert "video_gen" in changed
+    assert config["video_gen"]["provider"] == "fal"
+    assert config["video_gen"]["use_gateway"] is True
+
+
+def test_apply_nous_managed_defaults_writes_image_gen_config(monkeypatch):
+    """apply_nous_managed_defaults must write image_gen.use_gateway
+    when a Nous subscriber selects image_gen without a direct FAL_KEY."""
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+
+    config = {"model": {"provider": "nous"}}
+    changed = ns.apply_nous_managed_defaults(
+        config, enabled_toolsets=["image_gen"],
+    )
+
+    assert "image_gen" in changed
+    assert config["image_gen"]["use_gateway"] is True
+
+
+def test_apply_nous_managed_defaults_skips_fal_tools_when_key_present(monkeypatch):
+    """When FAL_KEY is set, apply_nous_managed_defaults should not touch
+    image_gen or video_gen config — the user's direct key takes precedence."""
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.setenv("FAL_KEY", "fal-direct-key")
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: True)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+
+    config = {"model": {"provider": "nous"}}
+    changed = ns.apply_nous_managed_defaults(
+        config, enabled_toolsets=["image_gen", "video_gen"],
+    )
+
+    assert "image_gen" not in changed
+    assert "video_gen" not in changed
+    assert "image_gen" not in config
+    assert "video_gen" not in config
+
+
+def test_apply_nous_managed_defaults_preserves_existing_video_gen_section(monkeypatch):
+    """When video_gen config already exists as a dict, the function should
+    update it in-place rather than replacing it."""
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+
+    config = {
+        "model": {"provider": "nous"},
+        "video_gen": {"model": "pixverse-v6"},
+    }
+    changed = ns.apply_nous_managed_defaults(
+        config, enabled_toolsets=["video_gen"],
+    )
+
+    assert "video_gen" in changed
+    assert config["video_gen"]["provider"] == "fal"
+    assert config["video_gen"]["use_gateway"] is True
+    # Pre-existing keys should be preserved
+    assert config["video_gen"]["model"] == "pixverse-v6"

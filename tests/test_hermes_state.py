@@ -1,9 +1,33 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import sqlite3
 import time
 import pytest
 
 from hermes_state import SessionDB
+
+
+class _NoFtsCursor(sqlite3.Cursor):
+    """Simulate a SQLite build without the fts5 module."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if probe in (
+            "SELECT * FROM messages_fts LIMIT 0",
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such table: " + probe.split()[-3])
+        return super().execute(sql, parameters)
+
+    def executescript(self, sql_script):
+        if "USING fts5" in sql_script:
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().executescript(sql_script)
+
+
+class _NoFtsConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFtsCursor)
 
 
 @pytest.fixture()
@@ -128,12 +152,63 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
 
+    def test_update_session_model_overwrites_existing(self, db):
+        """A mid-session /model switch must overwrite the stored model.
+
+        update_token_counts uses COALESCE(model, ?) (first-writer-wins), so
+        the dashboard kept showing the original model after a switch (#34850).
+        update_session_model sets the column unconditionally.
+        """
+        db.create_session(session_id="s1", source="telegram",
+                          model="xiaomi/mimo-v2.5-pro")
+        # Token updates never change the model once set.
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               model="xiaomi/mimo-v2.5-pro")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
+
+        # Explicit switch overwrites it.
+        db.update_session_model("s1", "xiaomi/mimo-v2.5")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
+        # And a subsequent token update does NOT revert it (COALESCE no-ops
+        # because the column is now non-NULL).
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               model="xiaomi/mimo-v2.5-pro")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+    def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            assert db._fts_enabled is False
+            # Neither FTS5 virtual table should have been created on a build
+            # that lacks the fts5 module — both init paths must degrade.
+            assert db._fts_table_exists("messages_fts") is False
+            assert db._fts_table_exists("messages_fts_trigram") is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="hello from sqlite without fts")
+
+            messages = db.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "hello from sqlite without fts"
+            assert db.search_messages("hello") == []
+        finally:
+            db.close()
 
 
 # =========================================================================

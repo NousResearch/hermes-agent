@@ -50,6 +50,14 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("anthropics/skills") == "trusted"
         assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
 
+    def test_nvidia_skills_is_trusted(self):
+        # NVIDIA/skills ships NVIDIA-verified skills with detached OMS
+        # signatures and governance skill cards. It's wired through the
+        # same trust path as the OpenAI / Anthropic / HuggingFace taps.
+        assert _resolve_trust_level("NVIDIA/skills") == "trusted"
+        assert _resolve_trust_level("NVIDIA/skills/aiq-deploy") == "trusted"
+        assert _resolve_trust_level("skills-sh/NVIDIA/skills/cuopt") == "trusted"
+
     def test_trusted_repo_sibling_prefixes_are_not_trusted(self):
         assert _resolve_trust_level("openai/skills-evil") == "community"
         assert _resolve_trust_level("anthropics/skills-foo/frontend-design") == "community"
@@ -281,7 +289,7 @@ class TestScanFile:
 
     def test_detect_invisible_unicode(self, tmp_path):
         f = tmp_path / "hidden.md"
-        f.write_text(f"normal text\u200b with zero-width space\n")
+        f.write_text(f"normal text\u200b with zero-width space\n", encoding="utf-8")
         findings = scan_file(f, "hidden.md")
         assert any(fi.pattern_id == "invisible_unicode" for fi in findings)
 

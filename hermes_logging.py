@@ -200,7 +200,7 @@ def setup_logging(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Read config defaults (best-effort — config may not be loaded yet).
-    cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
+    cfg_level, cfg_max_size, cfg_backup, cfg_loggers = _read_logging_config()
 
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -254,6 +254,50 @@ def setup_logging(
     # Suppress noisy third-party loggers.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Apply per-logger level overrides from config.yaml ``logging.loggers``.
+    # Must run after handlers are attached so the levels take effect on the
+    # configured hierarchy.  Each entry may be a bare string ("DEBUG") or a
+    # dict with a "level" key ({"level": "DEBUG"}).  Invalid or missing levels
+    # are skipped silently to avoid breaking startup.
+    #
+    # When any override is finer-grained than the current root/handler level
+    # (e.g. DEBUG while agent.log runs at INFO), the root logger and the
+    # agent.log handler are also lowered so that per-logger records can
+    # propagate all the way to the file.  The root logger's level gates
+    # propagated records before they reach handlers; the handler's level gates
+    # what it writes.  Both must be at or below the per-logger level for the
+    # records to appear in agent.log.
+    if isinstance(cfg_loggers, dict):
+        min_per_logger_level: Optional[int] = None
+        for logger_name, logger_cfg in cfg_loggers.items():
+            if isinstance(logger_cfg, dict):
+                lvl_value = logger_cfg.get("level")
+            elif isinstance(logger_cfg, str):
+                lvl_value = logger_cfg
+            else:
+                continue
+            if not isinstance(lvl_value, str):
+                continue
+            lvl_int = getattr(logging, lvl_value.upper(), None)
+            if not isinstance(lvl_int, int):
+                continue
+            logging.getLogger(logger_name).setLevel(lvl_int)
+            if min_per_logger_level is None or lvl_int < min_per_logger_level:
+                min_per_logger_level = lvl_int
+
+        # Lower root + agent.log handler if needed so per-logger records reach
+        # the file.  We never raise these levels — only lower them.
+        if min_per_logger_level is not None and min_per_logger_level < level:
+            if root.level > min_per_logger_level or root.level == logging.NOTSET:
+                root.setLevel(min_per_logger_level)
+            for h in root.handlers:
+                if (
+                    isinstance(h, RotatingFileHandler)
+                    and "agent.log" in getattr(h, "baseFilename", "")
+                    and h.level > min_per_logger_level
+                ):
+                    h.setLevel(min_per_logger_level)
 
     _logging_initialized = True
     return log_dir
@@ -456,7 +500,15 @@ def _add_rotating_handler(
 def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml.
 
-    Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
+    Returns ``(level, max_size_mb, backup_count, loggers)`` — any may be
+    ``None``.  ``loggers`` is a dict mapping logger name → config entry,
+    where each entry is either a bare level string (``"DEBUG"``) or a dict
+    with a ``"level"`` key (``{"level": "DEBUG"}``).
+
+    Why: Centralises config parsing so setup_logging() can apply both the
+    top-level level and per-logger overrides from a single read.
+    Test: Write a config.yaml with ``logging.loggers.tools.tool_search.level:
+    DEBUG`` and assert the returned loggers dict contains that entry.
     """
     try:
         import yaml
@@ -470,7 +522,8 @@ def _read_logging_config():
                     log_cfg.get("level"),
                     log_cfg.get("max_size_mb"),
                     log_cfg.get("backup_count"),
+                    log_cfg.get("loggers") or {},
                 )
     except Exception:
         pass
-    return (None, None, None)
+    return (None, None, None, {})

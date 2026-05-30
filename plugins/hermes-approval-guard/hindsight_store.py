@@ -1,17 +1,16 @@
 """审批记忆 — 支持 Hindsight / Honcho / none 三种后端。
 
-配置复用官方 plugins/memory/hindsight 的解析链：
-  1. 插件显式配置 (plugin_guard.memory.hindsight_url)
-  2. 官方 Hindsight 配置 (~/.hermes/hindsight/config.json)
-  3. 环境变量 (HINDSIGHT_API_URL → HINDSIGHT_URL)
-  4. 默认值 (localhost:8888)
-
-通过 config.yaml 配置：
+所有记忆配置通过 config.yaml 显式声明：
   plugin_guard:
     memory:
-      backend: hindsight    # hindsight | honcho | none
-      bank: approval        # Hindsight bank 或 Honcho user_id
-      hindsight_url: ...    # 可选显式覆盖
+      backend: hindsight    # hindsight | honcho | none（必填）
+      bank: approval        # Hindsight bank 或 Honcho user_id（必填）
+      hindsight_url: ...    # Hindsight 服务地址（必填，默认 localhost:8888）
+      honcho_url: ...       # Honcho 服务地址（必填，默认 localhost:1819）
+
+也可通过环境变量覆盖：
+  HINDSIGHT_URL — Hindsight 服务地址
+  HONCHO_URL    — Honcho 服务地址
 
 提供两个维度的查询：
   1. session 级 — 查询本 session 的审批历史（理解操作链条）
@@ -34,69 +33,29 @@ _DEFAULT_HINDSIGHT_URL = "http://localhost:8888"
 _DEFAULT_HONCHO_URL = "http://localhost:1819"
 TIMEOUT = 3
 
-# ── 复用官方 Hindsight 插件配置 ────────────────────────────────────
-
-_official_config_cache: Optional[Dict[str, Any]] = None
-
-
-def _get_official_hindsight_config() -> Dict[str, Any]:
-    """读取官方 Hindsight 插件配置（复用 plugins/memory/hindsight._load_config）。
-
-    官方配置路径（按优先级）：
-      1. $HERMES_HOME/hindsight/config.json (profile-scoped)
-      2. ~/.hindsight/config.json (legacy)
-      3. 环境变量 HINDSIGHT_MODE / HINDSIGHT_API_KEY / HINDSIGHT_API_URL 等
-    """
-    global _official_config_cache
-    if _official_config_cache is not None:
-        return _official_config_cache
-    try:
-        from plugins.memory.hindsight import _load_config
-        _official_config_cache = _load_config()
-    except Exception:
-        _official_config_cache = {}
-    return _official_config_cache
-
 
 def _resolve_hindsight_url(cfg: Dict[str, Any]) -> str:
-    """解析 Hindsight URL（复用官方插件配置链）。"""
+    """解析 Hindsight URL：显式配置 > 环境变量 > 默认值。"""
     mem_cfg = cfg.get("memory", {}) if isinstance(cfg.get("memory"), dict) else {}
 
-    # 1. 审批插件显式配置
     explicit = mem_cfg.get("hindsight_url", "")
     if explicit:
         return explicit
 
-    # 2. 官方 Hindsight 插件 config.json
-    official = _get_official_hindsight_config()
-    official_url = official.get("api_url", "")
-    if official_url:
-        return official_url
+    env_val = os.getenv("HINDSIGHT_URL", "")
+    if env_val:
+        return env_val
 
-    # 3. 环境变量（官方标准 + 兼容旧变量）
-    for env_key in ("HINDSIGHT_API_URL", "HINDSIGHT_URL"):
-        env_val = os.getenv(env_key, "")
-        if env_val:
-            return env_val
-
-    # 4. 默认值
     return _DEFAULT_HINDSIGHT_URL
 
 
 def _resolve_hindsight_bank(cfg: Dict[str, Any]) -> str:
-    """解析 Hindsight bank ID（复用官方插件配置）。"""
+    """解析 Hindsight bank ID：显式配置 > 默认值。"""
     mem_cfg = cfg.get("memory", {}) if isinstance(cfg.get("memory"), dict) else {}
 
-    # 1. 审批插件显式配置
     bank = mem_cfg.get("bank", "")
     if bank:
         return bank
-
-    # 2. 官方 Hindsight 配置
-    official = _get_official_hindsight_config()
-    official_bank = official.get("bank_id", "")
-    if official_bank:
-        return official_bank
 
     return "approval"
 
@@ -161,16 +120,12 @@ def _get_backend(cfg: Dict[str, Any]) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Hindsight HTTP API（复用官方配置解析，urllib 直连）
+# Hindsight HTTP API（显式配置，urllib 直连）
 # ══════════════════════════════════════════════════════════════════
 
 
 def _hindsight_api(endpoint: str, payload: Dict[str, Any], cfg: Dict[str, Any]) -> Optional[Dict]:
-    """调用 Hindsight REST API。
-
-    使用 urllib 直连（无额外依赖）。URL 解析复用官方插件配置链。
-    后续若 hindsight_client SDK 可用，可切换为 SDK 调用。
-    """
+    """调用 Hindsight REST API。使用 urllib 直连（无额外依赖）。"""
     try:
         url = f"{_resolve_hindsight_url(cfg)}/{endpoint}"
         data = json.dumps(payload).encode("utf-8")

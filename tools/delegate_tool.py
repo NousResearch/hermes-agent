@@ -1318,6 +1318,67 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
+def _normalize_provider_name(value: Any) -> str:
+    """Return a conservative provider identity for runtime safety checks."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def _provider_identities_match(candidate: Any, expected: Any) -> bool:
+    """Return True when two provider identifiers can share credentials.
+
+    Most pools use the canonical provider name directly. Named custom-provider
+    pools are keyed as ``custom:<name>`` while the runtime child provider may be
+    the bare configured name; treat those as equivalent, but never collapse two
+    unrelated concrete providers.
+    """
+    candidate_name = _normalize_provider_name(candidate)
+    expected_name = _normalize_provider_name(expected)
+    if not candidate_name or not expected_name:
+        return False
+    if candidate_name == expected_name:
+        return True
+    if (
+        candidate_name.startswith("custom:")
+        and candidate_name.removeprefix("custom:") == expected_name
+    ):
+        return True
+    if (
+        expected_name.startswith("custom:")
+        and expected_name.removeprefix("custom:") == candidate_name
+    ):
+        return True
+    return False
+
+
+def _credential_entry_matches_child_runtime(child: Any, entry: Any) -> bool:
+    """Guard against binding a leased credential to the wrong child runtime."""
+    child_provider = _normalize_provider_name(getattr(child, "provider", None))
+    entry_provider = _normalize_provider_name(getattr(entry, "provider", None))
+    pool_provider = _normalize_provider_name(
+        getattr(getattr(child, "_credential_pool", None), "provider", None)
+    )
+    credential_provider = entry_provider or pool_provider
+    if credential_provider and child_provider and not _provider_identities_match(
+        credential_provider,
+        child_provider,
+    ):
+        return False
+
+    child_base = getattr(child, "base_url", None)
+    entry_base = (
+        getattr(entry, "runtime_base_url", None)
+        or getattr(entry, "base_url", None)
+    )
+    if isinstance(child_base, str) and isinstance(entry_base, str):
+        normalized_child_base = child_base.strip().rstrip("/")
+        normalized_entry_base = entry_base.strip().rstrip("/")
+        if normalized_child_base and normalized_entry_base:
+            return normalized_child_base == normalized_entry_base
+    return True
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -1349,7 +1410,11 @@ def _run_single_child(
         if leased_cred_id is not None:
             try:
                 leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, "_swap_credential"):
+                if (
+                    leased_entry is not None
+                    and hasattr(child, "_swap_credential")
+                    and _credential_entry_matches_child_runtime(child, leased_entry)
+                ):
                     child._swap_credential(leased_entry)
             except Exception as exc:
                 logger.debug("Failed to bind child to leased credential: %s", exc)
@@ -2325,7 +2390,15 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
+        pool_provider = _normalize_provider_name(getattr(parent_pool, "provider", None))
+        if not pool_provider or _provider_identities_match(pool_provider, effective_provider):
+            return parent_pool
+        logger.debug(
+            "Parent credential pool provider '%s' does not match child provider "
+            "'%s'; loading child pool",
+            getattr(parent_pool, "provider", None),
+            effective_provider,
+        )
 
     try:
         from agent.credential_pool import load_pool

@@ -1409,14 +1409,31 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_same_provider_shares_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
+        mock_pool.provider = "openrouter"
         parent._credential_pool = mock_pool
 
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_same_parent_provider_rejects_mismatched_parent_pool(self):
+        parent = _make_mock_parent()
+        parent.provider = "openai-codex"
+        mismatched_pool = MagicMock()
+        mismatched_pool.provider = "xiaomi"
+        parent._credential_pool = mismatched_pool
+        own_pool = MagicMock()
+        own_pool.has_credentials.return_value = True
+
+        with patch("agent.credential_pool.load_pool", return_value=own_pool) as mock_load:
+            result = _resolve_child_credential_pool("openai-codex", parent)
+
+        mock_load.assert_called_once_with("openai-codex")
+        self.assertIs(result, own_pool)
+
     def test_no_provider_inherits_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
+        mock_pool.provider = "openrouter"
         parent._credential_pool = mock_pool
 
         result = _resolve_child_credential_pool(None, parent)
@@ -1537,7 +1554,10 @@ class TestChildCredentialLeasing(unittest.TestCase):
         leased_entry.id = "cred-b"
 
         child = MagicMock()
+        child.provider = "openrouter"
+        child.base_url = "https://openrouter.ai/api/v1"
         child._credential_pool = MagicMock()
+        child._credential_pool.provider = "openrouter"
         child._credential_pool.acquire_lease.return_value = "cred-b"
         child._credential_pool.current.return_value = leased_entry
         child.run_conversation.return_value = {
@@ -1559,6 +1579,42 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._credential_pool.acquire_lease.assert_called_once_with()
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
+
+    def test_run_single_child_skips_cross_provider_leased_credential(self):
+        from tools.delegate_tool import _run_single_child
+
+        leased_entry = MagicMock()
+        leased_entry.id = "xiaomi-cred"
+        leased_entry.provider = "xiaomi"
+        leased_entry.runtime_base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+        leased_entry.base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+
+        child = MagicMock()
+        child.provider = "openai-codex"
+        child.base_url = "https://chatgpt.com/backend-api/codex"
+        child._credential_pool = MagicMock()
+        child._credential_pool.provider = "xiaomi"
+        child._credential_pool.acquire_lease.return_value = "xiaomi-cred"
+        child._credential_pool.current.return_value = leased_entry
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Review safely",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._credential_pool.acquire_lease.assert_called_once_with()
+        child._swap_credential.assert_not_called()
+        child._credential_pool.release_lease.assert_called_once_with("xiaomi-cred")
 
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child

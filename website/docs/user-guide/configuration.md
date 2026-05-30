@@ -447,7 +447,7 @@ Set the sandbox language hint (used by Daytona for runtime environment setup):
 ```yaml
 terminal:
   backend: daytona
-  daytona_language: "python"    # python, javascript, typescript, go, rust, java, csharp, ruby
+  daytona_language: "python"    # currently python, javascript, typescript (validated against installed Daytona SDK)
 ```
 
 #### CWD Sync (Project Directory Upload)
@@ -471,7 +471,7 @@ terminal:
 | `daytona_image` | `TERMINAL_DAYTONA_IMAGE` | `nikolaik/python-nodejs:python3.11-nodejs20` | Docker image for image mode |
 | `daytona_create_mode` | `TERMINAL_DAYTONA_CREATE_MODE` | `image` | Creation mode: `image` or `snapshot` |
 | `daytona_snapshot` | `TERMINAL_DAYTONA_SNAPSHOT` | _(empty)_ | Snapshot name or ID (required in snapshot mode) |
-| `daytona_language` | `TERMINAL_DAYTONA_LANGUAGE` | _(empty)_ | Sandbox language hint |
+| `daytona_language` | `TERMINAL_DAYTONA_LANGUAGE` | _(empty)_ | Sandbox language hint validated against the installed Daytona SDK (currently `python`, `javascript`, `typescript`) |
 | `daytona_name_prefix` | `TERMINAL_DAYTONA_NAME_PREFIX` | `hermes` | Sandbox name prefix |
 | `daytona_name_scope` | `TERMINAL_DAYTONA_NAME_SCOPE` | `task` | Name scope: `task`, `profile`, `global`, `legacy` |
 | `daytona_labels` | `TERMINAL_DAYTONA_LABELS` | `{}` | Custom labels (JSON object) |

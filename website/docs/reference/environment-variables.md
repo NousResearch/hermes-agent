@@ -210,7 +210,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_DAYTONA_IMAGE` | Docker image for image mode (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DAYTONA_CREATE_MODE` | Creation mode: `image` (default) or `snapshot` |
 | `TERMINAL_DAYTONA_SNAPSHOT` | Snapshot name or ID (required when create mode is `snapshot`) |
-| `TERMINAL_DAYTONA_LANGUAGE` | Sandbox language hint (`python`, `javascript`, `typescript`, `go`, `rust`, `java`, `csharp`, `ruby`) |
+| `TERMINAL_DAYTONA_LANGUAGE` | Sandbox language hint validated against the installed Daytona SDK (currently `python`, `javascript`, `typescript`) |
 | `TERMINAL_DAYTONA_NAME_PREFIX` | Sandbox name prefix (default: `hermes`) |
 | `TERMINAL_DAYTONA_NAME_SCOPE` | Name scope: `task` (default), `profile`, `global`, or `legacy` |
 | `TERMINAL_DAYTONA_LABELS` | Custom labels as JSON object (default: `{}`) |

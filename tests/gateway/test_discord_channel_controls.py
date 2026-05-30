@@ -399,6 +399,28 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
 
 
+def test_config_bridges_auto_thread_summary_settings(monkeypatch, tmp_path):
+    """config.yaml exposes Discord auto-thread summary naming settings."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "auto_thread_name_mode": "summary",
+            "auto_thread_summary_max_chars": 70,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_NAME_MODE", "")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_AUTO_THREAD_NAME_MODE") == "summary"
+    assert os.getenv("DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS") == "70"
+
+
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     """Env vars should take precedence over config.yaml values."""
     import yaml

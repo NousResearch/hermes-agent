@@ -89,6 +89,37 @@ async def test_discord_thread_renames_placeholder_to_sanitized_generated_title()
 
 
 @pytest.mark.asyncio
+async def test_discord_auto_thread_name_mode_message_skips_summary_rename(monkeypatch):
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_NAME_MODE", raising=False)
+    runner, adapter = _make_runner(extra={"auto_thread_name_mode": "message"})
+
+    await runner._rename_discord_thread_for_session_title(
+        _make_source(thread_id="999"),
+        "sess-discord",
+        "Generated Summary Title",
+    )
+
+    adapter.rename_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_summary_max_chars_is_configurable(monkeypatch):
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS", raising=False)
+    runner, adapter = _make_runner(extra={"auto_thread_summary_max_chars": 24})
+
+    await runner._rename_discord_thread_for_session_title(
+        _make_source(thread_id="999"),
+        "sess-discord",
+        "Investigate Dashboard Build Timeout Across All Hosted Workers",
+    )
+
+    adapter.rename_thread.assert_awaited_once()
+    renamed = adapter.rename_thread.await_args.kwargs["name"]
+    assert renamed == "Investigate Dashboard..."
+    assert len(renamed) <= 24
+
+
+@pytest.mark.asyncio
 async def test_non_discord_thread_does_not_auto_rename_thread():
     runner, adapter = _make_runner()
 

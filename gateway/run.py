@@ -13329,9 +13329,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         future.add_done_callback(_log_rename_failure)
 
+    def _discord_platform_extra(self) -> dict:
+        """Return Discord platform extra config, if available."""
+        try:
+            platform_cfg = self.config.platforms.get(Platform.DISCORD)
+            extra = getattr(platform_cfg, "extra", None)
+        except Exception:
+            return {}
+        return extra if isinstance(extra, dict) else {}
+
+    def _discord_auto_thread_name_mode(self) -> str:
+        """Return how auto-created Discord threads should be named."""
+        raw = os.getenv("DISCORD_AUTO_THREAD_NAME_MODE")
+        if raw is None:
+            raw = self._discord_platform_extra().get("auto_thread_name_mode")
+        mode = str(raw or "summary").strip().lower()
+        return mode if mode in {"summary", "message"} else "summary"
+
+    def _discord_auto_thread_summary_max_chars(self) -> int:
+        """Return the Discord thread-title cap for summary-generated names."""
+        raw = os.getenv("DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS")
+        if raw is None:
+            raw = self._discord_platform_extra().get("auto_thread_summary_max_chars")
+        try:
+            max_chars = int(raw) if raw is not None else 70
+        except (TypeError, ValueError):
+            max_chars = 70
+        if max_chars <= 0:
+            return 70
+        # Discord thread names are capped at 100 characters. Keep invalid large
+        # values safe while still allowing users to choose shorter summaries.
+        return min(max_chars, 100)
+
     def _sanitize_discord_thread_title(self, title: str) -> str:
         """Return a Discord-safe thread name for generated session titles."""
-        max_chars = 70
+        max_chars = self._discord_auto_thread_summary_max_chars()
         cleaned = re.sub(r"\s+", " ", str(title or "")).strip() or "Hermes Chat"
         if len(cleaned) <= max_chars:
             return cleaned
@@ -13350,6 +13382,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """True when an auto-created Discord thread can be renamed from a generated title."""
         return (
             self._is_discord_thread_source(source)
+            and self._discord_auto_thread_name_mode() == "summary"
             and bool(getattr(source, "thread_initial_name", None))
         )
 

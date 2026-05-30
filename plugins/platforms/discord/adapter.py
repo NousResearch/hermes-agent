@@ -7786,7 +7786,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
     throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
-    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
+    ``DISCORD_AUTO_THREAD``, ``DISCORD_AUTO_THREAD_NAME_MODE``,
+    ``DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
@@ -7851,6 +7852,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(ntc, list):
             ntc = ",".join(str(v) for v in ntc)
         os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+    # auto_thread_name_mode: "summary" renames auto-created threads from the
+    # generated session title; "message" preserves the initial message-derived
+    # Discord thread name. The gateway reads these env vars when scheduling the
+    # post-response title sync.
+    atnm = discord_cfg.get("auto_thread_name_mode")
+    if atnm is not None and not os.getenv("DISCORD_AUTO_THREAD_NAME_MODE"):
+        os.environ["DISCORD_AUTO_THREAD_NAME_MODE"] = str(atnm).lower()
+    atsmc = discord_cfg.get("auto_thread_summary_max_chars")
+    if atsmc is not None and not os.getenv("DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS"):
+        os.environ["DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS"] = str(atsmc)
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.
@@ -7930,7 +7941,8 @@ def register(ctx) -> None:
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
         # auto_thread, reactions, ignored_channels, allowed_channels,
-        # no_thread_channels, allow_mentions.*, reply_to_mode,
+        # no_thread_channels, auto_thread_name_mode,
+        # auto_thread_summary_max_chars, allow_mentions.*, reply_to_mode,
         # thread_require_mention) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
         # that used to live in ``gateway/config.py``.  Hook contract: #24836.

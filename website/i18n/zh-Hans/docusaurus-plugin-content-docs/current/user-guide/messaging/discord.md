@@ -280,7 +280,9 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_THREAD_REQUIRE_MENTION` | 否 | `false` | 为 `true` 时，禁用线程内的提及快捷方式——线程与频道的门控方式相同，即使机器人已经参与其中，也需要 `@提及`。当多个机器人共享一个线程且你希望每个机器人仅在明确 `@提及` 时触发时使用此设置。 |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 否 | — | 机器人无需 `@提及` 即可响应的频道 ID，逗号分隔，即使 `DISCORD_REQUIRE_MENTION` 为 `true` 也适用。 |
 | `DISCORD_IGNORE_NO_MENTION` | 否 | `true` | 为 `true` 时，如果消息 `@提及` 了其他用户但**未**提及机器人，机器人保持沉默。防止机器人介入针对其他人的对话。仅适用于服务器频道，不适用于私信。 |
-| `DISCORD_AUTO_THREAD` | 否 | `true` | 为 `true` 时，自动为文本频道中的每次 `@提及` 创建新线程，使每个对话相互隔离（类似 Slack 行为）。已在线程或私信中的消息不受影响。 |
+| `DISCORD_AUTO_THREAD` | 否 | `true` | 为 `true` 时，在文本频道中每次 `@提及` 都会自动创建新线程，使每个对话隔离（类似 Slack 行为）。现有线程或私信中的消息不受影响。 |
+| `DISCORD_AUTO_THREAD_NAME_MODE` | 否 | `summary` | 控制自动创建的 Discord 线程如何命名。`summary` 会在首次回复后把线程重命名为生成的 Hermes 会话标题；`message` 保留初始的消息派生线程名。 |
+| `DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS` | 否 | `70` | summary 生成的自动线程名最大长度。高于 Discord 100 字符限制的值会被截断。 |
 | `DISCORD_ALLOW_BOTS` | 否 | `"none"` | 控制机器人如何处理来自其他 Discord 机器人的消息。`"none"` — 忽略所有其他机器人。`"mentions"` — 仅接受 `@提及` Hermes 的机器人消息。`"all"` — 接受所有机器人消息。 |
 | `DISCORD_REACTIONS` | 否 | `true` | 为 `true` 时，机器人在处理过程中为消息添加 emoji 反应（开始时 👀，成功时 ✅，出错时 ❌）。设置为 `false` 可完全禁用反应。 |
 | `DISCORD_IGNORED_CHANNELS` | 否 | — | 机器人**永不**响应的频道 ID，逗号分隔，即使被 `@提及` 也不响应。优先于所有其他频道设置。 |
@@ -309,7 +311,9 @@ discord:
   require_mention: true           # 在服务器频道中需要 @提及
   thread_require_mention: false   # 为 true 时，线程中也需要 @提及（多机器人线程）
   free_response_channels: ""      # 逗号分隔的频道 ID（或 YAML 列表）
-  auto_thread: true               # 在 @提及 时自动创建线程
+  auto_thread: true               # 自动在 @提及时创建线程
+  auto_thread_name_mode: summary   # summary | message（自动创建线程的命名方式）
+  auto_thread_summary_max_chars: 70 # summary 生成线程名的最大字符数
   reactions: true                 # 处理过程中添加 emoji 反应
   ignored_channels: []            # 机器人永不响应的频道 ID
   no_thread_channels: []          # 机器人不创建线程直接响应的频道 ID
@@ -375,6 +379,24 @@ discord:
 启用后，普通文本频道中的每次 `@提及` 都会自动为对话创建新线程。这保持主频道整洁，并为每个对话提供独立的会话历史。一旦创建线程，该线程中的后续消息不需要 `@提及`——机器人知道它已经在参与其中。对于多机器人设置，将 [`thread_require_mention`](#discordthread_require_mention) 设置为 `true` 可禁用此线程内快捷方式。
 
 在现有线程或私信中发送的消息不受此设置影响。`discord.free_response_channels` 或 `discord.no_thread_channels` 中列出的频道也会绕过自动创建线程，改为直接回复。
+
+默认情况下，自动创建的 Discord 线程使用 `discord.auto_thread_name_mode: summary`：Hermes 会先立即用短的消息派生占位标题创建线程，然后在首次回复后把线程重命名为生成的 Hermes 会话标题。只有当 Discord 线程仍保持初始名称时才会重命名，因此手动修改过的 Discord 线程名会保留，不会被覆盖。
+
+如果你想保留旧行为，可设置 `discord.auto_thread_name_mode: message`，让线程继续使用初始的消息派生名称：
+
+```yaml
+discord:
+  auto_thread: true
+  auto_thread_name_mode: message
+```
+
+使用 `discord.auto_thread_summary_max_chars` 控制生成的 summary 线程名最大长度。默认值为 `70`；高于 Discord 100 字符线程名限制的值会被截断。
+
+```yaml
+discord:
+  auto_thread_name_mode: summary
+  auto_thread_summary_max_chars: 70
+```
 
 #### `discord.reactions`
 

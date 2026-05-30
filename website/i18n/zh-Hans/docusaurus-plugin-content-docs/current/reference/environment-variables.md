@@ -259,6 +259,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `DISCORD_REQUIRE_MENTION` | 在服务器频道中响应前要求 @mention |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 不需要 mention 的逗号分隔频道 ID |
 | `DISCORD_AUTO_THREAD` | 支持时自动将长回复转为线程 |
+| `DISCORD_AUTO_THREAD_NAME_MODE` | 自动线程命名模式：`summary`（默认，重命名为生成的会话标题）或 `message`（保留消息派生名称） |
+| `DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS` | summary 生成的 Discord 自动线程名最大字符数（默认：`70`，受 Discord 100 字符限制约束） |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | 设为 `true` 时接受任意文件类型的附件（不仅限于内置的 PDF/文本/zip/office 白名单）。未知类型被缓存并以本地路径形式提供给 agent，供其通过 `terminal`/`read_file`/`ffprobe` 检查。默认 `false`。 |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | gateway 缓存的每个附件最大字节数。默认 `33554432`（32 MiB）。设为 `0` 表示无上限（附件在写入时保存在内存中）。 |
 | `DISCORD_REACTIONS` | 处理期间在消息上启用 emoji 反应（默认：`true`） |

@@ -281,6 +281,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
+| `DISCORD_AUTO_THREAD_NAME_MODE` | No | `summary` | Controls how auto-created Discord threads are named. `summary` renames the thread to the generated Hermes session title after the first response; `message` keeps the initial message-derived Discord thread name. |
+| `DISCORD_AUTO_THREAD_SUMMARY_MAX_CHARS` | No | `70` | Maximum length for summary-generated auto-thread names. Values above Discord's 100-character limit are capped. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
@@ -316,6 +318,8 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  auto_thread_name_mode: summary   # summary | message (how auto-created threads are named)
+  auto_thread_summary_max_chars: 70 # Max chars for summary-generated thread names
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
@@ -381,6 +385,24 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+
+By default, auto-created Discord threads use `discord.auto_thread_name_mode: summary`: Hermes creates the thread with a short message-derived placeholder immediately, then renames it to the generated Hermes session title after the first response. The rename only happens while the Discord thread still has its initial name, so a manual Discord thread rename wins and is not overwritten.
+
+If you prefer the pre-summary behavior, set `discord.auto_thread_name_mode: message` to keep the original message-derived Discord thread name:
+
+```yaml
+discord:
+  auto_thread: true
+  auto_thread_name_mode: message
+```
+
+Use `discord.auto_thread_summary_max_chars` to control how long generated summary thread names can be. The default is `70`; values above Discord's 100-character thread-name limit are capped.
+
+```yaml
+discord:
+  auto_thread_name_mode: summary
+  auto_thread_summary_max_chars: 70
+```
 
 #### `discord.reactions`
 

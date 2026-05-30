@@ -297,6 +297,34 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
 
+            # Optional per-sender routing.
+            # peerByLid routes multi-user WhatsApp chats to the correct
+            # Honcho peer. We scan the gateway user_id (the sender's LID,
+            # e.g. "1234567890@lid") for any known LID and override the
+            # configured peer_name when a match is found. The map lives in
+            # honcho.json, e.g. {"1234567890": "alice", "9876543210": "bob"}
+            # This override wins over both the default peer_name and the
+            # upstream runtime_user_peer_name path because routing
+            # identity is per-message, not per-deployment. Load-bearing
+            # for auto-renamed sessions where the LID is no longer
+            # present in the session key.
+            #
+            # We also rewrite kwargs["user_id"] so the upstream
+            # runtime_user_peer_name plumbing (passed into the session
+            # manager below) sees the resolved peer instead of the raw
+            # LID. Defense in depth alongside the session.py patch.
+            _gw_user_id = kwargs.get("user_id")
+            if _gw_user_id and getattr(cfg, "peer_by_lid", None):
+                for _lid, _peer in cfg.peer_by_lid.items():
+                    if _lid and str(_lid) in str(_gw_user_id):
+                        cfg.peer_name = _peer
+                        kwargs["user_id"] = _peer
+                        logger.info(
+                            "peerByLid routed user_id=%s -> peer=%s",
+                            _gw_user_id, _peer,
+                        )
+                        break
+
             self._config = cfg
 
             # ----- B1: recall_mode from config -----

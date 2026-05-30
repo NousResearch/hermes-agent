@@ -267,6 +267,20 @@ class HonchoSessionManager:
         """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
         return re.sub(r'[^a-zA-Z0-9_-]', '-', id_str)
 
+    def _resolve_user_peer_for_key(self, key: str) -> str | None:
+        """Map a WhatsApp LID in a session key to a peer name.
+
+        When the session key contains a known LID (from peer_by_lid in
+        honcho.json), return the mapped peer. Returns None when no mapping
+        matches, so the caller falls back to the default behavior.
+        """
+        if not self._config or not getattr(self._config, "peer_by_lid", None):
+            return None
+        for lid, peer in self._config.peer_by_lid.items():
+            if lid and str(lid) in key:
+                return self._sanitize_id(peer)
+        return None
+
     def get_or_create(self, key: str) -> HonchoSession:
         """
         Get an existing session or create a new one.
@@ -283,25 +297,36 @@ class HonchoSessionManager:
                 return self._cache[key]
 
         # Determine peer IDs — no lock needed (read-only, no shared state mutation).
-        # Gateway sessions normally use the runtime user identity (the
-        # platform-native ID: Telegram UID, Discord snowflake, Slack user,
-        # etc.) so multi-user bots scope memory per user.  For a single-user
-        # deployment the config-supplied ``peer_name`` is an unambiguous
-        # identity and we should keep it unified across platforms — see
-        # #14984.  Opt into that with ``hosts.<host>.pinPeerName: true`` in
-        # ``honcho.json`` (or root-level ``pinPeerName: true``).
+        # Per-LID peer override wins over everything else. The session key
+        # usually carries the chat LID (e.g. "whatsapp:dm:1234567890@lid"),
+        # which lets multi-user deployments route each sender to the right peer.
+        # More specific than runtime_user_peer_name, which is set by the
+        # gateway from the sender id and may not match the multi-tenant
+        # WhatsApp DM case.
+        #
+        # After LID, gateway sessions normally use the runtime user identity
+        # (the platform-native ID: Telegram UID, Discord snowflake, Slack
+        # user, etc.) so multi-user bots scope memory per user.  For a
+        # single-user deployment the config-supplied ``peer_name`` is an
+        # unambiguous identity and we should keep it unified across
+        # platforms — see #14984.  Opt into that with
+        # ``hosts.<host>.pinPeerName: true`` in ``honcho.json`` (or
+        # root-level ``pinPeerName: true``).
         # `is True` (not `bool(...)`) is deliberate: several multi-user tests
         # pass a ``MagicMock`` for ``config`` where ``mock.pin_peer_name``
         # silently returns another MagicMock — truthy by default.  Requiring
         # strict ``True`` keeps pinning as opt-in even for callers that
         # haven't updated their mocks yet; real configs built via
         # ``from_global_config`` always produce a proper boolean.
+        lid_peer = self._resolve_user_peer_for_key(key)
         pin_peer_name = (
             self._config is not None
             and bool(getattr(self._config, "peer_name", None))
             and getattr(self._config, "pin_peer_name", False) is True
         )
-        if self._runtime_user_peer_name and not pin_peer_name:
+        if lid_peer:
+            user_peer_id = lid_peer
+        elif self._runtime_user_peer_name and not pin_peer_name:
             user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
         elif self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)

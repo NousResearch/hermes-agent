@@ -386,11 +386,12 @@ def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
 
 def _check_fal_video_available() -> bool:
     """True if the FAL.ai video backend is reachable (direct key or managed gateway)."""
+    from tools.managed_tool_gateway import is_managed_tool_gateway_ready
     from tools.tool_backend_helpers import fal_key_is_configured
 
     if fal_key_is_configured():
         return True
-    return _resolve_managed_fal_video_gateway() is not None
+    return is_managed_tool_gateway_ready("fal-queue")
 
 
 # ---------------------------------------------------------------------------

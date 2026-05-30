@@ -62,7 +62,7 @@ from tools.fal_common import (
     _extract_http_status,
     _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
 )
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.managed_tool_gateway import is_managed_tool_gateway_ready, resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
     managed_nous_tools_enabled,
@@ -758,7 +758,7 @@ def image_generate_tool(
 
 def check_fal_api_key() -> bool:
     """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+    return bool(fal_key_is_configured() or is_managed_tool_gateway_ready("fal-queue"))
 
 
 def _build_no_backend_setup_message() -> str:

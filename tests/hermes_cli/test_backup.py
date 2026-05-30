@@ -146,6 +146,12 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert not _should_exclude(Path("logs/agent.log"))
 
+    def test_includes_nested_hermes_agent_in_skills(self):
+        """skills/autonomous-ai-agents/hermes-agent/ must NOT be excluded —
+        only the root-level hermes-agent/ repo is skipped."""
+        from hermes_cli.backup import _should_exclude
+        assert not _should_exclude(Path("skills/autonomous-ai-agents/hermes-agent/SKILL.md"))
+        assert not _should_exclude(Path("skills/autonomous-ai-agents/hermes-agent/sub/item.txt"))
 
 # ---------------------------------------------------------------------------
 # Backup tests
@@ -205,6 +211,37 @@ class TestBackup:
             names = zf.namelist()
             agent_files = [n for n in names if "hermes-agent" in n]
             assert agent_files == [], f"hermes-agent files leaked into backup: {agent_files}"
+
+    def test_includes_nested_hermes_agent_in_skills(self, tmp_path, monkeypatch):
+        """Backup includes skills/.../hermes-agent/ but NOT root hermes-agent/."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        # Add a nested hermes-agent directory inside skills (like the real layout)
+        nested = hermes_home / "skills" / "autonomous-ai-agents" / "hermes-agent"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("# Hermes Agent Skill\n")
+        (nested / "sub").mkdir()
+        (nested / "sub" / "item.txt").write_text("nested content\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            # Root hermes-agent must be excluded
+            root_agent = [n for n in names if n.startswith("hermes-agent/")]
+            assert root_agent == [], f"root hermes-agent leaked: {root_agent}"
+            # Nested skill hermes-agent must be included
+            assert "skills/autonomous-ai-agents/hermes-agent/SKILL.md" in names
+            assert "skills/autonomous-ai-agents/hermes-agent/sub/item.txt" in names
 
     def test_excludes_pycache(self, tmp_path, monkeypatch):
         """Backup does NOT include __pycache__ dirs."""

@@ -10549,6 +10549,22 @@ class GatewayRunner:
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
 
+                        # Persist the new model to the session DB so the
+                        # dashboard shows the updated model (#34850).
+                        _sess_db = getattr(_self, "_session_db", None)
+                        if _sess_db is not None:
+                            try:
+                                _sess_entry = _self.session_store.get_or_create_session(
+                                    event.source
+                                )
+                                _sess_db.update_session_model(
+                                    _sess_entry.session_id, result.new_model
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "Failed to persist model switch to DB: %s", exc
+                                )
+
                         # Store model note + session override
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
@@ -10685,6 +10701,19 @@ class GatewayRunner:
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
+
+        # Persist the new model to the session DB so the dashboard
+        # shows the updated model (#34850).
+        if self._session_db is not None:
+            try:
+                _sess_entry = self.session_store.get_or_create_session(source)
+                self._session_db.update_session_model(
+                    _sess_entry.session_id, result.new_model
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to persist model switch to DB: %s", exc
+                )
 
         # Store a note to prepend to the next user message so the model
         # knows about the switch (avoids system messages mid-history).

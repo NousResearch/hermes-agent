@@ -965,6 +965,20 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_model(self, session_id: str, model: str) -> None:
+        """Update the model for a session after a mid-session switch.
+
+        Unlike ``update_token_counts`` which uses ``COALESCE(model, ?)``
+        (only filling in NULL), this unconditionally sets the model column
+        so that the dashboard reflects the user's latest /model choice.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model = ? WHERE id = ?",
+                (model, session_id),
+            )
+        self._execute_write(_do)
+
     def update_token_counts(
         self,
         session_id: str,

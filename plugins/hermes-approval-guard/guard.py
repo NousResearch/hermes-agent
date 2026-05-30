@@ -233,8 +233,6 @@ def pre_tool_call_handler(
 
     cfg_stage2 = cfg.get("stage2", {})
     if not cfg_stage2.get("enabled", True):
-        if cfg.get("fail_open", True):
-            return None
         return None
 
     # 从 session DB 获取完整上下文（工具链条 + 对话）

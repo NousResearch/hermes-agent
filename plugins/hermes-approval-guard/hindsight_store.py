@@ -1,10 +1,17 @@
 """审批记忆 — 支持 Hindsight / Honcho / none 三种后端。
 
+配置复用官方 plugins/memory/hindsight 的解析链：
+  1. 插件显式配置 (plugin_guard.memory.hindsight_url)
+  2. 官方 Hindsight 配置 (~/.hermes/hindsight/config.json)
+  3. 环境变量 (HINDSIGHT_API_URL → HINDSIGHT_URL)
+  4. 默认值 (localhost:8888)
+
 通过 config.yaml 配置：
   plugin_guard:
     memory:
       backend: hindsight    # hindsight | honcho | none
       bank: approval        # Hindsight bank 或 Honcho user_id
+      hindsight_url: ...    # 可选显式覆盖
 
 提供两个维度的查询：
   1. session 级 — 查询本 session 的审批历史（理解操作链条）
@@ -27,15 +34,71 @@ _DEFAULT_HINDSIGHT_URL = "http://localhost:8888"
 _DEFAULT_HONCHO_URL = "http://localhost:1819"
 TIMEOUT = 3
 
+# ── 复用官方 Hindsight 插件配置 ────────────────────────────────────
 
-def _get_hindsight_url(cfg: Dict[str, Any]) -> str:
-    """读取 Hindsight URL：config > 环境变量 > 默认值。"""
+_official_config_cache: Optional[Dict[str, Any]] = None
+
+
+def _get_official_hindsight_config() -> Dict[str, Any]:
+    """读取官方 Hindsight 插件配置（复用 plugins/memory/hindsight._load_config）。
+
+    官方配置路径（按优先级）：
+      1. $HERMES_HOME/hindsight/config.json (profile-scoped)
+      2. ~/.hindsight/config.json (legacy)
+      3. 环境变量 HINDSIGHT_MODE / HINDSIGHT_API_KEY / HINDSIGHT_API_URL 等
+    """
+    global _official_config_cache
+    if _official_config_cache is not None:
+        return _official_config_cache
+    try:
+        from plugins.memory.hindsight import _load_config
+        _official_config_cache = _load_config()
+    except Exception:
+        _official_config_cache = {}
+    return _official_config_cache
+
+
+def _resolve_hindsight_url(cfg: Dict[str, Any]) -> str:
+    """解析 Hindsight URL（复用官方插件配置链）。"""
     mem_cfg = cfg.get("memory", {}) if isinstance(cfg.get("memory"), dict) else {}
-    return (
-        mem_cfg.get("hindsight_url")
-        or os.getenv("HINDSIGHT_URL")
-        or _DEFAULT_HINDSIGHT_URL
-    )
+
+    # 1. 审批插件显式配置
+    explicit = mem_cfg.get("hindsight_url", "")
+    if explicit:
+        return explicit
+
+    # 2. 官方 Hindsight 插件 config.json
+    official = _get_official_hindsight_config()
+    official_url = official.get("api_url", "")
+    if official_url:
+        return official_url
+
+    # 3. 环境变量（官方标准 + 兼容旧变量）
+    for env_key in ("HINDSIGHT_API_URL", "HINDSIGHT_URL"):
+        env_val = os.getenv(env_key, "")
+        if env_val:
+            return env_val
+
+    # 4. 默认值
+    return _DEFAULT_HINDSIGHT_URL
+
+
+def _resolve_hindsight_bank(cfg: Dict[str, Any]) -> str:
+    """解析 Hindsight bank ID（复用官方插件配置）。"""
+    mem_cfg = cfg.get("memory", {}) if isinstance(cfg.get("memory"), dict) else {}
+
+    # 1. 审批插件显式配置
+    bank = mem_cfg.get("bank", "")
+    if bank:
+        return bank
+
+    # 2. 官方 Hindsight 配置
+    official = _get_official_hindsight_config()
+    official_bank = official.get("bank_id", "")
+    if official_bank:
+        return official_bank
+
+    return "approval"
 
 
 def _get_honcho_url(cfg: Dict[str, Any]) -> str:
@@ -46,6 +109,7 @@ def _get_honcho_url(cfg: Dict[str, Any]) -> str:
         or os.getenv("HONCHO_URL")
         or _DEFAULT_HONCHO_URL
     )
+
 
 # ── 模式 key 生成：用于跨 session 匹配相似操作 ────────────────────
 
@@ -58,7 +122,6 @@ def _build_pattern_key(tool_name: str, args: Dict[str, Any]) -> str:
     """
     if tool_name in ("write_file", "patch"):
         path = str(args.get("path", ""))
-        # 提取目录前缀（如 /etc/nginx/）
         dirs = path.rsplit("/", 1)
         if len(dirs) > 1:
             return f"{tool_name}{dirs[0]}/"
@@ -66,7 +129,6 @@ def _build_pattern_key(tool_name: str, args: Dict[str, Any]) -> str:
 
     if tool_name == "terminal":
         cmd = str(args.get("command", "")).strip()
-        # 提取第一个词作为命令类型
         first_word = re.split(r"[;\s|&]", cmd)[0].strip()
         if first_word:
             return f"terminal/{first_word}"
@@ -74,7 +136,6 @@ def _build_pattern_key(tool_name: str, args: Dict[str, Any]) -> str:
 
     if tool_name == "delegate_task":
         goal = str(args.get("goal", ""))
-        # 提取前 3 个有意义的词
         words = goal.lower().split()
         key_words = [w for w in words if w not in ("the", "a", "an", "is", "in", "to", "of")][:3]
         if key_words:
@@ -100,13 +161,18 @@ def _get_backend(cfg: Dict[str, Any]) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Hindsight HTTP API
+# Hindsight HTTP API（复用官方配置解析，urllib 直连）
 # ══════════════════════════════════════════════════════════════════
 
 
 def _hindsight_api(endpoint: str, payload: Dict[str, Any], cfg: Dict[str, Any]) -> Optional[Dict]:
+    """调用 Hindsight REST API。
+
+    使用 urllib 直连（无额外依赖）。URL 解析复用官方插件配置链。
+    后续若 hindsight_client SDK 可用，可切换为 SDK 调用。
+    """
     try:
-        url = f"{_get_hindsight_url(cfg)}/{endpoint}"
+        url = f"{_resolve_hindsight_url(cfg)}/{endpoint}"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=data,
@@ -121,7 +187,7 @@ def _hindsight_api(endpoint: str, payload: Dict[str, Any], cfg: Dict[str, Any]) 
 
 
 def _hindsight_retain(content: str, tags: list, cfg: Dict[str, Any]) -> None:
-    bank = cfg.get("memory", {}).get("bank", "approval") if isinstance(cfg.get("memory"), dict) else "approval"
+    bank = _resolve_hindsight_bank(cfg)
     _hindsight_api(f"v1/default/banks/{bank}/memories", {
         "items": [{
             "content": content,
@@ -133,7 +199,7 @@ def _hindsight_retain(content: str, tags: list, cfg: Dict[str, Any]) -> None:
 
 def _hindsight_recall_extended(query_parts: list, cfg: Dict[str, Any], limit: int = 5) -> list:
     """召回并返回完整 memory 列表（含 content + tags）。"""
-    bank = cfg.get("memory", {}).get("bank", "approval") if isinstance(cfg.get("memory"), dict) else "approval"
+    bank = _resolve_hindsight_bank(cfg)
     result = _hindsight_api(f"v1/default/banks/{bank}/memories/recall", {
         "query": " ".join(query_parts),
     }, cfg)
@@ -239,9 +305,9 @@ def query_session_history(
     用于 ACP prompt 注入：让 ACP 知道本次会话中之前审批过什么操作。
     返回格式化的文本，可直接注入 prompt；无历史时返回空字符串。
     """
-    if not session_id or cfg is None:
+    if not session_id:
         return ""
-    cfg = cfg if cfg is not None else {}
+    cfg = cfg or {}
     backend = _get_backend(cfg)
     if backend == "none":
         return ""
@@ -327,7 +393,6 @@ def _build_tags(
     tool_name: str, args: Dict[str, Any],
     session_id: str, pattern_key: str,
 ) -> list:
-    """构建 Hindsight/Honcho 标签。"""
     tags = ["approval", tool_name, pattern_key]
     if session_id:
         tags.append(f"sid:{session_id}")

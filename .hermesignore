@@ -1,0 +1,49 @@
+# ── Version control ──────────────────────────────────────────
+.git/
+.svn/
+.hg/
+
+# ── Build artifacts ──────────────────────────────────────────
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+out/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments ─────────────────────────────────────
+.venv/
+venv/
+env/
+.env/
+
+# ── IDE / editor ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Secrets (never scan) ─────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+
+# ── Large/generated dirs ─────────────────────────────────────
+vendor/
+.wasm/
+
+# ── UA / Flywheel artifacts (generated, not source) ──────────
+.understand-anything/
+.hermes/code-state/

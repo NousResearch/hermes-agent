@@ -1,6 +1,6 @@
 # Understand-Anything Incorporation Strategy
 
-> **Status:** Phase 1 complete / verified / committed (`24356edcd`). Phase 2 D1-D3 complete / reviewed / evaluated 11/11 PASS / merged to `jc-fork/main` at HEAD `24e9fe65a`. D4 is deferred by default and requires explicit JC approval. Phase 3 not started; next action is Phase 3 approval package.
+> **Status:** Phase 1 complete / verified / committed (`24356edcd`). Phase 2 D1-D3 complete / reviewed / evaluated 11/11 PASS / merged to `jc-fork/main` at HEAD `24e9fe65a`. Phase 3 D1-D3 complete / merged to local main at `0133a0a4b` via PR #6. D4 (Phase 2) is deferred by default and requires explicit JC approval. D4 (Phase 3) remains deferred by default.
 > **Related:** See `understand-anything-to-flywheel-review.md` for the full risk analysis and artifact inventory.
 > **Last updated:** 2026-05-30
 
@@ -170,7 +170,7 @@ Skills should use the existing SKILL.md frontmatter pattern with `hermes.tags` i
 3. Neighbor map generation for >500-file repos
 4. Staleness detection (compare git diff against fingerprints)
 
-**No commit to Phase 4 until Phase 1-3 are in use and validated.**
+**Phase 1-3 complete.** No commit to Phase 4 until Phase 1-3 are in use and validated.
 
 ---
 

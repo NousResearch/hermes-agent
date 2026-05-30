@@ -2,7 +2,7 @@
 
 > **Purpose:** Canonical entry point for the Understand-Anything → Hermes Flywheel integration.
 > All details live in `.plans/` and `.beads/`. This file is a navigation pointer.
-> **Last updated:** 2026-05-30 (Phase 3 D1-D3 complete locally; awaiting push/merge direction)
+> **Last updated:** 2026-05-30 (Phase 3 D1-D3 merged to local main at `0133a0a4b` via PR #6; CI green)
 
 ## Key Documents
 
@@ -32,16 +32,16 @@ All deliverables committed in `24356edcd`. 80 tests pass.
 > Post-push CI: Tests ✅, Lint ✅, Nix ✅.
 > **D4** remains deferred — requires explicit JC approval. Phase 3 D1-D3 approved for autonomous execution.
 
-## Phase 3 (Incremental Analysis) — ✅ D1-D3 COMPLETE LOCALLY
+## Phase 3 (Incremental Analysis) — ✅ D1-D3 MERGED TO LOCAL MAIN
 
 | Bead | File | Status |
 |---|---|---|
-| D1 — fingerprint model | `.beads/phase3-d1-fingerprint-model.md` | ✅ Complete locally; 61 tests pass; reviewer PASS |
-| D2 — incremental scan | `.beads/phase3-d2-incremental-scan.md` | ✅ Complete locally; 40 scan tests + 61 D1 regression tests pass; reviewer PASS |
-| D3 — graph assembly | `.beads/phase3-d3-assemble-graph.md` | ✅ Complete locally; 64 D3 tests + 132 regression tests pass; reviewer PASS |
+| D1 — fingerprint model | `.beads/phase3-d1-fingerprint-model.md` | ✅ Merged at `0133a0a4b` via PR #6; 61 tests pass; reviewer PASS |
+| D2 — incremental scan | `.beads/phase3-d2-incremental-scan.md` | ✅ Merged at `0133a0a4b` via PR #6; 40 scan tests + 61 D1 regression tests pass; reviewer PASS |
+| D3 — graph assembly | `.beads/phase3-d3-assemble-graph.md` | ✅ Merged at `0133a0a4b` via PR #6; 64 D3 tests + 132 regression tests pass; reviewer PASS |
 | D4 — skill integration | `.beads/phase3-d4-skill-integration-deferred.md` | Deferred by default |
 
-> **Phase 3 D1-D3 complete locally.** D4 remains deferred by default. No push/merge has been performed.
+> **Phase 3 D1-D3 merged to local main at `0133a0a4b`** (PR #6 squash merge). CI on main: Tests ✅, Lint ✅, Nix ✅. D4 remains deferred by default.
 > Approval doc: `.plans/phase-3-incremental-analysis.md`.
 
 ## Execution Model
@@ -56,10 +56,10 @@ Beads under `.beads/` are the authoritative execution units. Each bead contains:
 
 ## Quick Links
 
-- Branch: `docs/ua-flywheel-phase3-plan`
-- `jc-fork/main` and HEAD: `24e9fe65a`
+- Branch: `main` (local main, 13 commits ahead of origin/main)
+- HEAD (local main): `0133a0a4b` (`feat(code-scan): add Phase 3 incremental analysis (#6)`)
 - origin/main: `5f84c9144`
-- Merge commit: `7d7785dc4`
+- Phase 2 merge commit: `7d7785dc4`; Phase 3 merge: `0133a0a4b` (PR #6 squash)
 - Phase 1 commit: `24356edcd`
 - Evaluation evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`
 - Test bed repos: `cass_memory_system/`, `mission-control/`, hermes-agent itself

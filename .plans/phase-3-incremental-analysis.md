@@ -2,7 +2,7 @@
 
 > **Parent doc:** `.plans/ua-incorporation-strategy.md`
 > **Prerequisite:** Phase 1 (Foundation) ✓ complete — committed `24356edcd`, 80 tests pass. Phase 2 (Orchestration) ✓ complete — D1-D3 evaluated 11/11 PASS, merged to `jc-fork/main` at HEAD `24e9fe65a`.
-> **Status:** PLANNED — awaiting JC approval as a whole-phase package. No implementation started.
+> **Status:** ✅ D1-D3 COMPLETE — merged to local main at `0133a0a4b` via PR #6 squash merge. CI: Tests ✅, Lint ✅, Nix ✅. D4 deferred by default.
 > **Execution beads:** Defined in `.beads/phase3-d1-fingerprint-model.md`, `.beads/phase3-d2-incremental-scan.md`, `.beads/phase3-d3-assemble-graph.md`, `.beads/phase3-d4-skill-integration-deferred.md`.
 >
 > **These bead files are the authoritative execution units.** This plan describes intent and scope; the beads contain exact functions, schemas, test contracts, verification commands, and allowed/forbidden file lists. When executing, dispatch coder subagents using the bead files as the sole implementation spec.
@@ -310,13 +310,13 @@ Required per-file keys:
 
 ## Phase 3 Deliverables Checklist
 
-- [ ] **D1:** Fingerprint model module + tests → `.beads/phase3-d1-fingerprint-model.md` — awaiting JC approval
-- [ ] **D2:** Incremental scan flag + tests → `.beads/phase3-d2-incremental-scan.md` — awaiting JC approval
-- [ ] **D3:** Graph assembly script + tests → `.beads/phase3-d3-assemble-graph.md` — awaiting JC approval
-- [ ] **D4:** Skill integration (deferred) → `.beads/phase3-d4-skill-integration-deferred.md` — awaiting JC approval (deferred by default)
-- [ ] Verification: tests pass, fingerprint format contract met, graph output validated
-- [ ] Reviewer: spec compliance + scope preservation + quality/security + forbidden-file integrity
-- [ ] Approval: JC approves full Phase 3 execution (D1-D3; D4 deferred)
+- [x] **D1:** Fingerprint model module + tests → `.beads/phase3-d1-fingerprint-model.md` — ✅ Merged at `0133a0a4b` via PR #6
+- [x] **D2:** Incremental scan flag + tests → `.beads/phase3-d2-incremental-scan.md` — ✅ Merged at `0133a0a4b` via PR #6
+- [x] **D3:** Graph assembly script + tests → `.beads/phase3-d3-assemble-graph.md` — ✅ Merged at `0133a0a4b` via PR #6
+- [ ] **D4:** Skill integration (deferred) → `.beads/phase3-d4-skill-integration-deferred.md` — deferred by default
+- [x] Verification: tests pass, fingerprint format contract met, graph output validated
+- [x] Reviewer: spec compliance + scope preservation + quality/security + forbidden-file integrity
+- [x] Approval: JC approved full Phase 3 execution (D1-D3; D4 deferred) — 2026-05-30T15:36:59Z
 
 ---
 

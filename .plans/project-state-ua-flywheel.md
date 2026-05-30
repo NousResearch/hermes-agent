@@ -1,7 +1,7 @@
 # Project State: Understand-Anything → Flywheel Integration
 
 > **Created:** 2026-05-30
-> **Last updated:** 2026-05-30T16:37:37Z (Phase 3 D1-D3 complete locally; awaiting JC push/merge direction)
+> **Last updated:** 2026-05-30T16:37:37Z (Phase 3 D1-D3 merged to local main at `0133a0a4b` via PR #6; CI green)
 > **Strategy doc:** `.plans/ua-incorporation-strategy.md`
 > **Phase 2 plan:** `.plans/phase-2-flywheel-ua-integration.md`
 > **Phase 3 plan:** `.plans/phase-3-incremental-analysis.md`
@@ -29,7 +29,7 @@
 - Post-push CI: Tests ✅, Lint ✅, Nix ✅.
 - Historical commits: `7d7785dc4` (merge), `86ba2b1d3` (CI fixture discovery fix), `24e9fe65a` (proxy test isolation).
 - Phase 2 D1-D3 checkpoint `5a39c7fc7` pushed to `jc-fork/docs/ua-flywheel-phase1-phase2-plan` for evaluation; merge into `jc-fork/main` completed.
-- **Phase 3 D1-D3 complete locally.** No push/merge performed; awaiting JC direction. D4 remains deferred. See `.plans/phase-3-incremental-analysis.md`.
+- **Phase 3 D1-D3 merged** to local main at `0133a0a4b` via PR #6 squash merge. D4 remains deferred. See `.plans/phase-3-incremental-analysis.md`.
 
 ## Deliverable Status
 
@@ -72,7 +72,7 @@
 - D4 (Phase 2) deferred by default — requires explicit JC approval to proceed
 - Preserved unrelated WIP (`tools/skills_sync.py`, `tests/tools/test_skills_sync.py`) is stashed as `WIP skills_sync usage-stat preservation`; these files must remain untouched during future work
 - No new runtime dependencies allowed without JC approval
-- Phase 3 D1-D3 complete locally. D4 deferred by default. No push/merge performed.
+- Phase 3 D1-D3 merged to local main at `0133a0a4b` via PR #6. D4 deferred by default. CI: Tests ✅, Lint ✅, Nix ✅.
 
 ## Reference Repos
 
@@ -92,11 +92,11 @@
 - **Evaluation plan executed:** `.plans/phase-2-d1-d3-evaluation-plan.md` — 11 test cases, all PASS. Evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`.
 - D1-D3 execution handoffs: `.hermes/handoffs/2026-05-30-0630-phase2-d1-complete.md`, `.hermes/handoffs/2026-05-30-0633-phase2-d2-complete.md`, `.hermes/handoffs/2026-05-30-0636-phase2-d3-complete.md`
 - Subagents had no commit/push authority; Hermes committed/pushed D1-D3 after JC approval. Future D4/merge/deploy gates require separate approval
-- Branch: `docs/ua-flywheel-phase3-plan`
-- `jc-fork/main` HEAD: `24e9fe65a` (`test(run-agent): isolate proxy tests from lazy dependency installs`)
+**Branch:** `main` (local main, 13 commits ahead of origin/main)
+- `jc-fork/main` HEAD: `0133a0a4b` (`feat(code-scan): add Phase 3 incremental analysis (#6)`)
 - origin/main: `5f84c9144`
-- Merge commit: `7d7785dc4`
+- Phase 2 merge commit: `7d7785dc4`; Phase 3 squash merge: `0133a0a4b` (PR #6)
 - Phase 1 commit: `24356edcd` ("feat: add Phase 1 code scan foundation")
 - Phase 2 D1-D3 historical checkpoint: `5a39c7fc7` ("[verified] Execute Phase 2 UA Flywheel D1-D3")
 - Historical CI fix: `86ba2b1d3`
-- **Phase 3 complete locally.** D1-D3 complete with verification and reviewer PASS; await JC push/merge direction.
+- **Phase 3 D1-D3 merged to local main at `0133a0a4b`** (PR #6: `feat(code-scan): add Phase 3 incremental analysis`). CI: Tests ✅, Lint ✅, Nix ✅. D4 remains deferred by default.

@@ -1,7 +1,7 @@
 ---
 id: phase1-code-scan-completion-fix
 title: Phase 1 Foundation — deterministic code-scan scripts + .hermesignore
-status: ready-for-review
+status: complete — committed at 24356edcd
 executor: delegate-coder
 parallel_safe: false
 base_branch: docs/ua-flywheel-phase1-phase2-plan

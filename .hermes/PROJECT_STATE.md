@@ -1,6 +1,6 @@
 # Project State: UA Flywheel Integration
 
-> **Last updated:** 2026-05-30T16:37:37Z (Phase 3 D1-D3 complete locally; awaiting JC push/merge direction)
+> **Last updated:** 2026-05-30T16:37:37Z (Phase 3 D1-D3 merged to local main at `0133a0a4b` via PR #6; CI green)
 > **Full state:** `.plans/project-state-ua-flywheel.md`
 > **Strategy:** `.plans/ua-incorporation-strategy.md`
 > **Phase 2 plan:** `.plans/phase-2-flywheel-ua-integration.md`
@@ -28,19 +28,18 @@ Committed: `24356edcd` | Tests: 80 passed
 - Phase 2 D1-D3 checkpoint `5a39c7fc7` was pushed to `jc-fork/docs/ua-flywheel-phase1-phase2-plan` for evaluation; merge into `jc-fork/main` at HEAD `24e9fe65a` completed.
 - **Phase 2 CLOSED.** No further Phase 2 implementation work.
 
-## Phase 3 — 🚧 APPROVED / ACTIVE
+## Phase 3 — ✅ D1-D3 MERGED / D4 DEFERRED
 - JC approval received 2026-05-30T15:36:59Z:
   > I approve Phase 3 UA Flywheel Incremental Analysis for autonomous execution on branch `docs/ua-flywheel-phase3-plan`.
   > Approved scope: D1 fingerprint model, D2 incremental scan, D3 graph assembly. D4 skill integration remains deferred.
   > No push, merge, deploy, dashboard/UI, auto-injection, SQLite store, tree-sitter/WASM, or new runtime dependencies without separate approval.
   > Hermes must execute bead-by-bead with coder subagents, verify locally, run reviewer review before each commit gate, and present evidence before any push/merge.
 - Approval package: `.plans/phase-3-incremental-analysis.md`
-- D1 fingerprint model complete locally: 61 tests PASS, Hermes verification PASS, reviewer PASS. Evidence: `/tmp/ua-flywheel-phase3-d1-verification-latest.log`.
-- D2 incremental scan complete locally: 40 scan tests PASS, D1 regression 61 tests PASS, Hermes verification PASS, reviewer PASS. Evidence: `/tmp/ua-flywheel-phase3-d2-verification-latest.log`.
-- D3 graph assembly complete locally: 64 D3 tests PASS, 132 regression tests PASS, fixture CLI E2E PASS, real pipeline E2E PASS, absolute-path canonicalization PASS, reviewer PASS. Evidence: `/tmp/ua-flywheel-phase3-d3-verification-latest.log`.
-- Phase 3 approved scope D1-D3 is complete locally. No push/merge performed; awaiting JC direction for push/merge.
+- D1 fingerprint model: 61 tests PASS, Hermes verification PASS, reviewer PASS. Evidence: `/tmp/ua-flywheel-phase3-d1-verification-latest.log`. Merged at `0133a0a4b` via PR #6.
+- D2 incremental scan: 40 scan tests PASS, D1 regression 61 tests PASS, Hermes verification PASS, reviewer PASS. Evidence: `/tmp/ua-flywheel-phase3-d2-verification-latest.log`. Merged at `0133a0a4b` via PR #6.
+- D3 graph assembly: 64 D3 tests PASS, 132 regression tests PASS, fixture CLI E2E PASS, real pipeline E2E PASS, absolute-path canonicalization PASS, reviewer PASS. Evidence: `/tmp/ua-flywheel-phase3-d3-verification-latest.log`. Merged at `0133a0a4b` via PR #6.
+- CI on local main: Tests ✅, Lint ✅, Nix ✅.
 - D4 deferred by default; no execution authorized.
-- Current branch: `docs/ua-flywheel-phase3-plan`. Worktree must remain clean outside active bead allowed files.
 
 ## Constraints
 - JIT/explicit-invocation only

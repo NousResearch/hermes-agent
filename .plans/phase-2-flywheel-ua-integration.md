@@ -2,7 +2,7 @@
 
 > **Parent doc:** `.plans/ua-incorporation-strategy.md`
 > **Prerequisite:** Phase 1 (Foundation) ✓ complete — committed `24356edcd`, 80 tests pass, scan scripts verified on test-bed repos.
-> **Status:** Phase 2 CLOSED — D1-D3 complete, verified, reviewed, evaluated 11/11 PASS, merged to `jc-fork/main` at HEAD `24e9fe65a`. D4 formally deferred. Phase 3 not started; next action is Phase 3 approval package.
+> **Status:** Phase 2 CLOSED — D1-D3 complete, verified, reviewed, evaluated 11/11 PASS, merged to `jc-fork/main` at HEAD `24e9fe65a`. D4 formally deferred. Phase 3 D1-D3 complete — merged to local main at `0133a0a4b` via PR #6. Phase 3 D4 remains deferred by default.
 > **Execution beads:** Defined in `.beads/phase2-d1-extract-imports.md`, `.beads/phase2-d2-code-scan-skill.md`, `.beads/phase2-d3-validation-gate-skill.md`, `.beads/phase2-d4-review-integration-deferred.md`.
 >
 > **These bead files are the authoritative execution units.** This plan describes intent and scope; the beads contain exact functions, schemas, test contracts, verification commands, and allowed/forbidden file lists. When executing, dispatch coder subagents using the bead files as the sole implementation spec.
@@ -235,7 +235,7 @@ Required top-level keys: `schema_version` (string, always `"1.0.0"`), `source_sc
 **Historical commits:** `7d7785dc4` (merge), `86ba2b1d3` (CI fixture discovery fix), `24e9fe65a` (proxy test isolation).
 **origin/main:** `5f84c9144`.
 
-**Next steps:** Phase 3 not started. Next action: Phase 3 approval package. Future Phase 3 execution requires JC approval.
+**Next steps:** Phase 3 D1-D3 complete — merged to local main at `0133a0a4b` via PR #6. Phase 3 D4 remains deferred by default. Phase 4 not started.
 
 ---
 
@@ -300,7 +300,7 @@ The lightweight verification table below is superseded by the full evaluation pl
 - [x] Approval: JC approved D1-D3 autonomous execution; D4 deferred
 - [x] Evaluation: D1-D3 effectiveness evaluation — **11/11 PASS** (evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`)
 - [x] Merge: merged to `jc-fork/main` at HEAD `24e9fe65a`. Post-push CI: Tests ✅, Lint ✅, Nix ✅.
-- [ ] **Phase 3:** Not started. Next action: Phase 3 approval package. Future Phase 3 execution requires JC approval.
+- [x] **Phase 3:** D1-D3 complete — merged to local main at `0133a0a4b` via PR #6. D4 remains deferred by default. Phase 4 not started.
 
 ### JC Approval Wording (copy-paste template)
 

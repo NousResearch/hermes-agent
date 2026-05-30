@@ -2109,17 +2109,36 @@ def delegate_task(
                 sorted(all_profiles.keys()) if all_profiles else [],
             )
         else:
-            resolved_profile_name = profile
-            # Profile toolsets override caller-supplied toolsets so the model
-            # cannot expand its own access beyond what the profile declares.
             profile_toolsets = profile_cfg.get("toolsets")
             if profile_toolsets and isinstance(profile_toolsets, list):
+                # Profile toolsets are authoritative: store them separately so
+                # the batch path (below) can enforce them per-task without
+                # allowing model-supplied per-task toolsets to override.
+                resolved_profile_name = profile
                 toolsets = profile_toolsets
+            else:
+                # Profile declares no toolsets — granting the bypass here
+                # would activate the mcp-* exception in _build_child_agent
+                # with whatever the model supplied as toolsets.  That is a
+                # privilege-escalation vector, so we refuse to set the
+                # resolved name and fall back to the normal intersection path.
+                logger.warning(
+                    "delegate_task: profile %r has no non-empty toolsets list; "
+                    "bypass NOT activated (falling back to intersection path).",
+                    profile,
+                )
             logger.debug(
-                "delegate_task: resolved profile %r → toolsets=%s",
+                "delegate_task: resolved profile %r → resolved_profile_name=%r toolsets=%s",
                 profile,
+                resolved_profile_name,
                 toolsets,
             )
+
+    # Capture the profile-resolved toolsets so the batch loop below can enforce
+    # them as authoritative, ignoring any per-task toolsets the model supplies.
+    # When no profile was resolved this is None and the batch loop falls through
+    # to the per-task / top-level toolsets (existing behaviour unchanged).
+    profile_resolved_toolsets: Optional[list[str]] = toolsets if resolved_profile_name else None
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2186,7 +2205,13 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
+                # Security: when a named profile was resolved its toolsets are
+                # authoritative for every task in the batch.  Using per-task
+                # model-supplied toolsets here would allow the model to name a
+                # valid profile (activating the mcp-* bypass in
+                # _build_child_agent) while injecting arbitrary toolsets that
+                # the profile never declared — a privilege-escalation vector.
+                toolsets=profile_resolved_toolsets if resolved_profile_name else (t.get("toolsets") or toolsets),
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,

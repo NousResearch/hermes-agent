@@ -2812,10 +2812,20 @@ class TestAgentProfiles(unittest.TestCase):
     @patch("tools.delegate_tool._load_profiles")
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_explicit_toolsets_override_profile(
+    def test_profile_toolsets_are_authoritative_over_explicit(
         self, mock_creds, mock_cfg, mock_profiles
     ):
-        """Explicit toolsets= wins over the profile's toolsets baseline."""
+        """A named profile's toolsets are AUTHORITATIVE — they win over explicit toolsets=.
+
+        Why: When a profile is named, its declared toolsets activate the mcp-*
+        parent-intersection bypass in _build_child_agent. Letting a caller- or
+        model-supplied ``toolsets`` override the profile's list would let an
+        attacker name a valid profile and inject undeclared (e.g. mcp-*)
+        toolsets through the bypass — a privilege-escalation vector. The profile
+        is the security boundary, so its toolsets are authoritative.
+        Test: profile "p" declares ["web"]; caller passes toolsets=["terminal"];
+        the child must receive ["web"] (profile wins), not ["terminal"].
+        """
         mock_cfg.return_value = {"max_iterations": 45}
         mock_creds.return_value = {
             "model": None,
@@ -2845,7 +2855,7 @@ class TestAgentProfiles(unittest.TestCase):
                 )
 
             _, kwargs = mock_build.call_args
-            self.assertEqual(kwargs["toolsets"], ["terminal"])
+            self.assertEqual(kwargs["toolsets"], ["web"])
 
     @patch("tools.delegate_tool._load_profiles")
     @patch("tools.delegate_tool._load_config")

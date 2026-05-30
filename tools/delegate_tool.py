@@ -2096,15 +2096,42 @@ def delegate_task(
     if not creds.get("model") and _profile_overrides.get("model"):
         creds["model"] = _profile_overrides["model"]
 
-    # NOTE: The named-profile MCP-bypass name is threaded to _build_child_agent
-    # solely via ``_task_profile_names`` below (the strict per-task resolution).
-    # A second, lenient resolver block used to live here: it re-read the profile
-    # via _load_agent_profiles() and, on an unknown name, *warned and fell back*
-    # to an unrestricted toolset — directly contradicting the strict resolver
-    # above (which returns an "Unknown agent profile" error and refuses the
-    # delegation). Unknown profile is now a hard error on the SINGLE strict path,
-    # so that lenient block is removed; an unknown profile can never silently run
-    # with an unintended toolset. See #32668/#32727.
+    # Named-profile resolution for the MCP-bypass / authoritative-toolset path.
+    #
+    # The profile name and per-task toolsets are threaded to _build_child_agent
+    # via ``_task_profile_names`` below (strict per-task resolution). An unknown
+    # profile already hard-failed above (``_resolve_profile`` raised → tool_error),
+    # so by here ``_profile_overrides`` reflects a VALID profile (or no profile).
+    # We do NOT re-read profiles via a second lenient loader: that older path
+    # warned-and-fell-back on an unknown name, contradicting the strict
+    # fail-closed resolver. Single strict path only. See #32668/#32727.
+    #
+    # ``resolved_profile_name`` activates two downstream behaviours when set:
+    #   1. the mcp-* parent-intersection bypass in _build_child_agent, and
+    #   2. authoritative profile toolsets for EVERY task in a batch (below),
+    #      so a model that names a valid profile cannot inject per-task toolsets
+    #      the profile never declared (batch-injection security fix).
+    # It is set ONLY when the resolved profile declares a non-empty toolsets
+    # list — an empty/toolset-less profile must not activate the bypass with
+    # caller-supplied toolsets (empty-profile bypass security fix).
+    resolved_profile_name: Optional[str] = None
+    if profile and _profile_overrides:
+        _resolved_profile_toolsets = _profile_overrides.get("toolsets")
+        if _resolved_profile_toolsets and isinstance(_resolved_profile_toolsets, list):
+            resolved_profile_name = profile
+            toolsets = _resolved_profile_toolsets
+        else:
+            logger.warning(
+                "delegate_task: profile %r has no non-empty toolsets list; "
+                "bypass NOT activated (falling back to intersection path).",
+                profile,
+            )
+
+    # Capture the profile-resolved toolsets so the batch loop below can enforce
+    # them as authoritative, ignoring any per-task toolsets the model supplies.
+    # When no profile was resolved this is None and the batch loop falls through
+    # to the per-task / top-level toolsets (existing behaviour unchanged).
+    profile_resolved_toolsets: Optional[list[str]] = toolsets if resolved_profile_name else None
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2151,23 +2178,39 @@ def delegate_task(
     # Effective profile name per task (per-task profile beats the top-level
     # one). Passed to _build_child_agent so MCP toolsets declared by a named
     # profile bypass the parent intersection. See NousResearch/hermes-agent#32668.
+    #
+    # Security: the name is carried ONLY when the resolved profile declares a
+    # non-empty toolsets list — the same guard used for ``resolved_profile_name``
+    # above. A toolset-less profile must not activate the mcp-* bypass in
+    # _build_child_agent with caller/model-supplied toolsets (empty-profile
+    # bypass fix). For tasks without a per-task profile we reuse the already
+    # toolset-gated ``resolved_profile_name`` so the top-level empty-profile
+    # case is handled consistently.
     _task_profile_names: List[Optional[str]] = []
     _profiles_cache: Optional[dict] = None
     for t in task_list:
         task_profile = t.get("profile")
         if not task_profile:
             _task_profile_overrides.append(_profile_overrides)
-            _task_profile_names.append(profile)
+            _task_profile_names.append(resolved_profile_name)
             continue
         if _profiles_cache is None:
             _profiles_cache = _load_profiles()
         try:
-            _task_profile_overrides.append(
-                _resolve_profile(task_profile, _profiles_cache)
-            )
+            _task_override = _resolve_profile(task_profile, _profiles_cache)
         except ValueError as exc:
             return tool_error(str(exc))
-        _task_profile_names.append(task_profile)
+        _task_profile_overrides.append(_task_override)
+        _task_toolsets = _task_override.get("toolsets")
+        if _task_toolsets and isinstance(_task_toolsets, list):
+            _task_profile_names.append(task_profile)
+        else:
+            logger.warning(
+                "delegate_task: per-task profile %r has no non-empty toolsets "
+                "list; bypass NOT activated for this task.",
+                task_profile,
+            )
+            _task_profile_names.append(None)
 
     overall_start = time.monotonic()
     results = []
@@ -2199,8 +2242,17 @@ def delegate_task(
             task_overrides = _task_profile_overrides[i]
             task_profile_name = _task_profile_names[i]
 
-            # Explicit per-task value > task profile > top-level toolsets baseline.
-            task_toolsets = t.get("toolsets") or task_overrides.get("toolsets") or toolsets
+            # Toolset resolution (security-ordered):
+            #  - If a per-task profile is authoritative (its name survived the
+            #    non-empty-toolsets gate in _task_profile_names), its declared
+            #    toolsets win — a model-supplied per-task `toolsets` must not
+            #    override a named profile and inject undeclared (mcp-*) toolsets.
+            #  - Otherwise: explicit per-task value > task profile baseline >
+            #    top-level toolsets baseline (backward-compatible behaviour).
+            if task_profile_name and task_overrides.get("toolsets"):
+                task_toolsets = task_overrides["toolsets"]
+            else:
+                task_toolsets = t.get("toolsets") or task_overrides.get("toolsets") or toolsets
             # Config delegation.model wins; otherwise fall back to the task profile model.
             task_model = creds["model"] or task_overrides.get("model")
             # effective_max_iter already folds in any top-level profile baseline
@@ -2215,7 +2267,16 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=task_toolsets,
+                # Security: when a TOP-LEVEL named profile was resolved its
+                # toolsets are authoritative for every task in the batch. Using
+                # per-task model-supplied toolsets here would let the model name
+                # a valid profile (activating the mcp-* bypass in
+                # _build_child_agent) while injecting arbitrary toolsets the
+                # profile never declared — a privilege-escalation vector. When
+                # no top-level profile is authoritative, fall back to the local
+                # per-task resolution (per-task profile > per-task toolsets >
+                # top-level baseline) computed in ``task_toolsets`` above.
+                toolsets=profile_resolved_toolsets if resolved_profile_name else task_toolsets,
                 model=task_model,
                 max_iterations=task_max_iter,
                 task_count=n_tasks,

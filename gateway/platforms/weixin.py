@@ -44,12 +44,10 @@ except ImportError:  # pragma: no cover - dependency gate
     AIOHTTP_AVAILABLE = False
 
 try:
-    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
     CRYPTO_AVAILABLE = True
 except ImportError:  # pragma: no cover - dependency gate
-    default_backend = None  # type: ignore[assignment]
     Cipher = None  # type: ignore[assignment]
     algorithms = None  # type: ignore[assignment]
     modes = None  # type: ignore[assignment]

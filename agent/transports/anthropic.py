@@ -94,13 +94,27 @@ class AnthropicTransport(ProviderTransport):
         reasoning_parts = []
         reasoning_details = []
         tool_calls = []
+        # Verbatim, order-preserving copy of every content block in the turn.
+        # Anthropic signs each thinking block against the turn content that
+        # PRECEDES it at its position; when a turn interleaves thinking and
+        # tool_use (adaptive/interleaved thinking, Claude 4.6+), the parallel
+        # reasoning_details + tool_calls lists below lose that cross-type
+        # ordering. Replaying the latest assistant message in the wrong order
+        # invalidates the signatures -> HTTP 400 "thinking ... blocks in the
+        # latest assistant message cannot be modified". Preserve the exact
+        # block sequence here so the adapter can replay it unchanged. See
+        # tests/agent/test_anthropic_thinking_block_order.py.
+        ordered_blocks = []
 
         for block in response.content:
+            block_dict = _to_plain_data(block)
+            if isinstance(block_dict, dict):
+                ordered_blocks.append(block_dict)
             if block.type == "text":
                 text_parts.append(block.text)
-            elif block.type == "thinking":
-                reasoning_parts.append(block.thinking)
-                block_dict = _to_plain_data(block)
+            elif block.type in ("thinking", "redacted_thinking"):
+                if block.type == "thinking":
+                    reasoning_parts.append(block.thinking)
                 if isinstance(block_dict, dict):
                     reasoning_details.append(block_dict)
             elif block.type == "tool_use":
@@ -130,6 +144,23 @@ class AnthropicTransport(ProviderTransport):
         provider_data = {}
         if reasoning_details:
             provider_data["reasoning_details"] = reasoning_details
+        # Only worth carrying the ordered-blocks channel when the turn
+        # actually interleaves signed thinking with tool_use — that's the
+        # only shape the parallel lists reconstruct incorrectly. A turn that
+        # is purely text, or thinking-then-tools with a single leading
+        # thinking block, replays correctly without it.
+        _has_signed_thinking = any(
+            isinstance(b, dict)
+            and b.get("type") in ("thinking", "redacted_thinking")
+            and (b.get("signature") or b.get("data"))
+            for b in ordered_blocks
+        )
+        _has_tool_use = any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in ordered_blocks
+        )
+        if _has_signed_thinking and _has_tool_use:
+            provider_data["anthropic_content_blocks"] = ordered_blocks
 
         return NormalizedResponse(
             content="\n".join(text_parts) if text_parts else None,

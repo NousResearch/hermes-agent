@@ -11711,6 +11711,12 @@ def main():
     gateway_parser.set_defaults(func=cmd_gateway)
 
     # =========================================================================
+    # control command
+    # =========================================================================
+    from hermes_cli.control import register_subparser as _control_register
+    _control_register(subparsers)
+
+    # =========================================================================
     # lsp command
     # =========================================================================
     try:

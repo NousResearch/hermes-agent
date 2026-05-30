@@ -6,7 +6,10 @@ and implement the required methods.
 """
 
 import asyncio
+import contextlib
+import hashlib
 import inspect
+import json
 import ipaddress
 import logging
 import os
@@ -1284,16 +1287,16 @@ class ProcessingOutcome(Enum):
 class MessageEvent:
     """
     Incoming message from a platform.
-    
+
     Normalized representation that all adapters produce.
     """
     # Message content
     text: str
     message_type: MessageType = MessageType.TEXT
-    
+
     # Source information
     source: SessionSource = None
-    
+
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
@@ -1306,16 +1309,16 @@ class MessageEvent:
     # ("Error while calling `get_updates` one more time to mark all fetched
     # updates" in gateway.log).
     platform_update_id: Optional[int] = None
-    
+
     # Media attachments
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
-    
+
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
-    
+
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
@@ -1329,18 +1332,18 @@ class MessageEvent:
     # from ``text`` so the sender-prefix logic in run.py can operate on the
     # trigger message alone, then prepend this context afterward.
     channel_context: Optional[str] = None
-    
+
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
-    
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.text.startswith("/")
-    
+
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
@@ -1354,7 +1357,7 @@ class MessageEvent:
         if raw and "/" in raw:
             return None
         return raw
-    
+
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
         if not self.is_command():
@@ -1546,6 +1549,15 @@ _RETRYABLE_ERROR_PATTERNS = (
     "eoferror",
 )
 
+_BOT_ROUTING_OPERATIONAL_RE = re.compile(
+    r"(?im)^(?:\s*(?:BOT_MSG\s+v1|ACTION_REQUIRED|DECISION_REQUEST|APPROVAL_REQUEST|HANDOFF|REVIEW_REQUEST)\b"
+    r"|.*\b(?:action_required|decision_request|approval_request|approval_id|correlation_id|reply_expected)\s*:)",
+)
+_BOT_ROUTING_TARGET_RE = re.compile(
+    r"(?i)\b(?:galt/default|default\s+profile|statute\s+pm|statutes?\s+pm|nj-statutes-pm|pm\s+worker|worker\s+bot)\b"
+)
+_BOT_ROUTING_TOOL_RE = re.compile(r"(?i)\bsend_bot_(?:message|approval_decision)\s*\(")
+
 
 # Type for message handlers.  Handlers may return a plain string (normal
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
@@ -1641,14 +1653,14 @@ def resolve_channel_skills(
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
-    
+
     Subclasses implement platform-specific logic for:
     - Connecting and authenticating
     - Receiving messages
     - Sending messages/responses
     - Handling media
     """
-    
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -1662,7 +1674,7 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
-        
+
         # Track active message handlers per session for interrupt support.
         # _active_sessions stores the per-session interrupt Event; _session_tasks
         # maps session → the specific Task currently processing it so that
@@ -1920,16 +1932,16 @@ class BasePlatformAdapter(ABC):
     def name(self) -> str:
         """Human-readable name for this adapter."""
         return self.platform.value.title()
-    
+
     @property
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
-    
+
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
         Set the handler for incoming messages.
-        
+
         The handler receives a MessageEvent and should return
         an optional response string.
         """
@@ -1972,31 +1984,31 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
-    
+
     def set_session_store(self, session_store: Any) -> None:
         """
         Set the session store for checking active sessions.
-        
+
         Used by adapters that need to check if a thread/conversation
         has an active session before processing messages (e.g., Slack
         thread replies without explicit mentions).
         """
         self._session_store = session_store
-    
+
     @abstractmethod
     async def connect(self) -> bool:
         """
         Connect to the platform and start receiving messages.
-        
+
         Returns True if connection was successful.
         """
         pass
-    
+
     @abstractmethod
     async def disconnect(self) -> None:
         """Disconnect from the platform."""
         pass
-    
+
     @abstractmethod
     async def send(
         self,
@@ -2007,13 +2019,13 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """
         Send a message to a chat.
-        
+
         Args:
             chat_id: The chat/channel ID to send to
             content: Message content (may be markdown)
             reply_to: Optional message ID to reply to
             metadata: Additional platform-specific options
-        
+
         Returns:
             SendResult with success status and message ID
         """
@@ -2277,7 +2289,7 @@ class BasePlatformAdapter(ABC):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.
-        
+
         Override in subclasses if the platform supports it.
         metadata: optional dict with platform-specific context (e.g. thread_id for Slack).
         """
@@ -2358,7 +2370,7 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """
         Send an image natively via the platform API.
-        
+
         Override in subclasses to send images as proper attachments
         instead of plain-text URLs. Default falls back to sending the
         URL as a text message.
@@ -2366,7 +2378,7 @@ class BasePlatformAdapter(ABC):
         # Fallback: send URL as text (subclasses override for native images)
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-    
+
     async def send_animation(
         self,
         chat_id: str,
@@ -2377,13 +2389,13 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """
         Send an animated GIF natively via the platform API.
-        
+
         Override in subclasses to send GIFs as proper animations
         (e.g., Telegram send_animation) so they auto-play inline.
         Default falls back to send_image.
         """
         return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
-    
+
     @staticmethod
     def _is_animation_url(url: str) -> bool:
         """Check if a URL points to an animated GIF (vs a static image)."""
@@ -2394,21 +2406,21 @@ class BasePlatformAdapter(ABC):
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """
         Extract image URLs from markdown and HTML image tags in a response.
-        
+
         Finds patterns like:
         - ![alt text](https://example.com/image.png)
         - <img src="https://example.com/image.png">
         - <img src="https://example.com/image.png"></img>
-        
+
         Args:
             content: The response text to scan.
-        
+
         Returns:
             Tuple of (list of (url, alt_text) pairs, cleaned content with image tags removed).
         """
         images = []
         cleaned = content
-        
+
         # Match markdown images: ![alt](url)
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
         for match in re.finditer(md_pattern, content):
@@ -2418,13 +2430,13 @@ class BasePlatformAdapter(ABC):
             if any(url.lower().endswith(ext) or ext in url.lower() for ext in
                    ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
                 images.append((url, alt_text))
-        
+
         # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
         html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
         for match in re.finditer(html_pattern, content):
             url = match.group(1)
             images.append((url, ""))
-        
+
         # Remove only the matched image tags from content (not all markdown images)
         if images:
             extracted_urls = {url for url, _ in images}
@@ -2435,9 +2447,9 @@ class BasePlatformAdapter(ABC):
             cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-        
+
         return images, cleaned
-    
+
     async def send_voice(
         self,
         chat_id: str,
@@ -2449,7 +2461,7 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """
         Send an audio file as a native voice message via the platform API.
-        
+
         Override in subclasses to send audio as voice bubbles (Telegram)
         or file attachments (Discord). Default falls back to sending the
         file path as text.
@@ -2462,9 +2474,14 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare text for TTS. Override to filter tool output, code, etc.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Default keeps the spoken payload conversational and leaves dense
+        technical detail for the text companion message.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        try:
+            from tools.tts_tool import prepare_voice_mode_tts_text_for_current_provider
+            return prepare_voice_mode_tts_text_for_current_provider(text)
+        except Exception:
+            return re.sub(r'[*_`#\[\]()]', '', text).strip()
 
     async def play_tts(
         self,
@@ -2609,7 +2626,7 @@ class BasePlatformAdapter(ABC):
         # ``content`` for it (so they can still react to it); here we just
         # keep it out of the user-visible cleaned text.
         cleaned = cleaned.replace("[[as_document]]", "")
-        
+
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs. The extension
         # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
@@ -2632,7 +2649,7 @@ class BasePlatformAdapter(ABC):
         if media:
             cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-        
+
         return media, cleaned
 
     @staticmethod
@@ -2717,10 +2734,10 @@ class BasePlatformAdapter(ABC):
     ) -> None:
         """
         Continuously send typing indicator until cancelled.
-        
+
         Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
         to recover quickly after progress messages interrupt it.
-        
+
         Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
@@ -2938,6 +2955,14 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
+    def _is_terminal_send_error(self, error: Optional[str]) -> bool:
+        """Return True for platform-specific send failures that must not retry or fallback.
+
+        Platform adapters override this for protocol guards where retrying or
+        wrapping the original payload would repeat the same invalid side effect.
+        """
+        return False
+
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
 
@@ -2959,6 +2984,137 @@ class BasePlatformAdapter(ABC):
                 ttl = 0
             return response.text, int(ttl or 0)
         return response, 0
+
+    def _should_guard_discord_bot_final_response(self, event: MessageEvent, text_content: str) -> tuple[bool, list[str]]:
+        """Return whether a Discord final response is an unsafe bot-routing payload.
+
+        This is a last-line guard for model free-form final responses. Operative
+        bot-to-bot traffic must use send_bot_message/send_bot_approval_decision,
+        not ordinary channel prose. The guard is intentionally narrow: it only
+        fires in Discord contexts that are bot-originated or explicitly name bot
+        routing targets, and where the response looks operational rather than
+        explanatory.
+        """
+        if _platform_name(getattr(self, "platform", None)) != "discord":
+            return False, []
+        text = text_content or ""
+        if not text.strip():
+            return False, []
+        source = getattr(event, "source", None)
+        if source is None:
+            return False, []
+        if _BOT_ROUTING_TOOL_RE.search(text):
+            return False, []
+        reasons: list[str] = []
+        if bool(getattr(source, "is_bot", False)):
+            reasons.append("source_is_bot")
+        allowed = {p.strip() for p in (os.getenv("DISCORD_ALLOWED_BOT_USERS", "") or "").replace(",", " ").split() if p.strip()}
+        sender_id = str(getattr(source, "user_id", "") or "")
+        if sender_id and sender_id in allowed:
+            reasons.append("source_user_is_allowlisted_bot")
+        target_text = "\n".join(
+            str(v or "")
+            for v in (
+                getattr(source, "chat_name", None),
+                getattr(source, "chat_topic", None),
+                getattr(source, "chat_id", None),
+                getattr(source, "thread_id", None),
+                text,
+            )
+        )
+        if _BOT_ROUTING_TARGET_RE.search(target_text):
+            reasons.append("bot_target_indicator")
+        if not reasons:
+            return False, []
+        if _BOT_ROUTING_OPERATIONAL_RE.search(text):
+            reasons.append("operational_payload_indicator")
+            return True, reasons
+        return False, []
+
+    def _write_discord_bot_routing_guard_audit(
+        self,
+        *,
+        event: MessageEvent,
+        text_content: str,
+        reasons: list[str],
+    ) -> Path:
+        source = getattr(event, "source", None)
+        now = datetime.utcnow()
+        digest = hashlib.sha256((text_content or "").encode("utf-8")).hexdigest()
+        audit_dir = get_hermes_home() / "logs" / "routing_guard"
+        audit_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with contextlib.suppress(OSError):
+            os.chmod(audit_dir, 0o700)
+        path = audit_dir / f"{now.strftime('%Y%m%dT%H%M%S%fZ')}-{digest[:12]}.json"
+        payload = {
+            "event": "bot_routing_final_response_guard",
+            "created_at": now.isoformat(timespec="microseconds") + "Z",
+            "platform": _platform_name(getattr(self, "platform", None)),
+            "adapter": self.name,
+            "reasons": reasons,
+            "body_sha256": digest,
+            "body_len": len(text_content or ""),
+            "body_redacted": True,
+            "source": {
+                "chat_id": str(getattr(source, "chat_id", "") or ""),
+                "thread_id": str(getattr(source, "thread_id", "") or ""),
+                "chat_name": str(getattr(source, "chat_name", "") or ""),
+                "chat_type": str(getattr(source, "chat_type", "") or ""),
+                "user_id": str(getattr(source, "user_id", "") or ""),
+                "user_name": str(getattr(source, "user_name", "") or ""),
+                "is_bot": bool(getattr(source, "is_bot", False)),
+                "message_id": str(getattr(event, "message_id", "") or ""),
+            },
+        }
+        data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except Exception:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            raise
+        return path
+
+    async def _send_text_response_with_routing_guard(
+        self,
+        *,
+        event: MessageEvent,
+        text_content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+    ) -> "SendResult":
+        blocked, reasons = self._should_guard_discord_bot_final_response(event, text_content)
+        if not blocked:
+            return await self._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=text_content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        audit_path = self._write_discord_bot_routing_guard_audit(
+            event=event,
+            text_content=text_content,
+            reasons=reasons,
+        )
+        logger.error(
+            "[%s] BOT_ROUTING_GUARD blocked ordinary Discord bot-to-bot final response; audit=%s reasons=%s",
+            self.name,
+            audit_path,
+            ",".join(reasons),
+        )
+        notice = (
+            "[ROUTING_GUARD] A bot-to-bot operational message was blocked because it was produced as an "
+            "ordinary final response instead of through send_bot_message/send_bot_approval_decision. "
+            f"Audit: {audit_path} body_sha256={hashlib.sha256((text_content or '').encode('utf-8')).hexdigest()}."
+        )
+        return await self._send_with_retry(
+            chat_id=event.source.chat_id,
+            content=notice,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def _send_with_retry(
         self,
@@ -2994,6 +3150,10 @@ class BasePlatformAdapter(ABC):
         # Timeout errors are not safe to retry (message may have been
         # delivered) and not formatting errors — return the failure as-is.
         if not is_network and self._is_timeout_error(error_str):
+            return result
+
+        if self._is_terminal_send_error(error_str):
+            logger.error("[%s] Terminal send rejection: %s", self.name, error_str)
             return result
 
         if is_network:
@@ -3466,7 +3626,7 @@ class BasePlatformAdapter(ABC):
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
-        
+
         This method returns quickly by spawning background tasks.
         This allows new messages to be processed even while an agent is running,
         enabling interruption support.
@@ -3645,7 +3805,7 @@ class BasePlatformAdapter(ABC):
                     merge_text=event.message_type == MessageType.TEXT,
                 )
             return  # Don't process now - will be handled after current task finishes
-        
+
         # Mark session as active BEFORE spawning background task to close
         # the race window where a second message arriving before the task
         # starts would also pass the _active_sessions check and spawn a
@@ -3654,7 +3814,7 @@ class BasePlatformAdapter(ABC):
         # _start_session_processing installs the guard AND the owner-task
         # mapping atomically so stale-lock detection works.
         self._start_session_processing(event, session_key)
-    
+
     @staticmethod
     def _get_human_delay() -> float:
         """
@@ -3701,7 +3861,7 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        
+
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         _keep_typing_kwargs = {"metadata": _thread_metadata}
@@ -3727,7 +3887,7 @@ class BasePlatformAdapter(ABC):
                 # typing task is already cancelled; if the parent task is also
                 # cancelling, let this message-processing task unwind now.
                 pass
-        
+
         try:
             await self._run_processing_hook("on_processing_start", event)
 
@@ -3796,7 +3956,7 @@ class BasePlatformAdapter(ABC):
                 local_files = self.filter_local_delivery_paths(local_files)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
-                
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -3863,9 +4023,9 @@ class BasePlatformAdapter(ABC):
                         _thread_metadata["notify"] = True
                     else:
                         _thread_metadata = {"notify": True}
-                    result = await self._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
+                    result = await self._send_text_response_with_routing_guard(
+                        event=event,
+                        text_content=text_content,
                         reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
@@ -4045,7 +4205,7 @@ class BasePlatformAdapter(ABC):
                     # Tests stub create_task() with non-hashable sentinels; tolerate.
                     pass
                 return  # Drain task owns the session now.
-                
+
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
             outcome = ProcessingOutcome.CANCELLED
@@ -4183,7 +4343,7 @@ class BasePlatformAdapter(ABC):
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     del self._session_tasks[session_key]
                     self._release_session_guard(session_key, guard=interrupt_event)
-    
+
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
 
@@ -4242,11 +4402,11 @@ class BasePlatformAdapter(ABC):
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""
         return session_key in self._active_sessions and self._active_sessions[session_key].is_set()
-    
+
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
         return self._pending_messages.pop(session_key, None)
-    
+
     def build_source(
         self,
         chat_id: str,
@@ -4283,29 +4443,29 @@ class BasePlatformAdapter(ABC):
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
         )
-    
+
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """
         Get information about a chat/channel.
-        
+
         Returns dict with at least:
         - name: Chat name
         - type: "dm", "group", "channel"
         """
         pass
-    
+
     def format_message(self, content: str) -> str:
         """
         Format a message for this platform.
-        
+
         Override in subclasses to handle platform-specific formatting
         (e.g., Telegram MarkdownV2, Discord markdown).
-        
+
         Default implementation returns content as-is.
         """
         return content
-    
+
     @staticmethod
     def truncate_message(
         content: str,

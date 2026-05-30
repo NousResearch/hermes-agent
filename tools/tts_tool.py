@@ -884,7 +884,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
             capture_output=True, timeout=30,
         )
         if result.returncode != 0:
-            logger.warning("ffmpeg conversion failed with return code %d: %s", 
+            logger.warning("ffmpeg conversion failed with return code %d: %s",
                           result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
             return None
         if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0:
@@ -2270,6 +2270,86 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = _MD_HR.sub('', text)
     text = _MD_EXCESS_NL.sub('\n\n', text)
     return text.strip()
+
+
+_VOICE_SECTION_RE = re.compile(
+    r"<(?:voice|spoken|say)>\s*(.*?)\s*</(?:voice|spoken|say)>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_VOICE_DETAIL_HEADING_RE = re.compile(
+    r"^\s{0,3}(?:#{1,6}\s*)?(?:technical details|details|implementation details|commands|logs|test results|verification|notes)\s*:?\s*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+
+
+def prepare_voice_mode_tts_text(text: str, max_chars: Optional[int] = None) -> str:
+    """Return the conversational subset of an assistant reply for voice mode.
+
+    If the model explicitly emits <voice>...</voice> (or <spoken>/<say>), that
+    section wins. Otherwise, remove code/log-heavy content and keep the
+    conversational body. When ``max_chars`` is a positive integer, cap the
+    spoken body on a sentence/word boundary. When ``max_chars`` is ``None``, do
+    not apply an arbitrary voice-mode cap; the provider cap in
+    ``text_to_speech_tool`` remains the final safety boundary. The full
+    markdown response is still sent to chat; this only controls what gets
+    spoken aloud.
+    """
+    if not text:
+        return ""
+
+    explicit = _VOICE_SECTION_RE.search(text)
+    if explicit:
+        candidate = explicit.group(1)
+    else:
+        candidate = _MD_CODE_BLOCK.sub(" ", text)
+        heading = _VOICE_DETAIL_HEADING_RE.search(candidate)
+        if heading:
+            candidate = candidate[:heading.start()]
+        candidate = re.sub(r"^\s*[-*+]\s+.*$", " ", candidate, flags=re.MULTILINE)
+        candidate = re.sub(r"^\s*\d+[.)]\s+.*$", " ", candidate, flags=re.MULTILINE)
+        candidate = re.sub(r"^\s*\|.*\|\s*$", " ", candidate, flags=re.MULTILINE)
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", candidate) if p.strip()]
+        kept: list[str] = []
+        for paragraph in paragraphs:
+            # Skip paragraphs that look like paths, commands, config, or logs.
+            technical_markers = (
+                "```", "Traceback", "$ ", "curl ", "python ", "pytest ",
+                "hermes config", ".yaml", ".json", "/Users/", "http://", "https://",
+            )
+            if any(marker in paragraph for marker in technical_markers):
+                continue
+            kept.append(paragraph)
+            if max_chars and max_chars > 0 and len("\n\n".join(kept)) >= max_chars:
+                break
+        candidate = "\n\n".join(kept) if kept else candidate
+
+    spoken = _strip_markdown_for_tts(candidate)
+    spoken = re.sub(r"\s+", " ", spoken).strip()
+    if max_chars is None or max_chars <= 0:
+        return spoken
+    if len(spoken) <= max_chars:
+        return spoken
+
+    cutoff = spoken.rfind(". ", 0, max_chars)
+    if cutoff < max_chars // 2:
+        cutoff = spoken.rfind(" ", 0, max_chars)
+    if cutoff <= 0:
+        cutoff = max_chars
+    return spoken[:cutoff].rstrip(" ,;:-") + "."
+
+
+def prepare_voice_mode_tts_text_for_current_provider(text: str) -> str:
+    """Prepare voice-mode TTS text using the active provider's configured cap.
+
+    Voice mode should filter code/log/detail-heavy content, but it should not
+    impose its own smaller hard-coded limit. The configured TTS provider cap is
+    the authoritative safety boundary and is enforced again by
+    ``text_to_speech_tool`` before synthesis.
+    """
+    tts_config = _load_tts_config()
+    provider = _get_provider(tts_config)
+    max_chars = _resolve_max_text_length(provider, tts_config)
+    return prepare_voice_mode_tts_text(text, max_chars=max_chars)
 
 
 def stream_tts_to_speaker(

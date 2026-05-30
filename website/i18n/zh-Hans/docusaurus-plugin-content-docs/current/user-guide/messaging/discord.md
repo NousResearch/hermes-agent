@@ -281,7 +281,12 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 否 | — | 机器人无需 `@提及` 即可响应的频道 ID，逗号分隔，即使 `DISCORD_REQUIRE_MENTION` 为 `true` 也适用。 |
 | `DISCORD_IGNORE_NO_MENTION` | 否 | `true` | 为 `true` 时，如果消息 `@提及` 了其他用户但**未**提及机器人，机器人保持沉默。防止机器人介入针对其他人的对话。仅适用于服务器频道，不适用于私信。 |
 | `DISCORD_AUTO_THREAD` | 否 | `true` | 为 `true` 时，自动为文本频道中的每次 `@提及` 创建新线程，使每个对话相互隔离（类似 Slack 行为）。已在线程或私信中的消息不受影响。 |
-| `DISCORD_ALLOW_BOTS` | 否 | `"none"` | 控制机器人如何处理来自其他 Discord 机器人的消息。`"none"` — 忽略所有其他机器人。`"mentions"` — 仅接受 `@提及` Hermes 的机器人消息。`"all"` — 接受所有机器人消息。 |
+| `DISCORD_ALLOW_BOTS` | 否 | `"none"` | 控制机器人如何处理来自其他 Discord 机器人的消息。`"none"` — 忽略所有其他机器人。`"mentions"` — 仅接受 `@提及` Hermes 的机器人消息。`"all"` — 接受所有机器人消息。Bot-to-bot 操作流量还必须使用 `BOT_MSG v1`；见 [Bot-to-bot approvals](#bot-to-bot-approvals)。 |
+| `DISCORD_ALLOWED_BOT_USERS` | 否 | — | 允许发送 bot-to-bot 消息的 Discord bot 用户 ID，逗号分隔。与人类用户的 `DISCORD_ALLOWED_USERS` 分开。 |
+| `DISCORD_APPROVAL_NOTIFY_MENTIONS` | 否 | — | 危险命令审批提示前置的原始 mention token（例如 `<@123>`），用于让 supervisor bot 收到 `approval_request` BOT_MSG envelope。 |
+| `DISCORD_BOT_MSG_PROTOCOL` | 否 | `v1` | Bot-to-bot 协议版本。未知值会让 gateway 启动失败，而不是接受歧义机器流量。 |
+| `DISCORD_BOT_MSG_MAX_BODY_CHARS` | 否 | `1800` | 接受其他 bot 的 BOT_MSG v1 body 最大长度。 |
+| `DISCORD_BOT_REPLY_FALSE_REACTION` | 否 | `👀` | `reply_expected: false` 的有效 BOT_MSG 流量使用的 reaction。 |
 | `DISCORD_REACTIONS` | 否 | `true` | 为 `true` 时，机器人在处理过程中为消息添加 emoji 反应（开始时 👀，成功时 ✅，出错时 ❌）。设置为 `false` 可完全禁用反应。 |
 | `DISCORD_IGNORED_CHANNELS` | 否 | — | 机器人**永不**响应的频道 ID，逗号分隔，即使被 `@提及` 也不响应。优先于所有其他频道设置。 |
 | `DISCORD_ALLOWED_CHANNELS` | 否 | — | 频道 ID，逗号分隔。设置后，机器人**仅**在这些频道（以及允许的私信）中响应。覆盖 `config.yaml` 中的 `discord.allowed_channels`。与 `DISCORD_IGNORED_CHANNELS` 结合使用可表达允许/拒绝规则。 |

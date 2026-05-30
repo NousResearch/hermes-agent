@@ -421,6 +421,9 @@ class TestWorkerSpawnEnv:
         kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
 
         env = captured["env"]
+        p_index = captured["cmd"].index("-p")
+        assert captured["cmd"][p_index:p_index + 2] == ["-p", "teknium"]
+        assert env["HERMES_PROFILE"] == "teknium"
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
         assert env["HERMES_KANBAN_TASK"] == "t_abc"
         # DB path should match the per-board DB, not the legacy default.

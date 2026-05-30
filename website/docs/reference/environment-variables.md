@@ -254,6 +254,12 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
 | `DISCORD_ALLOWED_ROLES` | Comma-separated Discord role IDs allowed to use the bot (OR with `DISCORD_ALLOWED_USERS`). Auto-enables the Members intent. Useful when moderation teams churn — role grants propagate automatically. |
+| `DISCORD_ALLOW_BOTS` | `none` (default) / `mentions` / `all` — accept inbound Discord bot messages. Operative bot-to-bot traffic must raw-mention the receiver and parse as `BOT_MSG v1`. |
+| `DISCORD_ALLOWED_BOT_USERS` | Comma-separated Discord bot user IDs allowed to send bot-to-bot messages. Separate from human `DISCORD_ALLOWED_USERS`. |
+| `DISCORD_APPROVAL_NOTIFY_MENTIONS` | Raw mention tokens prepended to Discord execution-approval prompts so supervisor bots receive `approval_request` BOT_MSG envelopes. |
+| `DISCORD_BOT_MSG_PROTOCOL` | Bot-to-bot protocol version; supported value is `v1`. |
+| `DISCORD_BOT_MSG_MAX_BODY_CHARS` | Maximum accepted BOT_MSG body size; default `1800`. |
+| `DISCORD_BOT_REPLY_FALSE_REACTION` | Reaction used for valid BOT_MSG traffic with `reply_expected: false`; default `👀`. |
 | `DISCORD_ALLOWED_CHANNELS` | Comma-separated Discord channel IDs. When set, the bot only responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. |
 | `DISCORD_PROXY` | Proxy URL for Discord connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
 | `DISCORD_HOME_CHANNEL` | Default Discord channel for cron delivery |

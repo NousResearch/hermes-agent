@@ -145,6 +145,87 @@ SEND_MESSAGE_SCHEMA = {
     }
 }
 
+SEND_BOT_MESSAGE_SCHEMA = {
+    "name": "send_bot_message",
+    "description": (
+        "Send a structured Discord BOT_MSG v1 control-plane message to another "
+        "allowlisted Hermes bot. Use this instead of send_message whenever the "
+        "message raw-mentions a Discord bot in DISCORD_ALLOWED_BOT_USERS. The tool "
+        "builds and validates the envelope; ordinary model text supplies only the body."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "Discord delivery target: discord:chat_id or discord:chat_id:thread_id or discord:#channel-name.",
+            },
+            "recipient_bot_id": {
+                "type": "string",
+                "description": "Numeric Discord user ID of the recipient bot to mention/address.",
+            },
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "status",
+                    "action_required",
+                    "approval_decision",
+                    "approval_request",
+                    "decision_request",
+                    "handoff",
+                    "review_request",
+                    "audit",
+                ],
+                "description": "BOT_MSG v1 semantic kind.",
+            },
+            "reply_expected": {
+                "type": "boolean",
+                "description": "Whether the recipient bot should run a model turn and reply. false means ACK/reaction only.",
+            },
+            "body": {
+                "type": "string",
+                "description": "Opaque task/status body. Do not include the BOT_MSG header; this tool builds it.",
+            },
+            "correlation_id": {
+                "type": "string",
+                "description": "Optional safe correlation id. If omitted, Hermes generates one.",
+            },
+            "idempotency_key": {
+                "type": "string",
+                "description": "Optional trusted-orchestrator idempotency key. Ordinary agents should omit it.",
+            },
+            "reply_to": {
+                "type": "string",
+                "description": "Optional Discord message id to reply to without pinging the replied user.",
+            },
+        },
+        "required": ["target", "recipient_bot_id", "kind", "reply_expected", "body"],
+    },
+}
+
+SEND_BOT_APPROVAL_DECISION_SCHEMA = {
+    "name": "send_bot_approval_decision",
+    "description": (
+        "Resolve a live Discord bot-to-bot dangerous-command approval request. "
+        "Use only when an approval_request BOT_MSG provides an approval_id. "
+        "Sends an approval_decision BOT_MSG with reply_expected=false; never raw-mention /approve or /deny."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string", "description": "Discord delivery target: discord:chat_id or discord:chat_id:thread_id."},
+            "recipient_bot_id": {"type": "string", "description": "Numeric Discord user ID of the bot that owns the pending approval."},
+            "approval_id": {"type": "string", "description": "Opaque live approval_id copied from the approval_request BOT_MSG."},
+            "decision": {"type": "string", "enum": ["approve", "deny"]},
+            "scope": {"type": "string", "enum": ["once", "session", "always"], "description": "Approval persistence for approve decisions. Defaults to once."},
+            "correlation_id": {"type": "string", "description": "Optional correlation id. Defaults to approval:<approval_id>."},
+            "reply_to": {"type": "string", "description": "Optional Discord message id to reply to."},
+        },
+        "required": ["target", "recipient_bot_id", "approval_id", "decision"],
+    },
+}
+
+
 
 def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
@@ -163,6 +244,330 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+def _legacy_discord_bot_to_bot_enabled() -> bool:
+    return os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() in {"1", "true", "yes"}
+
+
+def send_bot_message_tool(args, **kw):
+    """Handle legacy structured Discord bot-to-bot send calls."""
+    if not _legacy_discord_bot_to_bot_enabled():
+        return tool_error(
+            "send_bot_message is disabled: Discord is no longer an authoritative bot-to-bot control plane. "
+            "Use the Hermes control-plane DB APIs for dispatch/approvals/messages; Discord may only mirror state."
+        )
+    return _handle_send_bot_message(args)
+
+
+def send_bot_approval_decision_tool(args, **kw):
+    """Handle legacy structured Discord bot-to-bot approval decisions."""
+    if not _legacy_discord_bot_to_bot_enabled():
+        return tool_error(
+            "send_bot_approval_decision is disabled: approvals are authoritative only in the Hermes control-plane DB."
+        )
+    return _handle_send_bot_approval_decision(args)
+
+
+def _discord_allowed_bot_user_ids_from_env() -> set[str]:
+    raw = os.getenv("DISCORD_ALLOWED_BOT_USERS", "")
+    ids = set()
+    for item in raw.replace(" ", "").split(","):
+        item = item.strip()
+        if item.startswith("<@") and item.endswith(">"):
+            item = item.lstrip("<@!").rstrip(">")
+        if item.lower().startswith("user:"):
+            item = item[5:]
+        if item.isdigit():
+            ids.add(item)
+    return ids
+
+
+def _discord_raw_allowed_bot_mentions(message: str) -> list[str]:
+    try:
+        from plugins.platforms.discord.bot_msg_protocol import discord_content_mentioned_allowed_bots
+        return discord_content_mentioned_allowed_bots(message or "", _discord_allowed_bot_user_ids_from_env())
+    except Exception:
+        return []
+
+
+def _bot_idempotency_store_path():
+    from hermes_constants import get_hermes_home
+    from pathlib import Path
+    root = Path(get_hermes_home()) / "state" / "discord_bot_messages"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "idempotency.json"
+
+
+def _normalize_bot_msg_body(body: str) -> str:
+    return "\n".join(line.rstrip() for line in (body or "").strip().splitlines())
+
+
+def _compute_bot_idempotency_key(*, target: str, chat_id: str, thread_id: str | None, reply_to: str | None, recipient_bot_id: str, kind: str, reply_expected: bool, correlation_id: str, body: str) -> str:
+    import hashlib
+    from gateway.session_context import get_session_env
+    source = get_session_env("HERMES_PROFILE", "") or os.getenv("HERMES_PROFILE", "default")
+    normalized = "\0".join([
+        str(source),
+        str(target or ""),
+        str(chat_id or ""),
+        str(thread_id or ""),
+        str(reply_to or ""),
+        str(recipient_bot_id),
+        str(kind),
+        "true" if reply_expected else "false",
+        str(correlation_id or ""),
+        _normalize_bot_msg_body(body),
+    ])
+    return "botmsg:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+
+
+def _load_bot_idempotency_store() -> dict:
+    import json
+    path = _bot_idempotency_store_path()
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _write_bot_idempotency_store(store: dict) -> None:
+    import json
+    from utils import atomic_json_write
+    atomic_json_write(_bot_idempotency_store_path(), store)
+
+
+def _legacy_discord_bot_to_bot_disabled_error() -> str:
+    return json.dumps({
+        "status": "error",
+        "error": "legacy_discord_bot_to_bot_disabled",
+        "message": "Discord bot-to-bot control messages are disabled by default; use the durable local control-plane DB instead. Set HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT=1 only for explicit rollback/testing.",
+    })
+
+
+def _handle_send_bot_approval_decision(args):
+    if not _legacy_discord_bot_to_bot_enabled():
+        return _legacy_discord_bot_to_bot_disabled_error()
+    target = (args.get("target") or "").strip()
+    recipient_bot_id = str(args.get("recipient_bot_id") or "").strip()
+    approval_id = (args.get("approval_id") or "").strip()
+    decision = (args.get("decision") or "").strip().lower()
+    scope = (args.get("scope") or "once").strip().lower()
+    correlation_id = (args.get("correlation_id") or "").strip() or f"approval:{approval_id}"
+    reply_to = (args.get("reply_to") or "").strip()
+
+    if not approval_id:
+        return tool_error("approval_id is required")
+    if decision not in {"approve", "deny"}:
+        return tool_error("decision must be approve or deny")
+    if scope not in {"once", "session", "always"}:
+        return tool_error("scope must be once, session, or always")
+    body = "\n".join([
+        f"approval_id: {approval_id}",
+        f"decision: {decision}",
+        f"scope: {scope}",
+    ])
+    payload = {
+        "target": target,
+        "recipient_bot_id": recipient_bot_id,
+        "kind": "approval_decision",
+        "reply_expected": False,
+        "body": body,
+        "correlation_id": correlation_id,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+    return _handle_send_bot_message(payload)
+
+
+def _handle_send_bot_message(args):
+    if not _legacy_discord_bot_to_bot_enabled():
+        return _legacy_discord_bot_to_bot_disabled_error()
+    target = (args.get("target") or "").strip()
+    recipient_bot_id = str(args.get("recipient_bot_id") or "").strip()
+    body = args.get("body", "")
+    kind = (args.get("kind") or "").strip()
+    reply_expected = args.get("reply_expected")
+    correlation_id = (args.get("correlation_id") or "").strip()
+    caller_correlation_id = correlation_id
+    idempotency_key = (args.get("idempotency_key") or "").strip()
+    reply_to = (args.get("reply_to") or "").strip() or None
+
+    if not target or not recipient_bot_id or not kind or reply_expected is None:
+        return tool_error("target, recipient_bot_id, kind, reply_expected, and body are required")
+    if not recipient_bot_id.isdigit():
+        return tool_error("recipient_bot_id must be a numeric Discord user id")
+    allowed_bot_ids = _discord_allowed_bot_user_ids_from_env()
+    if recipient_bot_id not in allowed_bot_ids:
+        return tool_error(
+            f"recipient_bot_id {recipient_bot_id} is not allowlisted in DISCORD_ALLOWED_BOT_USERS; "
+            "send_bot_message only routes to explicitly allowlisted Hermes bots"
+        )
+    if reply_to is not None and not reply_to.isdigit():
+        return tool_error("reply_to must be a numeric Discord message id")
+    if not target.lower().startswith("discord"):
+        return tool_error("send_bot_message currently supports Discord targets only")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    thread_id = None
+    if target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    else:
+        is_explicit = False
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return json.dumps({"error": f"Could not resolve '{target_ref}' on Discord. Use send_message(action='list') to see available targets."})
+        except Exception:
+            return json.dumps({"error": f"Could not resolve '{target_ref}' on Discord. Try using a numeric channel ID instead."})
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+        platform = Platform(platform_name)
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        return tool_error("Discord is not configured. Set up Discord gateway credentials first.")
+    if not chat_id:
+        home = config.get_home_channel(platform)
+        if home:
+            chat_id = home.chat_id
+        else:
+            return tool_error("No Discord target or home channel available for send_bot_message")
+
+    try:
+        from plugins.platforms.discord.bot_msg_protocol import (
+            DISCORD_BOT_MSG_CORRELATION_RE,
+            DISCORD_BOT_MSG_KINDS,
+        )
+        if kind not in DISCORD_BOT_MSG_KINDS:
+            return tool_error(f"Invalid BOT_MSG v1 kind: {kind}")
+    except Exception as e:
+        return json.dumps(_error(f"BOT_MSG protocol validation failed: {e}"))
+
+    if not idempotency_key:
+        idempotency_key = _compute_bot_idempotency_key(
+            target=target,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            reply_to=reply_to,
+            recipient_bot_id=recipient_bot_id,
+            kind=kind,
+            reply_expected=bool(reply_expected),
+            # Preserve caller intent. If the caller omitted correlation_id,
+            # retries must compute the same idempotency key instead of being
+            # defeated by a fresh random correlation id on every attempt.
+            correlation_id=caller_correlation_id,
+            body=body,
+        )
+    if not correlation_id:
+        import hashlib
+        correlation_id = "botmsg-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:16]
+    if not DISCORD_BOT_MSG_CORRELATION_RE.fullmatch(correlation_id):
+        return tool_error("Invalid BOT_MSG v1 correlation_id")
+    store = _load_bot_idempotency_store()
+    existing = store.get(idempotency_key)
+    if existing and existing.get("success") and existing.get("message_id"):
+        existing = dict(existing)
+        existing.update({"success": True, "skipped": True, "reason": "idempotency_key_reused"})
+        return json.dumps(existing)
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(
+            _send_bot_message_to_discord(
+                platform,
+                pconfig,
+                chat_id,
+                recipient_bot_id=recipient_bot_id,
+                body=body,
+                reply_expected=bool(reply_expected),
+                kind=kind,
+                correlation_id=correlation_id,
+                thread_id=thread_id,
+                reply_to=reply_to,
+            )
+        )
+        if isinstance(result, dict) and result.get("success"):
+            result.update({
+                "idempotency_key": idempotency_key,
+                "correlation_id": correlation_id,
+                "recipient_bot_id": recipient_bot_id,
+                "kind": kind,
+                "reply_expected": bool(reply_expected),
+                "thread_id": thread_id or result.get("thread_id"),
+                "chat_id": chat_id,
+            })
+            store[idempotency_key] = {k: result.get(k) for k in ("success", "message_id", "chat_id", "thread_id", "recipient_bot_id", "kind", "correlation_id", "reply_expected", "idempotency_key") if k in result}
+            _write_bot_idempotency_store(store)
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"send_bot_message failed: {e}"))
+
+
+async def _send_bot_message_to_discord(platform, pconfig, chat_id, *, recipient_bot_id, body, reply_expected, kind, correlation_id, thread_id=None, reply_to=None):
+    if not _legacy_discord_bot_to_bot_enabled():
+        return {"status": "error", "error": "legacy_discord_bot_to_bot_disabled"}
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    if runner is not None:
+        try:
+            adapter = runner.adapters.get(platform)
+        except Exception:
+            adapter = None
+        if adapter is not None and hasattr(adapter, "send_bot_message"):
+            metadata = {"thread_id": thread_id} if thread_id else None
+            result = await adapter.send_bot_message(
+                chat_id=chat_id,
+                recipient_bot_id=recipient_bot_id,
+                body=body,
+                reply_expected=reply_expected,
+                kind=kind,
+                correlation_id=correlation_id,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if result.success:
+                return {"success": True, "message_id": result.message_id, "raw_response": result.raw_response}
+            return {"error": f"Adapter send_bot_message failed: {result.error}"}
+
+    try:
+        from plugins.platforms.discord.adapter import _standalone_send_bot_message
+        return await _standalone_send_bot_message(
+            pconfig,
+            chat_id,
+            recipient_bot_id=recipient_bot_id,
+            body=body,
+            reply_expected=reply_expected,
+            kind=kind,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            reply_to=reply_to,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        return {"error": f"Discord standalone send_bot_message failed: {e}"}
 
 
 def _handle_send(args):
@@ -242,6 +647,21 @@ def _handle_send(args):
             return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
     from gateway.platforms.base import BasePlatformAdapter
+
+    if platform_name == "discord":
+        mentioned_bot_ids = _discord_raw_allowed_bot_mentions(message)
+        if mentioned_bot_ids:
+            if len(mentioned_bot_ids) > 1:
+                return tool_error("Multiple allowed Discord bot mentions are not permitted via send_message; use one control-plane dispatch per bot")
+            if _legacy_discord_bot_to_bot_enabled():
+                return tool_error(
+                    f"Raw mention of allowed Discord bot {mentioned_bot_ids[0]} is not permitted via send_message; "
+                    "use send_bot_message so Hermes builds a BOT_MSG v1 envelope"
+                )
+            return tool_error(
+                f"Raw mention of allowed Discord bot {mentioned_bot_ids[0]} is not permitted via send_message; "
+                "legacy Discord bot-to-bot control is disabled and control-plane DB dispatch must be used"
+            )
 
     # Capture [[as_document]] directive before extract_media strips it.
     # Image-extension files in this batch will route through send_document
@@ -1782,3 +2202,25 @@ registry.register(
     check_fn=_check_send_message,
     emoji="📨",
 )
+
+if _legacy_discord_bot_to_bot_enabled():
+    registry.register(
+        name="send_bot_message",
+        toolset="messaging",
+        schema=SEND_BOT_MESSAGE_SCHEMA,
+        handler=send_bot_message_tool,
+        check_fn=_check_send_message,
+        emoji="🤖",
+    )
+
+    registry.register(
+        name="send_bot_approval_decision",
+        toolset="messaging",
+        schema=SEND_BOT_APPROVAL_DECISION_SCHEMA,
+        handler=send_bot_approval_decision_tool,
+        check_fn=_check_send_message,
+        emoji="✅",
+    )
+else:
+    registry.deregister("send_bot_message")
+    registry.deregister("send_bot_approval_decision")

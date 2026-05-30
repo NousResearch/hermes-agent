@@ -6313,10 +6313,12 @@ class HermesCLI:
         if not self._session_db:
             return []
         try:
+            from hermes_cli.config import get_session_sort_order
             sessions = self._session_db.list_sessions_rich(
                 source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
+                order_by_last_active=get_session_sort_order() == "last_active",
             )
         except Exception:
             return []

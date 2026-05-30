@@ -2367,6 +2367,15 @@ def _(rid, params: dict) -> dict:
     )
 
 
+def _order_by_last_active() -> bool:
+    """Check if config says sessions should be sorted by last activity time."""
+    try:
+        from hermes_cli.config import get_session_sort_order
+        return get_session_sort_order() == "last_active"
+    except Exception:
+        return False
+
+
 @method("session.list")
 def _(rid, params: dict) -> dict:
     db = _get_db()
@@ -2390,7 +2399,7 @@ def _(rid, params: dict) -> dict:
         fetch_limit = max(limit * 2, 200)
         rows = [
             s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
+            for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_last_active=_order_by_last_active())
             if (s.get("source") or "").strip().lower() not in deny
         ][:limit]
         return _ok(
@@ -2437,7 +2446,7 @@ def _(rid, params: dict) -> dict:
         # users (lots of recent ``tool`` rows) don't get a false
         # "no eligible session" answer.  ``session.list`` uses a
         # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200)
+        rows = db.list_sessions_rich(source=None, limit=200, order_by_last_active=_order_by_last_active())
         for row in rows:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
@@ -6267,7 +6276,7 @@ def _(rid, params: dict) -> dict:
         cutoff = time.time() - days * 86400
         rows = [
             s
-            for s in db.list_sessions_rich(limit=500)
+            for s in db.list_sessions_rich(limit=500, order_by_last_active=_order_by_last_active())
             if (s.get("started_at") or 0) >= cutoff
         ]
         return _ok(

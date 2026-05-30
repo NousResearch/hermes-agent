@@ -642,7 +642,8 @@ async def get_status():
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=50)
+            from hermes_cli.config import get_session_sort_order
+            sessions = db.list_sessions_rich(limit=50, order_by_last_active=get_session_sort_order() == "last_active")
             now = time.time()
             active_sessions = sum(
                 1 for s in sessions
@@ -826,7 +827,8 @@ async def get_sessions(limit: int = 20, offset: int = 0):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
+            from hermes_cli.config import get_session_sort_order
+            sessions = db.list_sessions_rich(limit=limit, offset=offset, order_by_last_active=get_session_sort_order() == "last_active")
             total = db.session_count()
             now = time.time()
             for s in sessions:
@@ -2470,7 +2472,8 @@ def _session_latest_descendant(session_id: str):
                     "started_at": row_get(row, "started_at", 2),
                 })
         else:
-            rows = db.list_sessions_rich(limit=10000, offset=0)
+            from hermes_cli.config import get_session_sort_order
+            rows = db.list_sessions_rich(limit=10000, offset=0, order_by_last_active=get_session_sort_order() == "last_active")
 
         children = {}
         for row in rows:

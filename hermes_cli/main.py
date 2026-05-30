@@ -13578,7 +13578,7 @@ Examples:
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, rename, sort, export, prune, delete)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13589,6 +13589,16 @@ Examples:
     )
     sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
+    )
+
+    sessions_sort = sessions_subparsers.add_parser(
+        "sort", help="Get or set session sort order (started_at | last_active)"
+    )
+    sessions_sort.add_argument(
+        "order",
+        nargs="?",
+        choices=["started_at", "last_active"],
+        help="Sort by session creation time (started_at) or most recent activity (last_active). Omit to show current value.",
     )
 
     sessions_export = sessions_subparsers.add_parser(
@@ -13669,8 +13679,10 @@ Examples:
         _exclude = None if _source else ["tool"]
 
         if action == "list":
+            from hermes_cli.config import get_session_sort_order
             sessions = db.list_sessions_rich(
-                source=args.source, exclude_sources=_exclude, limit=args.limit
+                source=args.source, exclude_sources=_exclude, limit=args.limit,
+                order_by_last_active=get_session_sort_order() == "last_active",
             )
             if not sessions:
                 print("No sessions found.")
@@ -13696,6 +13708,17 @@ Examples:
                 else:
                     sid = s["id"]
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+
+        elif action == "sort":
+            if args.order is None:
+                from hermes_cli.config import get_session_sort_order
+                current = get_session_sort_order()
+                print(f"Current sort order: {current}")
+                return
+            from hermes_cli.config import set_config_value
+            set_config_value("display.session_sort_order", args.order)
+            print(f"✓ Session sort order set to '{args.order}'.")
+            print(f"  Open /resume to see the updated session list.")
 
         elif action == "export":
             if args.session_id:
@@ -13777,8 +13800,10 @@ Examples:
             limit = getattr(args, "limit", 500) or 500
             source = getattr(args, "source", None)
             _browse_exclude = None if source else ["tool"]
+            from hermes_cli.config import get_session_sort_order
             sessions = db.list_sessions_rich(
-                source=source, exclude_sources=_browse_exclude, limit=limit
+                source=source, exclude_sources=_browse_exclude, limit=limit,
+                order_by_last_active=get_session_sort_order() == "last_active",
             )
             db.close()
             if not sessions:

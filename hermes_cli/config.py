@@ -1216,6 +1216,10 @@ DEFAULT_CONFIG = {
         # when an exchange was tool-heavy. Set False to restore the legacy
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
+        # Sort session list by most recent activity instead of creation time.
+        # "started_at" (default) sorts by when the session began.
+        # "last_active" sorts by the most recent message timestamp.
+        "session_sort_order": "started_at",
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
         # When true, `hermes --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
@@ -2153,6 +2157,25 @@ DEFAULT_CONFIG = {
     # Config schema version - bump this when adding new required fields
     "_config_version": 24,
 }
+
+
+def get_session_sort_order() -> str:
+    """Return the configured session sort order from config.yaml.
+
+    Returns ``\"started_at\"`` (default) for creation-time ordering, or
+    ``\"last_active\"`` for most-recent-message ordering.  Falls back to
+    ``\"started_at\"`` on any config read failure.
+    """
+    try:
+        cfg = load_config()
+        display = cfg.get("display", {})
+        if not isinstance(display, dict):
+            return "started_at"
+        val = display.get("session_sort_order", "started_at")
+        return val if val in ("started_at", "last_active") else "started_at"
+    except Exception:
+        return "started_at"
+
 
 # =============================================================================
 # Config Migration System

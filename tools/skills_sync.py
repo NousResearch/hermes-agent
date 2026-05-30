@@ -567,15 +567,24 @@ def sync_skills(quiet: bool = False) -> dict:
 
 
 def _rmtree_writable(path: Path) -> None:
-    """Remove a directory tree, making read-only files writable first.
+    """Remove a directory tree, making read-only entries writable first.
 
     Handles immutable package sources (Nix store, deb/rpm installs) that
-    preserve read-only permissions on copied files.  See #34860, #34972.
+    preserve read-only permissions on copied files *and* directories
+    (``r-xr-xr-x``).  Removing a child requires write permission on its
+    parent directory, so the retry handler makes the failing path **and its
+    parent** writable before re-attempting.  See #34860, #34972.
     """
+    import stat
+
     def _on_error(func, fpath, exc_info):
-        # Make the file/directory writable and retry
-        import stat
-        os.chmod(fpath, stat.S_IWRITE)
+        # Unlinking a child requires the parent dir to be writable, so chmod
+        # the parent as well as the failing path, then retry.
+        for target in (os.path.dirname(fpath), fpath):
+            try:
+                os.chmod(target, stat.S_IRWXU)
+            except OSError:
+                pass
         func(fpath)
 
     shutil.rmtree(path, onerror=_on_error)

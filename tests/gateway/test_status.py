@@ -52,6 +52,20 @@ class TestGatewayPidState:
         payload = json.loads((tmp_path / "gateway.pid").read_text())
         assert payload["pid"] == os.getpid()
 
+    def test_get_running_pid_skips_reused_pid_via_start_time_us(self, monkeypatch):
+        record = {
+            "pid": 4321, "kind": status._GATEWAY_KIND,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": None, "start_time_us": 111,
+        }
+        monkeypatch.setattr(status, "_read_pid_record", lambda p: record)
+        monkeypatch.setattr(status, "_read_gateway_lock_record", lambda p: None)
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda p: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_cleanup_invalid_pid_path", lambda *a, **k: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)  # reused -> mismatch
+        assert status.get_running_pid() is None
+
     def test_get_running_pid_rejects_live_non_gateway_pid(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

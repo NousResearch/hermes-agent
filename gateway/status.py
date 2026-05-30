@@ -1028,7 +1028,7 @@ def get_running_pid(
         if not _pid_exists(pid):
             continue
 
-        recorded_start = record.get("start_time")
+        recorded_start = record.get("start_time_us")
         current_start = _get_process_start_time(pid)
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
             continue

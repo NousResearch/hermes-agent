@@ -1123,9 +1123,11 @@ class UrlSource(SkillSource):
     """Fetch a single-file SKILL.md skill directly from an HTTP(S) URL.
 
     The identifier IS the URL (e.g. ``https://example.com/path/SKILL.md``).
-    Only single-file skills are supported — multi-file skills with
-    ``references/`` or ``scripts/`` subfolders need a manifest we can't
-    discover from a bare URL.
+    Bare URLs stay single-file only. If the URL is a raw GitHub skill
+    pointing at ``raw.githubusercontent.com/.../skills/.../SKILL.md``, we
+    delegate to :class:`GitHubSource` so the full directory bundle
+    (``references/``, ``scripts/``, etc.) is installed instead of only the
+    markdown file.
 
     The skill name is read from the ``name:`` field in the SKILL.md YAML
     frontmatter (with a URL-slug fallback). Trust level is always
@@ -1165,10 +1167,52 @@ class UrlSource(SkillSource):
             return False
         return path.lower().endswith(".md")
 
+    @staticmethod
+    def _raw_github_skill_identifier(url: str) -> Optional[str]:
+        """Translate raw GitHub skill URLs into GitHubSource identifiers.
+
+        We only special-case raw.githubusercontent.com URLs that point at a
+        skill directory (``.../skills/.../SKILL.md``). That lets the GitHub
+        adapter fetch the full directory bundle while leaving generic direct
+        URLs alone.
+        """
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return None
+        if parsed.netloc.lower() != "raw.githubusercontent.com":
+            return None
+
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 5 or parts[-1].lower() != "skill.md":
+            return None
+
+        try:
+            skill_dir_start = next(i for i, part in enumerate(parts) if part == "skills")
+        except StopIteration:
+            return None
+
+        if skill_dir_start < 3 or skill_dir_start >= len(parts) - 1:
+            return None
+
+        skill_dir = "/".join(parts[skill_dir_start:-1])
+        if not skill_dir:
+            return None
+
+        owner, repo = parts[0], parts[1]
+        return f"{owner}/{repo}/{skill_dir}"
+
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         if not self._matches(identifier):
             return None
         url = identifier.strip()
+
+        github_identifier = self._raw_github_skill_identifier(url)
+        if github_identifier:
+            meta = GitHubSource(auth=GitHubAuth()).inspect(github_identifier)
+            if meta is not None:
+                return meta
+
         text = self._fetch_text(url)
         if text is None:
             return None
@@ -1194,10 +1238,18 @@ class UrlSource(SkillSource):
             extra={"url": url, "awaiting_name": name is None},
         )
 
+
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         if not self._matches(identifier):
             return None
         url = identifier.strip()
+
+        github_identifier = self._raw_github_skill_identifier(url)
+        if github_identifier:
+            bundle = GitHubSource(auth=GitHubAuth()).fetch(github_identifier)
+            if bundle is not None:
+                return bundle
+
         text = self._fetch_text(url)
         if text is None:
             return None
@@ -1226,6 +1278,7 @@ class UrlSource(SkillSource):
             trust_level="community",
             metadata={"url": url, "awaiting_name": not skill_name},
         )
+
 
     @staticmethod
     def _fetch_text(url: str) -> Optional[str]:

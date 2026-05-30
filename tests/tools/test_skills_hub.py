@@ -1096,6 +1096,53 @@ class TestUrlSource:
         assert bundle.name == "my-skill"
 
     @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "fetch")
+    def test_fetch_delegates_raw_github_skill_to_github_source(self, mock_fetch, mock_get):
+        mock_fetch.return_value = SkillBundle(
+            name="supabase-postgres-best-practices",
+            files={
+                "SKILL.md": "---\nname: supabase-postgres-best-practices\n---\n",
+                "references/patterns.md": "ref",
+                "scripts/install.sh": "#!/bin/sh\n",
+            },
+            source="github",
+            identifier="supabase/agent-skills/skills/supabase-postgres-best-practices",
+            trust_level="community",
+        )
+
+        bundle = self._source().fetch(
+            "https://raw.githubusercontent.com/supabase/agent-skills/main/skills/supabase-postgres-best-practices/SKILL.md"
+        )
+
+        assert bundle is not None
+        assert bundle.source == "github"
+        assert bundle.identifier == "supabase/agent-skills/skills/supabase-postgres-best-practices"
+        assert "references/patterns.md" in bundle.files
+        assert "scripts/install.sh" in bundle.files
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "inspect")
+    def test_inspect_delegates_raw_github_skill_to_github_source(self, mock_inspect, mock_get):
+        mock_inspect.return_value = SkillMeta(
+            name="supabase-postgres-best-practices",
+            description="Best practices.",
+            source="github",
+            identifier="supabase/agent-skills/skills/supabase-postgres-best-practices",
+            trust_level="community",
+            path="skills/supabase-postgres-best-practices",
+        )
+
+        meta = self._source().inspect(
+            "https://raw.githubusercontent.com/supabase/agent-skills/main/skills/supabase-postgres-best-practices/SKILL.md"
+        )
+
+        assert meta is not None
+        assert meta.source == "github"
+        assert meta.identifier == "supabase/agent-skills/skills/supabase-postgres-best-practices"
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
     def test_fetch_returns_none_on_404(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         assert self._source().fetch("https://example.com/SKILL.md") is None

@@ -430,6 +430,13 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 # or the user's active Codex model selection).
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
+# HTTP-level timeout (seconds) for all auxiliary OpenAI client instances.
+# The OpenAI SDK defaults to a 30 s read timeout, which causes compression
+# and other long-running auxiliary calls to fail with slow local LLMs (#35517).
+# This is a ceiling; task-level timeouts in auxiliary.<task>.timeout still
+# control the actual application-level deadline.
+_AUX_HTTP_TIMEOUT = 300.0
+
 
 def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
@@ -1455,7 +1462,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                         extra["default_headers"] = dict(_ph_aux.default_headers)
                 except Exception:
                     pass
-            _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
+            _client = OpenAI(api_key=api_key, base_url=base_url, timeout=_AUX_HTTP_TIMEOUT, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
 
@@ -1492,7 +1499,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     extra["default_headers"] = dict(_ph_aux2.default_headers)
             except Exception:
                 pass
-        _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
+        _client = OpenAI(api_key=api_key, base_url=base_url, timeout=_AUX_HTTP_TIMEOUT, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
 
@@ -1512,7 +1519,7 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
+        return OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=or_key, base_url=base_url,
                        default_headers=build_or_headers()), model or _OPENROUTER_MODEL
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
@@ -1520,7 +1527,7 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
-    return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+    return OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=or_key, base_url=OPENROUTER_BASE_URL,
                    default_headers=build_or_headers()), model or _OPENROUTER_MODEL
 
 
@@ -1613,7 +1620,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             return None, None
         base_url = str((nous or {}).get("inference_base_url") or _nous_base_url()).rstrip("/")
     return (
-        OpenAI(
+        OpenAI(timeout=_AUX_HTTP_TIMEOUT,
             api_key=api_key,
             base_url=base_url,
         ),
@@ -1842,7 +1849,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
+        real_client = OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
         # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
@@ -1856,14 +1863,14 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
                 "Custom endpoint declares api_mode=anthropic_messages but the "
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
-            return OpenAI(api_key=custom_key, base_url=_clean_base, **_extra), model
+            return OpenAI(api_key=custom_key, base_url=_clean_base, timeout=_AUX_HTTP_TIMEOUT, **_extra), model
         return (
             AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
             model,
         )
     # URL-based anthropic detection for custom endpoints that didn't set
     # api_mode explicitly (e.g. kimi.com/coding reached via custom config).
-    _fallback_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
+    _fallback_client = OpenAI(api_key=custom_key, base_url=_clean_base, timeout=_AUX_HTTP_TIMEOUT, **_extra)
     _fallback_client = _maybe_wrap_anthropic(
         _fallback_client, model, custom_key, custom_base, custom_mode,
     )
@@ -1892,7 +1899,7 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
         return None, None
     api_key, base_url = resolved
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    real_client = OpenAI(api_key=api_key, base_url=base_url)
+    real_client = OpenAI(api_key=api_key, base_url=base_url, timeout=_AUX_HTTP_TIMEOUT)
     return CodexAuxiliaryClient(real_client, model), model
 
 
@@ -1929,7 +1936,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
-    real_client = OpenAI(
+    real_client = OpenAI(timeout=_AUX_HTTP_TIMEOUT,
         api_key=codex_token,
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token),
@@ -2029,7 +2036,7 @@ def _try_azure_foundry(
     if _dq:
         extra["default_query"] = _dq
 
-    client = OpenAI(api_key=api_key, base_url=_clean_base, **extra)
+    client = OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=api_key, base_url=_clean_base, **extra)
 
     if runtime_api_mode == "codex_responses":
         # GPT-5.x / o-series / codex models on Azure Foundry are
@@ -3170,7 +3177,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
-    return AsyncOpenAI(**async_kwargs), model
+    return AsyncOpenAI(timeout=_AUX_HTTP_TIMEOUT, **async_kwargs), model
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
@@ -3379,7 +3386,7 @@ def resolve_provider_client(
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = _normalize_resolved_model(model, provider)
-            raw_client = OpenAI(
+            raw_client = OpenAI(timeout=_AUX_HTTP_TIMEOUT,
                 api_key=codex_token,
                 base_url=_CODEX_AUX_BASE_URL,
                 default_headers=_codex_cloudflare_headers(codex_token),
@@ -3457,7 +3464,7 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
-            client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
+            client = OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
@@ -3555,7 +3562,7 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
-                        client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
+                        client = OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
@@ -3564,7 +3571,7 @@ def resolve_provider_client(
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
-                client = OpenAI(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=custom_key, base_url=_clean_base2, **_extra2)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
@@ -3703,7 +3710,7 @@ def resolve_provider_client(
                     headers.update(_ph_main.default_headers)
             except Exception:
                 pass
-        client = OpenAI(api_key=api_key, base_url=base_url,
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=_AUX_HTTP_TIMEOUT,
                         **({"default_headers": headers} if headers else {}))
 
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
@@ -4229,7 +4236,7 @@ def _refresh_nous_auxiliary_client(
         return None, model
 
     fresh_key, fresh_base_url = runtime
-    sync_client = OpenAI(api_key=fresh_key, base_url=fresh_base_url)
+    sync_client = OpenAI(timeout=_AUX_HTTP_TIMEOUT, api_key=fresh_key, base_url=fresh_base_url)
     final_model = model
 
     current_loop = None

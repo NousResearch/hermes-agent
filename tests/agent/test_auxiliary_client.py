@@ -3427,3 +3427,74 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestAuxiliaryClientTimeout:
+    """All OpenAI() construction sites in auxiliary_client.py must pass a
+    ``timeout`` parameter so slow local LLMs don't hit the OpenAI SDK's 30 s
+    default read timeout during compression, title generation, etc. (#35517)."""
+
+    @staticmethod
+    def _expected_timeout():
+        from agent.auxiliary_client import _AUX_HTTP_TIMEOUT
+        return _AUX_HTTP_TIMEOUT
+
+    def test_xai_oauth_passes_timeout(self):
+        """_build_xai_oauth_aux_client must pass timeout to OpenAI()."""
+        with (
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("agent.auxiliary_client._resolve_xai_oauth_for_aux",
+                  return_value=("sk-xai", "https://api.x.ai/v1")),
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_xai_oauth_aux_client
+
+            _build_xai_oauth_aux_client("grok-4")
+
+            assert mock_openai.call_args is not None
+            assert "timeout" in mock_openai.call_args.kwargs, (
+                f"OpenAI() kwargs missing timeout in _build_xai_oauth_aux_client"
+            )
+            assert mock_openai.call_args.kwargs["timeout"] == self._expected_timeout()
+
+    def test_codex_client_passes_timeout(self):
+        """_build_codex_client must pass timeout to OpenAI()."""
+        with (
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("agent.auxiliary_client._select_pool_entry",
+                  return_value=(True, MagicMock(runtime_api_key="pool-token",
+                                                runtime_base_url="https://chatgpt.com/backend-api/codex"))),
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_codex_client
+
+            _build_codex_client("gpt-5.4")
+
+            assert mock_openai.call_args is not None
+            assert "timeout" in mock_openai.call_args.kwargs, (
+                f"OpenAI() kwargs missing timeout in _build_codex_client"
+            )
+            assert mock_openai.call_args.kwargs["timeout"] == self._expected_timeout()
+
+    def test_openrouter_fallback_passes_timeout(self):
+        """_try_openrouter must pass timeout to OpenAI()."""
+        with (
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _try_openrouter
+
+            # This will fail network-wise, but we just want to see the constructor call
+            with patch("agent.auxiliary_client.openai", create=True):
+                try:
+                    _try_openrouter()
+                except Exception:
+                    pass
+
+            # _try_openrouter may not call OpenAI if env vars are unset;
+            # that's fine — the test just ensures that WHEN it does, timeout is there.
+            if mock_openai.call_args:
+                assert "timeout" in mock_openai.call_args.kwargs, (
+                    f"OpenAI() kwargs missing timeout in _try_openrouter"
+                )
+

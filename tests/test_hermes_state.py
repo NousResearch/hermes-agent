@@ -11,12 +11,16 @@ class _NoFtsCursor(sqlite3.Cursor):
     """Simulate a SQLite build without the fts5 module."""
 
     def execute(self, sql, parameters=()):
-        if sql.strip() == "SELECT * FROM messages_fts LIMIT 0":
-            raise sqlite3.OperationalError("no such table: messages_fts")
+        probe = sql.strip()
+        if probe in (
+            "SELECT * FROM messages_fts LIMIT 0",
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such table: " + probe.split()[-3])
         return super().execute(sql, parameters)
 
     def executescript(self, sql_script):
-        if "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5" in sql_script:
+        if "USING fts5" in sql_script:
             raise sqlite3.OperationalError("no such module: fts5")
         return super().executescript(sql_script)
 
@@ -167,6 +171,10 @@ class TestSessionLifecycle:
         db = SessionDB(db_path=tmp_path / "state.db")
         try:
             assert db._fts_enabled is False
+            # Neither FTS5 virtual table should have been created on a build
+            # that lacks the fts5 module — both init paths must degrade.
+            assert db._fts_table_exists("messages_fts") is False
+            assert db._fts_table_exists("messages_fts_trigram") is False
 
             db.create_session(session_id="s1", source="cli")
             db.append_message("s1", role="user", content="hello from sqlite without fts")

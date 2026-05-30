@@ -50,6 +50,25 @@ _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
 
+class _PassthroughSessionCM:
+    """Async-context wrapper that yields a pre-existing object as-is.
+
+    Used by ``MattermostAdapter._open_session`` so test fixtures that set
+    ``self._session`` to a ``MagicMock`` continue to intercept HTTP calls
+    after the production code switched to per-call ``aiohttp.ClientSession``
+    (the cross-loop fix). The wrapper does not close the inner object on
+    context exit.
+    """
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    async def __aenter__(self) -> Any:
+        return self._inner
+
+    async def __aexit__(self, *args: Any) -> bool:
+        return False
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter can be used."""
     token = os.getenv("MATTERMOST_TOKEN", "")
@@ -109,17 +128,39 @@ class MattermostAdapter(BasePlatformAdapter):
             "Content-Type": "application/json",
         }
 
+    def _open_session(self, timeout_sec: int = 30) -> Any:
+        """Return an async context manager for an aiohttp ClientSession.
+
+        Production: creates a fresh ``ClientSession`` in the *current* event
+        loop. This avoids the "Timeout context manager should be used inside
+        a task" ``RuntimeError`` raised by ``aiohttp`` when the cached
+        ``self._session`` (bound to the gateway's main loop and to the
+        WebSocket) is consumed from a worker-loop bridge such as
+        ``send_message`` dispatched from the agent via
+        ``model_tools._run_async``.
+
+        Tests: if ``self._session`` has been replaced with a non-aiohttp
+        object (typically a ``MagicMock``), it is yielded as-is through a
+        passthrough wrapper so existing test fixtures keep intercepting
+        HTTP calls without modification.
+        """
+        import aiohttp
+        if self._session is not None and not isinstance(self._session, aiohttp.ClientSession):
+            return _PassthroughSessionCM(self._session)
+        return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_sec))
+
     async def _api_get(self, path: str) -> Dict[str, Any]:
         """GET /api/v4/{path}."""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async with self._open_session(30) as session:
+                async with session.get(url, headers=self._headers()) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
         except aiohttp.ClientError as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
             return {}
@@ -131,15 +172,15 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async with self._open_session(30) as session:
+                async with session.post(
+                    url, headers=self._headers(), json=payload,
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
         except aiohttp.ClientError as exc:
             logger.error("MM API POST %s network error: %s", path, exc)
             return {}
@@ -151,14 +192,15 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.put(
-                url, headers=self._headers(), json=payload
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async with self._open_session(30) as session:
+                async with session.put(
+                    url, headers=self._headers(), json=payload
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
@@ -179,14 +221,15 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        async with self._open_session(60) as session:
+            async with session.post(url, headers=headers, data=form) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -200,9 +243,11 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("Mattermost: URL or token not configured")
             return False
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
+        # Default timeout is intentionally omitted: per-call ``_open_session``
+        # wraps each REST request with its own timeout (see ``_open_session``
+        # for the cross-loop rationale). ``self._session`` here is reserved
+        # for the WebSocket, which uses ``heartbeat=`` for liveness.
+        self._session = aiohttp.ClientSession()
         self._closing = False
 
         # Verify credentials and fetch bot identity.
@@ -438,18 +483,19 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status >= 500 or resp.status == 429:
-                        if attempt < 2:
-                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
-                                         attempt + 1, url[:80], resp.status)
-                            await asyncio.sleep(1.5 * (attempt + 1))
-                            continue
-                    if resp.status >= 400:
-                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
-                    file_data = await resp.read()
-                    ct = resp.content_type or "application/octet-stream"
-                    break
+                async with self._open_session(30) as session:
+                    async with session.get(url) as resp:
+                        if resp.status >= 500 or resp.status == 429:
+                            if attempt < 2:
+                                logger.debug("Mattermost download retry %d/2 for %s (status %d)",
+                                             attempt + 1, url[:80], resp.status)
+                                await asyncio.sleep(1.5 * (attempt + 1))
+                                continue
+                        if resp.status >= 400:
+                            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                        file_data = await resp.read()
+                        ct = resp.content_type or "application/octet-stream"
+                        break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
@@ -568,17 +614,16 @@ class MattermostAdapter(BasePlatformAdapter):
                             logger.warning("Mattermost: blocked unsafe image URL in batch")
                             continue
                         try:
-                            async with self._session.get(
-                                image_url, timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
-                                if resp.status >= 400:
-                                    logger.warning(
-                                        "Mattermost: failed to download image (HTTP %d): %s",
-                                        resp.status, image_url[:80],
-                                    )
-                                    continue
-                                file_data = await resp.read()
-                                ct = resp.content_type or "image/png"
+                            async with self._open_session(30) as session:
+                                async with session.get(image_url) as resp:
+                                    if resp.status >= 400:
+                                        logger.warning(
+                                            "Mattermost: failed to download image (HTTP %d): %s",
+                                            resp.status, image_url[:80],
+                                        )
+                                        continue
+                                    file_data = await resp.read()
+                                    ct = resp.content_type or "image/png"
                         except Exception as dl_err:
                             logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
                             continue
@@ -808,29 +853,29 @@ class MattermostAdapter(BasePlatformAdapter):
 
                 import aiohttp
                 dl_url = f"{self._base_url}/api/v4/files/{fid}"
-                async with self._session.get(
-                    dl_url,
-                    headers={"Authorization": f"Bearer {self._token}"},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status < 400:
-                        file_data = await resp.read()
-                        from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
-                        if mime.startswith("image/"):
-                            local_path = cache_image_from_bytes(file_data, ext or ".png")
-                            media_urls.append(local_path)
-                            media_types.append(mime)
-                        elif mime.startswith("audio/"):
-                            from gateway.platforms.base import cache_audio_from_bytes
-                            local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
-                            media_urls.append(local_path)
-                            media_types.append(mime)
+                async with self._open_session(30) as session:
+                    async with session.get(
+                        dl_url,
+                        headers={"Authorization": f"Bearer {self._token}"},
+                    ) as resp:
+                        if resp.status < 400:
+                            file_data = await resp.read()
+                            from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
+                            if mime.startswith("image/"):
+                                local_path = cache_image_from_bytes(file_data, ext or ".png")
+                                media_urls.append(local_path)
+                                media_types.append(mime)
+                            elif mime.startswith("audio/"):
+                                from gateway.platforms.base import cache_audio_from_bytes
+                                local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
+                                media_urls.append(local_path)
+                                media_types.append(mime)
+                            else:
+                                local_path = cache_document_from_bytes(file_data, fname)
+                                media_urls.append(local_path)
+                                media_types.append(mime)
                         else:
-                            local_path = cache_document_from_bytes(file_data, fname)
-                            media_urls.append(local_path)
-                            media_types.append(mime)
-                    else:
-                        logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
+                            logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
 

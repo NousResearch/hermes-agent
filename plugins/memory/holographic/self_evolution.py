@@ -133,8 +133,10 @@ class SelfEvolution:
         conn: sqlite3.Connection,
         lock: threading.RLock,
         config: dict | None = None,
+        pipeline_conn: sqlite3.Connection | None = None,
     ) -> None:
-        self._conn = conn
+        self._conn = conn               # memory_store.db (facts, feedback)
+        self._pipeline_conn = pipeline_conn or conn  # pipeline_state.db (schemas, consolidation_runs, dream_hypotheses)
         self._lock = lock
         self._config = config or {}
         self._enabled = self._config.get("self_evolution_enabled", False)
@@ -248,13 +250,13 @@ class SelfEvolution:
         Falls back to 0.3 if tables unavailable.
         """
         try:
-            runs = self._conn.execute(
+            runs = self._pipeline_conn.execute(
                 "SELECT COUNT(*) FROM consolidation_runs "
                 "WHERE timestamp >= ?",
                 (since,),
             ).fetchone()
 
-            schemas = self._conn.execute(
+            schemas = self._pipeline_conn.execute(
                 "SELECT COUNT(*) FROM schemas "
                 "WHERE created_at >= ?",
                 (since,),
@@ -276,7 +278,7 @@ class SelfEvolution:
         Falls back to 0.2 if no hypotheses exist.
         """
         try:
-            row = self._conn.execute(
+            row = self._pipeline_conn.execute(
                 """
                 SELECT
                     COUNT(*) FILTER (WHERE verified = 1) AS verified,

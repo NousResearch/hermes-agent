@@ -4210,7 +4210,16 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
         return True
 
     parsed = urllib.parse.urlparse(origin)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"}:
+        # Packaged Electron loads the desktop renderer over file://, so its
+        # WebSocket handshake carries a non-web Origin such as file:// or null.
+        # DNS-rebinding attacks originate from an http(s) site; they cannot
+        # forge a file:// origin and still hold the loopback session token.
+        # Public/gated binds have no legitimate non-web client, so keep
+        # rejecting these origins there.
+        return bound_host.lower() in _LOOPBACK_HOST_VALUES
+
+    if not parsed.netloc:
         return False
 
     return _is_accepted_host(parsed.netloc, bound_host)

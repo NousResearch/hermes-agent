@@ -1629,6 +1629,31 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_includes_ca_bundle_env_when_bundle_exists(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        ca_bundle = hermes_home / "certs" / "hermes-ca-bundle.pem"
+        ca_bundle.parent.mkdir(parents=True)
+        ca_bundle.write_text("FAKE CERT", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        for key in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+            assert f"<key>{key}</key>" in plist
+            assert f"<string>{ca_bundle}</string>" in plist
+
+    def test_launchd_plist_omits_ca_bundle_env_when_bundle_missing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        for key in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+            assert f"<key>{key}</key>" not in plist
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

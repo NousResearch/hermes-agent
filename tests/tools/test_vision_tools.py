@@ -313,58 +313,6 @@ class TestErrorLoggingExcInfo:
             error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
             assert any(r.exc_info and r.exc_info[0] is not None for r in error_records)
 
-    @pytest.mark.asyncio
-    async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):
-        """Temp file cleanup failure should log warning with exc_info."""
-        # Create a real temp file that will be "downloaded"
-        temp_dir = tmp_path / "temp_vision_images"
-        temp_dir.mkdir()
-
-        async def fake_download(url, dest, max_retries=3):
-            """Simulate download by writing file to the expected destination."""
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
-            return dest
-
-        with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
-            patch("tools.vision_tools._download_image", side_effect=fake_download),
-            patch(
-                "tools.vision_tools._image_to_base64_data_url",
-                return_value="data:image/jpeg;base64,abc",
-            ),
-            caplog.at_level(logging.WARNING, logger="tools.vision_tools"),
-        ):
-            # Mock the async_call_llm function to return a mock response
-            mock_response = MagicMock()
-            mock_choice = MagicMock()
-            mock_choice.message.content = "A test image description"
-            mock_response.choices = [mock_choice]
-
-            with (
-                patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
-            ):
-                # Make unlink fail to trigger cleanup warning
-                original_unlink = Path.unlink
-
-                def failing_unlink(self, *args, **kwargs):
-                    raise PermissionError("no permission")
-
-                with patch.object(Path, "unlink", failing_unlink):
-                    result = await vision_analyze_tool(
-                        "https://example.com/tempimg.jpg", "describe", "test/model"
-                    )
-
-            warning_records = [
-                r
-                for r in caplog.records
-                if r.levelno == logging.WARNING
-                and "temporary file" in r.getMessage().lower()
-            ]
-            assert len(warning_records) >= 1
-            assert warning_records[0].exc_info is not None
-
-
 class TestVisionConfig:
     @pytest.mark.asyncio
     async def test_vision_uses_configured_temperature_and_timeout(self, tmp_path):
@@ -435,7 +383,7 @@ class TestVisionSafetyGuards:
             result = json.loads(await vision_analyze_tool(str(secret), "extract text"))
 
         assert result["success"] is False
-        assert "Only real image files are supported" in result["error"]
+        assert "not a recognized image" in result["error"]
         mock_llm.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -448,15 +396,16 @@ class TestVisionSafetyGuards:
         }
 
         with (
-            patch("tools.vision_tools.check_website_access", return_value=blocked),
-            patch("tools.vision_tools._validate_image_url", return_value=True),
-            patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
+            patch("tools.website_policy.check_website_access", return_value=blocked),
+            patch("tools.url_safety.is_safe_url", return_value=True),
+            patch("tools.image_source._download_to_bytes", new_callable=AsyncMock) as mock_download,
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm,
         ):
             result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
 
         assert result["success"] is False
-        assert "Blocked by website policy" in result["error"]
         mock_download.assert_not_awaited()
+        mock_llm.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_download_blocks_redirected_final_url(self, tmp_path):

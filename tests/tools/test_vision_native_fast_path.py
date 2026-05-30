@@ -8,7 +8,6 @@ the pixels directly on its next turn.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import os
@@ -100,12 +99,11 @@ class TestBuildNativeVisionToolResult:
 
 
 class TestVisionAnalyzeNative:
-    def test_local_file_returns_multimodal_envelope(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_local_file_returns_multimodal_envelope(self, tmp_path):
         img = tmp_path / "test.png"
         img.write_bytes(_TINY_PNG)
-        result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(img), "what is this?")
-        )
+        result = await _vision_analyze_native(str(img), "what is this?")
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
         parts = result["content"]
@@ -114,45 +112,42 @@ class TestVisionAnalyzeNative:
         url = next(p["image_url"]["url"] for p in parts if p.get("type") == "image_url")
         assert url.startswith("data:image/")
 
-    def test_missing_file_returns_error_string(self, tmp_path):
-        result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(tmp_path / "nope.png"), "?")
-        )
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_error_string(self, tmp_path):
+        result = await _vision_analyze_native(str(tmp_path / "nope.png"), "?")
         # tool_error returns a JSON string, not the multimodal envelope
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed.get("success") is False
         assert parsed.get("error")
 
-    def test_data_url_returns_multimodal_envelope(self):
+    @pytest.mark.asyncio
+    async def test_data_url_returns_multimodal_envelope(self):
         import base64 as _b64
 
         data_url = "data:image/png;base64," + _b64.b64encode(_TINY_PNG).decode()
-        result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(data_url, "what is this?")
-        )
+        result = await _vision_analyze_native(data_url, "what is this?")
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
 
-    def test_empty_image_url_returns_error(self):
-        result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native("", "?")
-        )
+    @pytest.mark.asyncio
+    async def test_empty_image_url_returns_error(self):
+        result = await _vision_analyze_native("", "?")
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed.get("success") is False
         assert "image_url is required" in parsed.get("error", "")
 
-    def test_file_url_scheme_resolves(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_file_url_scheme_resolves(self, tmp_path):
         img = tmp_path / "t.png"
         img.write_bytes(_TINY_PNG)
-        result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(f"file://{img}", "?")
-        )
+        result = await _vision_analyze_native(f"file://{img}", "?")
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
 
-    def test_oversized_image_resized_under_embed_cap(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_oversized_image_resized_under_embed_cap(self, tmp_path):
         """Regression for the wedged-session incident (May 2026).
 
         A vision tool-result image is baked into conversation history and
@@ -163,11 +158,8 @@ class TestVisionAnalyzeNative:
         embed cap (well under 5 MB) BEFORE embedding, not just at the 20 MB
         hard ceiling.  Skips if Pillow isn't available (resize is a no-op).
         """
-        pytest = __import__("pytest")
-        try:
-            from PIL import Image
-        except ImportError:
-            pytest.skip("Pillow not installed — proactive resize is a no-op")
+        pytest.importorskip("PIL")  # proactive resize requires Pillow
+        from PIL import Image
 
         from tools.vision_tools import _EMBED_TARGET_BYTES
 
@@ -176,9 +168,7 @@ class TestVisionAnalyzeNative:
         Image.effect_noise((2600, 2600), 80).convert("RGB").save(big, format="PNG")
         assert big.stat().st_size * 4 // 3 > 5 * 1024 * 1024, "test image not big enough"
 
-        result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(big), "describe")
-        )
+        result = await _vision_analyze_native(str(big), "describe")
         assert isinstance(result, dict) and result.get("_multimodal") is True
         url = next(
             p["image_url"]["url"]
@@ -190,15 +180,19 @@ class TestVisionAnalyzeNative:
             f"{_EMBED_TARGET_BYTES / 1024 / 1024:.0f} MB — would wedge sessions on Anthropic"
         )
 
-    def test_oversize_image_is_resized_not_rejected(self, tmp_path):
-        """Regression: a 20-50MB image must be resized through to a multimodal
+    @pytest.mark.asyncio
+    async def test_oversize_image_is_resized_not_rejected(self, tmp_path):
+        """Regression: a >20MB image must be resized through to a multimodal
         envelope, NOT hard-rejected by the resolver before resize can run.
 
-        (The resolver used to cap raw bytes at 20MB inside ``_finalize``; the
-        ingest cap is now 50MB and the 20MB payload cap is enforced post-resize.)
+        The resolver used to cap raw bytes at 20MB inside ``_finalize`` and
+        reject anything larger outright; the ingest cap is now 50MB, so a
+        20-50MB image survives ingest and is resized down to the embed cap.
         """
         pytest.importorskip("PIL")  # resize requires Pillow
         from PIL import Image
+
+        from tools.vision_tools import _EMBED_TARGET_BYTES
 
         # Incompressible noise so the raw PNG genuinely exceeds 20MB (a solid
         # color would compress to a few KB and not exercise the resize path).
@@ -207,14 +201,14 @@ class TestVisionAnalyzeNative:
             big, format="PNG")
         assert big.stat().st_size > 20 * 1024 * 1024
 
-        result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(big), "what is this?")
-        )
+        result = await _vision_analyze_native(str(big), "what is this?")
         assert isinstance(result, dict), result  # not an error JSON string
         assert result.get("_multimodal") is True
         url = next(p["image_url"]["url"] for p in result["content"]
                    if p.get("type") == "image_url")
-        assert len(url) <= 20 * 1024 * 1024  # resized under the payload cap
+        # Resized down to the proactive embed cap, not merely under the 20MB
+        # hard ceiling — assert the real bound so the test can't silently rot.
+        assert len(url) <= _EMBED_TARGET_BYTES
 
 
 # ─── task_id seam: dispatch must thread task_id to the resolver ──────────────
@@ -262,7 +256,8 @@ class TestTaskIdSeam:
 class TestHandleVisionAnalyzeFastPath:
     """Verify the dispatcher chooses fast-path vs aux-LLM correctly."""
 
-    def test_vision_capable_main_model_uses_fast_path(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_vision_capable_main_model_uses_fast_path(self, tmp_path):
         """Main model supports native vision → fast path returns multimodal."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
@@ -277,8 +272,7 @@ class TestHandleVisionAnalyzeFastPath:
                 "agent.image_routing.decide_image_input_mode",
                 return_value="native",
             ):
-                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                result = asyncio.get_event_loop().run_until_complete(coro)
+                result = await _handle_vision_analyze({"image_url": str(img), "question": "?"})
         finally:
             clear_runtime_main()
 
@@ -286,8 +280,9 @@ class TestHandleVisionAnalyzeFastPath:
             f"Expected multimodal envelope, got {type(result).__name__}: {str(result)[:200]}"
         assert result.get("_multimodal") is True
 
-    def test_non_vision_main_model_falls_through_to_aux(self, tmp_path, monkeypatch):
-        """Non-vision main model → fast path skipped, aux LLM path attempted."""
+    @pytest.mark.asyncio
+    async def test_non_vision_main_model_falls_through_to_aux(self, tmp_path):
+        """Non-vision main model → fast path skipped, aux LLM path taken."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
@@ -297,17 +292,21 @@ class TestHandleVisionAnalyzeFastPath:
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("openrouter", "qwen/qwen3-coder")
         try:
-            with patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
-                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                result = asyncio.get_event_loop().run_until_complete(coro)
+            with patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                result = await _handle_vision_analyze({"image_url": str(img), "question": "?"})
         finally:
             clear_runtime_main()
 
-        assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
-            "Fast path fired for non-vision model; should have fallen through to aux LLM"
+        # The aux LLM path must actually be the one taken — not merely "not the
+        # fast path" (which an unrelated error would also satisfy).
+        mock_aux.assert_called_once()
+        assert json.loads(result) == {"sentinel": "aux-path"}
 
-    def test_fast_path_disabled_for_unsupported_provider(self, tmp_path, monkeypatch):
-        """Even with vision-capable model, unknown provider → fall through."""
+    @pytest.mark.asyncio
+    async def test_fast_path_disabled_for_unsupported_provider(self, tmp_path):
+        """Even with vision-capable model, unknown provider → fall through to aux."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
@@ -317,16 +316,18 @@ class TestHandleVisionAnalyzeFastPath:
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("brand-new-provider", "anthropic/claude-opus-4.6")
         try:
-            with patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
-                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                result = asyncio.get_event_loop().run_until_complete(coro)
+            with patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                result = await _handle_vision_analyze({"image_url": str(img), "question": "?"})
         finally:
             clear_runtime_main()
 
-        assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
-            "Fast path fired for unknown provider; should have fallen through"
+        mock_aux.assert_called_once()
+        assert json.loads(result) == {"sentinel": "aux-path"}
 
-    def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
         """supports_vision=true enables the fast path on an unlisted provider."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
@@ -343,15 +344,15 @@ class TestHandleVisionAnalyzeFastPath:
             ), patch(
                 "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
             ) as mock_aux:
-                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                result = asyncio.get_event_loop().run_until_complete(coro)
+                result = await _handle_vision_analyze({"image_url": str(img), "question": "?"})
         finally:
             clear_runtime_main()
 
         assert isinstance(result, dict) and result.get("_multimodal") is True
         mock_aux.assert_not_called()
 
-    def test_text_mode_wins_over_supports_vision_override(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_text_mode_wins_over_supports_vision_override(self, tmp_path):
         """Explicit text routing blocks the fast path even with supports_vision."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
@@ -371,8 +372,7 @@ class TestHandleVisionAnalyzeFastPath:
             ), patch(
                 "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
             ) as mock_aux:
-                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
-                result = asyncio.get_event_loop().run_until_complete(coro)
+                result = await _handle_vision_analyze({"image_url": str(img), "question": "?"})
         finally:
             clear_runtime_main()
 

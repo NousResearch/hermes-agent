@@ -366,18 +366,19 @@ class TestVisionDispatchLoopSafety:
                 new_callable=AsyncMock,
                 return_value=fake_response,
             ),
+            # Image sourcing now funnels through tools.image_source. Mock only
+            # the two external boundaries the resolver touches — the URL-safety
+            # gate (avoids a live DNS/policy lookup for example.com) and the
+            # network download — so the real http branch, _finalize magic-byte
+            # sniff, and base64 encode still execute.
             patch(
-                "tools.vision_tools._download_image",
+                "tools.image_source._http_block_reason",
+                return_value=None,
+            ),
+            patch(
+                "tools.image_source._download_to_bytes",
                 new_callable=AsyncMock,
-                side_effect=lambda url, dest, **kw: _write_fake_image(dest),
-            ),
-            patch(
-                "tools.vision_tools._validate_image_url",
-                return_value=True,
-            ),
-            patch(
-                "tools.vision_tools._image_to_base64_data_url",
-                return_value="data:image/jpeg;base64,abc",
+                return_value=_fake_jpeg_bytes(),
             ),
         ):
             result_json = registry.dispatch(
@@ -410,18 +411,17 @@ class TestVisionDispatchLoopSafety:
                 new_callable=AsyncMock,
                 return_value=fake_response,
             ),
+            # See test_vision_dispatch_keeps_loop_alive: mock only the resolver's
+            # external boundaries (safety gate + network), not the moved-away
+            # tools.vision_tools seams.
             patch(
-                "tools.vision_tools._download_image",
+                "tools.image_source._http_block_reason",
+                return_value=None,
+            ),
+            patch(
+                "tools.image_source._download_to_bytes",
                 new_callable=AsyncMock,
-                side_effect=lambda url, dest, **kw: _write_fake_image(dest),
-            ),
-            patch(
-                "tools.vision_tools._validate_image_url",
-                return_value=True,
-            ),
-            patch(
-                "tools.vision_tools._image_to_base64_data_url",
-                return_value="data:image/jpeg;base64,abc",
+                return_value=_fake_jpeg_bytes(),
             ),
         ):
             args = {"image_url": "https://example.com/cat.png", "question": "Describe"}
@@ -438,8 +438,6 @@ class TestVisionDispatchLoopSafety:
         assert not loop_after_second.is_closed()
 
 
-def _write_fake_image(dest):
-    """Write minimal bytes so vision_analyze_tool thinks download succeeded."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
-    return dest
+def _fake_jpeg_bytes() -> bytes:
+    """Minimal JPEG-magic bytes so the resolver's _finalize sniffs image/jpeg."""
+    return b"\xff\xd8\xff" + b"\x00" * 16

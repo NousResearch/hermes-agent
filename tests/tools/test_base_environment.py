@@ -32,7 +32,7 @@ class TestWrapCommand:
         assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
-        assert "export -p >" in wrapped
+        assert "export -p | grep -Eiv" in wrapped
         assert "pwd -P >" in wrapped
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped

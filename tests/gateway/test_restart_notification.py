@@ -1,6 +1,5 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
-import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock

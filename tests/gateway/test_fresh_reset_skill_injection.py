@@ -25,7 +25,6 @@ a "Session automatically reset due to inactivity" user-facing notice and
 a context-note prepend into the agent's prompt — both wrong for an explicit
 /new or /reset.
 """
-import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionSource, SessionStore

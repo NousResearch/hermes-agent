@@ -10704,10 +10704,11 @@ class GatewayRunner:
 
         # Persist the new model to the session DB so the dashboard
         # shows the updated model (#34850).
-        if self._session_db is not None:
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is not None:
             try:
                 _sess_entry = self.session_store.get_or_create_session(source)
-                self._session_db.update_session_model(
+                _sess_db.update_session_model(
                     _sess_entry.session_id, result.new_model
                 )
             except Exception as exc:

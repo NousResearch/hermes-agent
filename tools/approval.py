@@ -1407,6 +1407,40 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
+def _chat_prefix(session_key: str) -> str:
+    """Extract the chat-identity prefix from a session key.
+
+    Session keys have the form ``agent:main:{platform}:{chat_type}:{chat_id}[:...]``.
+    The prefix is the first five colon-separated segments (up to and including
+    chat_id), which uniquely identify a chat regardless of per-user or
+    per-thread suffixes.  Returns the full key when it has fewer than five
+    segments (defensive fallback).
+    """
+    parts = session_key.split(":")
+    if len(parts) >= 5:
+        return ":".join(parts[:5])
+    return session_key
+
+
+def _resolve_queue_key(session_key: str) -> Optional[str]:
+    """Return the actual key in ``_gateway_queues`` for *session_key*.
+
+    Tries an exact match first.  When that fails, falls back to a
+    chat-prefix match so that ``/approve`` still works when the inbound
+    source produces a slightly different session key (e.g. weixin
+    content-dedup or bridge reshuffling user identifiers).
+
+    Must be called with ``_lock`` held.
+    """
+    if session_key in _gateway_queues:
+        return session_key
+    prefix = _chat_prefix(session_key)
+    for key in _gateway_queues:
+        if _chat_prefix(key) == prefix:
+            return key
+    return None
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
@@ -1419,7 +1453,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
     Returns the number of approvals resolved (0 means nothing was pending).
     """
     with _lock:
-        queue = _gateway_queues.get(session_key)
+        actual_key = _resolve_queue_key(session_key)
+        if actual_key is None:
+            return 0
+        queue = _gateway_queues.get(actual_key)
         if not queue:
             return 0
         if resolve_all:
@@ -1428,7 +1465,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
         else:
             targets = [queue.pop(0)]
         if not queue:
-            _gateway_queues.pop(session_key, None)
+            _gateway_queues.pop(actual_key, None)
 
     for entry in targets:
         entry.result = choice
@@ -1439,7 +1476,13 @@ def resolve_gateway_approval(session_key: str, choice: str,
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
-        return bool(_gateway_queues.get(session_key))
+        if _gateway_queues.get(session_key):
+            return True
+        prefix = _chat_prefix(session_key)
+        return any(
+            _chat_prefix(key) == prefix
+            for key in _gateway_queues
+        )
 
 
 def submit_pending(session_key: str, approval: dict):

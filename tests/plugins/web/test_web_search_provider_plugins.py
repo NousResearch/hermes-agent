@@ -91,17 +91,13 @@ class TestBundledPluginsRegister:
     @pytest.mark.parametrize(
         "plugin_name,expected_search,expected_extract",
         [
-            ("brave-free", True, False, False),
-            ("ddgs", True, False, False),
-            ("searxng", True, False, False),
-            ("exa", True, True, False),
-            ("parallel", True, True, False),
-            ("tavily", True, True, True),
-            ("xai", True, False, False),
-            # firecrawl: search + extract + crawl. Crawl was originally
-            # disabled in the migration (fell through to a legacy inline
-            # path); the follow-up commit enabled it natively.
-            ("firecrawl", True, True, True),
+            ("brave-free", True, False),
+            ("ddgs", True, False),
+            ("searxng", True, False),
+            ("exa", True, True),
+            ("parallel", True, True),
+            ("tavily", True, True),
+            ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
         ],

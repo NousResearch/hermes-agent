@@ -1072,22 +1072,31 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
-    # First pass: canonical names (so they win slots if we hit the cap).
+    # Match Telegram-visible commands first so gateway command menus stay in
+    # parity across platforms before optional aliases consume Slack's cap.
+    lookup = _build_command_lookup()
+    for name, description in telegram_bot_commands():
+        cmd = lookup.get(name.replace("_", "-")) or lookup.get(name)
+        hint = cmd.args_hint if cmd else ""
+        _add(name, description, hint or "")
+
+    # Add the short aliases that Slack users expect as native commands.
+    for alias in ("reset", "bg", "btw", "q"):
+        cmd = lookup.get(alias)
+        if cmd and _is_gateway_available(cmd, overrides):
+            _add(alias, f"Alias for /{cmd.name} - {cmd.description}", cmd.args_hint or "")
+
+    # Fill any remaining slots in registry order.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
-
-    # Second pass: aliases.
-    for cmd in COMMAND_REGISTRY:
-        if not _is_gateway_available(cmd, overrides):
-            continue
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
-            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+            _add(alias, f"Alias for /{cmd.name} - {cmd.description}", cmd.args_hint or "")
 
-    # Third pass: plugin commands.
+    # Second pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 

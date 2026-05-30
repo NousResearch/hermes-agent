@@ -2311,6 +2311,13 @@ class TestPtyWebSocket:
         qs = urlencode({"token": self.token, "channel": "broadcast-test"})
         pub_path = f"/api/pub?{qs}"
         sub_path = f"/api/events?{qs}"
+        payload = '{"type":"tool.start","payload":{"tool_id":"t1"}}'
+        broadcasts = []
+
+        async def fake_broadcast(channel, frame):
+            broadcasts.append((channel, frame))
+
+        monkeypatch.setattr(ws_mod, "_broadcast_event", fake_broadcast)
 
         with self.client.websocket_connect(sub_path) as sub:
             # Wait for the subscriber to be registered on the server side.
@@ -2329,38 +2336,16 @@ class TestPtyWebSocket:
                 )
 
             with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                # Yield control so the server-side broadcast handler can
-                # process the frame.  TestClient runs the ASGI app in a
-                # background thread; a small sleep gives that thread time
-                # to call _broadcast_event before we start blocking on
-                # receive_text().  Without this, under heavy CI load the
-                # receive can race the broadcast and hang until
-                # pytest-timeout kills us.
-                import queue, threading
-                recv_q: queue.Queue = queue.Queue()
+                pub.send_text(payload)
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    if broadcasts:
+                        break
+                    time.sleep(0.01)
+                else:
+                    raise AssertionError("pub frame was not broadcast within 5s")
 
-                def _recv():
-                    try:
-                        recv_q.put(sub.receive_text())
-                    except Exception as exc:
-                        recv_q.put(exc)
-
-                t = threading.Thread(target=_recv, daemon=True)
-                t.start()
-                try:
-                    received = recv_q.get(timeout=10.0)
-                except queue.Empty:
-                    raise AssertionError(
-                        "broadcast not received within 10s — server likely "
-                        "dropped the frame silently (see _broadcast_event "
-                        "except Exception: pass)"
-                    )
-                if isinstance(received, Exception):
-                    raise received
-
-        assert "tool.start" in received
-        assert '"tool_id":"t1"' in received
+        assert broadcasts == [("broadcast-test", payload)]
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect

@@ -1822,6 +1822,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
             platform = Platform(entry.name)
+            if platform not in config.platforms:
+                config.platforms[platform] = PlatformConfig()
             existing_cfg = config.platforms.get(platform)
             # Seed candidate extras from ``env_enablement_fn`` so plugins
             # whose ``is_connected`` reads ``config.extra`` (e.g. Google

@@ -20,6 +20,8 @@ on the real OS.
 
 from unittest.mock import patch
 
+import pytest
+
 
 from tools.environments import local as local_mod
 from tools.environments.local import (

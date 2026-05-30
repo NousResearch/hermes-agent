@@ -29,7 +29,15 @@ def _write_profile(tmp_path, **overrides):
     return profile_path
 
 
-def test_vendor_status_sees_cloned_sdk():
+def test_vendor_status_sees_cloned_sdk(monkeypatch, tmp_path):
+    sdk_path = tmp_path / "neuro-sdk"
+    api_path = sdk_path / "API"
+    api_path.mkdir(parents=True)
+    (api_path / "SPECIFICATION.md").write_text("# Spec\n", encoding="utf-8")
+    (api_path / "README.md").write_text("# API\n", encoding="utf-8")
+    (sdk_path / "LICENSE.md").write_text("MIT License\n", encoding="utf-8")
+    monkeypatch.setattr(neuro_bridge, "NEURO_SDK_PATH", sdk_path)
+
     status = neuro_bridge.neuro_sdk_vendor_status()
 
     assert status["success"] is True

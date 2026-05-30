@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import shlex
 import signal
 import subprocess
@@ -299,6 +300,7 @@ class TestStdinHelpers:
             pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="PTY EOF integration is POSIX-only")
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
@@ -580,7 +582,7 @@ class TestPopenLeakOnSetupFailure:
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch("os.getpgid", side_effect=ProcessLookupError, create=True), \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -612,7 +614,7 @@ class TestPopenLeakOnSetupFailure:
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", return_value=fake_thread), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch("os.getpgid", side_effect=ProcessLookupError, create=True), \
              patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
             with pytest.raises(OSError, match="disk full"):
                 registry.spawn_local("echo hello", cwd="/tmp")

@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -254,21 +255,24 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
+    def _win_join(*parts: str) -> str:
+        return ntpath.join(*(part for part in parts if part))
+
     def _is_wsl_bash_stub(candidate: str | None) -> bool:
         if not candidate:
             return False
         try:
-            resolved = os.path.normcase(os.path.abspath(candidate))
+            resolved = ntpath.normcase(ntpath.abspath(candidate))
         except (OSError, ValueError):
-            resolved = os.path.normcase(str(candidate))
-        windir = os.path.normcase(os.environ.get("WINDIR", r"C:\Windows"))
-        local_appdata = os.path.normcase(os.environ.get("LOCALAPPDATA", ""))
-        wsl_paths = [os.path.join(windir, "system32", "bash.exe")]
+            resolved = ntpath.normcase(str(candidate))
+        windir = ntpath.normcase(os.environ.get("WINDIR", r"C:\Windows"))
+        local_appdata = ntpath.normcase(os.environ.get("LOCALAPPDATA", ""))
+        wsl_paths = [_win_join(windir, "system32", "bash.exe")]
         if local_appdata:
             wsl_paths.append(
-                os.path.join(local_appdata, "microsoft", "windowsapps", "bash.exe")
+                _win_join(local_appdata, "microsoft", "windowsapps", "bash.exe")
             )
-        return any(resolved == os.path.normcase(path) for path in wsl_paths)
+        return any(resolved == ntpath.normcase(path) for path in wsl_paths)
 
     # Prefer our own portable Git install first — this way a broken or
     # partially-uninstalled system Git can't hijack the bash lookup.  The
@@ -280,19 +284,19 @@ def _find_bash() -> str:
     #   PortableGit: %LOCALAPPDATA%\hermes\git\bin\bash.exe   (primary)
     #   MinGit:      %LOCALAPPDATA%\hermes\git\usr\bin\bash.exe (legacy/32-bit fallback)
     _local_appdata = os.environ.get("LOCALAPPDATA", "")
-    _hermes_portable_git = os.path.join(_local_appdata, "hermes", "git") if _local_appdata else ""
+    _hermes_portable_git = _win_join(_local_appdata, "hermes", "git") if _local_appdata else ""
     if _hermes_portable_git:
         for candidate in (
-            os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
-            os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+            _win_join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
+            _win_join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
             if os.path.isfile(candidate):
                 return candidate
 
     for candidate in (
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
+        _win_join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        _win_join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        _win_join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate

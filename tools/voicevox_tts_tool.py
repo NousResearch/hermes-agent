@@ -304,9 +304,8 @@ def _play_wav_to_output_device(
 
 
 def _wav_bytes_to_float32(wav_bytes: bytes) -> tuple[Any, int, int]:
+    import struct
     import wave
-
-    import numpy as np
 
     with wave.open(io.BytesIO(wav_bytes)) as wf:
         channels = wf.getnchannels()
@@ -315,15 +314,32 @@ def _wav_bytes_to_float32(wav_bytes: bytes) -> tuple[Any, int, int]:
         frames = wf.readframes(wf.getnframes())
         frame_count = wf.getnframes()
 
-    if width == 2:
-        data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    elif width == 4:
-        data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-    else:
-        raise ValueError(f"unsupported WAV sample width: {width}")
+    try:
+        import numpy as np
 
-    if channels > 1:
-        data = data.reshape(-1, channels)
+        if width == 2:
+            data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif width == 4:
+            data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise ValueError(f"unsupported WAV sample width: {width}")
+
+        if channels > 1:
+            data = data.reshape(-1, channels)
+    except ImportError:
+        if width == 2:
+            raw = struct.unpack(f"<{len(frames) // 2}h", frames)
+            data = [sample / 32768.0 for sample in raw]
+        elif width == 4:
+            raw = struct.unpack(f"<{len(frames) // 4}i", frames)
+            data = [sample / 2147483648.0 for sample in raw]
+        else:
+            raise ValueError(f"unsupported WAV sample width: {width}") from None
+        if channels > 1:
+            data = [
+                data[index:index + channels]
+                for index in range(0, len(data), channels)
+            ]
 
     duration_ms = int(frame_count / samplerate * 1000) if samplerate else 0
     return data, samplerate, duration_ms

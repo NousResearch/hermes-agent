@@ -2,7 +2,7 @@
 
 > **Parent doc:** `.plans/ua-incorporation-strategy.md`
 > **Prerequisite:** Phase 1 (Foundation) ✓ complete — committed `24356edcd`, 80 tests pass, scan scripts verified on test-bed repos.
-> **Status:** Approval package prepared — awaiting JC approval for full-phase execution.
+> **Status:** D1-D3 complete, verified, reviewed, committed, and pushed (`5a39c7fc7`); D4 remains deferred pending explicit JC approval.
 > **Execution beads:** Defined in `.beads/phase2-d1-extract-imports.md`, `.beads/phase2-d2-code-scan-skill.md`, `.beads/phase2-d3-validation-gate-skill.md`, `.beads/phase2-d4-review-integration-deferred.md`.
 >
 > **These bead files are the authoritative execution units.** This plan describes intent and scope; the beads contain exact functions, schemas, test contracts, verification commands, and allowed/forbidden file lists. When executing, dispatch coder subagents using the bead files as the sole implementation spec.
@@ -240,12 +240,12 @@ Required top-level keys: `schema_version` (string, always `"1.0.0"`), `source_sc
 ## Phase 2 Deliverables Checklist
 
 - [x] Prerequisite: Phase 1 verified and committed (`24356edcd`, 80 tests pass)
-- [x] D1: `scripts/code-scan/extract_imports.py` + unit tests → `.beads/phase2-d1-extract-imports.md` — executed locally; Hermes verified
-- [x] D2: `skills/code-analysis/code-scan/SKILL.md` (≤80 lines) → `.beads/phase2-d2-code-scan-skill.md` — executed locally; 39 lines
-- [x] D3: `skills/code-analysis/validation-gate/SKILL.md` (≤80 lines) → `.beads/phase2-d3-validation-gate-skill.md` — executed locally; 48 lines
+- [x] D1: `scripts/code-scan/extract_imports.py` + unit tests → `.beads/phase2-d1-extract-imports.md` — complete; committed/pushed in `5a39c7fc7`
+- [x] D2: `skills/code-analysis/code-scan/SKILL.md` (≤80 lines) → `.beads/phase2-d2-code-scan-skill.md` — complete; 39 lines; committed/pushed in `5a39c7fc7`
+- [x] D3: `skills/code-analysis/validation-gate/SKILL.md` (≤80 lines) → `.beads/phase2-d3-validation-gate-skill.md` — complete; 48 lines; committed/pushed in `5a39c7fc7`
 - [ ] D4: `requesting-code-review` integration — **DEFERRED** unless JC explicitly approves → `.beads/phase2-d4-review-integration-deferred.md`
-- [ ] Verification: tests pass, context budget met, scope guardrails pass
-- [ ] Reviewer: spec compliance + quality/security + scope preservation PASS
+- [x] Verification: tests pass, context budget met, scope guardrails pass
+- [x] Reviewer: spec compliance + quality/security + scope preservation PASS (`.hermes/handoffs/2026-05-30-0648-phase2-d1-d3-review-pass.md`)
 - [x] Approval: JC approved D1-D3 autonomous execution; D4 deferred
 
 ### JC Approval Wording (copy-paste template)

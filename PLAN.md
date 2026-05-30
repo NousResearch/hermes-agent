@@ -16,17 +16,17 @@
 
 All deliverables committed in `24356edcd`. 80 tests pass.
 
-## Phase 2 (Orchestration) — 🔄 D1-D3 Executed Locally / Review Pending
+## Phase 2 (Orchestration) — ✅ D1-D3 Complete / Reviewed / Pushed
 
 | Bead | File | Status |
 |---|---|---|
-| D1 — extract_imports.py | `.beads/phase2-d1-extract-imports.md` | Executed locally; Hermes verified |
-| D2 — code-scan SKILL.md | `.beads/phase2-d2-code-scan-skill.md` | Executed locally; Hermes verified |
-| D3 — validation-gate SKILL.md | `.beads/phase2-d3-validation-gate-skill.md` | Executed locally; Hermes verified |
+| D1 — extract_imports.py | `.beads/phase2-d1-extract-imports.md` | Complete; committed `5a39c7fc7`; pushed to `jc-fork` |
+| D2 — code-scan SKILL.md | `.beads/phase2-d2-code-scan-skill.md` | Complete; committed `5a39c7fc7`; pushed to `jc-fork` |
+| D3 — validation-gate SKILL.md | `.beads/phase2-d3-validation-gate-skill.md` | Complete; reviewer PASS; committed `5a39c7fc7` |
 | D4 — code-review integration | `.beads/phase2-d4-review-integration-deferred.md` | Deferred |
 
-> JC approved **D1-D3 only** for autonomous execution.
-> **D4** remains deferred — requires explicit JC approval.
+> JC approved **D1-D3 only** for autonomous execution; checkpoint committed and pushed as `5a39c7fc7`.
+> **D4** remains deferred — requires explicit JC approval. Merge/deploy remain unapproved.
 
 ## Execution Model
 
@@ -42,4 +42,5 @@ Beads under `.beads/` are the authoritative execution units. Each bead contains:
 
 - Branch: `docs/ua-flywheel-phase1-phase2-plan`
 - Parent commit: `24356edcd` (Phase 1)
+- Latest Phase 2 checkpoint: `5a39c7fc7` pushed to `jc-fork/docs/ua-flywheel-phase1-phase2-plan`
 - Test bed repos: `cass_memory_system/`, `mission-control/`, hermes-agent itself

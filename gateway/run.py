@@ -1730,6 +1730,14 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        # Last successfully-resolved (non-empty) model, keyed by session. Used
+        # as a fallback when a fresh config read transiently returns an empty
+        # model (e.g. an mtime-keyed config-cache miss during a post-interrupt
+        # recovery turn). Without this, the agent is built with model="" and
+        # every API call fails HTTP 400 "No models provided" — the session
+        # goes silent until the user manually re-sends. See #35314. The "*"
+        # key holds a process-wide last-known-good for first-seen sessions.
+        self._last_resolved_model: Dict[str, str] = {}
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -2487,6 +2495,32 @@ class GatewayRunner:
                     )
             except Exception:
                 pass
+
+        # Final safety net (#35314): if resolution still produced an empty
+        # model — e.g. a transient config-cache miss during a post-interrupt
+        # recovery turn returned an empty user_config — reuse the last model we
+        # successfully resolved for this session (or, failing that, the most
+        # recent one resolved process-wide). Building an agent with model=""
+        # makes every API call fail HTTP 400 "No models provided" and the
+        # session goes silent until the user manually re-sends. getattr guards
+        # against bare test runners built via object.__new__.
+        _last_good = getattr(self, "_last_resolved_model", None)
+        if _last_good is not None:
+            if not model:
+                _recovered = _last_good.get(resolved_session_key or "") or _last_good.get("*")
+                if _recovered:
+                    logger.warning(
+                        "Empty model resolved for session=%s — recovering "
+                        "last-known-good model %s (config read likely returned "
+                        "empty; see #35314)",
+                        resolved_session_key or "", _recovered,
+                    )
+                    model = _recovered
+            elif model:
+                # Cache the good resolution for future recovery turns.
+                if resolved_session_key:
+                    _last_good[resolved_session_key] = model
+                _last_good["*"] = model
 
         return model, runtime_kwargs
 

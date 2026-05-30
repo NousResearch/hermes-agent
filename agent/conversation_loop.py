@@ -1492,7 +1492,8 @@ def run_conversation(
                     
                     if retry_count >= max_retries:
                         # Try fallback before giving up
-                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                        if agent._has_pending_fallback():
+                            agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                         if agent._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -3094,12 +3095,17 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
-                    # Try fallback before aborting — a different provider
-                    # may not have the same issue (rate limit, auth, etc.)
-                    if classified.reason == FailoverReason.content_policy_blocked:
-                        agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
-                    else:
-                        agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    # Try fallback before aborting — a different provider may
+                    # not have the same issue (rate limit, auth, etc.). Only
+                    # announce the attempt when a fallback chain actually
+                    # exists; otherwise "trying fallback..." is a lie and the
+                    # session looks like it's recovering when it's about to
+                    # abort silently (#35314, #17446).
+                    if agent._has_pending_fallback():
+                        if classified.reason == FailoverReason.content_policy_blocked:
+                            agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
+                        else:
+                            agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -3242,7 +3248,8 @@ def run_conversation(
                         retry_count = 0
                         continue
                     # Try fallback before giving up entirely
-                    agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                    if agent._has_pending_fallback():
+                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0

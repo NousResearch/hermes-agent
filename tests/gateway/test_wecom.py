@@ -5,6 +5,7 @@ import base64
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,6 +42,11 @@ class TestWeComAdapterInit:
         from gateway.platforms.wecom import WeComAdapter
 
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_declares_native_streaming_reply_capability(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.SUPPORTS_NATIVE_STREAMING_REPLIES is True
 
     def test_reads_config_from_extra(self):
         from gateway.platforms.wecom import WeComAdapter
@@ -167,6 +173,440 @@ class TestWeComQrScan:
 
 class TestWeComReplyMode:
     @pytest.mark.asyncio
+    async def test_send_uses_metadata_reply_req_id_first(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["old-msg"] = "legacy-req"
+        adapter._last_chat_req_ids["chat-1"] = "chat-req"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "metadata-req"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-1",
+            "hello",
+            reply_to="old-msg",
+            metadata={"wecom_reply_req_id": "metadata-req"},
+        )
+
+        assert result.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "metadata-req"
+        assert result.raw_response["cmd"] == APP_CMD_RESPONSE
+        assert result.raw_response["headers"]["req_id"] == "metadata-req"
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_reply_to_then_chat(self):
+        from gateway.platforms.wecom import APP_CMD_SEND, APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["old-msg"] = "legacy-req"
+        adapter._last_chat_req_ids["chat-1"] = "chat-req"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "legacy-req"}, "errcode": 0},
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "chat-req"}, "errcode": 0},
+            ]
+        )
+        adapter._send_request = AsyncMock(
+            return_value={"cmd": APP_CMD_SEND, "headers": {"req_id": "proactive-req"}, "errcode": 0}
+        )
+
+        reply_result = await adapter.send("chat-1", "reply first", reply_to="old-msg")
+        chat_result = await adapter.send("chat-1", "chat fallback")
+        proactive_result = await adapter.send("chat-2", "proactive only")
+
+        assert reply_result.success is True
+        assert chat_result.success is True
+        assert proactive_result.success is True
+        assert adapter._send_reply_request.await_count == 2
+        assert adapter._send_reply_request.await_args_list[0].args[0] == "legacy-req"
+        assert adapter._send_reply_request.await_args_list[1].args[0] == "chat-req"
+        adapter._send_request.assert_awaited_once_with(
+            APP_CMD_SEND,
+            {
+                "chatid": "chat-2",
+                "msgtype": "markdown",
+                "markdown": {"content": "proactive only"},
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_without_reply_context_uses_proactive_send_not_placeholder(self):
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock()
+        adapter._send_request = AsyncMock(
+            return_value={"cmd": APP_CMD_SEND, "headers": {"req_id": "proactive-req"}, "errcode": 0}
+        )
+
+        result = await adapter.send("chat-1", "hello")
+
+        assert result.success is True
+        adapter._send_reply_request.assert_not_awaited()
+        adapter._send_request.assert_awaited_once_with(
+            APP_CMD_SEND,
+            {
+                "chatid": "chat-1",
+                "msgtype": "markdown",
+                "markdown": {"content": "hello"},
+            },
+        )
+        assert result.raw_response["cmd"] == APP_CMD_SEND
+
+    @pytest.mark.asyncio
+    async def test_send_ignores_blank_or_non_dict_metadata_reply_req_id(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["old-msg"] = "legacy-req"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "legacy-req"}, "errcode": 0},
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "legacy-req"}, "errcode": 0},
+            ]
+        )
+
+        blank_result = await adapter.send(
+            "chat-1",
+            "blank metadata",
+            reply_to="old-msg",
+            metadata={"wecom_reply_req_id": "   "},
+        )
+        non_dict_result = await adapter.send(
+            "chat-1",
+            "non-dict metadata",
+            reply_to="old-msg",
+            metadata=cast(Any, "metadata-req"),
+        )
+
+        assert blank_result.success is True
+        assert non_dict_result.success is True
+        assert adapter._send_reply_request.await_count == 2
+        assert adapter._send_reply_request.await_args_list[0].args[0] == "legacy-req"
+        assert adapter._send_reply_request.await_args_list[1].args[0] == "legacy-req"
+
+    @pytest.mark.asyncio
+    async def test_send_quote_reply_to_falls_back_to_chat_req_id(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["quote:old-msg"] = "legacy-req"
+        adapter._last_chat_req_ids["chat-1"] = "chat-req"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "chat-req"}, "errcode": 0}
+        )
+
+        result = await adapter.send("chat-1", "quoted reply", reply_to="quote:old-msg")
+
+        assert result.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        await_args = adapter._send_reply_request.await_args
+        assert await_args is not None
+        assert await_args.args[0] == "chat-req"
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_requires_reply_context(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock()
+        adapter._send_request = AsyncMock()
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="hello",
+            finalize=False,
+            stream_key="stream-1",
+        )
+
+        assert result.success is False
+        assert "reply context" in (result.error or "")
+        adapter._send_reply_request.assert_not_awaited()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_uses_metadata_req_id(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock(
+            return_value={
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": "metadata-req"},
+                "body": {"stream": {"id": "stream-id-1"}},
+                "errcode": 0,
+            }
+        )
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="hello",
+            finalize=False,
+            metadata={"wecom_reply_req_id": "metadata-req"},
+            stream_key="stream-1",
+        )
+
+        assert result.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "metadata-req"
+        assert args[1]["msgtype"] == "stream"
+        assert args[1]["stream"]["event"] == "start"
+        assert args[1]["stream"]["content"] == "hello"
+        assert args[1]["stream"]["stream_id"] == "metadata-req"
+        assert "id" not in args[1]["stream"]
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_preserves_non_string_falsy_content(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock(
+            return_value={
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": "metadata-req"},
+                "body": {"stream": {"id": "stream-id-1"}},
+                "errcode": 0,
+            }
+        )
+
+        zero_result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content=cast(Any, 0),
+            finalize=False,
+            metadata={"wecom_reply_req_id": "metadata-req"},
+            stream_key="stream-1",
+        )
+        false_result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content=cast(Any, False),
+            finalize=True,
+            stream_key="stream-1",
+        )
+
+        assert zero_result.success is True
+        assert false_result.success is True
+        sent_contents = [call.args[1]["stream"]["content"] for call in adapter._send_reply_request.await_args_list]
+        assert sent_contents == ["0", "False"]
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_finalize_uses_same_stream_state(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {
+                    "cmd": APP_CMD_RESPONSE,
+                    "headers": {"req_id": "metadata-req"},
+                    "body": {"stream": {"id": "stream-id-1"}},
+                    "errcode": 0,
+                },
+                {
+                    "cmd": APP_CMD_RESPONSE,
+                    "headers": {"req_id": "metadata-req"},
+                    "body": {"stream": {"id": "stream-id-1"}},
+                    "errcode": 0,
+                },
+                {
+                    "cmd": APP_CMD_RESPONSE,
+                    "headers": {"req_id": "metadata-req"},
+                    "body": {"stream": {"id": "stream-id-1"}},
+                    "errcode": 0,
+                },
+            ]
+        )
+
+        start_result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="hello",
+            finalize=False,
+            metadata={"wecom_reply_req_id": "metadata-req"},
+            stream_key="stream-1",
+        )
+        continue_result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="middle",
+            finalize=False,
+            stream_key="stream-1",
+        )
+        finish_result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="done",
+            finalize=True,
+            stream_key="stream-1",
+        )
+
+        assert start_result.success is True
+        assert continue_result.success is True
+        assert finish_result.success is True
+        assert adapter._send_reply_request.await_count == 3
+        start_args = adapter._send_reply_request.await_args_list[0].args
+        continue_args = adapter._send_reply_request.await_args_list[1].args
+        finish_args = adapter._send_reply_request.await_args_list[2].args
+        assert start_args[0] == "metadata-req"
+        assert continue_args[0] == "metadata-req"
+        assert finish_args[0] == "metadata-req"
+        assert start_args[1]["stream"]["event"] == "start"
+        assert continue_args[1]["stream"]["event"] == "continue"
+        assert finish_args[1]["stream"]["event"] == "finish"
+        assert start_args[1]["stream"]["stream_id"] == "metadata-req"
+        assert continue_args[1]["stream"]["stream_id"] == "stream-id-1"
+        assert finish_args[1]["stream"]["stream_id"] == "stream-id-1"
+        assert "id" not in start_args[1]["stream"]
+        assert "id" not in continue_args[1]["stream"]
+        assert "id" not in finish_args[1]["stream"]
+        assert "stream-1" not in adapter._stream_states
+
+    @pytest.mark.asyncio
+    async def test_send_stream_chunk_error_clears_stream_state(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_states["stream-1"] = {
+            "reply_req_id": "metadata-req",
+            "stream_id": "stream-id-1",
+        }
+        adapter._send_reply_request = AsyncMock(
+            return_value={
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": "metadata-req"},
+                "errcode": 846608,
+                "errmsg": "reply context expired",
+            }
+        )
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="continued",
+            finalize=False,
+            stream_key="stream-1",
+        )
+
+        assert result.success is False
+        assert "reply context expired" in (result.error or "")
+        assert "stream-1" not in adapter._stream_states
+
+    @pytest.mark.asyncio
+    async def test_native_final_overflow_sends_prefix_then_overflow_chunks(self, monkeypatch):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_states["stream-1"] = {
+            "reply_req_id": "metadata-req",
+            "stream_id": "stream-id-1",
+        }
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 10)
+        overflow_calls: list[str] = []
+
+        async def fake_send_reply_markdown(reply_req_id: str, content: str):
+            overflow_calls.append(content)
+            return {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": reply_req_id}, "errcode": 0}
+
+        adapter._send_reply_request = AsyncMock(
+            return_value={
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": "metadata-req"},
+                "body": {"stream": {"id": "stream-id-1"}},
+                "errcode": 0,
+            }
+        )
+        adapter._send_reply_markdown = AsyncMock(side_effect=fake_send_reply_markdown)
+        final_content = "abcdefghijABCDEFGHIJklmnop"
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content=final_content,
+            finalize=True,
+            stream_key="stream-1",
+        )
+
+        assert result.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        native_payload = adapter._send_reply_request.await_args.args[1]["stream"]
+        assert native_payload["event"] == "finish"
+        assert len(native_payload["content"]) <= adapter.MAX_MESSAGE_LENGTH
+        adapter._send_reply_markdown.assert_awaited_once_with("metadata-req", final_content[10:])
+        assert native_payload["content"] + "".join(overflow_calls) == final_content
+        assert "stream-1" not in adapter._stream_states
+
+    @pytest.mark.asyncio
+    async def test_overflow_failure_returns_delivered_prefix(self, monkeypatch):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_states["stream-1"] = {
+            "reply_req_id": "metadata-req",
+            "stream_id": "stream-id-1",
+        }
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 10)
+        adapter._send_reply_request = AsyncMock(
+            return_value={
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": "metadata-req"},
+                "body": {"stream": {"id": "stream-id-1"}},
+                "errcode": 0,
+            }
+        )
+        adapter._send_reply_markdown = AsyncMock(side_effect=RuntimeError("send reply markdown failed: WeCom errcode 500: boom"))
+        final_content = "abcdefghijABCDEFGHIJklmnop"
+
+        result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content=final_content,
+            finalize=True,
+            stream_key="stream-1",
+        )
+
+        assert result.success is False
+        assert "send reply markdown failed" in (result.error or "")
+        assert result.raw_response["confirmed_prefix_len"] == 10
+        assert result.raw_response["overflow_error"] == "send reply markdown failed: WeCom errcode 500: boom"
+        assert result.raw_response["native_response"]["errcode"] == 0
+        assert "stream-1" not in adapter._stream_states
+
+    @pytest.mark.asyncio
+    async def test_expired_req_id_clears_native_state_and_future_call_fails_closed(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_states["stream-1"] = {
+            "reply_req_id": "metadata-req",
+            "stream_id": "stream-id-1",
+        }
+        adapter._send_reply_request = AsyncMock(
+            return_value={
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": "metadata-req"},
+                "errcode": 846608,
+                "errmsg": "reply context expired",
+            }
+        )
+        first_result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="continued",
+            finalize=False,
+            stream_key="stream-1",
+        )
+        second_result = await adapter.send_stream_chunk(
+            chat_id="chat-1",
+            content="continued again",
+            finalize=False,
+            stream_key="stream-1",
+        )
+
+        assert first_result.success is False
+        assert "reply context expired" in (first_result.error or "")
+        assert "stream-1" not in adapter._stream_states
+        assert second_result.success is False
+        assert "reply context" in (second_result.error or "")
+        assert adapter._send_reply_request.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_send_uses_passive_reply_markdown_when_reply_context_exists(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -186,6 +626,129 @@ class TestWeComReplyMode:
         # (unsupported type). Markdown renders everywhere.
         assert args[1]["msgtype"] == "markdown"
         assert args[1]["markdown"]["content"] == "hello from reply"
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_non_string_falsy_markdown_content(self):
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = AsyncMock(
+            return_value={"cmd": APP_CMD_SEND, "headers": {"req_id": "req-final"}, "errcode": 0}
+        )
+
+        zero_result = await adapter.send("chat-1", cast(Any, 0))
+        false_result = await adapter.send("chat-1", cast(Any, False))
+        none_result = await adapter.send("chat-1", cast(Any, None))
+
+        assert zero_result.success is True
+        assert false_result.success is True
+        assert none_result.success is True
+        sent_contents = [call.args[1]["markdown"]["content"] for call in adapter._send_request.await_args_list]
+        assert sent_contents == ["0", "False", ""]
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_long_proactive_markdown_without_dropping_tail(self, monkeypatch):
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 80)
+        adapter._send_request = AsyncMock(
+            return_value={"cmd": APP_CMD_SEND, "headers": {"req_id": "req-final"}, "errcode": 0}
+        )
+        long_content = (
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda "
+            "mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega tail-word"
+        )
+
+        result = await adapter.send("chat-1", long_content)
+
+        assert result.success is True
+        assert adapter._send_request.await_count > 1
+        sent_chunks = [
+            call.args[1]["markdown"]["content"]
+            for call in adapter._send_request.await_args_list
+        ]
+        assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in sent_chunks)
+        total = len(sent_chunks)
+        assert sent_chunks[0].endswith(f"(1/{total})")
+        assert sent_chunks[-1].endswith(f"({total}/{total})")
+        assert "tail-word" in sent_chunks[-1]
+        reconstructed = " ".join(chunk.rsplit(" (", 1)[0] for chunk in sent_chunks)
+        assert reconstructed == long_content
+        assert result.raw_response["headers"]["req_id"] == "req-final"
+
+    @pytest.mark.asyncio
+    async def test_send_stops_on_first_proactive_markdown_chunk_error(self, monkeypatch):
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 80)
+        adapter._send_request = AsyncMock(
+            side_effect=[
+                {"cmd": APP_CMD_SEND, "errcode": 600039, "errmsg": "unsupported type"},
+                {"cmd": APP_CMD_SEND, "headers": {"req_id": "should-not-send"}, "errcode": 0},
+            ]
+        )
+        long_content = " ".join(["chunk-error"] * 30)
+
+        result = await adapter.send("chat-1", long_content)
+
+        assert result.success is False
+        assert "send markdown failed: WeCom errcode 600039: unsupported type" in (result.error or "")
+        assert adapter._send_request.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_long_reply_markdown_without_dropping_tail(self, monkeypatch):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 80)
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "req-final"}, "errcode": 0}
+        )
+        long_content = (
+            "reply alpha beta gamma delta epsilon zeta eta theta iota kappa "
+            "lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega reply-tail"
+        )
+
+        result = await adapter.send("chat-1", long_content, reply_to="msg-1")
+
+        assert result.success is True
+        assert adapter._send_reply_request.await_count > 1
+        sent_chunks = [
+            call.args[1]["markdown"]["content"]
+            for call in adapter._send_reply_request.await_args_list
+        ]
+        assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in sent_chunks)
+        total = len(sent_chunks)
+        assert sent_chunks[0].endswith(f"(1/{total})")
+        assert sent_chunks[-1].endswith(f"({total}/{total})")
+        assert "reply-tail" in sent_chunks[-1]
+        reconstructed = " ".join(chunk.rsplit(" (", 1)[0] for chunk in sent_chunks)
+        assert reconstructed == long_content
+        assert result.raw_response["headers"]["req_id"] == "req-final"
+
+    @pytest.mark.asyncio
+    async def test_send_stops_on_first_reply_markdown_chunk_error(self, monkeypatch):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "MAX_MESSAGE_LENGTH", 80)
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {"cmd": APP_CMD_RESPONSE, "errcode": 600039, "errmsg": "unsupported type"},
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": "should-not-send"}, "errcode": 0},
+            ]
+        )
+        long_content = " ".join(["reply-chunk-error"] * 30)
+
+        result = await adapter.send("chat-1", long_content, reply_to="msg-1")
+
+        assert result.success is False
+        assert "send reply markdown failed: WeCom errcode 600039: unsupported type" in (result.error or "")
+        assert adapter._send_reply_request.await_count == 1
 
     @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):

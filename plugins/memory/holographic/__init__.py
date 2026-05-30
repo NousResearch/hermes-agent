@@ -357,6 +357,7 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
+        # English patterns
         _PREF_PATTERNS = [
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
@@ -367,6 +368,34 @@ class HolographicMemoryProvider(MemoryProvider):
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
         ]
 
+        # Chinese patterns (中文)
+        _ZH_PREF_PATTERNS = [
+            re.compile(r'(?:我|俺)(?:喜欢|偏好|习惯|想用|要用|需要|爱用|一直在用)\s*(.+)'),
+            re.compile(r'(?:我|俺)(?:最喜欢的|默认的|常用的)\s*\w+\s*(?:是|=)\s*(.+)'),
+            re.compile(r'(?:我|俺)\s*(?:一直|总是|从不|通常)\s*(.+)'),
+        ]
+        _ZH_DECISION_PATTERNS = [
+            re.compile(r'(?:我们|大家)\s*(?:决定|同意|选择了?)\s*(?:要)?\s*(.+)'),
+            re.compile(r'(?:这个|该项目|项目)\s*(?:使用|需要用|采用了?)\s*(.+)'),
+        ]
+
+        # Japanese patterns (日本語)
+        _JA_PREF_PATTERNS = [
+            re.compile(r'(?:私は|わたしは|僕は|俺は)\s*(?:.*?(?:好き|欲しい|使いたい|選びたい)).*?([^\s。]+)'),
+            re.compile(r'(?:デフォルト|お気に入り|よく使う)\s*(?:の|は)\s*(.+)'),
+        ]
+        _JA_DECISION_PATTERNS = [
+            re.compile(r'(?:私たちは|我々は|みんなで)\s*(?:.*?(?:決定|選んだ|決めた)).*?([^\s。]+)'),
+        ]
+
+        # Korean patterns (한국어)
+        _KO_PREF_PATTERNS = [
+            re.compile(r'(?:저는|나는|제가|내가)\s*(?:.*?(?:좋아합니다|좋아해|쓰고 싶습니다|쓰고 싶어|원합니다|원해)).*?([^\s.]+)'),
+        ]
+        _KO_DECISION_PATTERNS = [
+            re.compile(r'(?:우리는|저희는)\s*(?:.*?(?:결정했습니다|결정했어|선택했습니다|선택했어)).*?([^\s.]+)'),
+        ]
+
         extracted = 0
         for msg in messages:
             if msg.get("role") != "user":
@@ -375,7 +404,11 @@ class HolographicMemoryProvider(MemoryProvider):
             if not isinstance(content, str) or len(content) < 10:
                 continue
 
-            for pattern in _PREF_PATTERNS:
+            # Try all language pattern sets
+            all_pref = _PREF_PATTERNS + _ZH_PREF_PATTERNS + _JA_PREF_PATTERNS + _KO_PREF_PATTERNS
+            all_decision = _DECISION_PATTERNS + _ZH_DECISION_PATTERNS + _JA_DECISION_PATTERNS + _KO_DECISION_PATTERNS
+
+            for pattern in all_pref:
                 if pattern.search(content):
                     try:
                         self._store.add_fact(content[:400], category="user_pref")
@@ -384,7 +417,7 @@ class HolographicMemoryProvider(MemoryProvider):
                         pass
                     break
 
-            for pattern in _DECISION_PATTERNS:
+            for pattern in all_decision:
                 if pattern.search(content):
                     try:
                         self._store.add_fact(content[:400], category="project")

@@ -1842,8 +1842,11 @@ def cmd_chat(args):
     # calls sys.exit itself (it would escape daemon `except Exception` guards).
     from hermes_cli.toolset_validation import normalize_toolsets, validate_explicit_toolsets
 
+    # warn=no-op: this is purely the all-unknown exit gate; the valid/partial
+    # request is re-validated (and any partial-invalid notice emitted) by the
+    # downstream surface (cli.py / tui_gateway), so warning here would double up.
     requested = normalize_toolsets(getattr(args, "toolsets", None))
-    _, toolset_error = validate_explicit_toolsets(requested, source="hermes")
+    _, toolset_error = validate_explicit_toolsets(requested, source="hermes", warn=lambda _: None)
     if toolset_error:
         if requested == ["ui"] and not use_tui:
             sys.stderr.write("hermes: unknown toolset 'ui'. Did you mean --tui (launch the terminal UI)?\n")

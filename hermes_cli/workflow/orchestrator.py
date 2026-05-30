@@ -194,6 +194,8 @@ class WorkflowRun:
     status: str = "completed"
     state_path: Path | None = None
     codex_plan: bool = False
+    contest: bool = False
+    cross_review: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -207,6 +209,8 @@ class WorkflowRun:
             "log_path": str(self.log_path),
             "state_path": str(self.state_path) if self.state_path else "",
             "codex_plan": self.codex_plan,
+            "contest": self.contest,
+            "cross_review": self.cross_review,
         }
 
 
@@ -305,6 +309,22 @@ class WorkflowConfig:
         return max(1, int(self.execution.get("max_concurrency", 2)))
 
     @property
+    def contest_candidates(self) -> int:
+        return max(2, min(5, int(self.execution.get("contest_candidates", 3))))
+
+    @property
+    def contest_workers(self) -> list[str]:
+        workers = [str(item) for item in self.execution.get("contest_workers") or []]
+        valid = [worker for worker in workers if worker in WORKER_TYPES]
+        return valid or ["researcher", "product_planner", "reviewer"]
+
+    @property
+    def cross_review_workers(self) -> list[str]:
+        workers = [str(item) for item in self.execution.get("cross_review_workers") or []]
+        valid = [worker for worker in workers if worker in WORKER_TYPES]
+        return valid or ["reviewer", "tester"]
+
+    @property
     def default_permission_mode(self) -> str:
         return str(self.execution.get("default_permission_mode") or "read-only")
 
@@ -330,6 +350,8 @@ def run_workflow(
     parallel: bool = False,
     background: bool = False,
     codex_plan: bool = False,
+    contest: bool = False,
+    cross_review: bool = False,
     run_id: str | None = None,
     resume: bool = False,
 ) -> WorkflowRun:
@@ -341,6 +363,8 @@ def run_workflow(
         max_subtasks=max_subtasks,
         parallel=parallel,
         codex_plan=codex_plan,
+        contest=contest,
+        cross_review=cross_review,
     )
     if resume:
         if not run_id:

@@ -112,12 +112,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     parallel = bool(getattr(args, "parallel", False))
     codex_plan = bool(getattr(args, "codex_plan", False))
+    contest = bool(getattr(args, "contest", False))
+    cross_review = bool(getattr(args, "cross_review", False))
     if resume_run_id:
         record = _store(args).get_run(resume_run_id)
         if record:
             dry_run = bool(record["dry_run"])
-            parallel = str(record["mode"]) == "parallel"
+            parallel = "parallel" in str(record["mode"])
             codex_plan = bool(record["codex_plan"])
+            contest = bool(record["contest"])
+            cross_review = bool(record["cross_review"])
 
     result = run_workflow(
         request or "Resumed workflow run.",
@@ -127,6 +131,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         parallel=parallel,
         background=bool(getattr(args, "background", False)),
         codex_plan=codex_plan,
+        contest=contest,
+        cross_review=cross_review,
         run_id=resume_run_id,
         resume=bool(resume_run_id),
     )
@@ -144,6 +150,8 @@ def _cmd_script(args: argparse.Namespace) -> int:
         max_subtasks=getattr(args, "max_subtasks", None),
         parallel=bool(getattr(args, "parallel", False)),
         codex_plan=bool(getattr(args, "codex_plan", False)),
+        contest=bool(getattr(args, "contest", False)),
+        cross_review=bool(getattr(args, "cross_review", False)),
     )
     result = runtime.run_script(
         getattr(args, "path"),
@@ -166,6 +174,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         "mode": record["mode"],
         "dry_run": bool(record["dry_run"]),
         "codex_plan": bool(record["codex_plan"]),
+        "contest": bool(record["contest"]),
+        "cross_review": bool(record["cross_review"]),
         "pid": record["pid"],
         "created_at": record["created_at"],
         "updated_at": record["updated_at"],
@@ -180,6 +190,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"Run id: {payload['run_id']}")
         print(f"Status: {payload['status']}")
         print(f"Mode: {payload['mode']}")
+        if payload["contest"]:
+            print(f"Contest: enabled (cross-review={payload['cross_review']})")
         print(f"Progress: {payload['completed_outputs']}/{payload['subtasks']}")
         if payload["pid"]:
             print(f"PID: {payload['pid']}")
@@ -224,8 +236,10 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         "Resumed workflow run.",
         config_path=getattr(args, "config", None),
         dry_run=bool(record["dry_run"]),
-        parallel=str(record["mode"]) == "parallel",
+        parallel="parallel" in str(record["mode"]),
         codex_plan=bool(record["codex_plan"]),
+        contest=bool(record["contest"]),
+        cross_review=bool(record["cross_review"]),
         run_id=run_id,
         resume=True,
     )
@@ -282,6 +296,16 @@ def _add_execution_flags(parser: argparse.ArgumentParser) -> None:
         "--codex-plan",
         action="store_true",
         help="Format the final response as a Codex Goal execution checklist.",
+    )
+    parser.add_argument(
+        "--contest",
+        action="store_true",
+        help="Run multiple candidate workers for each subtask and select the best result.",
+    )
+    parser.add_argument(
+        "--cross-review",
+        action="store_true",
+        help="Have reviewer/tester workers adversarially review contest candidates.",
     )
 
 

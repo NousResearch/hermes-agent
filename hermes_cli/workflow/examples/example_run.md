@@ -27,6 +27,13 @@ Generate a Codex Goal checklist:
 hermes workflow run --dry-run --codex-plan "Break down the multi-role login rollout"
 ```
 
+Run a contest harness with cross-review:
+
+```bash
+hermes workflow run --dry-run --contest --cross-review --codex-plan \
+  "Choose the best next plan for homeowner, contractor, and worker adoption"
+```
+
 For a model-backed run, omit `--dry-run`:
 
 ```bash

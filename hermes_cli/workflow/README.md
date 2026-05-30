@@ -60,6 +60,13 @@ Format output for Codex Goal Mode:
 hermes workflow run --codex-plan --dry-run "Break down the multi-role login rollout"
 ```
 
+Run a contest harness with adversarial cross-review:
+
+```bash
+hermes workflow run --contest --cross-review --codex-plan \
+  "Choose the best next plan for the multi-role login rollout"
+```
+
 Run a reusable Python workflow script:
 
 ```python
@@ -92,8 +99,11 @@ The runtime:
 4. Persists run state, subtasks, outputs, evaluator scores, and events.
 5. Executes sequentially by default, or in dependency-aware parallel mode with
    `--parallel`.
-6. Evaluates each output and performs one bounded revision cycle if needed.
-7. Synthesizes a concise final answer or a Codex Goal checklist.
+6. Optionally runs contest mode where multiple workers independently answer a
+   subtask, reviewer/tester workers cross-review the candidates, and the best
+   candidate is selected.
+7. Evaluates each output and performs one bounded revision cycle if needed.
+8. Synthesizes a concise final answer or a Codex Goal checklist.
 
 JSONL logs are appended to `~/.hermes/logs/workflow_runs.jsonl`. Durable run
 state is stored in `~/.hermes/workflow_runs.db` unless `execution.state_db` is

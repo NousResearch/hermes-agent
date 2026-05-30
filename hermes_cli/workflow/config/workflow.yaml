@@ -9,6 +9,9 @@ execution:
   background_enabled: true
   state_db: ""
   default_permission_mode: read-only
+  contest_candidates: 3
+  contest_workers: [researcher, product_planner, reviewer]
+  cross_review_workers: [reviewer, tester]
 
 safety:
   allow_background_execution: true

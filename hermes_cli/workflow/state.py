@@ -50,6 +50,8 @@ class RunStore:
                     mode TEXT NOT NULL,
                     dry_run INTEGER NOT NULL,
                     codex_plan INTEGER NOT NULL,
+                    contest INTEGER NOT NULL DEFAULT 0,
+                    cross_review INTEGER NOT NULL DEFAULT 0,
                     analysis_json TEXT NOT NULL,
                     final_response TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
@@ -59,6 +61,8 @@ class RunStore:
                 )
                 """
             )
+            self._ensure_run_column(conn, "contest", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_run_column(conn, "cross_review", "INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workflow_subtasks (
@@ -91,6 +95,16 @@ class RunStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _ensure_run_column(
+        self, conn: sqlite3.Connection, name: str, definition: str
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(workflow_runs)").fetchall()
+        }
+        if name not in columns:
+            conn.execute(f"ALTER TABLE workflow_runs ADD COLUMN {name} {definition}")
+
     def create_run(
         self,
         *,
@@ -100,6 +114,8 @@ class RunStore:
         mode: str,
         dry_run: bool,
         codex_plan: bool,
+        contest: bool = False,
+        cross_review: bool = False,
         status: str = "queued",
     ) -> None:
         now = _now()
@@ -108,9 +124,9 @@ class RunStore:
                 """
                 INSERT INTO workflow_runs (
                     run_id, original_request, status, mode, dry_run, codex_plan,
-                    analysis_json, created_at, updated_at
+                    contest, cross_review, analysis_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -119,6 +135,8 @@ class RunStore:
                     mode,
                     int(dry_run),
                     int(codex_plan),
+                    int(contest),
+                    int(cross_review),
                     json.dumps(analysis.to_dict(), ensure_ascii=False),
                     now,
                     now,

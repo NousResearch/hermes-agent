@@ -116,6 +116,8 @@ def test_config_loads_runtime_agent_fields():
     assert config.background_enabled is True
     assert config.allow_background_execution is True
     assert config.max_concurrency >= 1
+    assert config.contest_candidates >= 2
+    assert "reviewer" in config.cross_review_workers
     assert config.default_permission_mode == "read-only"
     assert config.agent_for("coder").description
     assert config.agent_for("coder").can_write_files is False
@@ -223,3 +225,58 @@ def test_workflow_parser_accepts_new_commands():
     args = parser.parse_args(["workflow", "script", "--dry-run", "flow.py"])
     assert args.workflow_command == "script"
     assert args.path == "flow.py"
+
+
+def test_contest_cross_review_selects_winner_and_logs_events(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    result = run_workflow(
+        "Choose the best plan for a multi-role login rollout.",
+        dry_run=True,
+        contest=True,
+        cross_review=True,
+        codex_plan=True,
+        max_subtasks=2,
+    )
+
+    assert result.status == "completed"
+    assert result.contest is True
+    assert result.cross_review is True
+    assert "Codex Goal Plan" in result.final_response
+    assert all("contest_winner" in item.worker_type for item in result.worker_outputs)
+    assert all("Contest harness" in item.output for item in result.worker_outputs)
+
+    store = RunStore(result.state_path)
+    record = store.get_run(result.run_id)
+    assert record is not None
+    assert record["contest"] == 1
+    assert record["cross_review"] == 1
+    assert "contest" in record["mode"]
+    events = [event["event"] for event in store.events(result.run_id)]
+    assert "contest_candidate" in events
+    assert "cross_review_result" in events
+    assert "contest_selected" in events
+
+
+def test_workflow_parser_accepts_contest_flags():
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    workflow_parser = add_parser(subparsers)
+    workflow_parser.set_defaults(func=lambda args: 0)
+
+    args = parser.parse_args(
+        [
+            "workflow",
+            "run",
+            "--dry-run",
+            "--contest",
+            "--cross-review",
+            "choose",
+            "best",
+        ]
+    )
+
+    assert args.workflow_command == "run"
+    assert args.contest is True
+    assert args.cross_review is True

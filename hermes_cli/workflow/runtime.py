@@ -87,6 +87,227 @@ class EvaluatorLoop:
         return output, evaluation, revision_used
 
 
+class ContestHarness:
+    """Runs competing workers for one subtask and selects the strongest output."""
+
+    def __init__(
+        self,
+        *,
+        config: WorkflowConfig,
+        executor: AgentExecutor,
+        evaluator_loop: EvaluatorLoop,
+        record: Callable[[str, dict[str, Any]], None],
+        cross_review: bool,
+    ):
+        self.config = config
+        self.executor = executor
+        self.evaluator_loop = evaluator_loop
+        self.record = record
+        self.cross_review = cross_review
+
+    def run(
+        self,
+        subtask: Subtask,
+        analysis: TaskAnalysis,
+        previous_outputs: list[WorkerOutput],
+    ) -> WorkerOutput:
+        candidates: list[WorkerOutput] = []
+        for worker_type in self._candidate_workers(subtask):
+            candidate = self._candidate_subtask(subtask, worker_type)
+            output, provider, model = self.executor.execute(
+                candidate, analysis, previous_outputs
+            )
+            output, evaluation, revision_used = self.evaluator_loop.evaluate(
+                subtask=candidate,
+                analysis=analysis,
+                previous_outputs=previous_outputs,
+                output=output,
+                executor=self.executor,
+            )
+            worker_output = WorkerOutput(
+                subtask=candidate,
+                worker_type=worker_type,
+                provider=provider,
+                model=model,
+                output=output,
+                evaluation=evaluation,
+                revision_used=revision_used,
+            )
+            candidates.append(worker_output)
+            self.record(
+                "contest_candidate",
+                {
+                    "subtask_id": subtask.id,
+                    "candidate_id": candidate.id,
+                    "worker_type": worker_type,
+                    "provider": provider,
+                    "model": model,
+                    "score": evaluation.score,
+                    "passed": evaluation.passed,
+                    "revision_used": revision_used,
+                    "result": output,
+                },
+            )
+
+        reviews = self._cross_review(subtask, analysis, previous_outputs, candidates)
+        selected = self._select_winner(candidates, reviews)
+        winner = WorkerOutput(
+            subtask=subtask,
+            worker_type=f"{selected.worker_type}:contest_winner",
+            provider=selected.provider,
+            model=selected.model,
+            output=self._winner_output(selected, candidates, reviews),
+            evaluation=selected.evaluation,
+            revision_used=selected.revision_used,
+        )
+        self.record(
+            "contest_selected",
+            {
+                "subtask_id": subtask.id,
+                "winner_worker": winner.worker_type,
+                "winner_candidate_id": selected.subtask.id,
+                "winner_score": winner.evaluation.score,
+                "candidate_count": len(candidates),
+                "cross_review_count": len(reviews),
+            },
+        )
+        return winner
+
+    def _candidate_workers(self, subtask: Subtask) -> list[str]:
+        workers = [subtask.worker_type or "researcher", *self.config.contest_workers]
+        unique: list[str] = []
+        for worker in workers:
+            if worker not in unique:
+                unique.append(worker)
+        return unique[: self.config.contest_candidates]
+
+    def _candidate_subtask(self, subtask: Subtask, worker_type: str) -> Subtask:
+        return Subtask(
+            id=f"{subtask.id}:candidate:{worker_type}",
+            objective=(
+                f"{subtask.objective}\n\n"
+                "Contest mode: produce the strongest independent answer. "
+                "Do not assume other candidates are correct."
+            ),
+            input_context=subtask.input_context,
+            expected_output=subtask.expected_output,
+            acceptance_criteria=subtask.acceptance_criteria,
+            risk_level=subtask.risk_level,
+            worker_type=worker_type,
+            depends_on=list(subtask.depends_on),
+            can_parallel=subtask.can_parallel,
+        )
+
+    def _cross_review(
+        self,
+        subtask: Subtask,
+        analysis: TaskAnalysis,
+        previous_outputs: list[WorkerOutput],
+        candidates: list[WorkerOutput],
+    ) -> list[WorkerOutput]:
+        if not self.cross_review:
+            return []
+
+        candidate_context = "\n\n".join(
+            f"{item.subtask.id} ({item.worker_type}, score={item.evaluation.score}):\n"
+            f"{item.output}"
+            for item in candidates
+        )
+        reviews: list[WorkerOutput] = []
+        for worker_type in self.config.cross_review_workers:
+            review_subtask = Subtask(
+                id=f"{subtask.id}:cross-review:{worker_type}",
+                objective=(
+                    "Adversarially review contest candidates and identify the "
+                    "best answer, gaps, contradictions, unsafe actions, and "
+                    "unclear assumptions."
+                ),
+                input_context=(
+                    f"Original subtask: {subtask.objective}\n\n"
+                    f"Acceptance criteria:\n{json.dumps(subtask.acceptance_criteria, ensure_ascii=False)}\n\n"
+                    f"Candidate outputs:\n{candidate_context}"
+                ),
+                expected_output="A ranked review of candidates with risks and a recommended winner.",
+                acceptance_criteria=[
+                    "Ranks or compares candidate outputs.",
+                    "Calls out gaps, contradictions, unsafe actions, or unclear assumptions.",
+                    "Recommends the strongest candidate or a merge direction.",
+                ],
+                risk_level=subtask.risk_level,
+                worker_type=worker_type,
+            )
+            output, provider, model = self.executor.execute(
+                review_subtask, analysis, previous_outputs + candidates
+            )
+            output, evaluation, revision_used = self.evaluator_loop.evaluate(
+                subtask=review_subtask,
+                analysis=analysis,
+                previous_outputs=previous_outputs + candidates,
+                output=output,
+                executor=self.executor,
+            )
+            review = WorkerOutput(
+                subtask=review_subtask,
+                worker_type=worker_type,
+                provider=provider,
+                model=model,
+                output=output,
+                evaluation=evaluation,
+                revision_used=revision_used,
+            )
+            reviews.append(review)
+            self.record(
+                "cross_review_result",
+                {
+                    "subtask_id": subtask.id,
+                    "reviewer": worker_type,
+                    "score": evaluation.score,
+                    "passed": evaluation.passed,
+                    "result": output,
+                },
+            )
+        return reviews
+
+    def _select_winner(
+        self, candidates: list[WorkerOutput], reviews: list[WorkerOutput]
+    ) -> WorkerOutput:
+        review_text = "\n".join(item.output.lower() for item in reviews)
+
+        def score(candidate: WorkerOutput) -> tuple[float, int, int]:
+            mentions = review_text.count(candidate.subtask.id.lower())
+            worker_mentions = review_text.count(candidate.worker_type.lower())
+            return candidate.evaluation.score, mentions, worker_mentions
+
+        return max(candidates, key=score)
+
+    def _winner_output(
+        self,
+        winner: WorkerOutput,
+        candidates: list[WorkerOutput],
+        reviews: list[WorkerOutput],
+    ) -> str:
+        summary = [
+            winner.output,
+            "",
+            "Contest harness",
+            f"- Winner: {winner.subtask.id} via {winner.worker_type} "
+            f"(score={winner.evaluation.score}).",
+            "- Candidates: "
+            + ", ".join(
+                f"{item.subtask.id}/{item.worker_type}/score={item.evaluation.score}"
+                for item in candidates
+            ),
+        ]
+        if reviews:
+            summary.append(
+                "- Cross-reviewers: "
+                + ", ".join(
+                    f"{item.worker_type}/score={item.evaluation.score}" for item in reviews
+                )
+            )
+        return "\n".join(summary)
+
+
 class Scheduler:
     """Executes pending subtasks sequentially or with dependency-aware parallelism."""
 
@@ -201,6 +422,8 @@ class WorkflowRuntime:
         max_subtasks: int | None = None,
         parallel: bool = False,
         codex_plan: bool = False,
+        contest: bool = False,
+        cross_review: bool = False,
     ):
         self.config = config
         self.dry_run = dry_run
@@ -209,6 +432,8 @@ class WorkflowRuntime:
             raise WorkflowError("Parallel workflow execution is disabled in config.")
         self.parallel = bool(parallel)
         self.codex_plan = bool(codex_plan)
+        self.contest = bool(contest)
+        self.cross_review = bool(cross_review)
         self.analyzer = TaskAnalyzer()
         self.planner = Planner(max_subtasks=self.max_subtasks)
         self.router = Router(config)
@@ -267,7 +492,12 @@ class WorkflowRuntime:
             if not subtask.worker_type:
                 subtask.worker_type = self.router.assign(subtask, analysis)
 
-        mode = "parallel" if self.parallel else "sequential"
+        mode_parts = ["parallel" if self.parallel else "sequential"]
+        if self.contest:
+            mode_parts.append("contest")
+        if self.cross_review:
+            mode_parts.append("cross-review")
+        mode = "+".join(mode_parts)
         self.store.create_run(
             run_id=run_id,
             original_request=clean_request,
@@ -275,6 +505,8 @@ class WorkflowRuntime:
             mode=mode,
             dry_run=self.dry_run,
             codex_plan=self.codex_plan,
+            contest=self.contest,
+            cross_review=self.cross_review,
             status=status,
         )
         self._record(run_id, "request", {"original_request": clean_request})
@@ -309,6 +541,8 @@ class WorkflowRuntime:
             status=status,
             state_path=self.store.path,
             codex_plan=self.codex_plan,
+            contest=self.contest,
+            cross_review=self.cross_review,
         )
 
     def run_script(self, path: str | Path, *, background: bool = False) -> WorkflowRun:
@@ -345,6 +579,8 @@ class WorkflowRuntime:
         self._record(run_id, "status", {"status": "running"})
         try:
             analysis = analysis_from_record(record)
+            self.contest = bool(record["contest"])
+            self.cross_review = bool(record["cross_review"])
             subtasks = self.store.load_subtasks(run_id)
             completed_outputs = self.store.load_outputs(run_id)
             scheduler = Scheduler(
@@ -369,6 +605,8 @@ class WorkflowRuntime:
                 status="completed",
                 state_path=self.store.path,
                 codex_plan=bool(record["codex_plan"]),
+                contest=bool(record["contest"]),
+                cross_review=bool(record["cross_review"]),
             )
         except WorkflowPaused:
             self._record(run_id, "status", {"status": "paused"})
@@ -385,6 +623,45 @@ class WorkflowRuntime:
             self.store.update_subtask_status(
                 run_id, subtask.id, "running", subtask.worker_type
             )
+            if self.contest:
+                harness = ContestHarness(
+                    config=self.config,
+                    executor=self.executor,
+                    evaluator_loop=self.evaluator_loop,
+                    record=lambda event, payload: self._record(run_id, event, payload),
+                    cross_review=self.cross_review,
+                )
+                worker_output = harness.run(subtask, analysis, previous_outputs)
+                self.store.save_output(run_id, worker_output)
+                self._record(
+                    run_id,
+                    "worker_result",
+                    {
+                        "subtask_id": subtask.id,
+                        "selected_worker": worker_output.worker_type,
+                        "provider": worker_output.provider,
+                        "model": worker_output.model,
+                        "result": worker_output.output,
+                        "revision_used": worker_output.revision_used,
+                        "contest": True,
+                        "cross_review": self.cross_review,
+                    },
+                )
+                self._record(
+                    run_id,
+                    "evaluation",
+                    {
+                        "subtask_id": subtask.id,
+                        "evaluator_score": worker_output.evaluation.score,
+                        "passed": worker_output.evaluation.passed,
+                        "missing_steps": worker_output.evaluation.missing_steps,
+                        "contradictions": worker_output.evaluation.contradictions,
+                        "unsafe_actions": worker_output.evaluation.unsafe_actions,
+                        "unclear_assumptions": worker_output.evaluation.unclear_assumptions,
+                    },
+                )
+                return worker_output
+
             output, provider, model = self.executor.execute(
                 subtask, analysis, previous_outputs
             )
@@ -458,6 +735,10 @@ class WorkflowRuntime:
             cmd.append("--parallel")
         if self.codex_plan:
             cmd.append("--codex-plan")
+        if self.contest:
+            cmd.append("--contest")
+        if self.cross_review:
+            cmd.append("--cross-review")
         with log_file.open("ab") as handle:
             process = subprocess.Popen(
                 cmd,
@@ -493,6 +774,8 @@ class WorkflowRuntime:
             status=str(record["status"]),
             state_path=self.store.path,
             codex_plan=bool(record["codex_plan"]),
+            contest=bool(record["contest"]),
+            cross_review=bool(record["cross_review"]),
         )
 
     def _final_response(self, analysis: TaskAnalysis, outputs: list[WorkerOutput]) -> str:

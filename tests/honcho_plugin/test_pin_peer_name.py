@@ -745,10 +745,10 @@ class TestPinTransition:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": True}))
-        sig_pinned = GatewayRunner._extract_cache_busting_config({})
+        sig_pinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": False}))
-        sig_unpinned = GatewayRunner._extract_cache_busting_config({})
+        sig_unpinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]
 
@@ -759,14 +759,14 @@ class TestPinTransition:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor"}))
-        sig_no_aliases = GatewayRunner._extract_cache_busting_config({})
+        sig_no_aliases = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         cfg_path.write_text(json.dumps({
             "apiKey": "k",
             "peerName": "Igor",
             "userPeerAliases": {"86701400": "Igor"},
         }))
-        sig_with_aliases = GatewayRunner._extract_cache_busting_config({})
+        sig_with_aliases = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_no_aliases["honcho.user_peer_aliases"] != sig_with_aliases["honcho.user_peer_aliases"]
 
@@ -777,14 +777,14 @@ class TestPinTransition:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor"}))
-        sig_no_prefix = GatewayRunner._extract_cache_busting_config({})
+        sig_no_prefix = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         cfg_path.write_text(json.dumps({
             "apiKey": "k",
             "peerName": "Igor",
             "runtimePeerPrefix": "telegram_",
         }))
-        sig_with_prefix = GatewayRunner._extract_cache_busting_config({})
+        sig_with_prefix = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_no_prefix["honcho.runtime_peer_prefix"] != sig_with_prefix["honcho.runtime_peer_prefix"]
 
@@ -805,14 +805,14 @@ class TestPinTransition:
             "peerName": "Igor",
             "aiPeer": "hermes",
         }))
-        sig_before = GatewayRunner._extract_cache_busting_config({})
+        sig_before = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         cfg_path.write_text(json.dumps({
             "apiKey": "k",
             "peerName": "Igor",
             "aiPeer": "hermetika",
         }))
-        sig_after = GatewayRunner._extract_cache_busting_config({})
+        sig_after = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_before["honcho.ai_peer"] != sig_after["honcho.ai_peer"]
 

@@ -13029,8 +13029,14 @@ Examples:
         ),
     )
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
-    memory_sub.add_parser(
+    _setup_parser = memory_sub.add_parser(
         "setup", help="Interactive provider selection and configuration"
+    )
+    _setup_parser.add_argument(
+        "provider",
+        nargs="?",
+        default=None,
+        help="Provider to configure directly (e.g. honcho), skipping the picker",
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")

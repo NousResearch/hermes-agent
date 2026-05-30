@@ -87,6 +87,7 @@ def atomic_json_write(
     data: Any,
     *,
     indent: int = 2,
+    mode: int | None = None,
     **dump_kwargs: Any,
 ) -> None:
     """Write JSON data to a file atomically.
@@ -99,13 +100,16 @@ def atomic_json_write(
         path: Target file path (will be created or overwritten).
         data: JSON-serializable data to write.
         indent: JSON indentation (default 2).
+        mode: Optional final permission mode. When set, the temp file is
+            created and replaced with this mode, avoiding chmod-after-write
+            TOCTOU exposure for secret-bearing files.
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    original_mode = _preserve_file_mode(path)
+    original_mode = None if mode is not None else _preserve_file_mode(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -113,6 +117,8 @@ def atomic_json_write(
         suffix=".tmp",
     )
     try:
+        if mode is not None:
+            os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
                 data,
@@ -125,7 +131,13 @@ def atomic_json_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        if mode is not None:
+            try:
+                os.chmod(real_path, mode)
+            except OSError:
+                pass
+        else:
+            _restore_file_mode(Path(real_path), original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.

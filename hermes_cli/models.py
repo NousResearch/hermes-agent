@@ -936,6 +936,105 @@ _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 
 
+# ---------------------------------------------------------------------------
+# Provider groups — DISPLAY ONLY
+#
+# Some vendors expose several Hermes provider slugs (one per endpoint /
+# auth method: global API, China API, OAuth coding plan, ...). Listing every
+# slug as a top-level row in the interactive `hermes model` / setup wizard /
+# Telegram `/model` pickers makes that list long and noisy.
+#
+# These groups fold related slugs under one top-level row in INTERACTIVE
+# PICKERS only. They do NOT change ``CANONICAL_PROVIDERS``, slug identity,
+# the ``--provider`` flag, ``/model <provider:model>``, or any typed path —
+# every member slug remains individually addressable. Grouping is a pure
+# display affordance; ``group_providers()`` is the single fold used by all
+# three picker surfaces so they stay consistent.
+#
+#   group_id -> (display_label, [member_slug, ...])
+#
+# Member order is the order shown inside the group submenu.
+# ---------------------------------------------------------------------------
+PROVIDER_GROUPS: dict[str, tuple[str, list[str]]] = {
+    "kimi":     ("Kimi / Moonshot", ["kimi-coding", "kimi-coding-cn"]),
+    "minimax":  ("MiniMax",         ["minimax", "minimax-oauth", "minimax-cn"]),
+    "xai":      ("xAI Grok",        ["xai", "xai-oauth"]),
+    "google":   ("Google Gemini",   ["gemini", "google-gemini-cli"]),
+    "openai":   ("OpenAI",          ["openai-codex", "openai-api"]),
+    "opencode": ("OpenCode",        ["opencode-zen", "opencode-go"]),
+    "copilot":  ("GitHub Copilot",  ["copilot", "copilot-acp"]),
+}
+
+# Reverse index: member slug -> group_id. Built once at import.
+_SLUG_TO_GROUP: dict[str, str] = {
+    slug: gid for gid, (_label, members) in PROVIDER_GROUPS.items() for slug in members
+}
+
+
+def provider_group_for_slug(slug: str) -> str:
+    """Return the group_id a provider slug belongs to, or "" if ungrouped."""
+    return _SLUG_TO_GROUP.get(str(slug or "").strip().lower(), "")
+
+
+def group_providers(slugs):
+    """Fold a flat ordered slug iterable into picker rows by provider group.
+
+    DISPLAY ONLY. Used by every interactive picker (``hermes model``, the
+    setup wizard, the Telegram ``/model`` keyboard) so grouping is identical
+    across surfaces.
+
+    Each returned row is a dict::
+
+        {"kind": "single", "slug": <slug>}                       # ungrouped, or
+                                                                  # 1-member group
+        {"kind": "group", "group_id": <gid>, "label": <label>,
+         "members": [<slug>, ...]}                                # 2+ members
+
+    Rules:
+      * A group row appears at the position of its FIRST present member, in
+        the input order. Subsequent members fold into that row (and are not
+        emitted again).
+      * Member order inside a group follows ``PROVIDER_GROUPS`` declaration,
+        restricted to the members actually present in ``slugs``.
+      * A group reduced to a single present member degrades to a ``single``
+        row — no pointless one-item submenu.
+      * Slugs not in any group pass through as ``single`` rows, order
+        preserved.
+      * Duplicate slugs in the input are ignored after first sight.
+    """
+    seen: set[str] = set()
+    # Which present members each group has, in declaration order.
+    group_members: dict[str, list[str]] = {}
+    for gid, (_label, members) in PROVIDER_GROUPS.items():
+        present = [m for m in members if m in set(slugs)]
+        if present:
+            group_members[gid] = present
+
+    rows = []
+    emitted_groups: set[str] = set()
+    for slug in slugs:
+        s = str(slug or "").strip().lower()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        gid = _SLUG_TO_GROUP.get(s, "")
+        if not gid:
+            rows.append({"kind": "single", "slug": s})
+            continue
+        if gid in emitted_groups:
+            continue  # already folded at the first member's position
+        emitted_groups.add(gid)
+        members = group_members.get(gid, [s])
+        if len(members) <= 1:
+            rows.append({"kind": "single", "slug": members[0]})
+        else:
+            label, _ = PROVIDER_GROUPS[gid]
+            rows.append(
+                {"kind": "group", "group_id": gid, "label": label, "members": list(members)}
+            )
+    return rows
+
+
 _PROVIDER_ALIASES = {
     "glm": "zai",
     "z-ai": "zai",

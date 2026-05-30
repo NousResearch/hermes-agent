@@ -2394,7 +2394,12 @@ def select_provider_and_model(args=None):
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         active = "custom"
 
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+    from hermes_cli.models import (
+        CANONICAL_PROVIDERS,
+        _PROVIDER_LABELS,
+        group_providers,
+        provider_group_for_slug,
+    )
 
     provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
     if active and active in _custom_provider_map:
@@ -2407,8 +2412,43 @@ def select_provider_and_model(args=None):
     print(f"  Active provider:  {active_label}")
     print()
 
-    # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
-    all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
+    # Step 1: Provider selection.
+    #
+    # Canonical providers are folded into top-level groups (display only — see
+    # PROVIDER_GROUPS in hermes_cli/models.py). A multi-member group shows one
+    # row ("Kimi / Moonshot ▸"); picking it opens a member sub-picker that
+    # resolves back to a concrete slug, so the dispatch chain below is
+    # unchanged. Custom providers and the trailing actions stay flat.
+    canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
+    grouped_rows = group_providers([p.slug for p in CANONICAL_PROVIDERS])
+
+    # The group/slug that should be pre-selected: the active provider's group
+    # if it's grouped, otherwise the active slug itself.
+    active_group = provider_group_for_slug(active) if active else ""
+
+    # ordered entries: (key, label, members)
+    #   members == [] → leaf row, key is a provider slug / action
+    #   members != [] → group row, key is "group:<gid>"
+    ordered: list[tuple[str, str, list[str]]] = []
+    default_idx = 0
+    for row in grouped_rows:
+        if row["kind"] == "group":
+            gid = row["group_id"]
+            label = f"{row['label']} ▸"
+            key = f"group:{gid}"
+            is_active = bool(active_group) and gid == active_group
+            members = row["members"]
+        else:
+            slug = row["slug"]
+            label = canonical_descs.get(slug, provider_labels.get(slug, slug))
+            key = slug
+            is_active = bool(active) and slug == active
+            members = []
+        if is_active:
+            ordered.append((key, f"{label}  ← currently active", members))
+            default_idx = len(ordered) - 1
+        else:
+            ordered.append((key, label, members))
 
     for key, provider_info in _custom_provider_map.items():
         name = provider_info["name"]
@@ -2416,36 +2456,49 @@ def select_provider_and_model(args=None):
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
         saved_model = provider_info.get("model", "")
         model_hint = f" — {saved_model}" if saved_model else ""
-        all_providers.append((key, f"{name} ({short_url}){model_hint}"))
-
-    # Build the menu
-    ordered = []
-    default_idx = 0
-    for key, label in all_providers:
+        label = f"{name} ({short_url}){model_hint}"
         if active and key == active:
-            ordered.append((key, f"{label}  ← currently active"))
+            ordered.append((key, f"{label}  ← currently active", []))
             default_idx = len(ordered) - 1
         else:
-            ordered.append((key, label))
+            ordered.append((key, label, []))
 
-    ordered.append(("custom", "Custom endpoint (enter URL manually)"))
+    ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(
         config.get("custom_providers")
     )
     if _has_saved_custom_list:
-        ordered.append(("remove-custom", "Remove a saved custom provider"))
-    ordered.append(("aux-config", "Configure auxiliary models..."))
-    ordered.append(("cancel", "Leave unchanged"))
+        ordered.append(("remove-custom", "Remove a saved custom provider", []))
+    ordered.append(("aux-config", "Configure auxiliary models...", []))
+    ordered.append(("cancel", "Leave unchanged", []))
 
     provider_idx = _prompt_provider_choice(
-        [label for _, label in ordered],
+        [label for _, label, _ in ordered],
         default=default_idx,
     )
     if provider_idx is None or ordered[provider_idx][0] == "cancel":
         print("No change.")
         return
 
-    selected_provider = ordered[provider_idx][0]
+    selected_key = ordered[provider_idx][0]
+    selected_members = ordered[provider_idx][2]
+
+    # Group row → drill into a member sub-picker. Default to the active member
+    # if the active provider lives in this group.
+    if selected_members:
+        member_default = 0
+        if active in selected_members:
+            member_default = selected_members.index(active)
+        member_labels = [
+            canonical_descs.get(m, provider_labels.get(m, m)) for m in selected_members
+        ]
+        member_idx = _prompt_provider_choice(member_labels, default=member_default)
+        if member_idx is None:
+            print("No change.")
+            return
+        selected_provider = selected_members[member_idx]
+    else:
+        selected_provider = selected_key
 
     if selected_provider == "aux-config":
         _aux_config_menu()

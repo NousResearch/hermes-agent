@@ -7139,6 +7139,34 @@ class GatewayRunner:
             _tool_approval_live = has_blocking_approval(_quick_key)
         except Exception:
             _tool_approval_live = False
+        if _tool_approval_live:
+            _raw_tool_reply = (event.text or "").strip().lower()
+            _tool_approval_aliases = {
+                "approve": "once",
+                "approve once": "once",
+                "allow once": "once",
+                "once": "once",
+                "yes": "once",
+                "ok": "once",
+                "session": "session",
+                "approve session": "session",
+                "allow session": "session",
+                "always": "always",
+                "approve always": "always",
+                "allow always": "always",
+                "deny": "deny",
+                "no": "deny",
+                "cancel": "deny",
+            }
+            _tool_choice = _tool_approval_aliases.get(_raw_tool_reply)
+            if _tool_choice is not None:
+                if _tool_choice == "deny":
+                    return await self._handle_deny_command(
+                        dataclasses.replace(event, text="/deny")
+                    )
+                return await self._handle_approve_command(
+                    dataclasses.replace(event, text=f"/approve {_tool_choice}")
+                )
         if _pending_confirm and not _tool_approval_live:
             _raw_reply = (event.text or "").strip()
             _cmd_reply = event.get_command()

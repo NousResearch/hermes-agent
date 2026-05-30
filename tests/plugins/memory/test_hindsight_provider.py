@@ -463,6 +463,44 @@ class TestPostSetup:
 
 
 class TestToolHandlers:
+    def test_retain_rejects_duplicate_identity_fact_before_hindsight(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "User's name is Andy Peacock."}
+        ))
+
+        assert result["result"] == "Memory skipped by retention gate."
+        assert "duplicate_identity" in result["reason"]
+        provider._client.aretain.assert_not_called()
+
+    def test_retain_rejects_pr_and_build_trivia_before_hindsight(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "Assistant pushed changes to branch fix/foo; PR #123 tests passed in 26.99 seconds."},
+        ))
+
+        assert result["result"] == "Memory skipped by retention gate."
+        assert "task_state" in result["reason"]
+        provider._client.aretain.assert_not_called()
+
+    def test_retain_rejects_single_work_item_task_state_before_hindsight(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "User Andy Peacock requested implementation of work item 7483."},
+        ))
+
+        assert result["result"] == "Memory skipped by retention gate."
+        assert result["reason"] == "task_state"
+        provider._client.aretain.assert_not_called()
+
+    def test_retain_keeps_durable_environment_fact_before_hindsight(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "Hermes Hindsight local memory is installed under user tc and served on http://localhost:9177."},
+        ))
+
+        assert result["result"] == "Memory stored successfully."
+        provider._client.aretain.assert_called_once()
+
     def test_retain_success(self, provider):
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "user likes dark mode"}
@@ -488,10 +526,11 @@ class TestToolHandlers:
         call_kwargs = p._client.aretain.call_args.kwargs
         assert call_kwargs["tags"] == ["pref", "ui", "client:x"]
 
-    def test_retain_without_tags(self, provider):
-        provider.handle_tool_call("hindsight_retain", {"content": "hello"})
-        call_kwargs = provider._client.aretain.call_args.kwargs
-        assert "tags" not in call_kwargs
+    def test_retain_skips_greeting_without_tags(self, provider):
+        result = json.loads(provider.handle_tool_call("hindsight_retain", {"content": "hello"}))
+        assert result["result"] == "Memory skipped by retention gate."
+        assert result["reason"] == "session_control"
+        provider._client.aretain.assert_not_called()
 
     def test_retain_missing_content(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -672,6 +711,26 @@ class TestPrefetch:
 
 
 class TestSyncTurn:
+    def test_sync_turn_rejects_obvious_task_state_before_hindsight(self, provider):
+        provider.sync_turn(
+            "Can you do work item 7483?",
+            "I pushed branch fix/hindsight-retention-gate and opened PR #123. Tests passed in 26.99 seconds.",
+        )
+
+        assert provider._retain_queue.empty()
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_sync_turn_keeps_stable_preference_before_hindsight(self, provider):
+        provider.sync_turn(
+            "Remember that I prefer Pending Review as the handoff lane for external Kanban work.",
+            "Noted. I will use Pending Review for external Kanban handoffs.",
+        )
+        provider._retain_queue.join()
+
+        provider._client.aretain_batch.assert_called_once()
+        content = provider._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "Pending Review" in content
+
     def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
         p = provider_with_config(
             retain_tags=["conv", "session1"],

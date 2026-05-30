@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
@@ -511,6 +512,59 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
     return rendered or fallback
 
 
+_DUPLICATE_IDENTITY_PATTERNS = [
+    re.compile(r"\buser(?:'s)?\s+(?:name|full name)\s+is\s+[a-z][a-z\s.'-]{1,80}\.?$", re.I),
+    re.compile(r"\buser\s+is\s+named\s+[a-z][a-z\s.'-]{1,80}\.?$", re.I),
+]
+
+_TASK_STATE_PATTERNS = [
+    re.compile(r"\b(?:pr|pull request)\s*#?\d+\b", re.I),
+    re.compile(r"\b(?:work item|card|issue|ticket)\s*#?\d{3,}\b", re.I),
+    re.compile(r"\b(?:commit|sha)\s+[0-9a-f]{7,40}\b", re.I),
+    re.compile(r"\b(?:pushed|opened|merged|created)\s+(?:changes\s+to\s+)?(?:branch|pr|pull request)\b", re.I),
+    re.compile(r"\b(?:tests?|build|assets?)\s+(?:passed|failed|completed|rebuilt)\b", re.I),
+    re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|seconds?|mins?|minutes?)\b", re.I),
+    re.compile(r"\bexit\s+code\s+\d+\b", re.I),
+]
+
+_SESSION_CONTROL_PATTERNS = [
+    re.compile(r"^\s*(?:hi|hello|hey|thanks|thank you|ok|okay|cool|great)[.!\s]*$", re.I),
+]
+
+_DURABLE_SIGNAL_PATTERNS = [
+    re.compile(r"\b(?:prefers?|preference|wants?|expects?|remember|use|avoid|do not|don't)\b", re.I),
+    re.compile(r"\b(?:stable|durable|convention|workflow|installed|served on|runs on|configured|uses|required|requires)\b", re.I),
+]
+
+
+def _retention_gate(content: str) -> tuple[bool, str]:
+    """Return whether *content* should be sent to Hindsight for retention.
+
+    This is intentionally conservative and lexical. Hindsight remains the
+    extractor/consolidator, but Hermes should not ship obviously polluted
+    candidates: duplicate gateway identity facts, transient PR/card/build
+    state, greetings, and command-output trivia.
+    """
+    text = " ".join(str(content or "").split())
+    if not text:
+        return False, "empty"
+
+    for pattern in _SESSION_CONTROL_PATTERNS:
+        if pattern.search(text):
+            return False, "session_control"
+
+    for pattern in _DUPLICATE_IDENTITY_PATTERNS:
+        if pattern.search(text):
+            return False, "duplicate_identity"
+
+    durable_signal = any(pattern.search(text) for pattern in _DURABLE_SIGNAL_PATTERNS)
+    task_hits = sum(1 for pattern in _TASK_STATE_PATTERNS if pattern.search(text))
+    if task_hits >= 2 or (task_hits and not durable_signal):
+        return False, "task_state"
+
+    return True, "retain"
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -573,6 +627,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_every_n_turns = 1
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
+        self._retain_gate_enabled = True
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
 
@@ -869,6 +924,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
+            {"key": "retain_gate", "description": "Skip obviously noisy memory candidates before sending them to Hindsight", "default": True},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
@@ -1193,6 +1249,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_retain = self._config.get("auto_retain", True)
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
+        self._retain_gate_enabled = self._config.get("retain_gate", True) is not False
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
@@ -1225,9 +1282,9 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_gate=%s, retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_gate_enabled, self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1452,6 +1509,15 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id = str(session_id).strip()
 
         turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
+        if self._retain_gate_enabled:
+            allowed, reason = _retention_gate(turn)
+            if not allowed:
+                logger.info(
+                    "Hindsight retain gate skipped auto-retain candidate: reason=%s content_len=%d",
+                    reason,
+                    len(turn),
+                )
+                return
         self._session_turns.append(turn)
         self._turn_counter += 1
         self._turn_index = self._turn_counter
@@ -1521,6 +1587,19 @@ class HindsightMemoryProvider(MemoryProvider):
             if not content:
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
+            if self._retain_gate_enabled:
+                allowed, reason = _retention_gate(content)
+                if not allowed:
+                    logger.info(
+                        "Hindsight retain gate skipped tool retain candidate: reason=%s content_len=%d context=%s",
+                        reason,
+                        len(str(content)),
+                        context,
+                    )
+                    return json.dumps({
+                        "result": "Memory skipped by retention gate.",
+                        "reason": reason,
+                    })
             try:
                 retain_kwargs = self._build_retain_kwargs(
                     content,

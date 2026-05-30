@@ -2005,6 +2005,19 @@ def convert_messages_to_anthropic(
     system = None
     result: List[Dict[str, Any]] = []
 
+    def _supports_mid_system() -> bool:
+        # Anthropic's mid-conversation system messages are intentionally gated
+        # narrowly: currently Claude Opus 4.8 on the native Anthropic endpoint.
+        # Other Anthropic-compatible endpoints keep the legacy extraction path.
+        model_l = (model or "").lower()
+        base_l = (base_url or "").lower()
+        native = not base_l or "api.anthropic.com" in base_l
+        return native and "opus" in model_l and (
+            "4.8" in model_l or "4-8" in model_l or "4_8" in model_l
+        )
+
+    allow_mid_system = _supports_mid_system()
+
     for m in messages:
         role = m.get("role", "user")
         content = m.get("content", "")
@@ -2016,13 +2029,24 @@ def convert_messages_to_anthropic(
                     p.get("cache_control") for p in content if isinstance(p, dict)
                 )
                 if has_cache:
-                    system = [p for p in content if isinstance(p, dict)]
+                    converted_system = [p for p in content if isinstance(p, dict)]
                 else:
-                    system = "\n".join(
+                    converted_system = "\n".join(
                         p["text"] for p in content if p.get("type") == "text"
                     )
             else:
-                system = content
+                converted_system = content
+
+            if system is None and not result:
+                system = converted_system
+            elif allow_mid_system:
+                result.append({"role": "system", "content": converted_system})
+            else:
+                # Legacy Anthropic Messages API compatibility: only a single
+                # top-level system parameter is supported. Later system messages
+                # replace the prior one, matching pre-existing Hermes behavior
+                # for non-Opus-4.8 routes.
+                system = converted_system
             continue
 
         if role == "assistant":

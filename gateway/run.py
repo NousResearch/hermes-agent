@@ -1779,6 +1779,8 @@ class GatewayRunner:
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Per-session orchestration mode toggles from /orchestrate.
+        self._session_orchestration_enabled: Dict[str, bool] = {}
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -7758,6 +7760,9 @@ class GatewayRunner:
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
+        if canonical == "orchestrate":
+            return await self._handle_orchestrate_command(event)
+
         if canonical == "fast":
             return await self._handle_fast_command(event)
 
@@ -12103,6 +12108,12 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
                 try:
+                    from agent.orchestration_mode import set_enabled as _set_orchestration_enabled
+                    if bool((getattr(self, "_session_orchestration_enabled", {}) or {}).get(self._session_key_for_source(source), False)):
+                        _set_orchestration_enabled(agent, True)
+                except Exception:
+                    logger.exception("Failed to apply orchestration state to background agent")
+                try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
                         task_id=task_id,
@@ -12294,6 +12305,49 @@ class GatewayRunner:
         self._set_session_reasoning_override(session_key, parsed)
         self._evict_cached_agent(session_key)
         return t("gateway.reasoning.set_session", effort=effort)
+
+    async def _handle_orchestrate_command(self, event: MessageEvent) -> str:
+        """Handle /orchestrate — session-scoped exhaustive delegation mode."""
+        raw_args = event.get_command_args().strip().lower()
+        args = raw_args or "status"
+        session_key = self._session_key_for_source(event.source)
+        states = getattr(self, "_session_orchestration_enabled", None)
+        if states is None:
+            states = {}
+            self._session_orchestration_enabled = states
+
+        if args not in {"on", "off", "status"}:
+            return "Usage: /orchestrate [on|off|status]"
+
+        if args == "status":
+            enabled = bool(states.get(session_key, False))
+            return (
+                f"Orchestration mode: {'ON' if enabled else 'OFF'}\n"
+                "When ON: reasoning=xhigh and substantive turns get scout + delegate_task fan-out reminders."
+            )
+
+        enabled = args == "on"
+        states[session_key] = enabled
+        cached = None
+        cache = getattr(self, "_agent_cache", None)
+        lock = getattr(self, "_agent_cache_lock", None)
+        if cache is not None and lock is not None:
+            with lock:
+                entry = cache.get(session_key)
+                cached = entry[0] if entry else None
+        if cached is not None:
+            try:
+                from agent.orchestration_mode import set_enabled
+                set_enabled(cached, enabled)
+            except Exception:
+                logger.exception("Failed to update cached agent orchestration state")
+        if enabled:
+            return (
+                "✅ Orchestration mode ON for this session.\n"
+                "Substantive turns will default to scout + parallel delegate_task fan-out."
+            )
+
+        return "✅ Orchestration mode OFF for this session."
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
@@ -17157,6 +17211,16 @@ class GatewayRunner:
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
+            try:
+                from agent.orchestration_mode import set_enabled as _set_orchestration_enabled
+                _orch_on = bool(
+                    (getattr(self, "_session_orchestration_enabled", {}) or {}).get(session_key, False)
+                )
+                _set_orchestration_enabled(agent, _orch_on)
+                if _orch_on:
+                    reasoning_config = agent.reasoning_config
+            except Exception:
+                logger.exception("Failed to apply orchestration state to agent")
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 

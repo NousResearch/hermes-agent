@@ -51,6 +51,11 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length,
 )
+from agent.orchestration_mode import (
+    reminder_for_next_turn,
+    supports_mid_conversation_system_messages,
+    wrap_user_reminder,
+)
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
@@ -937,6 +942,12 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        orchestration_reminder = reminder_for_next_turn(agent)
+        orchestration_mid_system = bool(
+            orchestration_reminder
+            and supports_mid_conversation_system_messages(agent)
+        )
+
         api_messages = []
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
@@ -954,6 +965,8 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                if orchestration_reminder and not orchestration_mid_system:
+                    _injections.append(wrap_user_reminder(orchestration_reminder))
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
@@ -1002,6 +1015,14 @@ def run_conversation(
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        # Claude Opus 4.8 supports mid-conversation system messages.  When
+        # available, append orchestration-mode reminders after the current user
+        # turn so the top-level cached system prompt stays byte-stable.  Other
+        # providers received the same reminder as ephemeral user-message context
+        # above to avoid invalid role sequences.
+        if orchestration_reminder and orchestration_mid_system:
+            api_messages.append({"role": "system", "content": orchestration_reminder})
 
         # Inject ephemeral prefill messages right after the system prompt
         # but before conversation history. Same API-call-time-only pattern.

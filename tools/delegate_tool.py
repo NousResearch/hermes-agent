@@ -2005,6 +2005,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2018,6 +2019,16 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'profile' parameter names an entry in the top-level
+    ``agent_profiles`` config mapping.  When set, the profile's declared
+    toolsets are used as the effective toolset list for the child, and
+    ``profile_name`` is forwarded to ``_build_child_agent`` so that
+    MCP toolsets declared by the profile bypass the parent's toolset
+    intersection.  This is the mechanism that lets fat sub-agents receive
+    their full MCP toolsets even when the orchestrator runs under a
+    ``no_mcp`` platform toolset.  See NousResearch/hermes-agent#32668 and
+    #32727.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2078,6 +2089,37 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    # Resolve named agent_profile, if one was requested.
+    # When ``profile`` is set the caller wants a pre-declared agent archetype
+    # (toolsets, model, system_prompt) from the top-level ``agent_profiles``
+    # config section.  We extract the toolsets from the profile here so the
+    # rest of the function can treat them as the effective toolset list.
+    # ``resolved_profile_name`` stays None when no profile was requested so
+    # the existing intersection path in _build_child_agent is unchanged.
+    resolved_profile_name: Optional[str] = None
+    if profile and isinstance(profile, str) and profile.strip():
+        all_profiles = _load_agent_profiles()
+        profile_cfg = all_profiles.get(profile)
+        if profile_cfg is None:
+            logger.warning(
+                "delegate_task: unknown profile %r; known profiles: %s. "
+                "Falling back to explicit toolsets (if any).",
+                profile,
+                sorted(all_profiles.keys()) if all_profiles else [],
+            )
+        else:
+            resolved_profile_name = profile
+            # Profile toolsets override caller-supplied toolsets so the model
+            # cannot expand its own access beyond what the profile declares.
+            profile_toolsets = profile_cfg.get("toolsets")
+            if profile_toolsets and isinstance(profile_toolsets, list):
+                toolsets = profile_toolsets
+            logger.debug(
+                "delegate_task: resolved profile %r → toolsets=%s",
+                profile,
+                toolsets,
+            )
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2162,7 +2204,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
-                profile_name=None,
+                profile_name=resolved_profile_name,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2624,6 +2666,41 @@ def _load_config() -> dict:
         return {}
 
 
+def _load_agent_profiles() -> dict:
+    """Return the top-level ``agent_profiles`` mapping from full config.
+
+    Why: agent_profiles live at the root of config.yaml (not under
+    ``delegation``), so _load_config() cannot see them.  This helper
+    reads the full config and returns the profiles dict so delegate_task()
+    can resolve a named profile to its declared toolsets/model.
+
+    What: Returns cfg["agent_profiles"] (a dict of name → profile dict),
+    or an empty dict when the key is absent or config loading fails.
+
+    Test: Patch ``cli.CLI_CONFIG`` with {"agent_profiles": {"docs": {"toolsets":
+    ["mcp-nextcloud-files"]}}} and assert _load_agent_profiles() returns
+    that inner dict keyed by "docs".
+    """
+    try:
+        from cli import CLI_CONFIG
+
+        profiles = CLI_CONFIG.get("agent_profiles")
+        if profiles and isinstance(profiles, dict):
+            return profiles
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+
+        full = load_config()
+        profiles = full.get("agent_profiles")
+        if profiles and isinstance(profiles, dict):
+            return profiles
+    except Exception:
+        pass
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
@@ -2914,6 +2991,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Named agent_profiles entry whose toolsets (and optionally model "
+                    "and system prompt) the sub-agent should use. When set, the "
+                    "profile's declared MCP toolsets are forwarded to the child even "
+                    "when the orchestrator runs under a no_mcp platform_toolset that "
+                    "has no MCP servers of its own. Leave unset to use ad-hoc "
+                    "toolsets or inherit from the parent. Example: 'documents'."
+                ),
+            },
         },
         "required": [],
     },
@@ -2936,6 +3024,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

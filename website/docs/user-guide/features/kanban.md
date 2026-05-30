@@ -155,6 +155,36 @@ events WebSocket is pinned to a board at connection time; switching in
 the UI opens a fresh WS against the new board.
 
 
+## File attachments
+
+Tasks can carry file attachments — PDFs, images, source documents — so a
+worker has the source material it needs without you pasting paths into the
+body and hoping it finds them.
+
+- **Upload** — open a task in the dashboard drawer and use the
+  **Attachments** section's *Upload file* button (multiple files at once
+  are fine). Each upload is capped at 25 MB.
+- **Storage** — files land under
+  `<hermes-home>/kanban/attachments/<task_id>/` for the default board, or
+  `<hermes-home>/kanban/boards/<slug>/attachments/<task_id>/` for a named
+  board. Set `HERMES_KANBAN_ATTACHMENTS_ROOT` to pin a custom location.
+- **What the worker sees** — when the dispatcher hands a task to a worker,
+  the worker's context includes an **Attachments** section listing each
+  file's name and its **absolute path**. The worker has full file/terminal
+  tool access, so it reads attachments directly (`read_file`, or shell
+  tools like `pdftotext`).
+- **Download / remove** — the drawer lists each attachment with a download
+  link and a remove (×) control. Removing an attachment deletes both the
+  metadata row and the on-disk file.
+
+:::note Remote terminal backends
+Attachment paths resolve directly on the **local** terminal backend, which
+is the default for Kanban workers. If you run workers on a remote backend
+(Docker, Modal), mount the board's `attachments/` directory into the
+sandbox so the absolute paths in the worker context are reachable.
+:::
+
+
 ## Quick start
 
 The commands below are **you** (the human) setting up the board and creating tasks. Once a task is assigned, the dispatcher spawns the assigned profile as a worker, and from there **the model drives the task through `kanban_*` tool calls, not CLI commands** — see [How workers interact with the board](#how-workers-interact-with-the-board).

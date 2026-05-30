@@ -3375,10 +3375,14 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
     don't want LAN hosts guessing tokens.
 
-    All-interfaces insecure bind (``--host 0.0.0.0 --insecure`` or
-    ``--host :: --insecure``): allow any peer. The operator explicitly
-    opted into LAN/public exposure in this mode, so the loopback-only peer
-    restriction should not apply.
+    Explicit non-loopback bind (``--host 0.0.0.0``, ``--host ::``, or a
+    specific address such as a Tailscale/LAN IP, always with
+    ``--insecure``): allow any peer. The operator explicitly opted into
+    non-loopback exposure, so the loopback-only peer restriction does not
+    apply. DNS-rebinding is still blocked by the Host/Origin guard in
+    :func:`_ws_host_origin_is_allowed`, which mirrors the HTTP layer and
+    requires the Host header to match the bound interface — the same
+    defence ``_is_accepted_host`` applies to non-loopback HTTP requests.
 
     Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
     (enabled when the OAuth gate is active so cookies can pick up
@@ -3390,8 +3394,13 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """
     if getattr(app.state, "auth_required", False):
         return True
-    bound_host = getattr(app.state, "bound_host", "")
-    if bound_host in {"0.0.0.0", "::"}:
+    # Any explicit non-loopback bind (0.0.0.0, ::, or a specific LAN /
+    # Tailscale address) means the operator opted into non-loopback
+    # access via --insecure.  The loopback-only peer gate only applies to
+    # an actual loopback bind; otherwise the WS handshake is rejected even
+    # though same-bind HTTP requests pass _is_accepted_host.
+    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    if bound_host and bound_host not in _LOOPBACK_HOSTS:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:

@@ -162,6 +162,30 @@ class TestWsTicketEndpoint:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def insecure_explicit_host_app():
+    """web_server.app bound to an explicit non-loopback host (--insecure).
+
+    Models `--host 100.64.0.10 --insecure` (e.g. a Tailscale IP behind
+    `tailscale serve`) — a specific address rather than the all-interfaces
+    0.0.0.0 wildcard.
+    """
+    _reset_for_tests()
+    clear_providers()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "100.64.0.10"
+    web_server.app.state.bound_port = 9119
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app, base_url="http://100.64.0.10:9119")
+    yield client
+    _reset_for_tests()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
 def _fake_ws(*, query: dict, client_host: str = "127.0.0.1", path: str = "/api/pty"):
     """Build a stand-in for starlette.WebSocket good enough for _ws_auth_ok."""
 
@@ -314,6 +338,33 @@ class TestWsRequestIsAllowedGated:
             "origin": "http://192.168.0.222:9120",
         }
         assert web_server._ws_request_is_allowed(ws) is True
+
+    def test_peer_allowed_on_explicit_non_loopback_bind(self, insecure_explicit_host_app):
+        """`--host 100.64.0.10 --insecure` (Tailscale/LAN IP) is an explicit
+        non-loopback opt-in too — not just the 0.0.0.0 wildcard.
+
+        Regression coverage: the merged 0.0.0.0/:: fix did not cover binding
+        directly to a specific tailnet/LAN address, so `/chat` HTML loaded but
+        WS upgrades were still rejected by the loopback-only peer guard.
+        """
+        ws = _fake_ws(query={}, client_host="100.64.0.99")
+        ws.headers = {
+            "host": "100.64.0.10:9119",
+            "origin": "http://100.64.0.10:9119",
+        }
+        assert web_server._ws_request_is_allowed(ws) is True
+
+    def test_rebinding_host_rejected_on_explicit_non_loopback_bind(
+        self, insecure_explicit_host_app
+    ):
+        """Lifting the peer-IP gate for an explicit bind must NOT lift the
+        DNS-rebinding Host guard: a mismatched Host header is still rejected,
+        because an explicit non-loopback bind requires an exact Host match in
+        `_is_accepted_host` (unlike the 0.0.0.0 wildcard, which accepts any).
+        """
+        ws = _fake_ws(query={}, client_host="100.64.0.99")
+        ws.headers = {"host": "evil.example.com"}
+        assert web_server._ws_request_is_allowed(ws) is False
 
     def test_host_origin_guard_still_runs_in_gated_mode(self, gated_app):
         """Bypassing the peer-IP check must not bypass the DNS-rebinding

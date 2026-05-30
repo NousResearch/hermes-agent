@@ -606,8 +606,26 @@ def run_conversation(
             "should_defer_preflight_to_real_usage",
             lambda _tokens: False,
         )
+        _preflight_deferred = _defer_preflight(_preflight_tokens)
 
-        if _defer_preflight(_preflight_tokens):
+        if not _preflight_deferred:
+            # Keep the CLI/ACP context display in sync with what preflight
+            # actually measured.  The status bar reads
+            # ``compressor.last_prompt_tokens``, which otherwise only updates
+            # from a *successful* API response.  When the conversation has grown
+            # since the last successful call — or when compression then fails
+            # (e.g. the auxiliary summary model times out) and no fresh usage
+            # arrives — the bar stays stuck at the old, smaller value while
+            # preflight reports a much larger number, looking out of sync.
+            # Seed it with the fresh estimate (only ever revising upward; a real
+            # ``update_from_response`` will correct it after the next API call).
+            # Skipped when deferring — a deferred estimate is known to over-count
+            # vs the last real provider prompt, so trusting it for the display
+            # would re-introduce the very desync we're avoiding.
+            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+                _compressor.last_prompt_tokens = _preflight_tokens
+
+        if _preflight_deferred:
             logger.info(
                 "Skipping preflight compression: rough estimate ~%s >= %s, "
                 "but last real provider prompt was %s after compression",

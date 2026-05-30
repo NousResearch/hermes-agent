@@ -25,7 +25,7 @@ Triggered when:
 
 ## Prerequisites
 
-Environment variable required:
+Environment variable:
 - `MINIMAX_CODING_API_KEY` — MiniMax API key (set in `~/.hermes/.env`)
 
 ## Quick Reference

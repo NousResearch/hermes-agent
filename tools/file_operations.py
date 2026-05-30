@@ -714,13 +714,9 @@ class ShellFileOperations(FileOperations):
         line-reference / patch / value-lookup / structure tasks (4/4 both),
         while dropping line numbers entirely regressed line-referencing
         (the model hand-counted and was off-by-one, 3/4) — so we keep the
-        numbers, just not the padding. ``HERMES_READ_GUTTER=padded``
-        restores the legacy fixed-width format for anyone who relied on
-        column alignment.
+        numbers, just not the padding.
         """
-        import os as _os
         from tools.tool_output_limits import get_max_line_length
-        padded = (_os.environ.get("HERMES_READ_GUTTER") or "").lower() == "padded"
         max_line_length = get_max_line_length()
         lines = content.split('\n')
         numbered = []
@@ -728,7 +724,7 @@ class ShellFileOperations(FileOperations):
             # Truncate long lines
             if len(line) > max_line_length:
                 line = line[:max_line_length] + "... [truncated]"
-            numbered.append(f"{i:6d}|{line}" if padded else f"{i}|{line}")
+            numbered.append(f"{i}|{line}")
         return '\n'.join(numbered)
     
     def _expand_path(self, path: str) -> str:

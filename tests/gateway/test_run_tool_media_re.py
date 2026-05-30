@@ -1,4 +1,4 @@
-"""Tests for _TOOL_MEDIA_RE regex patterns in gateway/run.py.
+r"""Tests for _TOOL_MEDIA_RE regex patterns in gateway/run.py.
 
 Issue #34632: The _TOOL_MEDIA_RE patterns in GatewayRunner used (?:/|~\/) to
 anchor paths, which only matched Unix-style absolute and home-relative paths.

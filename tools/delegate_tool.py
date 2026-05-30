@@ -2885,16 +2885,26 @@ def _merge_delegation_config_for_tier(delegation_cfg: dict, tier_cfg: dict) -> d
     ``provider`` or ``base_url``, the inherited routing bundle from the base
     config must be cleared first so we don't leak incompatible credentials or
     transports into the selected tier.
+
+    Blank-string values are treated like absent overrides here. The config CLI
+    persists unset-like values as ``""`` rather than removing the key, so
+    merging them literally would accidentally erase the base route and fall
+    back to parent inheritance.
     """
+    sanitized_tier_cfg = {
+        key: value
+        for key, value in tier_cfg.items()
+        if not (isinstance(value, str) and not value.strip())
+    }
     merged = dict(delegation_cfg)
 
     provider_changed = (
-        "provider" in tier_cfg
-        and tier_cfg.get("provider") != delegation_cfg.get("provider")
+        "provider" in sanitized_tier_cfg
+        and sanitized_tier_cfg.get("provider") != delegation_cfg.get("provider")
     )
     base_url_changed = (
-        "base_url" in tier_cfg
-        and tier_cfg.get("base_url") != delegation_cfg.get("base_url")
+        "base_url" in sanitized_tier_cfg
+        and sanitized_tier_cfg.get("base_url") != delegation_cfg.get("base_url")
     )
 
     if provider_changed or base_url_changed:
@@ -2909,7 +2919,7 @@ def _merge_delegation_config_for_tier(delegation_cfg: dict, tier_cfg: dict) -> d
         ):
             merged.pop(key, None)
 
-    merged.update(tier_cfg)
+    merged.update(sanitized_tier_cfg)
     return merged
 
 

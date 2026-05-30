@@ -3027,6 +3027,47 @@ class TestDelegationTierConfigMerge(unittest.TestCase):
         self.assertNotIn("api_key", merged)
         self.assertEqual(merged["reasoning_effort"], "medium")
 
+    def test_blank_provider_override_is_ignored_and_model_override_still_applies(self):
+        merged = _merge_delegation_config_for_tier(
+            {
+                "provider": "openrouter",
+                "model": "google/gemini-2.5-pro",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "base-key",
+                "api_mode": "chat_completions",
+            },
+            {
+                "provider": "",
+                "model": "google/gemini-2.5-flash-lite",
+            },
+        )
+
+        self.assertEqual(merged["provider"], "openrouter")
+        self.assertEqual(merged["model"], "google/gemini-2.5-flash-lite")
+        self.assertEqual(merged["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(merged["api_key"], "base-key")
+        self.assertEqual(merged["api_mode"], "chat_completions")
+
+    def test_blank_base_url_override_is_ignored(self):
+        merged = _merge_delegation_config_for_tier(
+            {
+                "model": "anthropic/claude-sonnet-4",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "base-key",
+                "api_mode": "chat_completions",
+            },
+            {
+                "base_url": "",
+            },
+        )
+
+        self.assertEqual(merged["provider"], "openrouter")
+        self.assertEqual(merged["model"], "anthropic/claude-sonnet-4")
+        self.assertEqual(merged["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(merged["api_key"], "base-key")
+        self.assertEqual(merged["api_mode"], "chat_completions")
+
 
 class TestDelegationTierConfigLoad(unittest.TestCase):
     def test_missing_delegation_block_returns_empty_config(self):
@@ -3082,6 +3123,31 @@ class TestDelegationTierConfigLoad(unittest.TestCase):
 
         self.assertEqual(loaded["provider"], "openrouter")
         self.assertEqual(loaded["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(loaded["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(loaded["api_key"], "base-key")
+        self.assertIn("tiers", loaded)
+
+    def test_requested_tier_ignores_blank_string_route_overrides(self):
+        full_cfg = {
+            "delegation": {
+                "provider": "openrouter",
+                "model": "google/gemini-2.5-pro",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "base-key",
+                "tiers": {
+                    "small": {
+                        "provider": "",
+                        "base_url": "",
+                        "model": "google/gemini-2.5-flash-lite",
+                    },
+                },
+            }
+        }
+
+        loaded = _load_delegation_config_for_tier(full_cfg, "small")
+
+        self.assertEqual(loaded["provider"], "openrouter")
+        self.assertEqual(loaded["model"], "google/gemini-2.5-flash-lite")
         self.assertEqual(loaded["base_url"], "https://openrouter.ai/api/v1")
         self.assertEqual(loaded["api_key"], "base-key")
         self.assertIn("tiers", loaded)

@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
-from utils import base_url_host_matches, base_url_hostname
+from utils import atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -846,9 +846,7 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     cache[key] = length
     path = _get_context_cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+        atomic_yaml_write(path, {"context_lengths": cache})
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
@@ -870,9 +868,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     del cache[key]
     path = _get_context_cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+        atomic_yaml_write(path, {"context_lengths": cache})
     except Exception as e:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
 

@@ -1638,6 +1638,7 @@ all = [
     { name = "pytest-timeout" },
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "ruff" },
+    { name = "setuptools" },
     { name = "simple-term-menu" },
     { name = "ty" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1668,6 +1669,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+    { name = "setuptools" },
     { name = "ty" },
 ]
 dingtalk = [
@@ -1877,6 +1879,7 @@ requires-dist = [
     { name = "rich", specifier = "==14.3.3" },
     { name = "ruamel-yaml", specifier = "==0.18.17" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.10" },
+    { name = "setuptools", marker = "extra == 'dev'", specifier = "==82.0.1" },
     { name = "simple-term-menu", marker = "extra == 'cli'", specifier = "==1.6.6" },
     { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.27.0" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.27.0" },

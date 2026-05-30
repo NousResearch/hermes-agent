@@ -128,6 +128,17 @@ class TestConfig:
 
         assert cfg["ttl_hours"] == float(model_catalog.DEFAULT_TTL_HOURS)
 
+    def test_negative_ttl_hours_clamps_to_zero(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model_catalog": {"ttl_hours": "-5"}},
+        ):
+            cfg = model_catalog._load_catalog_config()
+
+        assert cfg["ttl_hours"] == 0.0
+
 
 class TestFetchSuccess:
     def test_fetch_and_cache_writes_disk(self, isolated_home):

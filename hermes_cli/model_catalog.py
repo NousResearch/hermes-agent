@@ -122,7 +122,7 @@ def _parse_ttl_hours(value: Any) -> float:
         return float(DEFAULT_TTL_HOURS)
     if not math.isfinite(ttl):
         return float(DEFAULT_TTL_HOURS)
-    return ttl
+    return max(0.0, ttl)
 
 
 def _cache_path() -> Path:

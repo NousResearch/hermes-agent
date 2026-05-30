@@ -405,6 +405,30 @@ diagnostic would fire. Tests in
 `tests/tools/test_inspect_discord_thread_context.py` cover mapped, missing
 mapping, missing path, read-only, and no-content behavior using temp paths only.
 
+## Thread Inventory Follow-up
+
+`tools/list_discord_thread_context_inventory.py` provides a read-only inventory
+of mapped Discord thread sessions from an explicit state root. It reads
+`sessions.json` and aggregate `state.db` metadata only, and never queries
+transcript or memory content.
+
+The inventory tests in `tests/tools/test_list_discord_thread_context_inventory.py`
+cover mapped thread sessions with nonzero transcript counts, zero transcript
+counts, available names, missing names, `--limit`, JSON output, missing paths,
+and read-only behavior.
+
+Live metadata validation found two mapped Discord thread sessions with zero
+transcript rows:
+
+- `1507598956752928820`:
+  `Travisaggie04's server / #general / Family Hub -- Part 17`
+- `1507081077196460185`:
+  `Travisaggie04's server / #general / Family Hub Public App -- Part 4`
+
+Those zero-row sessions have active `sessions.json` mappings but no persisted
+transcript rows in `state.db`, so they look like empty mapped sessions rather
+than exact orphan/missing-mapping recoveries.
+
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:

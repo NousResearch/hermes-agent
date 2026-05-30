@@ -12,11 +12,13 @@ that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
 metadata hostnames (metadata.google.internal, 169.254.169.254) are
 **always** blocked — those are never legitimate agent targets.
 
-Limitations (documented, not fixable at pre-flight level):
+Limitations:
   - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
     can return a public IP for the check, then a private IP for the actual
-    connection. Fixing this requires connection-level validation (e.g.
-    Python's Champion library or an egress proxy like Stripe's Smokescreen).
+    connection. CDP-backed browser sessions also validate Chrome's reported
+    remoteIPAddress after connection and before returning page content to the
+    agent. Preventing the first packet still requires connection-level controls
+    in the HTTP client/socket layer or an egress proxy like Stripe's Smokescreen.
   - Redirect-based bypass is mitigated by httpx event hooks that re-validate
     each redirect target in vision_tools, gateway platform adapters, and
     media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
@@ -269,6 +271,35 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+def _is_always_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if the IP is in the non-negotiable metadata/link-local floor."""
+    return ip in _ALWAYS_BLOCKED_IPS or any(
+        ip in net for net in _ALWAYS_BLOCKED_NETWORKS
+    )
+
+
+def is_blocked_ip_address(ip: str) -> bool:
+    """Return True if an IP string is private/internal and should be blocked.
+
+    Invalid IP strings fail closed. This helper is for callers that already
+    have a browser/client-reported remote IP and need to apply the same SSRF
+    classification as ``is_safe_url`` without doing another DNS lookup.
+    """
+    try:
+        return _is_blocked_ip(ipaddress.ip_address(str(ip).strip()))
+    except ValueError:
+        logger.warning("Blocked request — invalid remote IP address: %s", ip)
+        return True
+
+
+def is_always_blocked_ip_address(ip: str) -> bool:
+    """Return True if an IP string is in the always-blocked security floor."""
+    try:
+        return _is_always_blocked_ip(ipaddress.ip_address(str(ip).strip()))
+    except ValueError:
+        return False
+
+
 def is_always_blocked_url(url: str) -> bool:
     """Return True when the URL targets an always-blocked endpoint.
 
@@ -319,9 +350,7 @@ def is_always_blocked_url(url: str) -> bool:
             ip = None
 
         if ip is not None:
-            if ip in _ALWAYS_BLOCKED_IPS or any(
-                ip in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
+            if _is_always_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to cloud metadata address "
                     "(always-blocked floor): %s",
@@ -348,9 +377,7 @@ def is_always_blocked_url(url: str) -> bool:
             except ValueError:
                 logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
                 continue
-            if resolved in _ALWAYS_BLOCKED_IPS or any(
-                resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
+            if _is_always_blocked_ip(resolved):
                 logger.warning(
                     "Blocked request to cloud metadata address "
                     "(always-blocked floor): %s -> %s",
@@ -425,7 +452,7 @@ def is_safe_url(url: str) -> bool:
                 return False
 
             # Always block cloud metadata IPs and link-local, even with toggle on
-            if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
+            if _is_always_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to cloud metadata address: %s -> %s",
                     hostname, ip_str,

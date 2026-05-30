@@ -115,12 +115,16 @@ try:
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
         sensitive_query_param_name as _sensitive_query_param_name,
+        is_blocked_ip_address as _is_blocked_ip_address,
+        is_always_blocked_ip_address as _is_always_blocked_ip_address,
     )
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
     _sensitive_query_param_name = lambda url: None  # noqa: E731 — best-effort fallback
+    _is_blocked_ip_address = lambda ip: True  # noqa: E731 — fail-closed on observed peers
+    _is_always_blocked_ip_address = lambda ip: True  # noqa: E731 — fail-closed on observed peers
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
@@ -1363,6 +1367,63 @@ def _allow_private_urls() -> bool:
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
     return _cached_allow_private_urls
+
+
+def _recent_unsafe_network_response(
+    task_id: str,
+    since_ts: float,
+    *,
+    allow_private_networks: bool,
+) -> Optional[Tuple[str, str, str]]:
+    """Return unsafe browser-observed peer info for a recent navigation.
+
+    The pre-navigation URL safety check resolves DNS in this Python process.
+    CDP-backed browsers can still resolve a hostname differently when they
+    actually connect (DNS rebinding / TOCTOU). The supervisor records Chrome's
+    reported ``remoteIPAddress`` from ``Network.responseReceived``; this helper
+    applies the same SSRF policy to that connected peer before any page content
+    is returned to the agent.
+    """
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return None
+        snapshot = supervisor.snapshot()
+    except Exception as exc:
+        logger.debug("Could not inspect browser network responses: %s", exc)
+        return None
+
+    for record in getattr(snapshot, "network_responses", ()):
+        ts = float(getattr(record, "ts", 0.0) or 0.0)
+        if ts < since_ts:
+            continue
+        remote_ip = str(getattr(record, "remote_ip", "") or "").strip()
+        if not remote_ip:
+            continue
+        url = str(getattr(record, "url", "") or "")
+
+        if _is_always_blocked_ip_address(remote_ip):
+            return ("cloud metadata endpoint", remote_ip, url)
+        if not allow_private_networks and _is_blocked_ip_address(remote_ip):
+            return ("private/internal address", remote_ip, url)
+
+    return None
+
+
+def _clear_network_response_history(task_id: str) -> None:
+    """Clear supervisor network-response history before a fresh navigation."""
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is not None:
+            clear = getattr(supervisor, "clear_network_responses", None)
+            if callable(clear):
+                clear()
+    except Exception as exc:
+        logger.debug("Could not clear browser network responses: %s", exc)
 
 
 def _socket_safe_tmpdir() -> str:
@@ -2807,6 +2868,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
+    _clear_network_response_history(nav_session_key)
+    nav_started_at = time.time()
     result = _run_browser_command(
         nav_session_key,
         "open",
@@ -2850,6 +2913,27 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a private/internal address",
+            })
+
+        network_violation = None
+        if not _is_local_backend():
+            network_violation = _recent_unsafe_network_response(
+                nav_session_key,
+                nav_started_at,
+                allow_private_networks=auto_local_this_nav or _allow_private_urls(),
+            )
+        if network_violation is not None:
+            reason, remote_ip, observed_url = network_violation
+            logger.warning(
+                "Blocked browser navigation after CDP reported %s peer %s for %s",
+                reason,
+                remote_ip,
+                observed_url,
+            )
+            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            return json.dumps({
+                "success": False,
+                "error": f"Blocked: browser connected to a {reason}",
             })
 
         response = {

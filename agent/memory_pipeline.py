@@ -2238,6 +2238,8 @@ class MemoryPipeline:
         fact_id = args.get('fact_id', 0)
         memory_ref = str(fact_id)
 
+        if not self._state:
+            return
         with self._state._lock:
             self._state._conn.execute(
                 "INSERT INTO salience_feedback "

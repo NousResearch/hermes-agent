@@ -676,6 +676,17 @@ def load_cli_config() -> Dict[str, Any]:
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
 
+    # Content tool-call promotion (recover tool calls models emit in `content`).
+    tools_config = defaults.get("tools", {})
+    if isinstance(tools_config, dict):
+        for config_key, env_var in {
+            "promote_content_tool_calls": "HERMES_PROMOTE_TOOLCALLS",
+            "promote_bare_json_tool_call": "HERMES_PROMOTE_BARE_JSON_TOOLCALL",
+        }.items():
+            val = tools_config.get(config_key)
+            if val is not None:
+                os.environ[env_var] = str(val).lower()
+
     return defaults
 
 # Load configuration at module startup
@@ -12695,6 +12706,20 @@ class HermesCLI:
                     "session JSONs, and logs. Set "
                     "[cyan]security.redact_secrets: true[/] in config.yaml "
                     "to re-enable."
+                )
+        except Exception:
+            pass
+        # Content tool-call promotion is ON by default; note when disabled so a
+        # model emitting tool calls in `content` (Ollama/Kimi/MiniMax) won't
+        # silently leak them as text.
+        try:
+            _promote_raw = os.getenv("HERMES_PROMOTE_TOOLCALLS", "true")
+            if _promote_raw.lower() not in {"1", "true", "yes", "on"}:
+                self._console_print(
+                    "[bold yellow]⚠  Content tool-call promotion is DISABLED[/] "
+                    f"(HERMES_PROMOTE_TOOLCALLS={_promote_raw}). Tool calls a model "
+                    "emits inside response content will not execute. Set "
+                    "[cyan]tools.promote_content_tool_calls: true[/] to re-enable."
                 )
         except Exception:
             pass

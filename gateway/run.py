@@ -934,6 +934,16 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+        # Content tool-call promotion (recover tool calls models emit in content).
+        _tools_cfg = _cfg.get("tools", {})
+        if isinstance(_tools_cfg, dict):
+            for _cfg_key, _env_var in {
+                "promote_content_tool_calls": "HERMES_PROMOTE_TOOLCALLS",
+                "promote_bare_json_tool_call": "HERMES_PROMOTE_BARE_JSON_TOOLCALL",
+            }.items():
+                _val = _tools_cfg.get(_cfg_key)
+                if _val is not None:
+                    os.environ[_env_var] = str(_val).lower()
         # Gateway settings (media delivery allowlist + recency trust + strict mode)
         _gateway_cfg = _cfg.get("gateway", {})
         if isinstance(_gateway_cfg, dict):

@@ -152,6 +152,24 @@ model:
 # worktree: false   # Default — only create when -w flag is passed
 
 # =============================================================================
+# Tool Calling
+# =============================================================================
+# Some models (Ollama qwen/glm, Kimi K2, MiniMax, Gemma) emit tool calls inside
+# the response `content` field — as JSON, XML, or special tokens — instead of the
+# structured tool_calls field. Hermes detects those and promotes them to real
+# executed calls. Both options default to ON.
+#
+# tools:
+#   # Global kill-switch for content tool-call promotion.
+#   promote_content_tool_calls: true
+#
+#   # The bare-JSON form ({"name": ..., "arguments": ...} as the whole message)
+#   # is the highest false-positive format. Disable it for injection-exposed
+#   # deployments that feed untrusted file/web content into the model; the four
+#   # token/XML-framed formats keep working.
+#   promote_bare_json_tool_call: true
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.

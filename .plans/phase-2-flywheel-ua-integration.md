@@ -1,8 +1,11 @@
 # Phase 2: UA Flywheel Integration — Orchestration Layer
 
 > **Parent doc:** `.plans/ua-incorporation-strategy.md`
-> **Prerequisite:** Phase 1 (Foundation) must be complete — `scripts/code-scan/scan_project.py`, `scripts/code-scan/language_registry.py`, `scripts/code-scan/graph_schema.py`, and `.hermesignore` must exist and pass verification.
-> **Status:** Draft — awaiting approval for full-phase execution.
+> **Prerequisite:** Phase 1 (Foundation) ✓ complete — committed `24356edcd`, 80 tests pass, scan scripts verified on test-bed repos.
+> **Status:** Approval package prepared — awaiting JC approval for full-phase execution.
+> **Execution beads:** Defined in `.beads/phase2-d1-extract-imports.md`, `.beads/phase2-d2-code-scan-skill.md`, `.beads/phase2-d3-validation-gate-skill.md`, `.beads/phase2-d4-review-integration-deferred.md`.
+>
+> **These bead files are the authoritative execution units.** This plan describes intent and scope; the beads contain exact functions, schemas, test contracts, verification commands, and allowed/forbidden file lists. When executing, dispatch coder subagents using the bead files as the sole implementation spec.
 
 ---
 
@@ -23,7 +26,7 @@ Approving Phase 2 authorizes Hermes to execute the full phase as a review-branch
 1. Implement `scripts/code-scan/extract_imports.py` and tests.
 2. Add `skills/code-analysis/code-scan/SKILL.md` and lightweight supporting references only if needed.
 3. Add `skills/code-analysis/validation-gate/SKILL.md` and deterministic validation contract tests.
-4. Prepare optional `requesting-code-review` integration as a documented follow-up or isolated final slice; execute it only if approval explicitly includes D4.
+4. D4 deferred by default: prepare optional `requesting-code-review` integration as a documented follow-up only; execute it only if approval explicitly includes D4.
 
 ### Excluded / Deferred
 
@@ -87,24 +90,57 @@ If any test-bed path is moved outside this worktree before execution, update thi
 
 **Purpose:** Extract import/dependency maps from the scan_project.py output. Reads scan JSON, parses import statements, returns import map JSON.
 
+**Authoritative execution bead:** `.beads/phase2-d1-extract-imports.md` contains exact function signatures, regex patterns, output schema contract, test fixtures, and verification commands.
+
 **Scope:**
 - Read `scan_project.py` JSON output
 - Regex-based import extraction (start with regex; tree-sitter is Phase 4)
 - Support: Python (`import X`, `from X import Y`), JavaScript/TypeScript (`import X from 'Y'`, `require()`), Rust (`use X::Y`), Go (`import "pkg"`), shell/bash (`source`, `.`)
-- Output: `{ "files": { "path/to/file": ["imported_module1", ...] } }`
+- Output: structured import map JSON following the schema contract below
 - No LLM involvement
+
+**Output schema contract (exact):**
+```json
+{
+  "schema_version": "1.0.0",
+  "source_scan": {
+    "project_root": "/path/to/project",
+    "total_files": 423
+  },
+  "generated_at": "2026-05-30T12:00:00Z",
+  "files": {
+    "src/main.py": {
+      "imports": ["os", "sys", "pathlib"],
+      "warnings": []
+    }
+  },
+  "totals": {
+    "files_with_imports": 156,
+    "files_without_imports": 267,
+    "unique_modules": 89,
+    "total_warnings": 3
+  }
+}
+```
+
+Required top-level keys: `schema_version` (string, always `"1.0.0"`), `source_scan` (object with `project_root` + `total_files`), `generated_at` (ISO 8601), `files` (map of relative_path → `{ imports: string[], warnings: string[] }`), `totals` (object with `files_with_imports`, `files_without_imports`, `unique_modules`, `total_warnings`).
+
+**Required functions:** `load_scan_output`, `iter_scanned_files`, `extract_python_imports`, `extract_js_ts_imports`, `extract_rust_imports`, `extract_go_imports`, `extract_shell_imports`, `extract_imports_for_file`, `build_import_map`, `main`.
 
 **Acceptance criteria:**
 - Runs standalone: `python scripts/code-scan/extract_imports.py <scan_output.json>`
 - Correctly extracts imports from ≥5 supported languages
-- Output is valid JSON parseable by downstream consumers
+- Output is valid JSON matching the schema contract above
 - Zero new runtime dependencies
+- All test cases in `.beads/phase2-d1-extract-imports.md` pass (RED → GREEN → FULL)
 
 ---
 
 ### D2: `skills/code-analysis/code-scan/SKILL.md`
 
 **Purpose:** JIT skill that orchestrates the scan pipeline. Agent loads this skill when analyzing a codebase.
+
+**Authoritative execution bead:** `.beads/phase2-d2-code-scan-skill.md` contains exact frontmatter content, all 7 orchestration steps, output format, line budget constraints, and contract tests.
 
 **Frontmatter:** Must follow existing SKILL.md convention with `hermes.tags` including `on-demand`.
 
@@ -117,47 +153,19 @@ If any test-bed path is moved outside this worktree before execution, update thi
 6. Renders structured summary to user
 
 **Acceptance criteria:**
-- SKILL.md ≤80 lines
+- SKILL.md ≤80 lines (enforced by contract test in the bead)
 - Skill loads via `agent/skill_commands.py` as user message (not system prompt)
 - End-to-end scan of a 50-file project completes in <5s (script execution only; LLM synthesis excluded from timing)
 - Agent produces correct scan output without hallucinating file structures
-
-**Skill structure (proposed):**
-```markdown
----
-name: code-scan
-hermes.tags: [on-demand, code-analysis, project-mapping]
----
-
-# Code Scan Skill
-
-When the user asks to analyze, map, or understand a codebase:
-
-1. Run `scripts/code-scan/scan_project.py <target_dir>` → capture JSON output
-2. Run `scripts/code-scan/extract_imports.py <scan_output.json>` → capture import map
-3. Read both JSON artifacts
-4. Synthesize: project name, one-line description, framework/stack narrative
-5. Present structured summary
-
-Constraints:
-- Never hallucinate file structures — only report what the scan scripts return
-- If scan fails, report the error; do not guess
-- Respect `.hermesignore` rules
-
-Output format:
-## Project: <name>
-- **Description:** <one-line>
-- **Languages:** <detected>
-- **Frameworks:** <detected>
-- **Structure:** <top-level dirs + key files>
-- **Import graph highlights:** <top 5 most-imported modules>
-```
+- All contract tests in `.beads/phase2-d2-code-scan-skill.md` pass
 
 ---
 
 ### D3: `skills/code-analysis/validation-gate/SKILL.md`
 
 **Purpose:** Two-phase validation skill. Phase 1 runs a deterministic validation script; Phase 2 reads results and renders approval/rejection.
+
+**Authoritative execution bead:** `.beads/phase2-d3-validation-gate-skill.md` contains exact frontmatter, two-phase behavior, validation checks, output format, line budget, graph_schema.py contract tests, and RED/GREEN/FULL evidence requirements.
 
 **Behavior:**
 1. Accepts a target artifact (graph JSON, scan output, or analysis result)
@@ -167,55 +175,39 @@ Output format:
 5. If REJECTED with critical issues, triggers revision gate
 
 **Acceptance criteria:**
-- SKILL.md ≤80 lines
+- SKILL.md ≤80 lines (enforced by contract test in the bead)
 - Validation script runs in <2s on typical outputs
 - Warnings don't block; only critical issues trigger REJECTED
 - Maps to existing Revision gate in gates taxonomy
-
-**Skill structure (proposed):**
-```markdown
----
-name: validation-gate
-hermes.tags: [on-demand, code-analysis, quality-gate]
----
-
-# Validation Gate
-
-When verifying analysis output, graph structures, or code mappings:
-
-1. Write/run a Python validation script using `scripts/code-scan/graph_schema.py`
-2. Execute the script → capture JSON results
-3. Read and interpret results:
-   - **APPROVED:** All checks pass
-   - **WARNING:** Non-blocking issues found (render as notes)
-   - **REJECTED:** Critical issues found (trigger revision)
-4. Render structured report to user
-
-Validation checks:
-- Node types are valid (via NODE_TYPE enum)
-- Edge types are valid (via EDGE_TYPE enum)
-- No orphan nodes (all edges reference existing node IDs)
-- No self-referencing edges (unless type allows)
-
-Do NOT validate using LLM intuition — only report what the script returns.
-```
+- All contract tests in `.beads/phase2-d3-validation-gate-skill.md` pass
 
 ---
 
-### D4: Integration with `requesting-code-review` (Optional / Approval-Scoped)
+### D4: Integration with `requesting-code-review` — DEFERRED by default
 
-**Purpose:** Extend the existing `requesting-code-review` skill to optionally run scan + validation gate on changed files in a PR/diff context.
+**⚠️ DEFAULT STATUS: DEFERRED.** This deliverable is **not included** in the standard Phase 2 approval scope. It will only execute if JC **explicitly** includes D4 in the Phase 2 approval.
 
-**Scope:**
+**Authoritative execution bead:** `.beads/phase2-d4-review-integration-deferred.md` contains the scoped implementation outline, constraints, and deferred verification plan. **No implementation work until JC grants explicit approval.**
+
+**Purpose (if approved):** Extend the existing `requesting-code-review` skill to optionally run scan + validation gate on changed files in a PR/diff context.
+
+**Scope (if approved):**
 - Add an optional code-scan step when reviewing code changes
 - Run `scan_project.py --changed` (or parse scan output for changed files only)
 - Feed results into review skill context
-- No new files — update existing skill
+- No new files — update existing skill only
 
-**Acceptance criteria:**
+**Acceptance criteria (if approved):**
 - Only activates when the user requests code analysis as part of review
 - Does not slow down normal review flow when code-scan is not requested
 - Existing `requesting-code-review` tests still pass
+- Modified SKILL.md still ≤80 lines total (may require condensing existing content)
+
+**Why deferred by default:**
+1. Modifying a production-critical skill introduces regression risk
+2. Line budget may be tight
+3. Value of scan-enriched review is unproven until D1/D2/D3 ship in isolation
+4. JC can approve D4 after seeing D1/D2/D3 results
 
 ---
 
@@ -247,11 +239,37 @@ Do NOT validate using LLM intuition — only report what the script returns.
 
 ## Phase 2 Deliverables Checklist
 
-- [ ] Prerequisite: Phase 1 verified and committed before execution begins
-- [ ] D1: `scripts/code-scan/extract_imports.py` + unit tests
-- [ ] D2: `skills/code-analysis/code-scan/SKILL.md`
-- [ ] D3: `skills/code-analysis/validation-gate/SKILL.md`
-- [ ] D4: `requesting-code-review` integration only if explicitly included in approval
+- [x] Prerequisite: Phase 1 verified and committed (`24356edcd`, 80 tests pass)
+- [x] D1: `scripts/code-scan/extract_imports.py` + unit tests → `.beads/phase2-d1-extract-imports.md` — executed locally; Hermes verified
+- [x] D2: `skills/code-analysis/code-scan/SKILL.md` (≤80 lines) → `.beads/phase2-d2-code-scan-skill.md` — executed locally; 39 lines
+- [x] D3: `skills/code-analysis/validation-gate/SKILL.md` (≤80 lines) → `.beads/phase2-d3-validation-gate-skill.md` — executed locally; 48 lines
+- [ ] D4: `requesting-code-review` integration — **DEFERRED** unless JC explicitly approves → `.beads/phase2-d4-review-integration-deferred.md`
 - [ ] Verification: tests pass, context budget met, scope guardrails pass
 - [ ] Reviewer: spec compliance + quality/security + scope preservation PASS
-- [ ] Approval: This entire Phase 2 plan approved by JC before execution
+- [x] Approval: JC approved D1-D3 autonomous execution; D4 deferred
+
+### JC Approval Wording (copy-paste template)
+
+```
+Phase 2 UA Flywheel Integration — Approval Decision
+
+I approve Phase 2 UA Flywheel Integration for autonomous execution on branch `docs/ua-flywheel-phase1-phase2-plan`.
+
+Approving:
+  ☐ D1 (extract_imports.py) — import extraction script + tests
+  ☐ D2 (code-scan SKILL.md) — JIT scan orchestration skill
+  ☐ D3 (validation-gate SKILL.md) — two-phase reviewer skill
+  ☐ D4 (requesting-code-review integration) — optional, deferred by default
+
+Scope limits:
+  - Explicit invocation / JIT only: no dashboard, no React UI, no auto-injection,
+    no SQLite store, no CLI command, no tree-sitter/WASM, no new runtime deps.
+  - No commit/push/merge/deploy beyond the local branch checkpoint.
+  - Coder subagents have no commit/push authority.
+  - Forbidden files (skills_sync.py, test_skills_sync.py) must remain untouched.
+  - SKILL.md files must not exceed 80 lines.
+
+Verifier to run after execution: see Verification table below.
+Reviewer subagent must return explicit PASS on spec compliance, scope preservation,
+context budget, quality/security, and forbidden-file integrity.
+```

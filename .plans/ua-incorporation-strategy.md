@@ -1,6 +1,6 @@
 # Understand-Anything Incorporation Strategy
 
-> **Status:** Phase 1 pending execution. Phase 2 plan below awaits approval.
+> **Status:** Phase 1 complete / verified / committed (`24356edcd`). Phase 2 approval package in prep — execution beads drafted (D1–D4), awaiting JC review. D4 is deferred by default.
 > **Related:** See `understand-anything-to-flywheel-review.md` for the full risk analysis and artifact inventory.
 > **Last updated:** 2026-05-30
 
@@ -15,8 +15,8 @@ Adopt high-value ideas from Understand-Anything into Hermes/Flywheel without con
 **Value:** High. Deterministic scripts handle file enumeration, language detection, import maps, and category assignment. LLM only synthesizes narrative fields (description, framework story). Drastically reduces token spend and hallucination risk.
 
 **Form:** A `scripts/code-scan/` module under the repos root (or `.hermes/` tool scripts). Two scripts:
-- `scan-project.py` — walks project, applies `.hermesignore` filtering, assigns language/category per extension tables, counts lines, estimates complexity. Returns JSON.
-- `extract-imports.py` — reads the scan output, parses imports via regex/tree-sitter (reuse existing LSP infrastructure where possible), returns import map JSON.
+- `scan_project.py` — walks project, applies `.hermesignore` filtering, assigns language/category per extension tables, counts lines, estimates complexity. Returns JSON.
+- `extract_imports.py` — reads the scan output, parses imports via regex/tree-sitter (reuse existing LSP infrastructure where possible), returns import map JSON.
 
 The LLM orchestration skill reads these JSON artifacts + manifests and synthesizes only what's non-deterministic (project name, description, framework narrative).
 

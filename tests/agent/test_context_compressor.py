@@ -37,6 +37,53 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=90000) is True
         assert compressor.should_compress(prompt_tokens=50000) is False
 
+    def test_codex_operational_cap_limits_threshold(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CODEX_CONTEXT_OPERATIONAL_CAP", "60000")
+        with patch("agent.context_compressor.get_model_context_length", return_value=400000):
+            c = ContextCompressor(
+                model="gpt-5.5",
+                provider="openai-codex",
+                threshold_percent=0.5,
+                quiet_mode=True,
+            )
+        assert c.context_length == 400000
+        assert c.threshold_tokens == 60000
+        assert c.should_compress(prompt_tokens=59999) is False
+        assert c.should_compress(prompt_tokens=60000) is True
+
+    def test_codex_operational_cap_by_api_mode_limits_threshold(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CODEX_CONTEXT_OPERATIONAL_CAP", "60000")
+        with patch("agent.context_compressor.get_model_context_length", return_value=400000):
+            c = ContextCompressor(
+                model="gpt-5.5",
+                provider="custom",
+                api_mode="codex_responses",
+                threshold_percent=0.5,
+                quiet_mode=True,
+            )
+        assert c.threshold_tokens == 60000
+
+    def test_codex_operational_cap_is_ignored_for_other_providers(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CODEX_CONTEXT_OPERATIONAL_CAP", "60000")
+        with patch("agent.context_compressor.get_model_context_length", return_value=400000):
+            c = ContextCompressor(
+                model="gpt-5.5",
+                provider="openrouter",
+                threshold_percent=0.5,
+                quiet_mode=True,
+            )
+        assert c.threshold_tokens == 200000
+
+    def test_update_model_reapplies_codex_operational_cap(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CODEX_CONTEXT_OPERATIONAL_CAP", "60000")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        c.update_model(
+            model="gpt-5.5",
+            context_length=400000,
+            provider="openai-codex",
+        )
+        assert c.threshold_tokens == 60000
 
 
 class TestUpdateFromResponse:

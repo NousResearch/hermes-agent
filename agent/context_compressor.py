@@ -19,6 +19,7 @@ Improvements over v2:
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -104,6 +105,28 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+
+def _codex_operational_threshold_cap(provider: str, api_mode: str = "") -> int | None:
+    """Return an optional operational compression threshold cap for Codex.
+
+    The ChatGPT Codex backend can become slow or unstable well before the
+    advertised model context window is exhausted.  JandY's always-on gateway
+    uses this environment-controlled cap to trigger compression from the
+    observed operational budget instead of the nominal model maximum.  Invalid
+    or non-positive values are ignored so normal providers keep historical
+    behavior.
+    """
+    provider_l = (provider or "").lower()
+    api_mode_l = (api_mode or "").lower()
+    if provider_l != "openai-codex" and not api_mode_l.startswith("codex"):
+        return None
+    raw = os.environ.get("HERMES_CODEX_CONTEXT_OPERATIONAL_CAP", "")
+    try:
+        cap = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return cap if cap > 0 else None
 
 # Hard ceiling for the deterministic summary-failure handoff.  The fallback is
 # only meant to preserve continuity anchors from the dropped window, not to
@@ -589,6 +612,9 @@ class ContextCompressor(ContextEngine):
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
+        operational_cap = _codex_operational_threshold_cap(provider, api_mode)
+        if operational_cap is not None:
+            self.threshold_tokens = min(self.threshold_tokens, operational_cap)
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -642,6 +668,9 @@ class ContextCompressor(ContextEngine):
             int(self.context_length * threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
+        operational_cap = _codex_operational_threshold_cap(provider, api_mode)
+        if operational_cap is not None:
+            self.threshold_tokens = min(self.threshold_tokens, operational_cap)
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context

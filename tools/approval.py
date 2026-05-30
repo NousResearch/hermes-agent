@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import unicodedata
-from typing import Optional
+from typing import Any, Dict, Optional
 from hermes_cli.config import cfg_get
 
 from utils import env_var_enabled, is_truthy_value
@@ -572,6 +572,25 @@ def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
+
+
+def get_pending_approval_info(session_key: str) -> Optional[Dict[str, Any]]:
+    """Return the command and description of the oldest pending gateway approval.
+
+    Used by the gateway's approve/deny handlers to record approval context
+    in the session transcript.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return None
+        for entry in queue:
+            if entry and entry.data:
+                cmd = entry.data.get("command", "")
+                desc = entry.data.get("description", "")
+                if cmd or desc:
+                    return {"command": cmd, "description": desc}
+        return None
 
 
 def submit_pending(session_key: str, approval: dict):

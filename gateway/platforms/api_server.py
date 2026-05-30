@@ -686,6 +686,52 @@ def _build_approval_value_map() -> dict[str, str]:
     return {o["label"]: o["value"] for o in _get_approval_options()}
 
 
+def _record_api_approval(handler, session_key: str, action: str) -> None:
+    """Buffer approval prompt and response for later transcript recording.
+
+    Called from _handle_chat_approve after the approval is resolved.
+    Defers the DB write to _flush_pending_approval() which runs after
+    the agent has finished its turn and all conversation messages are
+    already stored, ensuring correct chronological ordering.
+    """
+    if not session_key or not session_key.startswith("api:"):
+        return
+    session_id = session_key[4:]
+
+    from tools.approval import get_pending_approval_info
+
+    # Map internal value to display label
+    options = _get_approval_options()
+    label = action
+    for opt in options:
+        if opt.get("value") == action:
+            label = opt.get("label", action)
+            break
+
+    # Get the pending command info
+    info = get_pending_approval_info(session_key) or {}
+    cmd = info.get("command", "")
+    desc = info.get("description", "")
+
+    # Build the prompt text
+    cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd if cmd else ""
+    prompt_parts = ["⚠️ **Dangerous command requires approval**"]
+    if cmd_preview:
+        prompt_parts.append(f"```\n{cmd_preview}\n```")
+    if desc:
+        prompt_parts.append(f"Reason: {desc}")
+    prompt_text = "\n\n".join(prompt_parts)
+
+    # Buffer for later flush (agent may not have stored all messages yet)
+    handler._pending_approval_records[session_id] = {
+        "session_id": session_id,
+        "prompt_text": prompt_text,
+        "options": options,
+        "label": label,
+        "action": action,
+    }
+
+
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
@@ -786,6 +832,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Value: {"event": threading.Event(), "result": {"response": None}}
         self._pending_inputs: Dict[str, dict] = {}
         self._pending_approvals: Dict[str, dict] = {}
+        # Buffered approval records deferred until agent finishes its turn
+        # (keys are session_id, values are dicts with prompt/options/action)
+        self._pending_approval_records: Dict[str, dict] = {}
         # 每个 session 当前已扫描过的消息总数，用于 _extract_media_from_result
         # 只取本轮新增的工具结果，避免重复推送历史截图
         self._session_msg_counts: Dict[str, int] = {}
@@ -1047,6 +1096,48 @@ class APIServerAdapter(BasePlatformAdapter):
             self._pending_approvals[approval_id] = {"session_key": session_key}
 
         return _on_approval
+
+    def _flush_pending_approval(self, session_id: str) -> None:
+        """Write buffered approval records to session DB.
+
+        Called after the agent finishes its turn and all conversation
+        messages are already stored. Uses the last user message's
+        timestamp as anchor for correct chronological ordering.
+        """
+        record = self._pending_approval_records.pop(session_id, None)
+        if not record:
+            return
+        db = self._ensure_session_db()
+        if db is None:
+            return
+        try:
+            _ts = time.time()
+            _row = db._conn.execute(
+                "SELECT timestamp FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if _row and _row[0]:
+                _ts = _row[0] + 0.001
+
+            opts_json = json.dumps({"approval_options": record["options"]})
+            meta_json = json.dumps({"approval_selection": record["action"]})
+
+            def _do(c):
+                c.execute(
+                    "INSERT INTO messages (session_id, role, content, message_type, message_meta, timestamp) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_id, "assistant", record["prompt_text"], "approval_prompt", opts_json, _ts),
+                )
+                c.execute("UPDATE sessions SET message_count = message_count + 1 WHERE id = ?", (session_id,))
+                c.execute(
+                    "INSERT INTO messages (session_id, role, content, message_type, message_meta, timestamp) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_id, "user", record["label"], "approval_response", meta_json, _ts + 0.001),
+                )
+                c.execute("UPDATE sessions SET message_count = message_count + 1 WHERE id = ?", (session_id,))
+            db._execute_write(_do)
+        except Exception:
+            logger.debug("Failed to flush pending approval record", exc_info=True)
 
     def _make_chat_clarify_callback_nonstreaming(self):
         """Create a clarify callback for non-streaming chat completions.
@@ -1696,6 +1787,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=500,
                 )
 
+        # Flush any pending approval records now that all messages are stored
+        self._flush_pending_approval(session_id)
+
         # 保存请求中的文件元数据（files 参数）到第一条 user 消息
         if _request_files and session_id:
             try:
@@ -1963,6 +2057,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                 except Exception:
                     pass
+
+            # Flush any pending approval records now that messages are stored
+            if session_id:
+                self._flush_pending_approval(session_id)
 
             # Auto-generate session title after first exchange (non-blocking)
             if session_id and self._session_db:
@@ -4231,6 +4329,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         session_key = pending.get("session_key", "")
 
+        # Record approval prompt and response in session transcript
+        try:
+            _record_api_approval(self, session_key, action)
+        except Exception:
+            logger.debug("Failed to record approval in transcript", exc_info=True)
+
         # Non-streaming mode: has threading event + result container
         if "event" in pending and "result" in pending:
             pending["result"]["action"] = action
@@ -4379,7 +4483,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # 2. Fetch all messages in chronological order
             msg_cursor = db._conn.execute(
-                "SELECT role, content, tool_calls, tool_name, files, reasoning, timestamp "
+                "SELECT role, content, tool_calls, tool_name, files, reasoning, timestamp, "
+                "message_type, message_meta "
                 "FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
                 (session_id,),
             )
@@ -4394,6 +4499,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     "reasoning": row[5],
                     "timestamp": row[6],
                 }
+                _msg_type = row[7]
+                _msg_meta = row[8]
+                if _msg_type:
+                    msg["message_type"] = _msg_type
+                if _msg_meta:
+                    try:
+                        _parsed = json.loads(_msg_meta)
+                        if isinstance(_parsed, dict):
+                            msg.update(_parsed)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 # Add tool display metadata (emoji, label) for historical sessions.
                 # During SSE streaming these are sent as hermes.tool.progress events,
                 # but they are not stored in the database — compute them on retrieval.

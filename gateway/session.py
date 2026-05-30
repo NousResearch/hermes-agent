@@ -1259,6 +1259,13 @@ class SessionStore:
         """
         if self._db and not skip_db:
             try:
+                # Collect extra metadata fields into message_meta JSON blob
+                _meta = {}
+                for _key in ("approval_options", "approval_selection", "clarify_options"):
+                    if _key in message:
+                        _meta[_key] = message[_key]
+                _message_meta = json.dumps(_meta) if _meta else None
+
                 self._db.append_message(
                     session_id=session_id,
                     role=message.get("role", "unknown"),
@@ -1277,6 +1284,9 @@ class SessionStore:
                     platform_message_id=(
                         message.get("platform_message_id") or message.get("message_id")
                     ),
+                    # Structured message type + metadata for UI rendering
+                    message_type=message.get("message_type"),
+                    message_meta=_message_meta,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)

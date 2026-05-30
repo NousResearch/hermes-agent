@@ -6628,6 +6628,43 @@ class GatewayRunner:
                         "Gateway intercepted clarify text response (session=%s, id=%s)",
                         _quick_key, _pending_clarify.clarify_id,
                     )
+                    # Record clarify prompt and response in the session
+                    # transcript so the full interaction appears in history.
+                    try:
+                        _cl_entry = self.session_store.get_or_create_session(source)
+                        _cl_ts = time.time()
+                        # Store the clarify question + options as assistant message
+                        _cl_question = _pending_clarify.question or ""
+                        _cl_choices = _pending_clarify.choices
+                        _cl_assistant_content = _cl_question
+                        if _cl_choices:
+                            _choices_text = "\n".join(
+                                f"{i+1}. {c}" for i, c in enumerate(_cl_choices)
+                            )
+                            _cl_assistant_content += f"\n\n{_choices_text}"
+                        self.session_store.append_to_transcript(
+                            _cl_entry.session_id,
+                            {
+                                "role": "assistant",
+                                "content": _cl_assistant_content,
+                                "message_type": "clarify_prompt",
+                                "clarify_options": _cl_choices or [],
+                                "timestamp": _cl_ts,
+                            },
+                        )
+                        # Store the user's clarify answer
+                        self.session_store.append_to_transcript(
+                            _cl_entry.session_id,
+                            {
+                                "role": "user",
+                                "content": _raw_clarify_reply,
+                                "message_type": "clarify_response",
+                                "timestamp": _cl_ts,
+                                "message_id": str(event.message_id) if event.message_id else None,
+                            },
+                        )
+                    except Exception:
+                        logger.debug("Failed to record clarify response in transcript", exc_info=True)
                     # Acknowledge with empty string so adapters that emit
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
@@ -13395,6 +13432,29 @@ class GatewayRunner:
     # ------------------------------------------------------------------
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
+    _DEFAULT_APPROVAL_OPTIONS = [
+        {"label": "Allow Once", "value": "once"},
+        {"label": "Session", "value": "session"},
+        {"label": "Always", "value": "always"},
+        {"label": "Deny", "value": "deny"},
+    ]
+
+    @staticmethod
+    def _get_approval_options() -> List[Dict[str, str]]:
+        """Return approval option labels from config, or default English labels.
+
+        Checks ``api_server.approval_options`` in config.yaml so operators
+        can customise labels per deployment (e.g. Chinese labels).
+        """
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _opts = (_cfg or {}).get("api_server", {}).get("approval_options")
+            if _opts and isinstance(_opts, list):
+                return _opts
+        except Exception:
+            pass
+        return list(GatewayRunner._DEFAULT_APPROVAL_OPTIONS)
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
@@ -13451,6 +13511,62 @@ class GatewayRunner:
             _adapter.resume_typing_for_chat(source.chat_id)
 
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
+        # Record approval prompt and response in session transcript.
+        try:
+            _ap_entry = self.session_store.get_or_create_session(source)
+            _ap_ts = time.time()
+            _ap_ts_s = str(_ap_ts)
+
+            # Read approval options from config or use defaults
+            _ap_options = self._get_approval_options()
+
+            # Map internal value to display label
+            _ap_label = choice
+            for _opt in _ap_options:
+                if _opt.get("value") == choice:
+                    _ap_label = _opt.get("label", choice)
+                    break
+
+            # Get the pending command info for context
+            from tools.approval import get_pending_approval_info
+            _ap_info = get_pending_approval_info(session_key) or {}
+            _ap_cmd = _ap_info.get("command", "")
+            _ap_desc = _ap_info.get("description", "")
+
+            # Build approval prompt text (matches what the user saw)
+            _ap_cmd_preview = _ap_cmd[:200] + "..." if len(_ap_cmd) > 200 else _ap_cmd if _ap_cmd else ""
+            _ap_prompt_parts = ["⚠️ **Dangerous command requires approval**"]
+            if _ap_cmd_preview:
+                _ap_prompt_parts.append(f"```\n{_ap_cmd_preview}\n```")
+            if _ap_desc:
+                _ap_prompt_parts.append(f"Reason: {_ap_desc}")
+            _ap_prompt_text = "\n\n".join(_ap_prompt_parts)
+
+            # Store the approval prompt as assistant message
+            self.session_store.append_to_transcript(
+                _ap_entry.session_id,
+                {
+                    "role": "assistant",
+                    "content": _ap_prompt_text,
+                    "message_type": "approval_prompt",
+                    "approval_options": _ap_options,
+                    "timestamp": _ap_ts,
+                },
+            )
+            # Store the user's approval selection
+            self.session_store.append_to_transcript(
+                _ap_entry.session_id,
+                {
+                    "role": "user",
+                    "content": _ap_label,
+                    "message_type": "approval_response",
+                    "approval_selection": choice,
+                    "timestamp": _ap_ts,
+                    "message_id": str(event.message_id) if event.message_id else None,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to record approval in transcript", exc_info=True)
         plural = "plural" if count > 1 else "singular"
         return t(f"gateway.approve.{choice}_{plural}", count=count)
 
@@ -13488,6 +13604,59 @@ class GatewayRunner:
             _adapter.resume_typing_for_chat(source.chat_id)
 
         logger.info("User denied %d dangerous command(s) via /deny", count)
+        # Record approval prompt and denial in session transcript.
+        try:
+            _de_entry = self.session_store.get_or_create_session(source)
+            _de_ts = time.time()
+
+            # Get the pending command info for context
+            from tools.approval import get_pending_approval_info
+            _de_info = get_pending_approval_info(session_key) or {}
+            _de_cmd = _de_info.get("command", "")
+            _de_desc = _de_info.get("description", "")
+
+            # Build approval prompt text
+            _de_cmd_preview = _de_cmd[:200] + "..." if len(_de_cmd) > 200 else _de_cmd if _de_cmd else ""
+            _de_prompt_parts = ["⚠️ **Dangerous command requires approval**"]
+            if _de_cmd_preview:
+                _de_prompt_parts.append(f"```\n{_de_cmd_preview}\n```")
+            if _de_desc:
+                _de_prompt_parts.append(f"Reason: {_de_desc}")
+            _de_prompt_text = "\n\n".join(_de_prompt_parts)
+
+            # Map deny label from options
+            _de_options = self._get_approval_options()
+            _de_label = "Deny"
+            for _opt in _de_options:
+                if _opt.get("value") == "deny":
+                    _de_label = _opt.get("label", "Deny")
+                    break
+
+            # Store the approval prompt as assistant message
+            self.session_store.append_to_transcript(
+                _de_entry.session_id,
+                {
+                    "role": "assistant",
+                    "content": _de_prompt_text,
+                    "message_type": "approval_prompt",
+                    "approval_options": _de_options,
+                    "timestamp": _de_ts,
+                },
+            )
+            # Store the user's denial
+            self.session_store.append_to_transcript(
+                _de_entry.session_id,
+                {
+                    "role": "user",
+                    "content": _de_label,
+                    "message_type": "approval_response",
+                    "approval_selection": "deny",
+                    "timestamp": _de_ts,
+                    "message_id": str(event.message_id) if event.message_id else None,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to record denial in transcript", exc_info=True)
         if count > 1:
             return t("gateway.deny.denied_plural", count=count)
         return t("gateway.deny.denied_singular")

@@ -238,7 +238,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
-    platform_message_id TEXT
+    platform_message_id TEXT,
+    message_type TEXT,
+    message_meta TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1462,6 +1464,8 @@ class SessionDB:
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
         platform_message_id: str = None,
+        message_type: str = None,
+        message_meta: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1504,8 +1508,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, files, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, message_type, message_meta)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1523,6 +1527,8 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     platform_message_id,
+                    message_type,
+                    message_meta,
                 ),
             )
             msg_id = cursor.lastrowid

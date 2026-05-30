@@ -737,13 +737,15 @@ class MemoryPipeline:
         self._state: PipelineState | None = None
         self._enabled: bool = self._config.get("enabled", True)
         self._session_id: str = ""
-        # All 6 layers
+        # All 6 layers + episodic + dreaming
         self._salience: SalienceScorer | None = None
         self._engrams: SilentEngramEngine | None = None
         self._consolidation: ConsolidationEngine | None = None
         self._reconsolidation: ReconsolidationEngine | None = None
         self._feedback: FeedbackCoordinator | None = None
         self._activation: ActivationGraph | None = None
+        self._episodic = None   # EpisodicTimeline (from holographic plugin)
+        self._dreaming = None   # DreamEngine (from holographic plugin)
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize pipeline state and all organic modules."""
@@ -787,10 +789,51 @@ class MemoryPipeline:
             self._activation = ActivationGraph(
                 edge_decay_hours=act_cfg.get("edge_decay_hours", 168.0))
 
+        # Layer 7: EpisodicTimeline (what-where-when binding)
+        epi_cfg = self._config.get("episodic", {})
+        if epi_cfg.get("enabled", False):
+            try:
+                import importlib.util
+                _spec = importlib.util.spec_from_file_location(
+                    "holographic_episodic",
+                    str(Path(__file__).resolve().parent.parent
+                        / "plugins" / "memory" / "holographic" / "episodic.py"))
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                self._episodic = _mod.EpisodicTimeline(self._state._conn, self._state._lock)
+                self._episodic.init_tables()
+            except Exception as e:
+                logger.debug("EpisodicTimeline init failed: %s", e)
+
+        # Layer 8: DreamEngine (structured selective replay)
+        dream_cfg = self._config.get("dreaming", {})
+        if dream_cfg.get("enabled", False):
+            try:
+                import importlib.util, sys as _sys
+                _spec = importlib.util.spec_from_file_location(
+                    "holographic_dreaming",
+                    str(Path(__file__).resolve().parent.parent
+                        / "plugins" / "memory" / "holographic" / "dreaming.py"))
+                _mod = importlib.util.module_from_spec(_spec)
+                _sys.modules[_spec.name] = _mod
+                _spec.loader.exec_module(_mod)
+                self._dreaming = _mod.DreamEngine(
+                    self._state._conn, self._state._lock,
+                    cooldown_hours=dream_cfg.get("cooldown_hours", 1.0),
+                    mode1_top_k=dream_cfg.get("mode1_top_k", 10),
+                    mode2_top_k=dream_cfg.get("mode2_top_k", 5),
+                    mode3_idle_hours=dream_cfg.get("mode3_idle_hours", 24.0),
+                    mode3_min_schema_conf=dream_cfg.get("mode3_min_schema_conf", 0.7),
+                )
+                self._dreaming.init_tables()
+            except Exception as e:
+                logger.debug("DreamEngine init failed: %s", e)
+
         logger.debug("MemoryPipeline initialized (session=%s, layers=%d)",
                       session_id, sum(1 for x in [self._salience, self._engrams,
                       self._consolidation, self._reconsolidation,
-                      self._feedback, self._activation] if x))
+                      self._feedback, self._activation,
+                      self._episodic, self._dreaming] if x))
 
     def shutdown(self) -> None:
         """Flush and close pipeline state."""
@@ -924,7 +967,7 @@ class MemoryPipeline:
             logger.debug("Pipeline post_tool_call failed: %s", e)
 
     def post_session_end(self, messages: list) -> None:
-        """Consolidation, engram decay, bridge discovery."""
+        """Consolidation, engram decay, bridge discovery, dreaming."""
         if not self._state:
             return
         try:
@@ -948,6 +991,27 @@ class MemoryPipeline:
             # Layer 6: decay activation edges
             if self._activation:
                 self._activation.decay_edges(self._state, hours_elapsed=1.0)
+
+            # Layer 7: close episodic episode
+            if self._episodic:
+                try:
+                    summary = f"Session {self._session_id}: {len(messages)} messages"
+                    self._episodic.close_episode(summary=summary)
+                except Exception as e:
+                    logger.debug("Episodic close_episode failed: %s", e)
+
+            # Layer 8: run dream cycle if conditions met
+            if self._dreaming:
+                try:
+                    if self._dreaming.should_dream():
+                        import threading as _t
+                        _t.Thread(
+                            target=self._dreaming.dream_cycle,
+                            args=(self._session_id,),
+                            daemon=True,
+                        ).start()
+                except Exception as e:
+                    logger.debug("Dream cycle failed: %s", e)
         except Exception as e:
             logger.debug("Pipeline post_session_end failed: %s", e)
 

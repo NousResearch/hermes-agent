@@ -215,3 +215,97 @@ class TestCmdUpdatePipUsesUvTool:
                 _cmd_update_pip(SimpleNamespace())
         assert exc_info.value.code == 1
         mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# pipx-managed installs, --system fallback, and VIRTUAL_ENV overlay
+# (issue #29700 / #35031 family — consolidated update-path handling)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdatePipInstallLayouts:
+    """The uv pip path must adapt to where the running interpreter lives:
+
+    - inside a venv (launcher shim)  -> export VIRTUAL_ENV, no ``--system``
+    - bare pip outside any venv      -> add ``--system``, no overlay
+    - pipx-managed                   -> ``pipx upgrade``
+    """
+
+    @patch("subprocess.run")
+    def test_pipx_managed_uses_pipx_upgrade(self, mock_run, monkeypatch):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.setattr(hm.sys, "prefix", "/home/u/.local/pipx/venvs/hermes-agent")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        def _which(name):
+            return {"uv": "/usr/bin/uv", "pipx": "/usr/bin/pipx"}.get(name)
+
+        with patch("shutil.which", side_effect=_which), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False):
+            hm._cmd_update_pip(SimpleNamespace())
+
+        assert mock_run.call_args[0][0] == ["/usr/bin/pipx", "upgrade", "hermes-agent"]
+        # pipx upgrade ignores VIRTUAL_ENV; we must not set it.
+        assert "env" not in mock_run.call_args.kwargs
+
+    @patch("subprocess.run")
+    def test_pipx_layout_without_pipx_binary_treated_as_venv(
+        self, mock_run, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.setattr(hm.sys, "prefix", "/home/u/.local/pipx/venvs/hermes-agent")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        # pipx layout detected via prefix, but pipx binary missing on PATH.
+        def _which(name):
+            return "/usr/bin/uv" if name == "uv" else None
+
+        with patch("shutil.which", side_effect=_which), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False):
+            hm._cmd_update_pip(SimpleNamespace())
+
+        # prefix != base_prefix, so this is treated as a venv -> overlay, no --system.
+        assert mock_run.call_args[0][0] == [
+            "/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent",
+        ]
+        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"].endswith("hermes-agent")
+
+    @patch("subprocess.run")
+    def test_bare_pip_outside_venv_adds_system(self, mock_run, monkeypatch):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        # No venv: prefix == base_prefix.
+        monkeypatch.setattr(hm.sys, "prefix", "/usr")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        with patch("shutil.which", return_value="/usr/bin/uv"), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False):
+            hm._cmd_update_pip(SimpleNamespace())
+
+        assert mock_run.call_args[0][0] == [
+            "/usr/bin/uv", "pip", "install", "--system", "--upgrade", "hermes-agent",
+        ]
+        assert "env" not in mock_run.call_args.kwargs
+
+    @patch("subprocess.run")
+    def test_venv_exports_virtualenv_and_omits_system(self, mock_run, monkeypatch):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(hm.sys, "prefix", "/home/u/.hermes/hermes-agent/venv")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        with patch("shutil.which", return_value="/usr/bin/uv"), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False):
+            hm._cmd_update_pip(SimpleNamespace())
+
+        cmd = mock_run.call_args[0][0]
+        assert "--system" not in cmd
+        assert cmd == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
+        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/home/u/.hermes/hermes-agent/venv"

@@ -4426,6 +4426,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
         )
         adapter._resolve_source_chat_type = Mock(return_value="group")
+        adapter.config = SimpleNamespace(extra={})
         adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter
@@ -4593,6 +4594,117 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             )
         )
         adapter._dispatch_inbound_event.assert_not_called()
+
+    def test_auto_thread_top_level_group_message_uses_message_id_as_thread_lane(self):
+        adapter = self._build_adapter()
+        adapter.config.extra["auto_thread_top_level_messages"] = True
+        message = SimpleNamespace(
+            content=json.dumps({"text": "start isolated work"}),
+            message_type="text",
+            message_id="om_topic_seed",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id=None,
+            thread_id=None,
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="om_topic_seed",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertEqual(adapter.build_source.call_args.kwargs["thread_id"], "om_topic_seed")
+
+    def test_auto_thread_top_level_default_disabled_keeps_plain_group_session(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "plain group lane"}),
+            message_type="text",
+            message_id="om_no_auto_thread",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id=None,
+            thread_id=None,
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="om_no_auto_thread",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertIsNone(adapter.build_source.call_args.kwargs["thread_id"])
+
+    def test_auto_thread_top_level_does_not_apply_to_p2p(self):
+        adapter = self._build_adapter()
+        adapter.config.extra["auto_thread_top_level_messages"] = True
+        message = SimpleNamespace(
+            content=json.dumps({"text": "dm should remain dm"}),
+            message_type="text",
+            message_id="om_dm",
+            mentions=[],
+            chat_id="oc_dm",
+            parent_id=None,
+            upper_message_id=None,
+            root_id=None,
+            thread_id=None,
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="p2p",
+                message_id="om_dm",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertIsNone(adapter.build_source.call_args.kwargs["thread_id"])
+
+    def test_auto_thread_top_level_does_not_override_existing_thread_id(self):
+        adapter = self._build_adapter()
+        adapter.config.extra["auto_thread_top_level_messages"] = True
+        message = SimpleNamespace(
+            content=json.dumps({"text": "continue topic"}),
+            message_type="text",
+            message_id="om_reply",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="om_seed",
+            upper_message_id=None,
+            root_id="om_seed",
+            thread_id="omt_existing",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="om_reply",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertEqual(adapter.build_source.call_args.kwargs["thread_id"], "omt_existing")
 
 
 class TestFeishuFetchMessageText(unittest.TestCase):

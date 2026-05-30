@@ -250,7 +250,7 @@ export function ModelPickerDialog(props: Props) {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 grid grid-cols-[200px_1fr] overflow-hidden">
+        <div className="flex-1 min-h-0 grid grid-cols-[140px_1fr] md:grid-cols-[200px_1fr] overflow-hidden">
           <ProviderColumn
             loading={loading}
             error={error}
@@ -451,7 +451,7 @@ function ModelColumn({
               <Check
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
-              <span className="flex-1 truncate">{m}</span>
+              <span className="flex-1 break-all">{m}</span>
               {isCurrent && <CurrentTag />}
             </ListItem>
           );

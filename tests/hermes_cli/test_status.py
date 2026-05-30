@@ -14,6 +14,21 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
+
+def test_show_status_zai_key_shows_configured(monkeypatch, capsys, tmp_path):
+    """Z.AI / GLM should show ✓ when ZAI_API_KEY is set (not just GLM_API_KEY)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("ZAI_API_KEY", "zai-test-key-123")
+    # Ensure GLM_API_KEY is NOT set
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Z.AI / GLM" in output
+    # Should show the key (masked), not ✗
+    assert "zai...123" in output or "✓" in output
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

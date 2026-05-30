@@ -651,6 +651,7 @@ AUTHOR_MAP = {
     "alexazzjjtt@163.com": "alexzhu0",
     "pub_forgreatagent@antgroup.com": "AntAISecurityLab",
     "252620095+briandevans@users.noreply.github.com": "briandevans",
+    "incharge.automation@gmail.com": "inchargeautomation-lab",
     "danielrpike9@gmail.com": "Bartok9",
     "96944678+ymylive@users.noreply.github.com": "sweetcornna",
     "skozyuk@cruxexperts.com": "CruxExperts",

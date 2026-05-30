@@ -1280,7 +1280,7 @@ _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
-def _profile_suffix() -> str:
+def _profile_suffix(hermes_home: str | Path | None = None) -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
     Returns ``""`` for the default root, the profile name for
@@ -1290,7 +1290,7 @@ def _profile_suffix() -> str:
     import hashlib
     import re
     from hermes_constants import get_default_hermes_root
-    home = get_hermes_home().resolve()
+    home = Path(hermes_home or str(get_hermes_home())).resolve()
     default = get_default_hermes_root().resolve()
     if home == default:
         return ""
@@ -1335,22 +1335,25 @@ def _profile_arg(hermes_home: str | None = None) -> str:
     return ""
 
 
-def get_service_name() -> str:
-    """Derive a systemd service name scoped to this HERMES_HOME.
+def get_service_name(hermes_home: str | Path | None = None) -> str:
+    """Derive a systemd service name scoped to a Hermes home path.
 
     Default ``~/.hermes`` returns ``hermes-gateway`` (backward compatible).
     Profile ``~/.hermes/profiles/coder`` returns ``hermes-gateway-coder``.
     Any other HERMES_HOME appends a short hash for uniqueness.
     """
-    suffix = _profile_suffix()
+    suffix = _profile_suffix(hermes_home=hermes_home)
     if not suffix:
         return _SERVICE_BASE
     return f"{_SERVICE_BASE}-{suffix}"
 
 
 
-def get_systemd_unit_path(system: bool = False) -> Path:
-    name = get_service_name()
+def get_systemd_unit_path(
+    system: bool = False,
+    hermes_home: str | Path | None = None,
+) -> Path:
+    name = get_service_name(hermes_home=hermes_home)
     if system:
         return Path("/etc/systemd/system") / f"{name}.service"
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"

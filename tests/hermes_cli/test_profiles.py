@@ -1248,6 +1248,72 @@ class TestEdgeCases:
             cleanup_stale=False,
         )
 
+    def test_gateway_running_check_falls_back_to_active_systemd_service(self, profile_env, monkeypatch):
+        """If the pid file is absent, detect an active profile service via systemd."""
+        from hermes_cli.profiles import _check_gateway_running
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        user_unit = tmp_path / "hermes-gateway.service"
+        user_unit.write_text("[Unit]\n")
+
+        with patch("gateway.status.get_running_pid", return_value=None):
+            monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+            monkeypatch.setattr(
+                "hermes_cli.gateway.get_systemd_unit_path",
+                lambda system=False, hermes_home=None: user_unit if not system else tmp_path / "missing.service",
+            )
+            monkeypatch.setattr(
+                "hermes_cli.gateway._run_systemctl",
+                lambda args, system=False, **kwargs: MagicMock(stdout="active\n"),
+            )
+
+            assert _check_gateway_running(default_home) is True
+
+    def test_gateway_running_check_uses_profile_scoped_service_name(self, profile_env, monkeypatch):
+        """Named profiles should probe their own suffixed systemd unit name."""
+        from hermes_cli.profiles import _check_gateway_running
+        profile_dir = create_profile("coder", no_alias=True)
+        user_unit = profile_dir.parent.parent.parent / "hermes-gateway-coder.service"
+        user_unit.write_text("[Unit]\n")
+        seen = {}
+
+        with patch("gateway.status.get_running_pid", return_value=None):
+            monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+            monkeypatch.setattr(
+                "hermes_cli.gateway.get_systemd_unit_path",
+                lambda system=False, hermes_home=None: user_unit if not system else profile_dir / "missing.service",
+            )
+
+            def _fake_run_systemctl(args, system=False, **kwargs):
+                seen["args"] = args
+                return MagicMock(stdout="active\n")
+
+            monkeypatch.setattr("hermes_cli.gateway._run_systemctl", _fake_run_systemctl)
+
+            assert _check_gateway_running(profile_dir) is True
+            assert seen["args"] == ["is-active", "hermes-gateway-coder"]
+
+    def test_gateway_running_check_keeps_false_when_service_inactive(self, profile_env, monkeypatch):
+        """An installed but inactive service should not be reported as running."""
+        from hermes_cli.profiles import _check_gateway_running
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        user_unit = tmp_path / "hermes-gateway.service"
+        user_unit.write_text("[Unit]\n")
+
+        with patch("gateway.status.get_running_pid", return_value=None):
+            monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+            monkeypatch.setattr(
+                "hermes_cli.gateway.get_systemd_unit_path",
+                lambda system=False, hermes_home=None: user_unit if not system else tmp_path / "missing.service",
+            )
+            monkeypatch.setattr(
+                "hermes_cli.gateway._run_systemctl",
+                lambda args, system=False, **kwargs: MagicMock(stdout="inactive\n"),
+            )
+
+            assert _check_gateway_running(default_home) is False
+
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""
         validate_profile_name("a")

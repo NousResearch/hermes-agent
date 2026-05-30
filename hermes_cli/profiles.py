@@ -503,9 +503,41 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None:
+            return True
     except Exception:
-        return False
+        pass
+
+    try:
+        from hermes_cli import gateway as gateway_cli
+
+        if not gateway_cli.supports_systemd_services():
+            return False
+
+        service_name = gateway_cli.get_service_name(hermes_home=profile_dir)
+        for system in (False, True):
+            unit_path = gateway_cli.get_systemd_unit_path(
+                system=system,
+                hermes_home=profile_dir,
+            )
+            if not unit_path.exists():
+                continue
+            try:
+                result = gateway_cli._run_systemctl(
+                    ["is-active", service_name],
+                    system=system,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (RuntimeError, subprocess.TimeoutExpired):
+                continue
+            if result.stdout.strip() == "active":
+                return True
+    except Exception:
+        pass
+
+    return False
 
 
 def _count_skills(profile_dir: Path) -> int:

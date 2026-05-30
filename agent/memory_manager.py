@@ -31,6 +31,7 @@ import inspect
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.memory_pipeline import MemoryPipeline, _load_pipeline_config
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -252,6 +253,7 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        self._pipeline: MemoryPipeline | None = None  # Organic memory infrastructure
 
     # -- Registration --------------------------------------------------------
 
@@ -332,6 +334,16 @@ class MemoryManager:
                     "Memory provider '%s' system_prompt_block() failed: %s",
                     provider.name, e,
                 )
+
+        # Pipeline augmentation (Phase 2+: organic memory status)
+        if self._pipeline:
+            try:
+                aug = self._pipeline.augment_system_prompt()
+                if aug and aug.strip():
+                    blocks.append(aug)
+            except Exception as e:
+                logger.debug("MemoryPipeline augment_system_prompt failed: %s", e)
+
         return "\n\n".join(blocks)
 
     # -- Prefetch / recall ---------------------------------------------------
@@ -353,6 +365,16 @@ class MemoryManager:
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
+
+        # Pipeline post-augmentation (Phase 2+: silent engrams, predictions, activation)
+        if self._pipeline:
+            try:
+                augmented = self._pipeline.post_prefetch(query, parts)
+                if augmented and augmented.strip():
+                    parts.append(augmented)
+            except Exception as e:
+                logger.debug("MemoryPipeline post_prefetch failed: %s", e)
+
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
@@ -389,6 +411,14 @@ class MemoryManager:
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Sync a completed turn to all providers."""
+        # Pipeline pre-intercept (Phase 2+: salience scoring)
+        pipeline_metadata: dict | None = None
+        if self._pipeline:
+            try:
+                pipeline_metadata = self._pipeline.pre_sync(user_content, assistant_content)
+            except Exception as e:
+                logger.debug("MemoryPipeline pre_sync failed: %s", e)
+
         for provider in self._providers:
             try:
                 if messages is not None and self._provider_sync_accepts_messages(provider):
@@ -450,13 +480,22 @@ class MemoryManager:
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
         try:
-            return provider.handle_tool_call(tool_name, args, **kwargs)
+            result = provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
             logger.error(
                 "Memory provider '%s' handle_tool_call(%s) failed: %s",
                 provider.name, tool_name, e,
             )
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
+
+        # Pipeline post-intercept (Phase 2+: reconsolidation, feedback, co-activation)
+        if self._pipeline:
+            try:
+                self._pipeline.post_tool_call(tool_name, args, result)
+            except Exception as e:
+                logger.debug("MemoryPipeline post_tool_call failed: %s", e)
+
+        return result
 
     # -- Lifecycle hooks -----------------------------------------------------
 
@@ -465,6 +504,13 @@ class MemoryManager:
 
         kwargs may include: remaining_tokens, model, platform, tool_count.
         """
+        # Pipeline pre-intercept (Phase 2+: novelty window reset, activation decay)
+        if self._pipeline:
+            try:
+                self._pipeline.pre_turn_start(turn_number, message)
+            except Exception as e:
+                logger.debug("MemoryPipeline pre_turn_start failed: %s", e)
+
         for provider in self._providers:
             try:
                 provider.on_turn_start(turn_number, message, **kwargs)
@@ -476,6 +522,13 @@ class MemoryManager:
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Notify all providers of session end."""
+        # Pipeline pre-intercept (Phase 2+: consolidation, decay, bridge discovery)
+        if self._pipeline:
+            try:
+                self._pipeline.post_session_end(messages)
+            except Exception as e:
+                logger.debug("MemoryPipeline post_session_end failed: %s", e)
+
         for provider in self._providers:
             try:
                 provider.on_session_end(messages)
@@ -533,6 +586,17 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+        # Pipeline post-intercept (Phase 2+: schema state update)
+        if self._pipeline:
+            try:
+                self._pipeline.post_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=reset,
+                )
+            except Exception as e:
+                logger.debug("MemoryPipeline post_session_switch failed: %s", e)
+
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Notify all providers before context compression.
 
@@ -540,6 +604,16 @@ class MemoryManager:
         summary prompt. Empty string if no provider contributes.
         """
         parts = []
+
+        # Pipeline pre-intercept (Phase 2+: extract key insights before discard)
+        if self._pipeline:
+            try:
+                insight = self._pipeline.pre_compress(messages)
+                if insight and insight.strip():
+                    parts.append(insight)
+            except Exception as e:
+                logger.debug("MemoryPipeline pre_compress failed: %s", e)
+
         for provider in self._providers:
             try:
                 result = provider.on_pre_compress(messages)
@@ -589,6 +663,15 @@ class MemoryManager:
 
         Skips the builtin provider itself (it's the source of the write).
         """
+        # Pipeline pre-intercept (Phase 2+: salience gate, reconsolidation check)
+        if self._pipeline:
+            try:
+                self._pipeline.pre_memory_write(
+                    action, target, content, dict(metadata or {})
+                )
+            except Exception as e:
+                logger.debug("MemoryPipeline pre_memory_write failed: %s", e)
+
         for provider in self._providers:
             if provider.name == "builtin":
                 continue
@@ -622,8 +705,25 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+        # Pipeline post-intercept (Phase 2+: score subagent result)
+        if self._pipeline:
+            try:
+                self._pipeline.post_delegation(
+                    task, result, child_session_id=child_session_id
+                )
+            except Exception as e:
+                logger.debug("MemoryPipeline post_delegation failed: %s", e)
+
     def shutdown_all(self) -> None:
-        """Shut down all providers (reverse order for clean teardown)."""
+        """Shut down pipeline and all providers (reverse order for clean teardown)."""
+        # Shutdown pipeline first (before providers)
+        if self._pipeline:
+            try:
+                self._pipeline.shutdown()
+            except Exception as e:
+                logger.debug("MemoryPipeline shutdown failed: %s", e)
+            self._pipeline = None
+
         for provider in reversed(self._providers):
             try:
                 provider.shutdown()
@@ -634,12 +734,21 @@ class MemoryManager:
                 )
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
-        """Initialize all providers.
+        """Initialize all providers and the memory pipeline.
 
         Automatically injects ``hermes_home`` into *kwargs* so that every
         provider can resolve profile-scoped storage paths without importing
         ``get_hermes_home()`` themselves.
         """
+        # Initialize pipeline first (before providers)
+        try:
+            pipeline_config = _load_pipeline_config()
+            self._pipeline = MemoryPipeline(config=pipeline_config)
+            self._pipeline.initialize(session_id, **kwargs)
+        except Exception as e:
+            logger.debug("MemoryPipeline initialization failed (non-fatal): %s", e)
+            self._pipeline = None
+
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())

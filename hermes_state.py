@@ -241,6 +241,21 @@ CREATE TABLE IF NOT EXISTS messages (
     observed INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS session_routing_metadata (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    session_key TEXT,
+    platform TEXT,
+    chat_type TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    parent_chat_id TEXT,
+    guild_id TEXT,
+    user_id TEXT,
+    message_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -250,6 +265,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_session_routing_key ON session_routing_metadata(session_key);
+CREATE INDEX IF NOT EXISTS idx_session_routing_discord_thread
+    ON session_routing_metadata(platform, thread_id);
 """
 
 FTS_SQL = """
@@ -705,6 +723,7 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        routing_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
@@ -723,12 +742,63 @@ class SessionDB:
                     time.time(),
                 ),
             )
+            if routing_metadata:
+                self._upsert_session_routing_metadata_in_tx(
+                    conn,
+                    session_id=session_id,
+                    routing_metadata=routing_metadata,
+                )
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def _upsert_session_routing_metadata_in_tx(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        session_id: str,
+        routing_metadata: Dict[str, Any],
+    ) -> None:
+        now = time.time()
+        conn.execute(
+            """
+            INSERT INTO session_routing_metadata (
+                session_id, session_key, platform, chat_type, chat_id,
+                thread_id, parent_chat_id, guild_id, user_id, message_id,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                session_key = excluded.session_key,
+                platform = excluded.platform,
+                chat_type = excluded.chat_type,
+                chat_id = excluded.chat_id,
+                thread_id = excluded.thread_id,
+                parent_chat_id = excluded.parent_chat_id,
+                guild_id = excluded.guild_id,
+                user_id = excluded.user_id,
+                message_id = excluded.message_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                session_id,
+                routing_metadata.get("session_key"),
+                routing_metadata.get("platform"),
+                routing_metadata.get("chat_type"),
+                routing_metadata.get("chat_id"),
+                routing_metadata.get("thread_id"),
+                routing_metadata.get("parent_chat_id"),
+                routing_metadata.get("guild_id"),
+                routing_metadata.get("user_id"),
+                routing_metadata.get("message_id"),
+                now,
+                now,
+            ),
+        )
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -3276,4 +3346,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

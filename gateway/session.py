@@ -748,6 +748,23 @@ class SessionStore:
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
+
+    @staticmethod
+    def _routing_metadata(session_key: str, source: Optional[SessionSource]) -> Optional[Dict[str, Any]]:
+        """Return safe routing identifiers for future diagnostics."""
+        if source is None:
+            return None
+        return {
+            "session_key": session_key,
+            "platform": source.platform.value,
+            "chat_type": source.chat_type,
+            "chat_id": source.chat_id,
+            "thread_id": source.thread_id,
+            "parent_chat_id": source.parent_chat_id,
+            "guild_id": source.guild_id,
+            "user_id": source.user_id,
+            "message_id": source.message_id,
+        }
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -937,6 +954,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "routing_metadata": self._routing_metadata(session_key, source),
             }
 
         # SQLite operations outside the lock
@@ -1163,6 +1181,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "routing_metadata": self._routing_metadata(session_key, old_entry.origin),
             }
 
         if self._db and db_end_session_id:

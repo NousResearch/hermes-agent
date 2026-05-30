@@ -8,6 +8,7 @@ the same Discord thread back to its prior transcript after restart.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import sqlite3
 
 import pytest
 
@@ -81,6 +82,35 @@ def test_discord_thread_session_key_stays_stable():
     source = _discord_thread_source()
 
     assert build_session_key(source) == EXPECTED_THREAD_KEY
+
+
+def test_discord_thread_session_persists_routing_metadata(store_factory):
+    source = _discord_thread_source()
+    store = store_factory()
+
+    entry = store.get_or_create_session(source)
+
+    with sqlite3.connect(store._db.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT session_key, platform, chat_type, chat_id, thread_id,
+                   parent_chat_id, guild_id, user_id
+            FROM session_routing_metadata
+            WHERE session_id = ?
+            """,
+            (entry.session_id,),
+        ).fetchone()
+
+    assert row == (
+        EXPECTED_THREAD_KEY,
+        "discord",
+        "thread",
+        THREAD_ID,
+        THREAD_ID,
+        PARENT_CHANNEL_ID,
+        GUILD_ID,
+        USER_ID,
+    )
 
 
 def test_discord_thread_session_and_transcript_survive_restart(store_factory):

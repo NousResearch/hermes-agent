@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -92,11 +93,72 @@ def test_missing_mapping_reports_candidates_without_transcript_content(temp_stor
     assert report["mapping"]["exists"] is False
     assert "missing" in report["mapping"]["status"]
     assert report["active_session"] is None
-    assert report["state_db"]["can_reliably_match_orphans_to_thread_key"] is False
-    assert report["state_db"]["limitations"]
-    assert report["candidate_orphan_sessions"][0]["session_id"] == session_id
-    assert report["candidate_orphan_sessions"][0]["message_count"] == 2
+    assert report["state_db"]["can_reliably_match_orphans_to_thread_key"] is True
+    assert report["exact_orphan_sessions"][0]["session_id"] == session_id
+    assert report["exact_orphan_sessions"][0]["message_count"] == 2
     assert PRIVATE_TRANSCRIPT_TEXT not in json.dumps(report)
+
+
+def test_missing_mapping_exactly_matches_orphan_by_routing_metadata(temp_store):
+    session_id, sessions_json, state_db = _create_thread_session(temp_store)
+    sessions_json.unlink()
+
+    report = inspect_discord_thread_mapping(
+        sessions_json=sessions_json,
+        state_db=state_db,
+        session_key=EXPECTED_THREAD_KEY,
+    )
+
+    assert report["mapping"]["exists"] is False
+    assert report["state_db"]["can_reliably_match_orphans_to_thread_key"] is True
+    assert report["exact_orphan_sessions"][0]["session_id"] == session_id
+    assert report["exact_orphan_sessions"][0]["match_type"] == "exact_metadata_match"
+    assert report["exact_orphan_sessions"][0]["routing_metadata"]["thread_id"] == THREAD_ID
+    assert report["candidate_orphan_sessions"] == []
+    assert PRIVATE_TRANSCRIPT_TEXT not in json.dumps(report)
+
+
+def test_old_state_db_without_routing_metadata_degrades_to_candidate_only(tmp_path):
+    sessions_json = tmp_path / "sessions.json"
+    sessions_json.write_text("{}", encoding="utf-8")
+    state_db = tmp_path / "old-state.db"
+    conn = sqlite3.connect(state_db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0
+            );
+            INSERT INTO sessions (
+                id, source, user_id, parent_session_id, started_at,
+                ended_at, end_reason, message_count
+            ) VALUES (
+                'old-session', 'discord', '333333333333333333', NULL,
+                1.0, NULL, NULL, 1
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = inspect_discord_thread_mapping(
+        sessions_json=sessions_json,
+        state_db=state_db,
+        session_key=EXPECTED_THREAD_KEY,
+    )
+
+    assert report["state_db"]["can_reliably_match_orphans_to_thread_key"] is False
+    assert report["exact_orphan_sessions"] == []
+    assert report["candidate_orphan_sessions"][0]["session_id"] == "old-session"
+    assert report["candidate_orphan_sessions"][0]["match_type"] == "candidate_only"
 
 
 def test_missing_sessions_json_is_graceful(temp_store):

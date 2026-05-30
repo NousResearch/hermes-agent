@@ -552,8 +552,21 @@ class TestPreflightCompression:
         )
         agent.client.chat.completions.create.side_effect = [ok_resp]
 
+        # First rough estimate must clear the threshold so preflight fires
+        # (rough growth since the last fitting request is large, so the
+        # deferral path is NOT taken). Every estimate after compaction is
+        # sub-threshold. Use a callable side_effect rather than a fixed list
+        # so we don't have to predict how many times the loop re-estimates —
+        # the post-response real-token estimate is an extra call that a
+        # 2-element list would exhaust (StopIteration).
+        _rough_calls = {"n": 0}
+
+        def _rough_estimate(*_args, **_kwargs):
+            _rough_calls["n"] += 1
+            return 125_000 if _rough_calls["n"] == 1 else 40_000
+
         with (
-            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=[125_000, 40_000]),
+            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),

@@ -152,6 +152,7 @@ class BridgeStateStore:
                     nonce TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
+                    approved_at TEXT,
                     consumed_at TEXT,
                     FOREIGN KEY (bridge_id) REFERENCES bindings(bridge_id)
                 );
@@ -170,6 +171,12 @@ class BridgeStateStore:
                 );
                 """
             )
+            approval_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(approvals)").fetchall()
+            }
+            if "approved_at" not in approval_columns:
+                conn.execute("ALTER TABLE approvals ADD COLUMN approved_at TEXT")
 
     def _now(self) -> datetime:
         now = self._now_fn()
@@ -679,6 +686,60 @@ class BridgeStateStore:
             approval_id = int(approval_id_raw)
         return BridgeApproval(approval_id=approval_id, bridge_id=bridge_id, nonce=nonce_value, expires_at=expires)
 
+    def record_approval_response(
+        self,
+        *,
+        nonce: str,
+        chat_id: str,
+        user_id: str,
+        thread_id: Optional[str] = None,
+    ) -> BridgeDecision:
+        """Record a Telegram user's approval response without consuming the executor nonce."""
+        if self._kill_switch_active():
+            return BridgeDecision(BridgeVerdict.REJECT, "bridge kill switch is active")
+
+        now = self._now()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT a.*, b.hermes_session_id, b.telegram_chat_id, b.telegram_user_id,
+                       b.telegram_thread_id, b.status, b.pause_reason
+                FROM approvals a
+                JOIN bindings b ON b.bridge_id = a.bridge_id
+                WHERE a.nonce=?
+                """,
+                (nonce,),
+            ).fetchone()
+            if row is None:
+                return BridgeDecision(BridgeVerdict.REJECT, "approval nonce not found")
+            if row["consumed_at"]:
+                return BridgeDecision(BridgeVerdict.REJECT, "approval nonce already consumed")
+            if row["approved_at"]:
+                return BridgeDecision(BridgeVerdict.REJECT, "approval nonce already approved")
+            if row["status"] != "active":
+                reason = row["pause_reason"] or row["status"]
+                return BridgeDecision(BridgeVerdict.REJECT, f"binding is paused: {reason}")
+            if str(chat_id) != str(row["telegram_chat_id"]):
+                return BridgeDecision(BridgeVerdict.REJECT, "telegram chat mismatch")
+            if str(user_id) != str(row["telegram_user_id"]):
+                return BridgeDecision(BridgeVerdict.REJECT, "telegram user mismatch")
+            if _thread_key(thread_id) != str(row["telegram_thread_id"]):
+                return BridgeDecision(BridgeVerdict.REJECT, "telegram thread mismatch")
+            if _dt_from_text(row["expires_at"]) <= now:
+                return BridgeDecision(BridgeVerdict.REJECT, "approval nonce expired")
+
+            conn.execute(
+                "UPDATE approvals SET approved_at=? WHERE approval_id=? AND approved_at IS NULL AND consumed_at IS NULL",
+                (_dt_to_text(now), row["approval_id"]),
+            )
+            return BridgeDecision(
+                BridgeVerdict.ACCEPT,
+                "approved",
+                bridge_id=row["bridge_id"],
+                hermes_session_id=row["hermes_session_id"],
+            )
+
     def consume_approval(
         self,
         *,
@@ -687,6 +748,10 @@ class BridgeStateStore:
         user_id: str,
         hermes_session_id: str,
         tool_args_hash: str,
+        turn_id: str | None = None,
+        tool_call_id: str | None = None,
+        thread_id: Optional[str] = None,
+        require_user_approval: bool = False,
     ) -> BridgeDecision:
         """Consume an approval nonce if every binding attribute still matches."""
         if self._kill_switch_active():
@@ -698,7 +763,7 @@ class BridgeStateStore:
             row = conn.execute(
                 """
                 SELECT a.*, b.hermes_session_id, b.telegram_chat_id, b.telegram_user_id,
-                       b.status, b.pause_reason
+                       b.telegram_thread_id, b.status, b.pause_reason
                 FROM approvals a
                 JOIN bindings b ON b.bridge_id = a.bridge_id
                 WHERE a.nonce=?
@@ -709,6 +774,12 @@ class BridgeStateStore:
                 return BridgeDecision(BridgeVerdict.REJECT, "approval nonce not found")
             if row["consumed_at"]:
                 return BridgeDecision(BridgeVerdict.REJECT, "approval nonce already consumed")
+            if require_user_approval and turn_id is None:
+                return BridgeDecision(BridgeVerdict.REJECT, "turn id is required for approved bridge nonce consumption")
+            if require_user_approval and tool_call_id is None:
+                return BridgeDecision(BridgeVerdict.REJECT, "tool call id is required for approved bridge nonce consumption")
+            if require_user_approval and not row["approved_at"]:
+                return BridgeDecision(BridgeVerdict.REJECT, "approval nonce has not been approved")
             if row["status"] != "active":
                 reason = row["pause_reason"] or row["status"]
                 return BridgeDecision(BridgeVerdict.REJECT, f"binding is paused: {reason}")
@@ -716,8 +787,14 @@ class BridgeStateStore:
                 return BridgeDecision(BridgeVerdict.REJECT, "telegram chat mismatch")
             if str(user_id) != str(row["telegram_user_id"]):
                 return BridgeDecision(BridgeVerdict.REJECT, "telegram user mismatch")
+            if require_user_approval and _thread_key(thread_id) != str(row["telegram_thread_id"]):
+                return BridgeDecision(BridgeVerdict.REJECT, "telegram thread mismatch")
             if str(hermes_session_id) != str(row["hermes_session_id"]):
                 return BridgeDecision(BridgeVerdict.REJECT, "hermes session mismatch")
+            if turn_id is not None and str(turn_id) != str(row["turn_id"]):
+                return BridgeDecision(BridgeVerdict.REJECT, "turn id mismatch")
+            if tool_call_id is not None and str(tool_call_id) != str(row["tool_call_id"]):
+                return BridgeDecision(BridgeVerdict.REJECT, "tool call id mismatch")
             if str(tool_args_hash) != str(row["tool_args_hash"]):
                 return BridgeDecision(BridgeVerdict.REJECT, "tool arguments changed")
             if _dt_from_text(row["expires_at"]) <= now:

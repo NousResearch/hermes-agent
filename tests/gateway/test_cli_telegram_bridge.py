@@ -142,11 +142,48 @@ def test_approval_nonce_is_single_use_and_bound_to_session_user_chat_and_args(tm
     )
     assert wrong.verdict is BridgeVerdict.REJECT
 
+    wrong_turn = store.consume_approval(
+        nonce=approval.nonce,
+        chat_id="48264503",
+        user_id="48264503",
+        hermes_session_id="cli-session",
+        turn_id="other-turn",
+        tool_call_id="tool-1",
+        tool_args_hash="sha256:abc",
+    )
+    assert wrong_turn.verdict is BridgeVerdict.REJECT
+    assert "turn" in wrong_turn.reason
+
+    wrong_tool_call = store.consume_approval(
+        nonce=approval.nonce,
+        chat_id="48264503",
+        user_id="48264503",
+        hermes_session_id="cli-session",
+        turn_id="turn-1",
+        tool_call_id="other-tool",
+        tool_args_hash="sha256:abc",
+    )
+    assert wrong_tool_call.verdict is BridgeVerdict.REJECT
+    assert "tool call" in wrong_tool_call.reason
+
+    missing_exact_binding = store.consume_approval(
+        nonce=approval.nonce,
+        chat_id="48264503",
+        user_id="48264503",
+        hermes_session_id="cli-session",
+        tool_args_hash="sha256:abc",
+        require_user_approval=True,
+    )
+    assert missing_exact_binding.verdict is BridgeVerdict.REJECT
+    assert "turn" in missing_exact_binding.reason
+
     ok = store.consume_approval(
         nonce=approval.nonce,
         chat_id="48264503",
         user_id="48264503",
         hermes_session_id="cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
         tool_args_hash="sha256:abc",
     )
     assert ok.verdict is BridgeVerdict.ACCEPT
@@ -156,6 +193,8 @@ def test_approval_nonce_is_single_use_and_bound_to_session_user_chat_and_args(tm
         chat_id="48264503",
         user_id="48264503",
         hermes_session_id="cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
         tool_args_hash="sha256:abc",
     )
     assert reused.verdict is BridgeVerdict.REJECT

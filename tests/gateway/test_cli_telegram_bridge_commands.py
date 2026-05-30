@@ -353,6 +353,8 @@ def test_create_bridge_approval_prompt_uses_single_use_nonce_bound_to_args(tmp_p
         chat_id="48264503",
         user_id="48264503",
         hermes_session_id="cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
         tool_args_hash=bridge_tool_args_hash("terminal", {"command": "echo safe", "timeout": 30}),
     )
     assert changed_args.verdict is BridgeVerdict.REJECT
@@ -363,9 +365,103 @@ def test_create_bridge_approval_prompt_uses_single_use_nonce_bound_to_args(tmp_p
         chat_id="48264503",
         user_id="48264503",
         hermes_session_id="cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
         tool_args_hash=prompt.tool_args_hash,
     )
     assert ok.verdict is BridgeVerdict.ACCEPT
+
+
+def test_gateway_bridge_approve_records_bound_user_approval_without_consuming_executor_nonce(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    approval = store.create_approval(
+        bridge_id="bridge-cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
+        tool_name="terminal",
+        tool_args_hash="sha256:abc",
+        ttl_seconds=300,
+        nonce="nonce-123",
+    )
+
+    out = handle_gateway_bridge_command(
+        _telegram_event(f"/bridge_approve {approval.nonce}"),
+        store=store,
+    )
+
+    assert "recorded" in out.lower()
+    ok = store.consume_approval(
+        nonce=approval.nonce,
+        chat_id="48264503",
+        user_id="48264503",
+        hermes_session_id="cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
+        tool_args_hash="sha256:abc",
+        require_user_approval=True,
+    )
+    assert ok.verdict is BridgeVerdict.ACCEPT
+
+
+def test_gateway_bridge_approve_rejects_wrong_telegram_user(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    approval = store.create_approval(
+        bridge_id="bridge-cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
+        tool_name="terminal",
+        tool_args_hash="sha256:abc",
+        ttl_seconds=300,
+        nonce="nonce-123",
+    )
+
+    out = handle_gateway_bridge_command(
+        _telegram_event(f"/bridge_approve {approval.nonce}", user_id="999"),
+        store=store,
+    )
+
+    assert "rejected" in out.lower()
+    assert "mismatch" in out.lower()
+
+
+def test_gateway_bridge_approve_rejects_wrong_telegram_thread(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+        telegram_thread_id="42",
+    )
+    approval = store.create_approval(
+        bridge_id="bridge-cli-session",
+        turn_id="turn-1",
+        tool_call_id="tool-1",
+        tool_name="terminal",
+        tool_args_hash="sha256:abc",
+        ttl_seconds=300,
+        nonce="nonce-123",
+    )
+
+    out = handle_gateway_bridge_command(
+        _telegram_event(f"/bridge_approve {approval.nonce}", thread_id="99"),
+        store=store,
+    )
+
+    assert "rejected" in out.lower()
+    assert "thread" in out.lower()
 
 
 def test_bridge_does_not_remap_slash_commands_or_paused_bindings(tmp_path):

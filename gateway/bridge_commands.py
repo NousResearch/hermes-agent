@@ -279,8 +279,9 @@ def create_bridge_approval_prompt(
         "⚠️ Bridge approval required\n\n"
         f"Tool: {tool_name}\n"
         f"Approval nonce: {approval.nonce}\n\n"
-        f"Reply `/bridge_approve {approval.nonce}` to approve this exact tool call, "
-        "or `/deny` to cancel. The nonce is single-use and expires automatically."
+        f"Reply `/bridge_approve {approval.nonce}` to record approval for this exact tool call. "
+        "The pending executor must still verify the same turn, tool call id, and tool arguments before execution. "
+        "The nonce is single-use and expires automatically."
     )
     return BridgeApprovalPrompt(
         decision=decision,
@@ -372,6 +373,21 @@ def handle_gateway_bridge_command(
             f"Bridge linked to Hermes session `{decision.hermes_session_id}`. Plain DM text now continues that session.",
         )
 
+    if command in {"bridge_approve", "bridge-approve"}:
+        nonce = args.split()[0] if args else ""
+        if not nonce:
+            return "Usage: /bridge_approve <nonce>"
+        decision = store.record_approval_response(
+            nonce=nonce,
+            chat_id=chat_id,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+        return _decision_message(
+            decision,
+            f"Bridge approval recorded for Hermes session `{decision.hermes_session_id}`. The matching pending tool request must still verify the exact turn, tool call, and arguments before execution.",
+        )
+
     if command in {"bridge_status", "bridge-status", "bridge"}:
         return store.describe_telegram_status(chat_id=chat_id, user_id=user_id, thread_id=thread_id)
 
@@ -399,4 +415,4 @@ def handle_gateway_bridge_command(
             return "No bridge binding is active for this Telegram chat/user."
         return f"Bridge disconnected from Hermes session `{row['hermes_session_id']}`. Plain DM text will use the normal Telegram session again."
 
-    return "Unknown bridge command. Use /bridge_status, /bridge_disconnect, or /bridge_bind <token>."
+    return "Unknown bridge command. Use /bridge_status, /bridge_disconnect, /bridge_bind <token>, or /bridge_approve <nonce>."

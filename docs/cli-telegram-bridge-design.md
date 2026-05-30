@@ -1,6 +1,6 @@
 # CLI ↔ Telegram Bridge Safety Design
 
-Status: phase-5 bridge reply/approval helpers implemented on top of the safe plain-DM continuation controls. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore` plus the higher-level helpers in `gateway.bridge_commands`.
+Status: phase-6 bridge reply/approval helpers and Telegram approval command plumbing implemented on top of the safe plain-DM continuation controls. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore` plus the higher-level helpers in `gateway.bridge_commands`.
 
 ## Goal
 
@@ -58,7 +58,7 @@ Rejected initially:
 - `binding_tokens`: local opt-in, single-use, expiring tokens minted from the local CLI/TUI side before Telegram can bind. Tokens may be pre-bound to expected Telegram chat/user/thread allowlist values.
 - `bindings`: explicit bridge id ↔ Hermes session id ↔ Telegram chat/user/thread binding.
 - `outbound_messages`: bot message registry for reply-to correlation, TTL, and one-time consumption.
-- `approvals`: single-use approval nonce bound to bridge/session/tool call/tool argument hash.
+- `approvals`: single-use approval nonce bound to bridge/session/tool call/tool argument hash. Telegram `/bridge_approve <nonce>` records the user approval; the executor must still call `consume_approval()` with the same turn id, tool call id, and canonical tool argument hash before execution.
 - Pause/resume state per binding.
 - Filesystem kill switch support.
 
@@ -92,7 +92,7 @@ Telegram DM side:
 
 1. Telegram text is untrusted user input, never local stdin.
 2. Bot output is not input. Outbound message IDs are tracked and only messages marked `input_expected` may be used as reply anchors.
-3. Approval is not text. Approval requires a nonce that matches session, user, chat, tool call, and tool argument hash.
+3. Approval is not text. Approval requires a nonce that matches session, user, chat, tool call, and tool argument hash. The Telegram command only records approval; executor-side consumption must verify the exact turn id, tool call id, and canonical argument hash.
 4. Any mismatch rejects:
    - wrong user
    - wrong chat/thread
@@ -114,7 +114,7 @@ Recommended order:
 4. Add bridge UX controls for status, pause/resume, emergency off/on, and disconnect. (Implemented.)
 5. Outbound “input prompt” messages use `register_bridge_reply_input_prompt()`, which validates the active Telegram DM binding and records `record_outbound_message(... input_expected=True ...)` for one-shot reply correlation. (Implemented.)
 6. Telegram replies to explicit input prompts must call `validate_reply_input()` before forwarding to any executor. The bridge state consumes the reply anchor on success. (Safety helper implemented.)
-7. Approval UI uses `create_bridge_approval_prompt()` and `bridge_tool_args_hash()` to create a `create_approval()` nonce bound to the bridge, session, tool call id, tool name, and canonical tool args hash. Executors must call `consume_approval()` with the same hash before resolving Hermes tool approvals. (Safety helper implemented.)
+7. Approval UI uses `create_bridge_approval_prompt()` and `bridge_tool_args_hash()` to create a `create_approval()` nonce bound to the bridge, session, tool call id, tool name, and canonical tool args hash. Telegram `/bridge_approve <nonce>` records the bound user's approval without consuming the executor nonce. Executors must call `consume_approval(..., turn_id=..., tool_call_id=..., tool_args_hash=..., require_user_approval=True)` before resolving Hermes tool approvals. (Safety helper and command plumbing implemented.)
 8. Only after these pass should an executor adapter be added:
    - preferred: structured TUI gateway/JSON-RPC or Gateway `MessageEvent` path
    - avoid: raw tmux/PTY keystroke injection
@@ -128,7 +128,7 @@ Recommended order:
 - reply input requires registered live outbound prompt, same Telegram user/chat/thread, and unexpired state
 - normal mirrored output cannot be used as input
 - stale reply anchors are rejected
-- approval nonce is single-use and bound to session/user/chat/tool args
+- approval nonce is single-use and bound to session/user/chat/turn/tool call/tool args
 - paused binding and filesystem kill switch fail closed
 
 `tests/gateway/test_cli_telegram_bridge_commands.py` verifies command integration:
@@ -142,6 +142,7 @@ Recommended order:
 - slash commands are not bridge-routed and paused bindings reject plain text.
 - `register_bridge_reply_input_prompt()` records only bound Telegram DM output as one-shot input anchors.
 - `create_bridge_approval_prompt()` creates nonce-bound approvals tied to canonical tool argument hashes.
+- `/bridge_approve <nonce>` records only the bound Telegram user's approval and leaves final executor consumption gated on exact turn/tool-call/argument verification.
 
 ## Non-goals for phase 1
 

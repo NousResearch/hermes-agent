@@ -7740,6 +7740,7 @@ class GatewayRunner:
         if canonical in {
             "bridge",
             "bridge_bind",
+            "bridge_approve",
             "bridge_status",
             "bridge_off",
             "bridge_pause",

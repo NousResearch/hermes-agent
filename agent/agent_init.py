@@ -133,6 +133,88 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _resolve_max_tokens(agent, agent_cfg, custom_providers=None):
+    """Resolve ``agent.max_tokens`` with precedence:
+
+        explicit constructor/CLI > per-model custom_providers > global
+        model.max_tokens > None (downstream 4096 floor).
+
+    The per-model value is checked BEFORE the global model.max_tokens — the
+    opposite order from context_length (global-first). A provider-specific
+    output cap is the more-specific intent and must win. The global is nulled on
+    switch_model / fallback (like ``_config_context_length``) so it only ever
+    applies to the primary model and never leaks onto fallbacks (#28782).
+
+    Sets ``agent._config_max_tokens`` (the config-resolved value, nulled-and-re-
+    resolved on switch) and ``agent._max_tokens_explicit`` (an explicit
+    constructor value survives switches untouched).
+    """
+    if custom_providers is None:
+        custom_providers = getattr(agent, "_custom_providers", None) or []
+    model_cfg = agent_cfg.get("model", {}) if isinstance(agent_cfg, dict) else {}
+
+    def _warn_invalid(what, value, example):
+        _ra().logger.warning(
+            "Invalid %s: %r — must be a positive integer (e.g. %s). "
+            "Falling back to provider default.", what, value, example,
+        )
+        print(
+            f"\n⚠ Invalid {what}: {value!r}\n"
+            f"  Must be a positive integer (e.g. {example}).\n"
+            f"  Falling back to provider default.\n",
+            file=sys.stderr,
+        )
+
+    def _raw_per_model_max_tokens():
+        target = (agent.base_url or "").rstrip("/")
+        if not target:
+            return None
+        for entry in custom_providers:
+            if not isinstance(entry, dict) or (entry.get("base_url") or "").rstrip("/") != target:
+                continue
+            models = entry.get("models")
+            cfg = models.get(agent.model) if isinstance(models, dict) else None
+            return cfg.get("max_tokens") if isinstance(cfg, dict) else None
+        return None
+
+    agent._max_tokens_explicit = agent.max_tokens is not None
+
+    if not agent._max_tokens_explicit:
+        # 1. Per-model custom_providers cap wins over the global value.
+        if custom_providers:
+            try:
+                from hermes_cli.config import get_custom_provider_max_tokens
+                cp_mt = get_custom_provider_max_tokens(
+                    model=agent.model, base_url=agent.base_url,
+                    custom_providers=custom_providers,
+                )
+            except Exception:
+                cp_mt = None
+            if cp_mt:
+                agent.max_tokens = int(cp_mt)
+            else:
+                # The helper silently skips invalid values — surface a warning.
+                raw = _raw_per_model_max_tokens()
+                if raw is not None:
+                    _warn_invalid(f"max_tokens for model {agent.model!r} in custom_providers", raw, 16384)
+
+        # 2. Else the global model.max_tokens (primary model only).
+        if agent.max_tokens is None:
+            global_mt = model_cfg.get("max_tokens")
+            if global_mt is not None:
+                try:
+                    if isinstance(global_mt, bool) or int(global_mt) <= 0:
+                        raise ValueError
+                    agent.max_tokens = int(global_mt)
+                except (TypeError, ValueError):
+                    _warn_invalid("model.max_tokens in config.yaml", global_mt, 4096)
+
+    # Persist the config-resolved value (None when explicit or unset) so
+    # switch_model / fallback can null-and-re-resolve per-model.
+    agent._config_max_tokens = None if agent._max_tokens_explicit else agent.max_tokens
+    agent._session_init_model_config["max_tokens"] = agent.max_tokens
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1268,33 +1350,9 @@ def init_agent(
             _aux_context_config = None
     agent._aux_compression_context_length_config = _aux_context_config
 
-    # Read explicit model output-token override from config when the
-    # caller did not pass one directly.
+    # max_tokens is resolved below, AFTER _custom_providers, so the per-model
+    # cap can win over the global model.max_tokens (see _resolve_max_tokens).
     _model_cfg = _agent_cfg.get("model", {})
-    if agent.max_tokens is None and isinstance(_model_cfg, dict):
-        _config_max_tokens = _model_cfg.get("max_tokens")
-        if _config_max_tokens is not None:
-            try:
-                if isinstance(_config_max_tokens, bool):
-                    raise ValueError
-                _parsed_max_tokens = int(_config_max_tokens)
-                if _parsed_max_tokens <= 0:
-                    raise ValueError
-                agent.max_tokens = _parsed_max_tokens
-            except (TypeError, ValueError):
-                _ra().logger.warning(
-                    "Invalid model.max_tokens in config.yaml: %r — "
-                    "must be a positive integer (e.g. 4096). "
-                    "Falling back to provider default.",
-                    _config_max_tokens,
-                )
-                print(
-                    f"\n⚠ Invalid model.max_tokens in config.yaml: {_config_max_tokens!r}\n"
-                    f"  Must be a positive integer (e.g. 4096).\n"
-                    f"  Falling back to provider default.\n",
-                    file=sys.stderr,
-                )
-    agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):
@@ -1386,6 +1444,10 @@ def init_agent(
     # Persist for reuse on switch_model / fallback activation. Must come
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
+
+    # Resolve the output-token cap (per-model custom_providers > global). Placed
+    # AFTER _custom_providers so the per-model lookup can win over the global.
+    _resolve_max_tokens(agent, _agent_cfg, custom_providers=_custom_providers)
 
     agent._ensure_lmstudio_runtime_loaded(_config_context_length)
 

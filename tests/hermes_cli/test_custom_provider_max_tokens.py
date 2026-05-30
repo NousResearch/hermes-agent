@@ -5,8 +5,11 @@ output cap must reach ``agent.max_tokens`` at startup AND be re-resolved on
 mid-session /model switch and fallback, the same way context_length is.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
+import agent.agent_init as agent_init
 from hermes_cli.config import get_custom_provider_max_tokens
 
 URL = "https://example.invalid/v1"
@@ -54,3 +57,55 @@ class TestGetCustomProviderMaxTokens:
     ])
     def test_empty_inputs_guarded(self, model, url, providers):
         assert get_custom_provider_max_tokens(model, url, providers) is None
+
+
+def _bare_agent(custom_providers, *, model="m", base_url=URL, max_tokens=None):
+    """Minimal agent stub exercising only the max_tokens resolution block."""
+    a = MagicMock()
+    a.model = model
+    a.base_url = base_url
+    a.max_tokens = max_tokens
+    a._custom_providers = custom_providers
+    a._session_init_model_config = {}
+    return a
+
+
+class TestStartupPrecedence:
+    def test_per_model_lands_on_agent(self):
+        a = _bare_agent(_cfg(131_072))
+        agent_init._resolve_max_tokens(a, {"model": {}})
+        assert a.max_tokens == 131_072
+        assert a._config_max_tokens == 131_072
+        assert a._max_tokens_explicit is False
+
+    def test_per_model_beats_global(self):
+        a = _bare_agent(_cfg(131_072))
+        agent_init._resolve_max_tokens(a, {"model": {"max_tokens": 8000}})
+        assert a.max_tokens == 131_072
+
+    def test_global_used_when_no_per_model(self):
+        a = _bare_agent([])
+        agent_init._resolve_max_tokens(a, {"model": {"max_tokens": 8000}})
+        assert a.max_tokens == 8000
+
+    def test_explicit_constructor_wins_and_marks_explicit(self):
+        a = _bare_agent(_cfg(131_072), max_tokens=5000)
+        agent_init._resolve_max_tokens(a, {"model": {"max_tokens": 8000}})
+        assert a.max_tokens == 5000
+        assert a._max_tokens_explicit is True
+        assert a._config_max_tokens is None  # explicit is not config-derived
+
+    def test_invalid_per_model_warns_and_falls_through(self):
+        a = _bare_agent(_cfg("32K"))
+        with patch.object(agent_init, "_ra") as mock_ra:
+            agent_init._resolve_max_tokens(a, {"model": {}})
+            assert mock_ra.return_value.logger.warning.called
+        assert a.max_tokens is None
+        assert a._config_max_tokens is None
+
+    def test_invalid_global_warns_and_falls_through(self):
+        a = _bare_agent([])
+        with patch.object(agent_init, "_ra") as mock_ra:
+            agent_init._resolve_max_tokens(a, {"model": {"max_tokens": "lots"}})
+            assert mock_ra.return_value.logger.warning.called
+        assert a.max_tokens is None

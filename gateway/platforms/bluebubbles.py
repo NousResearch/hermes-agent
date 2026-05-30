@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -42,6 +43,7 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
+_RECENT_TEXTS_MAX = 500  # Bounded cache size for edit detection
 
 # Tapback reaction codes (BlueBubbles associatedMessageType values)
 _TAPBACK_ADDED = {
@@ -52,9 +54,6 @@ _TAPBACK_REMOVED = {
     3000: "love", 3001: "like", 3002: "dislike",
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
-
-# Webhook event types that carry user messages
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -129,6 +128,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        # Bounded FIFO cache: message GUID → original text.
+        # Used to detect text changes in updated-message (edit/retract) events.
+        self._recent_texts: OrderedDict[str, str] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -811,8 +813,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "invalid payload"}, status=400)
 
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        # Only process message events; silently acknowledge everything else
-        if event_type and event_type not in _MESSAGE_EVENTS:
+        # Normalise legacy "message" alias
+        if event_type == "message":
+            event_type = "new-message"
+        if event_type not in ("new-message", "updated-message"):
             return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
@@ -838,6 +842,52 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             or ""
         )
+        msg_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+
+        # ---- updated-message: distinguish edits, retractions, and status updates
+        if event_type == "updated-message":
+            cached = self._recent_texts.get(msg_guid) if msg_guid else None
+
+            # Retraction (unsend)
+            if record.get("dateRetracted") is not None:
+                logger.debug("[bluebubbles] message retracted: %s", msg_guid)
+                text = f"[The user unsent a message]: {cached or text or '(unknown content)'}"
+                if msg_guid:
+                    self._recent_texts.pop(msg_guid, None)
+            # Edit
+            elif record.get("dateEdited") is not None:
+                if cached is not None and cached == text:
+                    # dateEdited set but text identical → metadata-only, skip
+                    return web.Response(text="ok")
+                logger.debug("[bluebubbles] message edited: %s", msg_guid)
+                raw_edited = text
+                if cached is not None:
+                    text = (
+                        f"[The user edited their previous message]\n"
+                        f"Before: {cached}\n"
+                        f"After: {raw_edited}"
+                    )
+                else:
+                    text = f"[The user edited a message to]: {raw_edited}"
+                if msg_guid:
+                    self._recent_texts[msg_guid] = raw_edited
+                    self._recent_texts.move_to_end(msg_guid)
+            else:
+                # No dateEdited and no dateRetracted → delivery / read receipt
+                return web.Response(text="ok")
+
+        # ---- Cache the latest text for future edit detection ----
+        elif msg_guid and text:
+            self._recent_texts[msg_guid] = text
+            self._recent_texts.move_to_end(msg_guid)
+
+        # Evict oldest entries if cache exceeds limit
+        while len(self._recent_texts) > _RECENT_TEXTS_MAX:
+            self._recent_texts.popitem(last=False)
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
@@ -926,11 +976,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=msg_guid,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

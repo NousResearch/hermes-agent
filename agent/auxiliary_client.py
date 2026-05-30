@@ -4131,13 +4131,27 @@ def resolve_vision_provider_client(
     return requested, client, final_model
 
 
-def get_auxiliary_extra_body() -> dict:
+def get_auxiliary_extra_body(task: str = "") -> dict:
     """Return extra_body kwargs for auxiliary API calls.
     
     Includes Nous Portal product tags when the auxiliary client is backed
-    by Nous Portal. Returns empty dict otherwise.
+    by Nous Portal, PLUS any extra_body configured in
+    auxiliary.<task>.extra_body in config.yaml.
+    
+    When *task* is empty (legacy callers), only Nous tags are returned.
     """
-    return _nous_extra_body() if auxiliary_is_nous else {}
+    result = _nous_extra_body() if auxiliary_is_nous else {}
+
+    if task:
+        try:
+            task_cfg = _get_auxiliary_task_config(task)
+            task_extra = task_cfg.get("extra_body", {}) or {}
+            if isinstance(task_extra, dict):
+                result.update(task_extra)
+        except Exception:
+            pass
+
+    return result
 
 
 def auxiliary_max_tokens_param(value: int) -> dict:

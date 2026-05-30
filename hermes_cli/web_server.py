@@ -3495,26 +3495,49 @@ _event_lock = asyncio.Lock()
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
+    tui_type: str = "hermes",
+    variant: str = "colored",
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
-    Default: whatever ``hermes --tui`` would run.  Tests monkeypatch this
-    function to inject a tiny fake command (``cat``, ``sh -c 'printf …'``)
-    so nothing has to build Node or the TUI bundle.
+    ``resume`` (when set) is forwarded as ``--resume <id>`` so the TUI
+    can reconnect to an existing session.
 
-    Session resume is propagated via the ``HERMES_TUI_RESUME`` env var —
-    matching what ``hermes_cli.main._launch_tui`` does for the CLI path.
-    Appending ``--resume <id>`` to argv doesn't work because ``ui-tui`` does
-    not parse its argv.
-
-    `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
+    ``sidecar_url`` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
+
+    `tui_type` selects which TUI to spawn: ``"hermes"`` (default, the
+    built-in Ink-based TUI) or ``"herm"`` (the standalone herm-tui binary).
     """
+    env = os.environ.copy()
+
+    if tui_type == "herm":
+        import shutil
+        herm_bin = shutil.which("herm")
+        if not herm_bin:
+            from hermes_constants import get_hermes_home
+            candidate = Path(get_hermes_home()) / "node" / "bin" / "herm"
+            if candidate.is_file():
+                herm_bin = str(candidate)
+            else:
+                raise SystemExit(
+                    "herm TUI not found. Install with: npm i -g herm-tui"
+                )
+        argv = [herm_bin]
+        if resume:
+            argv += ["--resume", resume]
+        cwd = None
+        env.setdefault("HERMES_TUI_INLINE", "1")
+        env.setdefault("COLORTERM", "truecolor")
+        if sidecar_url:
+            env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+        return argv, cwd, env
+
+    # Default: built-in hermes --tui (Ink-based)
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    env = os.environ.copy()
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel
@@ -3524,6 +3547,16 @@ def _resolve_chat_argv(
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
     env.setdefault("HERMES_TUI_INLINE", "1")
+    # The gateway runs under systemd which sets TERM=dumb.  Ink/chalk
+    # checks TERM to decide the color level — dumb ⇒ no colors at all.
+    # Force xterm-256color so the TUI emits ANSI codes.
+    env["TERM"] = "xterm-256color"
+    # Advertise true-color support so Ink/chalk emits 24-bit ANSI codes
+    # instead of downgrading to the 256-color palette (whose warm default
+    # entries shift the TUI's intended colors toward yellow/cream).
+    env.setdefault("COLORTERM", "truecolor")
+    # Theme variant: "colored" (golden brand) or "desaturated" (greyscale).
+    env["HERMES_TUI_VARIANT"] = variant
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
@@ -3625,11 +3658,25 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
+    tui_type = ws.query_params.get("tui") or "hermes"
+    if tui_type not in ("hermes", "herm"):
+        tui_type = "hermes"
+    variant = ws.query_params.get("variant") or "colored"
+    if variant not in ("colored", "desaturated"):
+        variant = "colored"
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
+    # Read initial terminal dimensions from the browser so the PTY spawns
+    # at the correct size instead of the 80×24 default.
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        init_cols = max(1, int(ws.query_params.get("cols", "80")))
+        init_rows = max(1, int(ws.query_params.get("rows", "24")))
+    except (ValueError, TypeError):
+        init_cols, init_rows = 80, 24
+
+    try:
+        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url, tui_type=tui_type, variant=variant)
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
@@ -3638,7 +3685,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env, cols=init_cols, rows=init_rows)
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
@@ -3868,12 +3915,15 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
+        import shutil as _shutil
+        has_herm = "true" if _shutil.which("herm") else "false"
         if gated:
             bootstrap_script = (
                 f"<script>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"window.__HERMES_HAS_HERM__={has_herm};"
                 f"</script>"
             )
         else:
@@ -3882,6 +3932,7 @@ def mount_spa(application: FastAPI):
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"window.__HERMES_HAS_HERM__={has_herm};"
                 f"</script>"
             )
         if prefix:

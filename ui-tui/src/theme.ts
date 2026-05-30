@@ -254,40 +254,27 @@ const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
   return cleaned || fallback
 }
 
-export const DARK_THEME: Theme = {
-  color: {
-    primary: '#FFD700',
-    accent: '#FFBF00',
-    border: '#CD7F32',
-    text: '#FFF8DC',
-    muted: '#CC9B1F',
-    // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
-    // read as barely-visible on dark terminals for long body text.  The
-    // new value sits ~60% luminance — readable without losing the "muted /
-    // secondary" semantic.  Field labels still use `label` (65%) which
-    // stays brighter so hierarchy holds.
+export const DARK_THEME: Theme = (() => {
+  // Two brand palettes for the dark theme.  The "colored" variant is the
+  // original golden Hermes brand.  The "desaturated" variant strips hue
+  // while preserving perceptual luminance hierarchy, boosted ~20% for
+  // readability on dark backgrounds.
+  //
+  // Shared (non-brand) colors stay the same in both variants.
+  const shared = {
+    text: '#ffffff',
     completionBg: '#1a1a2e',
     completionCurrentBg: '#333355',
     completionMetaBg: '#1a1a2e',
     completionMetaCurrentBg: '#333355',
 
-    label: '#DAA520',
     ok: '#4caf50',
     error: '#ef5350',
     warn: '#ffa726',
 
-    prompt: '#FFF8DC',
-    // sessionLabel/sessionBorder intentionally track the `dim` value — they
-    // are "same role, same colour" by design.  fromSkin's banner_dim fallback
-    // relies on this pairing (#11300).
-    sessionLabel: '#CC9B1F',
-    sessionBorder: '#CC9B1F',
-
     statusBg: '#1a1a2e',
     statusFg: '#C0C0C0',
     statusGood: '#8FBC8F',
-    statusWarn: '#FFD700',
-    statusBad: '#FF8C00',
     statusCritical: '#FF6B6B',
     selectionBg: '#3a3a55',
 
@@ -296,13 +283,44 @@ export const DARK_THEME: Theme = {
     diffAddedWord: 'rgb(36,138,61)',
     diffRemovedWord: 'rgb(207,34,46)',
     shellDollar: '#4dabf7'
-  },
+  } as const
 
-  brand: BRAND,
+  const colored = {
+    primary: '#FFD700',
+    accent: '#FFBF00',
+    border: '#CD7F32',
+    muted: '#CC9B1F',
+    label: '#DAA520',
+    prompt: '#FFF8DC',
+    sessionLabel: '#CC9B1F',
+    sessionBorder: '#CC9B1F',
+    statusWarn: '#FFD700',
+    statusBad: '#FF8C00',
+  }
 
-  bannerLogo: '',
-  bannerHero: ''
-}
+  const desaturated = {
+    primary: '#ffffff',
+    accent: '#f3f3f3',
+    border: '#c5c5c5',
+    muted: '#d3d3d3',
+    label: '#dddddd',
+    prompt: '#ffffff',
+    sessionLabel: '#d3d3d3',
+    sessionBorder: '#d3d3d3',
+    statusWarn: '#ffffff',
+    statusBad: '#d5d5d5',
+  }
+
+  const variant = (process.env.HERMES_TUI_VARIANT ?? 'colored').toLowerCase()
+  const brand = variant === 'desaturated' ? desaturated : colored
+
+  return {
+    color: { ...shared, ...brand },
+    brand: BRAND,
+    bannerLogo: '',
+    bannerHero: ''
+  }
+})()
 
 // Light-terminal palette: darker golds/ambers that stay legible on white
 // backgrounds. Same shape as DARK_THEME so `fromSkin` still layers on top
@@ -511,6 +529,43 @@ export const DEFAULT_THEME: Theme = normalizeThemeForAnsiLightTerminal(
   DEFAULT_LIGHT_MODE
 )
 
+// ── Variant post-processing ───────────────────────────────────────────
+// The skin system (fromSkin) can override DARK_THEME brand colors with
+// golden values from the config.  applyVariant runs AFTER fromSkin to
+// ensure desaturation always wins when HERMES_TUI_VARIANT=desaturated.
+
+/** Desaturate a hex color to greyscale, preserving perceptual luminance.
+ *  Light colors (lum > 80) are pushed 70% toward white for brightness.
+ *  Dark colors (lum ≤ 80) get a 25% bump to stay readable. */
+function desaturateHex(hex: string): string {
+  const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)
+  if (!m) return hex
+  const r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16)
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b
+  const newLum = lum > 80
+    ? Math.min(255, Math.round(lum + (255 - lum) * 0.7))
+    : Math.min(255, Math.round(lum * 1.25))
+  const h = newLum.toString(16).padStart(2, '0')
+  return `#${h}${h}${h}`
+}
+
+/**
+ * If HERMES_TUI_VARIANT is "desaturated", override ALL non-background color
+ * values in the final theme to greyscale.  This catches skin-provided golden
+ * values and any other color source that fromSkin alone cannot intercept.
+ */
+export function applyVariant(theme: Theme): Theme {
+  if ((process.env.HERMES_TUI_VARIANT ?? '').toLowerCase() !== 'desaturated') return theme
+  const patched = { ...theme, color: { ...theme.color } }
+  for (const key of Object.keys(patched.color)) {
+    const val = (patched.color as Record<string, string>)[key]
+    if (typeof val === 'string' && val.startsWith('#')) {
+      (patched.color as Record<string, string>)[key] = desaturateHex(val)
+    }
+  }
+  return patched
+}
+
 // ── Skin → Theme ─────────────────────────────────────────────────────
 
 export function fromSkin(
@@ -537,7 +592,7 @@ export function fromSkin(
   const completionMetaBg = c('completion_menu_meta_bg') ?? completionBg
   const completionMetaCurrentBg = c('completion_menu_meta_current_bg') ?? completionCurrentBg
 
-  return normalizeThemeForAnsiLightTerminal({
+  return applyVariant(normalizeThemeForAnsiLightTerminal({
     color: {
       primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
       accent,
@@ -585,5 +640,5 @@ export function fromSkin(
 
     bannerLogo,
     bannerHero
-  }, process.env, DEFAULT_LIGHT_MODE)
+  }, process.env, DEFAULT_LIGHT_MODE))
 }

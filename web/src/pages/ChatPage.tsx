@@ -26,7 +26,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, PanelRight, X, Terminal as TerminalIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -41,13 +41,18 @@ function buildWsUrl(
   authParam: [string, string],
   resume: string | null,
   channel: string,
+  tuiType: string = "hermes",
+  cols: number = 80,
+  rows: number = 24,
+  variant: string = "colored",
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // ``authParam`` is ``["token", <session>]`` in loopback mode and
-  // ``["ticket", <minted>]`` in gated mode. The server-side helper
-  // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
   const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
   if (resume) qs.set("resume", resume);
+  if (tuiType && tuiType !== "hermes") qs.set("tui", tuiType);
+  if (variant && variant !== "colored") qs.set("variant", variant);
+  qs.set("cols", String(cols));
+  qs.set("rows", String(rows));
   return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
@@ -62,17 +67,34 @@ function generateChannelId(): string {
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
+// Colors for the terminal body.  White foreground for legibility — the TUI's
+// skin engine already paints accent content with its own ANSI colors; the
+// default foreground is only used for unstyled/reset text.
 const TERMINAL_THEME = {
   background: "#0d2626",
-  foreground: "#f0e6d2",
+  foreground: "#ffffff",
   cursor: "#f0e6d2",
   cursorAccent: "#0d2626",
   selectionBackground: "#f0e6d244",
 };
+
+/** Read the current theme's background from CSS variables and lighten it
+ *  so the terminal canvas matches the container regardless of theme. */
+function getThemeBackground(): string {
+  if (typeof document === "undefined") return "#0d2626";
+  const base = getComputedStyle(document.documentElement)
+    .getPropertyValue("--background-base")
+    .trim();
+  if (!base) return "#0d2626";
+  // Parse hex and add a fixed brightness lift to each channel.
+  const m = base.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return base;
+  const lift = 12;
+  const r = Math.min(255, parseInt(m[1], 16) + lift);
+  const g = Math.min(255, parseInt(m[2], 16) + lift);
+  const b = Math.min(255, parseInt(m[3], 16) + lift);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -103,8 +125,8 @@ function terminalFontSizeForWidth(layoutWidthPx: number): number {
   return 14;
 }
 
-function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
+function terminalLineHeightForWidth(_layoutWidthPx: number): number {
+  return 1.0;
 }
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
@@ -164,7 +186,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const tuiParam = searchParams.get("tui") || "hermes";
+  const variantParam = searchParams.get("variant") || "colored";
+  const [tuiType, setTuiType] = useState<string>(tuiParam);
+  const [variant, setVariant] = useState<string>(variantParam);
+  const variantRef = useRef(variant);
+  variantRef.current = variant;
+  const [termBg, setTermBg] = useState<string>(getThemeBackground);
+  const channel = useMemo(() => generateChannelId(), [resumeParam, tuiType, variant]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -273,6 +302,32 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+const handleToggleTui = useCallback(() => {
+    const next = tuiType === "hermes" ? "herm" : "hermes";
+    setTuiType(next);
+    const params = new URLSearchParams(searchParams);
+    if (next === "hermes") {
+      params.delete("tui");
+    } else {
+      params.set("tui", next);
+    }
+    setSearchParams(params, { replace: true });
+    wsRef.current?.close();
+  }, [tuiType, searchParams, setSearchParams]);
+
+  const handleToggleVariant = useCallback(() => {
+    const next = variant === "colored" ? "desaturated" : "colored";
+    setVariant(next);
+    const params = new URLSearchParams(searchParams);
+    if (next === "colored") {
+      params.delete("variant");
+    } else {
+      params.set("variant", next);
+    }
+    setSearchParams(params, { replace: true });
+    wsRef.current?.close();
+  }, [variant, searchParams, setSearchParams]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -312,9 +367,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
-      theme: TERMINAL_THEME,
+      theme: { ...TERMINAL_THEME, background: getThemeBackground(), cursorAccent: getThemeBackground() },
     });
     termRef.current = term;
+
+    // Watch for theme changes — the ThemeProvider sets CSS variables on
+    // document.documentElement.style.  When --background-base changes,
+    // update the xterm background to match.
+    const themeObserver = new MutationObserver(() => {
+      const bg = getThemeBackground();
+      setTermBg(bg);
+      if (term.options.theme && (term.options.theme as Record<string, string>).background !== bg) {
+        term.options.theme = { ...term.options.theme, background: bg, cursorAccent: bg };
+      }
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
 
     // --- Clipboard integration ---------------------------------------
     //
@@ -438,24 +505,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
+    // Always try WebGL for accurate cell sizing. Fallback to canvas renderer.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch (err) {
+      console.warn(
+        "[hermes-chat] WebGL renderer unavailable; falling back to default",
+        err,
+      );
     }
+
 
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
@@ -555,6 +616,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     });
 
+    let settleTimer1: ReturnType<typeof setTimeout> | null = null;
+    let settleTimer2: ReturnType<typeof setTimeout> | null = null;
+    settleTimer1 = setTimeout(() => { settleTimer1 = null; syncTerminalMetrics(); }, 300);
+    settleTimer2 = setTimeout(() => { settleTimer2 = null; syncTerminalMetrics(); }, 600);
+    document.fonts.ready.then(() => { if (!unmounting) syncTerminalMetrics(); });
+
     // WebSocket. In gated mode (``window.__HERMES_AUTH_REQUIRED__``) this
     // awaits a single-use ticket via /api/auth/ws-ticket before opening;
     // in loopback mode it resolves synchronously against the injected
@@ -567,7 +634,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel);
+      // Fit BEFORE building the WS URL so term.cols/rows have the real
+      // container dimensions, not the 80×24 defaults.
+      try { fit.fit(); } catch { /* ignore */ }
+      const url = buildWsUrl(authParam, resumeParam, channel, tuiType, term.cols, term.rows, variant);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -628,7 +698,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable = term.onData((data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
 
-        if (SGR_MOUSE_RE.test(data)) {
+        if (tuiType === "hermes" && SGR_MOUSE_RE.test(data)) {
           return;
         }
 
@@ -656,9 +726,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         scheduleSyncTerminalMetrics,
       );
       ro.disconnect();
+      themeObserver.disconnect();
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      if (settleTimer1) clearTimeout(settleTimer1);
+      if (settleTimer2) clearTimeout(settleTimer2);
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer
       // effect's top level so it can't reach into that scope — close via
@@ -674,7 +747,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, tuiType, variant]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -828,7 +901,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: TERMINAL_THEME.background,
+            backgroundColor: termBg,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
@@ -836,31 +909,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
-
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: TERMINAL_THEME.foreground }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
         </div>
 
         {!narrow && (
@@ -876,6 +924,78 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           </div>
         )}
       </div>
+
+      <div className="flex items-center mt-2 mb-2">
+        <div className="flex-1 flex justify-center translate-x-10 pr-0 lg:pr-80">
+          <Button
+            ghost
+            onClick={handleCopyLast}
+            title="Copy last assistant response as raw markdown"
+            aria-label="Copy last assistant response"
+            className={cn(
+              "normal-case tracking-normal font-normal",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150",
+              "px-2.5 py-1.5 text-xs",
+            )}
+            style={{ color: TERMINAL_THEME.foreground }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Copy className="h-3 w-3 shrink-0" />
+              <span className="tracking-wide">
+                {copyState === "copied" ? "copied" : "copy last response"}
+              </span>
+            </span>
+          </Button>
+        </div>
+        {tuiType === "hermes" && (
+          <Button
+            ghost
+            onClick={handleToggleVariant}
+            title={`Switch to ${variant === "colored" ? "desaturated" : "colored"} theme`}
+            className={cn(
+              "normal-case tracking-normal font-normal",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150",
+              "px-2.5 py-1.5 text-xs mr-2",
+            )}
+            style={{ color: "var(--color-text-secondary, #a0a0a0)" }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <span className="tracking-wide">
+                {variant === "colored" ? "color" : "grey"}
+              </span>
+            </span>
+          </Button>
+        )}
+        {window.__HERMES_HAS_HERM__ && (
+        <Button
+            ghost
+            onClick={handleToggleTui}
+            title={`Switch to ${tuiType === "hermes" ? "herm" : "hermes"} TUI`}
+            className={cn(
+              "normal-case tracking-normal font-normal",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150",
+              "px-2.5 py-1.5 text-xs",
+            )}
+            style={{ color: "var(--color-text-secondary, #a0a0a0)" }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <TerminalIcon className="h-3 w-3 shrink-0" />
+              <span className="tracking-wide">
+                {tuiType === "hermes" ? "hermes" : "herm"}
+              </span>
+            </span>
+          </Button>
+        )}
+      </div>
       <PluginSlot name="chat:bottom" />
     </div>
   );
@@ -885,5 +1005,6 @@ declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
     __HERMES_AUTH_REQUIRED__?: boolean;
+    __HERMES_HAS_HERM__?: boolean;
   }
 }

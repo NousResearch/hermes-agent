@@ -43,6 +43,30 @@
 }
 
 /* ------------------------------------------------------------------ */
+/* Emphatic — display font for UI labels (LIVE, tabs, etc.)           */
+/* ------------------------------------------------------------------ */
+@font-face {
+  font-family: 'Emphatic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Emphatic-Regular.woff2') format('woff2');
+}
+
+/* Override the design-system's Rules Compressed display font with Emphatic.
+   !important needed because globals.css re-declares --font-rules-compressed
+   later in the cascade after our :root block.
+   Scale down slightly — Emphatic's letterforms are larger than Rules Compressed
+   at the same font-size, so a small reduction keeps visual parity. */
+:root {
+  --font-rules-compressed: 'Emphatic', sans-serif !important;
+}
+@utility font-compressed {
+  font-family: var(--font-rules-compressed);
+  font-size: 0.9em;
+}
+
+/* ------------------------------------------------------------------ */
 /* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) lens applied   */
 /* statically. Mirrors nousnet-web/(hermes-agent)/layout.tsx so the    */
 /* canonical Hermes palette is the default — teal canvas + cream      */
@@ -142,6 +166,31 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }
 code { font-size: 0.875rem; }
+
+/* ── xterm.js cell-sizing fix ──────────────────────────────────────
+   The dashboard body inherits --theme-line-height: 1.55 (≈23px at
+   15px font).  xterm.js creates a hidden measure span and the
+   canvas/WebGL renderer uses fontSize × lineHeight from its own
+   options to size cells — but if the browser's computed line-height
+   leaks into the measure span, FitAddon's width calculation can
+   diverge from the renderer's actual glyph metrics, especially on
+   HiDPI displays (DPR > 1).  Kill the inherited line-height at
+   every level of the xterm DOM tree so nothing interferes.          */
+.xterm {
+  line-height: 1 !important;
+}
+.xterm .xterm-rows > div {
+  line-height: 1 !important;
+}
+.xterm-char-measure-element {
+  line-height: 1 !important;
+}
+.xterm .xterm-viewport,
+.xterm .xterm-screen,
+.xterm .xterm-helpers {
+  line-height: 1 !important;
+}
+/* ── end xterm fix ──────────────────────────────────────────────── */
 
 /* Shadcn-compat tokens.
    The dashboard's page code predates the Nous DS and uses shadcn-style

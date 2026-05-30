@@ -71,7 +71,7 @@ export function Backdrop() {
           background:
             "radial-gradient(ellipse at 0% 0%, transparent 60%, var(--warm-glow) 100%)",
           mixBlendMode: "lighten",
-          opacity: 0.22,
+          opacity: 0.14,
         }}
       />
 
@@ -81,10 +81,11 @@ export function Backdrop() {
           className="pointer-events-none fixed inset-0 z-[101]"
           style={{
             backgroundImage:
-              "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='%23eaeaea' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E\")",
-            backgroundSize: "512px 512px",
+              "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 1024 1024' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' seed='7' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='%23eaeaea' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E\")",
+            backgroundSize: "1024px 1024px",
             mixBlendMode: "color-dodge",
-            opacity: "calc(0.55 * var(--noise-opacity-mul, 1))",
+            filter: "blur(0.2px)",
+            opacity: "calc(0.3 * var(--noise-opacity-mul, 1))",
           }}
         />
       )}

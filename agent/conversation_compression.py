@@ -42,7 +42,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from agent.context_engine import sanitize_memory_context
+from agent.context_engine import (
+    automatic_compaction_status_message,
+    sanitize_memory_context,
+)
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -1089,7 +1092,20 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(COMPACTION_STATUS)
+    _compaction_status = COMPACTION_STATUS
+    if not force:
+        _compaction_status = automatic_compaction_status_message(
+            agent.context_compressor,
+            phase="compress",
+            default_message=_compaction_status,
+            approx_tokens=approx_tokens,
+            message_count=_pre_msg_count,
+            model=agent.model,
+            focus_topic=focus_topic,
+        )
+    _compaction_status_emitted = bool(_compaction_status)
+    if _compaction_status:
+        agent._emit_status(_compaction_status)
     _compaction_done_emitted = False
 
     def _complete_compaction_lifecycle() -> None:
@@ -1097,7 +1113,11 @@ def compress_context(
         if _compaction_done_emitted:
             return
         _compaction_done_emitted = True
-        _emit_compaction_done(agent)
+        # A suppressed start (quiet context engine) opened no visible
+        # compaction phase — emit no terminal edge either. Failure warnings
+        # go through agent._emit_warning and are never suppressed here.
+        if _compaction_status_emitted:
+            _emit_compaction_done(agent)
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two

@@ -2119,8 +2119,18 @@ def delegate_task(
         _resolved_profile_toolsets = _profile_overrides.get("toolsets")
         if _resolved_profile_toolsets and isinstance(_resolved_profile_toolsets, list):
             resolved_profile_name = profile
-            toolsets = _resolved_profile_toolsets
+            # Copy, not reference (config-aliasing hardening, #b06f4f89c).
+            # _resolve_profile already deep-copies the profile dict, so this is
+            # belt-and-suspenders, but it also insulates the config from any
+            # later in-place mutation (.append()/.clear()) of the working
+            # ``toolsets`` variable below. list() is an independent shallow copy
+            # of the string items, which is all we need.
+            toolsets = list(_resolved_profile_toolsets)
         else:
+            # Profile declares no toolsets — granting the bypass here would
+            # activate the mcp-* exception in _build_child_agent with whatever
+            # the caller/model supplied as toolsets, a privilege-escalation
+            # vector. Refuse to set the resolved name; fall back to intersection.
             logger.warning(
                 "delegate_task: profile %r has no non-empty toolsets list; "
                 "bypass NOT activated (falling back to intersection path).",
@@ -2131,7 +2141,12 @@ def delegate_task(
     # them as authoritative, ignoring any per-task toolsets the model supplies.
     # When no profile was resolved this is None and the batch loop falls through
     # to the per-task / top-level toolsets (existing behaviour unchanged).
-    profile_resolved_toolsets: Optional[list[str]] = toolsets if resolved_profile_name else None
+    #
+    # Take an independent copy (list()) even though `toolsets` was already
+    # copied from profile_toolsets above.  This keeps profile_resolved_toolsets
+    # stable against any future code that mutates `toolsets` in-place between
+    # here and the batch loop — defence-in-depth.
+    profile_resolved_toolsets: Optional[list[str]] = list(toolsets) if resolved_profile_name else None
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()

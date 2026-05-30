@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
 
+OVERRIDES_PATH = get_hermes_home() / "channel_directory_overrides.json"
+
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
@@ -98,7 +100,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
     directory = {
         "updated_at": datetime.now().isoformat(),
-        "platforms": platforms,
+        "platforms": _merge_channel_overrides(platforms),
     }
 
     try:
@@ -107,6 +109,52 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         logger.warning("Channel directory: failed to write: %s", e)
 
     return directory
+
+
+def _merge_channel_overrides(platforms: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Merge profile-local static channel labels into the discovered directory.
+
+    Messaging platforms such as Telegram cannot reliably enumerate forum topic
+    titles from the Bot API during directory refresh.  A profile may therefore
+    define stable non-secret labels in ``channel_directory_overrides.json``:
+
+    {"platforms": {"telegram": [{"id": "chat:thread", "name": "..."}]}}
+
+    Overrides are keyed by platform + id.  They can rename discovered entries
+    or add known static delivery targets that have no inbound session yet.
+    """
+    merged: Dict[str, List[Dict[str, Any]]] = {
+        platform: [dict(entry) for entry in entries]
+        for platform, entries in platforms.items()
+    }
+    if not OVERRIDES_PATH.exists():
+        return merged
+    try:
+        data = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
+        override_platforms = data.get("platforms", {})
+        if not isinstance(override_platforms, dict):
+            return merged
+        for platform, entries in override_platforms.items():
+            if not isinstance(entries, list):
+                continue
+            target_entries = merged.setdefault(str(platform), [])
+            by_id = {str(entry.get("id")): entry for entry in target_entries if entry.get("id")}
+            for raw_entry in entries:
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry_id = raw_entry.get("id")
+                if not entry_id:
+                    continue
+                clean_entry = {str(k): v for k, v in raw_entry.items() if v is not None}
+                clean_entry["id"] = str(entry_id)
+                if clean_entry["id"] in by_id:
+                    by_id[clean_entry["id"]].update(clean_entry)
+                else:
+                    target_entries.append(clean_entry)
+                    by_id[clean_entry["id"]] = clean_entry
+    except Exception as e:
+        logger.warning("Channel directory: failed to merge overrides from %s: %s", OVERRIDES_PATH, e)
+    return merged
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:

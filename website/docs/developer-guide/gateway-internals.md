@@ -16,7 +16,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
-| `gateway/channel_directory.py` | Maps chat IDs to human-readable names for cron delivery |
+| `gateway/channel_directory.py` | Maps chat IDs to human-readable names for cron delivery and `send_message` target resolution; merges optional profile-local `channel_directory_overrides.json` labels for static targets |
 | `gateway/hooks.py` | Hook discovery, loading, and lifecycle event dispatch |
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |

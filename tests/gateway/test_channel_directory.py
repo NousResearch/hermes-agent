@@ -14,6 +14,7 @@ from gateway.channel_directory import (
     load_directory,
     _build_from_sessions,
     _build_slack,
+    _merge_channel_overrides,
 )
 
 
@@ -67,6 +68,91 @@ class TestBuildChannelDirectoryWrites:
             result = load_directory()
 
         assert result == previous
+
+    def test_build_merges_channel_overrides_before_writing(self, tmp_path):
+        cache_file = tmp_path / "channel_directory.json"
+        overrides_file = tmp_path / "channel_directory_overrides.json"
+        overrides_file.write_text(json.dumps({
+            "platforms": {
+                "telegram": [
+                    {"id": "-100123:42", "name": "Project Chat / Release Notes", "type": "group"}
+                ]
+            }
+        }))
+
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch("gateway.channel_directory.OVERRIDES_PATH", overrides_file):
+            directory = asyncio.run(build_channel_directory({}))
+            result = load_directory()
+
+        assert directory == result
+        assert {entry["id"] for entry in result["platforms"]["telegram"]} == {"-100123:42"}
+
+
+class TestMergeChannelOverrides:
+    def _write_overrides(self, tmp_path, data):
+        overrides_file = tmp_path / "channel_directory_overrides.json"
+        overrides_file.write_text(json.dumps(data))
+        return patch("gateway.channel_directory.OVERRIDES_PATH", overrides_file)
+
+    def test_missing_file_returns_copy_without_mutating_source(self, tmp_path):
+        platforms = {"telegram": [{"id": "123", "name": "Alice", "type": "dm"}]}
+        with patch("gateway.channel_directory.OVERRIDES_PATH", tmp_path / "missing.json"):
+            result = _merge_channel_overrides(platforms)
+
+        assert result == platforms
+        assert result is not platforms
+        assert result["telegram"] is not platforms["telegram"]
+        assert result["telegram"][0] is not platforms["telegram"][0]
+
+    def test_overrides_existing_entry_and_adds_static_target(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {"id": "-100123:42", "name": "Project Chat / topic 42", "type": "group"},
+            ]
+        }
+        with self._write_overrides(tmp_path, {
+            "platforms": {
+                "telegram": [
+                    {"id": "-100123:42", "name": "Project Chat / Release Notes", "thread_id": "42"},
+                    {"id": "-100456:7", "name": "Team Chat / Escalations", "type": "group"},
+                ]
+            }
+        }):
+            result = _merge_channel_overrides(platforms)
+
+        assert platforms["telegram"][0]["name"] == "Project Chat / topic 42"
+        assert result["telegram"] == [
+            {"id": "-100123:42", "name": "Project Chat / Release Notes", "type": "group", "thread_id": "42"},
+            {"id": "-100456:7", "name": "Team Chat / Escalations", "type": "group"},
+        ]
+
+    def test_ignores_invalid_shapes_and_normalizes_ids_to_strings(self, tmp_path):
+        platforms = {"sms": [{"id": "sms-primary", "name": "Primary", "type": "dm"}]}
+        with self._write_overrides(tmp_path, {
+            "platforms": {
+                "telegram": [
+                    "not-an-entry",
+                    {"name": "missing id"},
+                    {"id": 12345, "name": "Numeric ID"},
+                ],
+                "sms": "not-a-list",
+            }
+        }):
+            result = _merge_channel_overrides(platforms)
+
+        assert result["telegram"] == [{"id": "12345", "name": "Numeric ID"}]
+        assert result["sms"] == platforms["sms"]
+
+    def test_invalid_json_is_non_fatal(self, tmp_path):
+        overrides_file = tmp_path / "channel_directory_overrides.json"
+        overrides_file.write_text("{not json")
+        platforms = {"telegram": [{"id": "123", "name": "Alice"}]}
+
+        with patch("gateway.channel_directory.OVERRIDES_PATH", overrides_file):
+            result = _merge_channel_overrides(platforms)
+
+        assert result == platforms
 
 
 class TestResolveChannelName:

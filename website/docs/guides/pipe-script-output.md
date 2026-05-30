@@ -220,6 +220,26 @@ Human-friendly names (`discord:#ops`, `slack:#engineering`) are resolved
 against this cache at send time, so you don't need to memorize numeric
 IDs.
 
+For channels or topics that a platform API cannot enumerate reliably, add
+non-secret, profile-local labels in `~/.hermes/channel_directory_overrides.json`.
+The gateway merges these entries into the next directory refresh and writes the
+combined result to `channel_directory.json`:
+
+```json
+{
+  "platforms": {
+    "telegram": [
+      {"id": "-1001234567890:42", "name": "Project Chat / Release Notes", "type": "group"}
+    ]
+  }
+}
+```
+
+Overrides are matched by platform and `id`. They can rename discovered entries
+or add static delivery targets that have no inbound session yet. Keep this file
+to stable routing metadata only; do not put API keys, bot tokens, OAuth tokens,
+or other secrets in it.
+
 ---
 
 ## Comparison with Other Approaches

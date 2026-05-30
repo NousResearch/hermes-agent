@@ -273,12 +273,12 @@ platform as a delivery option.
 
 ## 11. Channel Directory (`gateway/channel_directory.py`)
 
-If your platform can't enumerate chats (most can't), add it to the
-session-based discovery list:
-
-```python
-for plat_name in ("telegram", "whatsapp", "signal", "your_platform"):
-```
+If your platform can enumerate channels, add platform-specific discovery in
+`build_channel_directory()`. Platforms that cannot enumerate chats fall back to
+session-based discovery automatically when they are present in the `Platform`
+enum or registered by a platform plugin. If users need stable labels for known
+static targets that cannot be discovered from inbound sessions yet, document
+non-secret entries in `channel_directory_overrides.json`.
 
 ---
 

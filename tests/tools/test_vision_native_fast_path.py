@@ -188,6 +188,45 @@ class TestVisionAnalyzeNative:
         )
 
 
+# ─── task_id seam: dispatch must thread task_id to the resolver ──────────────
+
+
+class TestTaskIdSeam:
+    """Lock in the seam that carries task_id to the Docker exec-read (#32709).
+
+    If a future refactor drops the task_id kwarg from dispatch -> handler ->
+    resolver, the in-container fallback silently breaks. These guard it.
+    """
+
+    def test_dispatch_threads_task_id_native(self, monkeypatch):
+        seen = {}
+
+        async def fake_native(url, q, task_id=None):
+            seen["task_id"] = task_id
+            return "{}"
+
+        monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: True)
+        monkeypatch.setattr("tools.vision_tools._vision_analyze_native", fake_native)
+        from tools.vision_tools import registry
+
+        registry.dispatch("vision_analyze", {"image_url": "x", "question": "y"}, task_id="t-123")
+        assert seen["task_id"] == "t-123"
+
+    def test_dispatch_threads_task_id_legacy(self, monkeypatch):
+        seen = {}
+
+        async def fake_aux(url, prompt, model, task_id=None):
+            seen["task_id"] = task_id
+            return "{}"
+
+        monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: False)
+        monkeypatch.setattr("tools.vision_tools.vision_analyze_tool", fake_aux)
+        from tools.vision_tools import registry
+
+        registry.dispatch("vision_analyze", {"image_url": "x", "question": "y"}, task_id="t-456")
+        assert seen["task_id"] == "t-456"
+
+
 # ─── _handle_vision_analyze fast-path gating ─────────────────────────────────
 
 

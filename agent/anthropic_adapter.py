@@ -1692,6 +1692,29 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     reasoning_content injection for Kimi/DeepSeek endpoints.
     """
     content = m.get("content", "")
+    # Anthropic interleaved-thinking fast path: when this turn carries a
+    # verbatim, order-preserving block list (set by normalize_response only
+    # for turns that interleave SIGNED thinking with tool_use), replay it
+    # unchanged. Reconstructing from the parallel reasoning_details +
+    # tool_calls fields front-loads thinking and reorders signed blocks,
+    # which Anthropic rejects with HTTP 400 ("thinking ... blocks in the
+    # latest assistant message cannot be modified"). Block order — and thus
+    # each thinking block's signature — must survive verbatim. tool_use IDs
+    # are sanitized to match the tool_result IDs produced elsewhere; the
+    # downstream mcp_ prefixing pass handles tool names on these blocks.
+    ordered_blocks = m.get("anthropic_content_blocks")
+    if isinstance(ordered_blocks, list) and ordered_blocks:
+        replayed: List[Dict[str, Any]] = []
+        for b in ordered_blocks:
+            if not isinstance(b, dict):
+                continue
+            blk = copy.deepcopy(b)
+            if blk.get("type") == "tool_use" and "id" in blk:
+                blk["id"] = _sanitize_tool_id(blk.get("id", ""))
+            replayed.append(blk)
+        if replayed:
+            return {"role": "assistant", "content": replayed}
+
     blocks = _extract_preserved_thinking_blocks(m)
     if content:
         if isinstance(content, list):

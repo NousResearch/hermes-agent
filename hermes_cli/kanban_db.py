@@ -1637,6 +1637,140 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    _rebuild_drifted_tables(conn)
+
+
+# Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
+# ``kanban_notify_subs``, a nullable ``TEXT last_event_id``). The current
+# schema uses ``INTEGER PRIMARY KEY AUTOINCREMENT`` / ``INTEGER NOT NULL
+# DEFAULT 0``. ``CREATE TABLE IF NOT EXISTS`` skips existing tables
+# regardless of schema and ``_add_column_if_missing`` only adds columns, so
+# neither can fix a drifted column type — the table must be rebuilt. See
+# #35096.
+#
+# Each entry pairs the canonical CREATE TABLE with the CREATE INDEX
+# statements that DROP TABLE would otherwise take down with it (including
+# ``idx_events_run``, added by the additive pass above). To guard against
+# this list drifting from SCHEMA_SQL, ``test_rebuilt_schema_matches_fresh``
+# asserts a rebuilt legacy DB is byte-identical to a fresh one.
+_REBUILD_SPECS = {
+    "task_events": (
+        "CREATE TABLE task_events ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " task_id TEXT NOT NULL, run_id INTEGER, kind TEXT NOT NULL,"
+        " payload TEXT, created_at INTEGER NOT NULL)",
+        (
+            "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
+            "CREATE INDEX idx_events_run ON task_events(run_id, id)",
+        ),
+    ),
+    "task_comments": (
+        "CREATE TABLE task_comments ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " task_id TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL,"
+        " created_at INTEGER NOT NULL)",
+        ("CREATE INDEX idx_comments_task ON task_comments(task_id, created_at)",),
+    ),
+    "task_runs": (
+        "CREATE TABLE task_runs ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
+        " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
+        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
+        " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
+        " error TEXT)",
+        (
+            "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
+            "CREATE INDEX idx_runs_status ON task_runs(status)",
+        ),
+    ),
+    "kanban_notify_subs": (
+        "CREATE TABLE kanban_notify_subs ("
+        " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
+        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
+        " notifier_profile TEXT, created_at INTEGER NOT NULL,"
+        " last_event_id INTEGER NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
+        ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
+    ),
+}
+
+
+def _table_has_drifted(conn: sqlite3.Connection, table: str) -> bool:
+    """True when ``table`` still carries the legacy (pre-AUTOINCREMENT) shape."""
+    info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if not info:
+        return False  # table absent — nothing to rebuild
+    if table == "kanban_notify_subs":
+        lei = next((c for c in info if c["name"] == "last_event_id"), None)
+        return lei is not None and (lei["type"] or "").upper() != "INTEGER"
+    # task_events / task_comments / task_runs: id must be INTEGER and a PK.
+    id_col = next((c for c in info if c["name"] == "id"), None)
+    if id_col is None:
+        return False
+    return not ((id_col["type"] or "").upper() == "INTEGER" and id_col["pk"])
+
+
+def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
+    """Rebuild any kanban table whose column types drifted from SCHEMA_SQL.
+
+    Old boards crash the gateway notifier (``int(None)`` on a NULL id in
+    ``unseen_events_for_sub``) and never match the ``id > cursor`` filter, so
+    every kanban notification is silently lost (#35096). Each affected table is
+    rebuilt with the standard SQLite pattern — CREATE new → INSERT shared
+    columns → DROP old → RENAME — recreating its indexes too (DROP TABLE takes
+    them down). The legacy TEXT ids are dropped (they aren't valid integers);
+    AUTOINCREMENT assigns fresh ones and ``last_event_id`` cursors reset to 0,
+    so the first post-migration tick replays a task's event history once —
+    the safe failure mode for a feature that was already fully broken.
+
+    The whole pass runs in one transaction so an interruption can't leave a
+    table half-renamed, and under ``connect()``'s init locks so nothing races
+    it. Idempotent: a correctly-typed DB skips every table and returns without
+    opening a transaction.
+    """
+    drifted = [t for t in _REBUILD_SPECS if _table_has_drifted(conn, t)]
+    if not drifted:
+        return
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for table in drifted:
+            create_sql, index_sqls = _REBUILD_SPECS[table]
+            old_cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({table})")]
+            _log.info("kanban migration: rebuilding %s to match current schema", table)
+            conn.execute(f"ALTER TABLE {table} RENAME TO {table}_legacy")
+            conn.execute(create_sql)
+            new_cols = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
+            if table == "kanban_notify_subs":
+                # Cast the legacy TEXT cursor to INTEGER; NULL / non-numeric → 0.
+                shared = [c for c in old_cols if c in new_cols and c != "last_event_id"]
+                cols_csv = ", ".join(shared)
+                conn.execute(
+                    f"INSERT INTO {table} ({cols_csv}, last_event_id) "
+                    f"SELECT {cols_csv}, COALESCE(CAST(last_event_id AS INTEGER), 0) "
+                    f"FROM {table}_legacy"
+                )
+            else:
+                # Drop the legacy TEXT id; AUTOINCREMENT reassigns it.
+                shared = [c for c in old_cols if c in new_cols and c != "id"]
+                cols_csv = ", ".join(shared)
+                conn.execute(
+                    f"INSERT INTO {table} ({cols_csv}) "
+                    f"SELECT {cols_csv} FROM {table}_legacy"
+                )
+            conn.execute(f"DROP TABLE {table}_legacy")
+            for index_sql in index_sqls:
+                conn.execute(index_sql)
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+
 
 def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
     """Read the SQLite header page_count and compare against actual file size.

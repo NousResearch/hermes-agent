@@ -11,6 +11,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
@@ -853,15 +854,27 @@ class TestWeixinContentDedup:
         adapter = _make_adapter()
         adapter._poll_session = object()
         adapter.handle_message = AsyncMock()
+        # Tighten the text-debounce delay so the flush completes quickly.
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
 
         base_msg = {
             "from_user_id": "wxid_user1",
             "item_list": [{"type": 1, "text_item": {"text": "hello world"}}],
         }
 
-        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-1"}))
-        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-2"}))
+        async def _drive():
+            # Both inbound messages share the same event loop so the debounce
+            # task created by the first one survives to be flushed.
+            await adapter._process_message({**base_msg, "message_id": "msg-1"})
+            await adapter._process_message({**base_msg, "message_id": "msg-2"})
+            # Wait out the quiet period so the buffered text batch flushes.
+            await asyncio.sleep(0.2)
 
+        asyncio.run(_drive())
+
+        # Content-dedup drops the second (duplicate) message before it is even
+        # enqueued, so only one combined dispatch reaches handle_message.
         assert adapter.handle_message.await_count == 1
         event = adapter.handle_message.await_args[0][0]
         assert event.text == "hello world"
@@ -882,3 +895,76 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+
+class TestWeixinTextDebounce:
+    """Text-debounce batching for rapid multi-message bursts (issue #35301).
+
+    Delays are read from ``config.extra`` (config.yaml), not env vars.
+    """
+
+    def test_batch_delays_default_from_config(self):
+        adapter = _make_adapter()
+        assert adapter._text_batch_delay_seconds == 3.0
+        assert adapter._text_batch_split_delay_seconds == 5.0
+
+    def test_batch_delays_overridden_via_config_extra(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "account_id": "test-account",
+                    "text_batch_delay_seconds": "0.5",
+                    "text_batch_split_delay_seconds": 1.5,
+                },
+            )
+        )
+        assert adapter._text_batch_delay_seconds == 0.5
+        assert adapter._text_batch_split_delay_seconds == 1.5
+
+    def test_invalid_config_value_falls_back_to_default(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "account_id": "test-account",
+                    "text_batch_delay_seconds": "not-a-number",
+                    "text_batch_split_delay_seconds": -4,
+                },
+            )
+        )
+        assert adapter._text_batch_delay_seconds == 3.0
+        assert adapter._text_batch_split_delay_seconds == 5.0
+
+    def test_rapid_texts_collapse_into_single_dispatch(self):
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+        dispatched = []
+
+        async def _capture(event):
+            dispatched.append(event.text)
+
+        adapter.handle_message = _capture
+
+        def _event(text):
+            return MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=adapter.build_source(
+                    chat_id="wxid_user1", chat_type="dm",
+                    user_id="wxid_user1", user_name="wxid_user1",
+                ),
+            )
+
+        async def _drive():
+            adapter._enqueue_text_event(_event("one"))
+            adapter._enqueue_text_event(_event("two"))
+            adapter._enqueue_text_event(_event("three"))
+            assert dispatched == []  # nothing flushed during the burst
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+        assert dispatched == ["one\ntwo\nthree"]

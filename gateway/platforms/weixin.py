@@ -1184,9 +1184,16 @@ class WeixinAdapter(BasePlatformAdapter):
         # iLink delivers messages individually, so rapid multi-message
         # bursts (forwarded batches, paste-splits) each trigger a
         # separate agent invocation.  Default 3s delay / 5s split delay
-        # are tuned for iLink's typical delivery cadence.
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_WEIXIN_TEXT_BATCH_DELAY_SECONDS", "3.0"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_WEIXIN_TEXT_BATCH_SPLIT_DELAY_SECONDS", "5.0"))
+        # are tuned for iLink's typical delivery cadence.  Tunable via
+        # config.yaml under
+        # ``gateway.platforms.weixin.extra.text_batch_delay_seconds`` /
+        # ``text_batch_split_delay_seconds``.
+        self._text_batch_delay_seconds = self._coerce_float_extra(
+            "text_batch_delay_seconds", 3.0
+        )
+        self._text_batch_split_delay_seconds = self._coerce_float_extra(
+            "text_batch_split_delay_seconds", 5.0
+        )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
@@ -1195,6 +1202,25 @@ class WeixinAdapter(BasePlatformAdapter):
             if persisted:
                 self._token = str(persisted.get("token") or "").strip()
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+
+    def _coerce_float_extra(self, key: str, default: float) -> float:
+        """Read a float from ``config.extra``, guarding against bad/non-finite values.
+
+        The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
+        unparseable values fall back to ``default``.
+        """
+        import math
+
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return float(default)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not math.isfinite(parsed) or parsed < 0:
+            return float(default)
+        return parsed
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:

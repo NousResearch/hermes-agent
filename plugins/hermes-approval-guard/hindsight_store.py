@@ -102,23 +102,23 @@ def _hindsight_api(endpoint: str, payload: Dict[str, Any]) -> Optional[Dict]:
 
 def _hindsight_retain(content: str, tags: list, cfg: Dict[str, Any]) -> None:
     bank = cfg.get("memory", {}).get("bank", "approval") if isinstance(cfg.get("memory"), dict) else "approval"
-    _hindsight_api("retain", {
-        "content": content,
-        "context": "approval_decision",
-        "tags": tags,
-        "bank": bank,
+    _hindsight_api(f"v1/default/banks/{bank}/memories", {
+        "items": [{
+            "content": content,
+            "context": "approval_decision",
+            "tags": tags,
+        }],
     })
 
 
 def _hindsight_recall_extended(query_parts: list, cfg: Dict[str, Any], limit: int = 5) -> list:
     """召回并返回完整 memory 列表（含 content + tags）。"""
     bank = cfg.get("memory", {}).get("bank", "approval") if isinstance(cfg.get("memory"), dict) else "approval"
-    result = _hindsight_api("recall", {
+    result = _hindsight_api(f"v1/default/banks/{bank}/memories/recall", {
         "query": " ".join(query_parts),
-        "bank": bank,
     })
     if result:
-        return result.get("memories", [])[:limit]
+        return result.get("results", [])[:limit]
     return []
 
 

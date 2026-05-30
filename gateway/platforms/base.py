@@ -611,11 +611,12 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     import hashlib as _hashlib
     cache_dir = get_image_cache_dir()
 
-    # Content-addressed filename: same bytes always map to the same file.
-    # This prevents stale-content collisions and avoids redundant disk writes
-    # when the same image is received twice (e.g. Telegram CDN dedup).
-    content_hash = _hashlib.sha256(data).hexdigest()[:16]
-    filename = f"img_{content_hash}{ext}"
+    # Content-addressed filename using BLAKE2b (fast, collision-resistant).
+    # Same bytes always map to the same file — prevents stale-content
+    # collisions when concurrent asyncio tasks download the same Telegram
+    # file_path and write to different UUID names (issue #35242).
+    content_hash = _hashlib.blake2b(data, digest_size=8).hexdigest()
+    filename = f"img_b2_{content_hash}{ext}"
     filepath = cache_dir / filename
 
     if filepath.exists():

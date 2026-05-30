@@ -91,33 +91,44 @@ export async function readClipboardText(
   return null
 }
 
+type WriteCmd = { args: readonly string[]; cmd: string } & (
+  | { stdin: true }
+  | { stdin: false; psScript: (b64: string) => string }
+)
+
+function _powershellWriteScript(b64: string): string {
+  return `Set-Clipboard -Value ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64}')))`
+}
+
 function writeClipboardCommands(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv
-): Array<{ args: readonly string[]; cmd: string }> {
+): WriteCmd[] {
   if (platform === 'darwin') {
-    return [{ cmd: 'pbcopy', args: [] }]
+    return [{ cmd: 'pbcopy', args: [], stdin: true }]
   }
 
   if (platform === 'win32') {
-    return [{ cmd: 'powershell', args: ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input'] }]
+    return [{ cmd: 'powershell', args: ['-NoProfile', '-NonInteractive'], stdin: false, psScript: _powershellWriteScript }]
   }
 
-  const attempts: Array<{ args: readonly string[]; cmd: string }> = []
+  const attempts: WriteCmd[] = []
 
   if (env.WSL_INTEROP || env.WSL_DISTRO_NAME) {
     attempts.push({
       cmd: 'powershell.exe',
-      args: ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input']
+      args: ['-NoProfile', '-NonInteractive'],
+      stdin: false,
+      psScript: _powershellWriteScript
     })
   }
 
   if (env.WAYLAND_DISPLAY) {
-    attempts.push({ cmd: 'wl-copy', args: ['--type', 'text/plain'] })
+    attempts.push({ cmd: 'wl-copy', args: ['--type', 'text/plain'], stdin: true })
   }
 
-  attempts.push({ cmd: 'xclip', args: ['-selection', 'clipboard', '-in'] })
-  attempts.push({ cmd: 'xsel', args: ['--clipboard', '--input'] })
+  attempts.push({ cmd: 'xclip', args: ['-selection', 'clipboard', '-in'], stdin: true })
+  attempts.push({ cmd: 'xsel', args: ['--clipboard', '--input'], stdin: true })
 
   return attempts
 }
@@ -144,14 +155,21 @@ export async function writeClipboardText(
 ): Promise<boolean> {
   const candidates = writeClipboardCommands(platform, env)
 
-  for (const { cmd, args } of candidates) {
+  for (const cmdEntry of candidates) {
     try {
       const ok = await new Promise<boolean>(resolve => {
-        const child = start(cmd, [...args], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
-
-        child.once('error', () => resolve(false))
-        child.once('close', code => resolve(code === 0))
-        child.stdin?.end(text)
+        if (cmdEntry.stdin) {
+          const child = start(cmdEntry.cmd, [...cmdEntry.args], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
+          child.once('error', () => resolve(false))
+          child.once('close', (code: number | null) => resolve(code === 0))
+          child.stdin?.end(text)
+        } else {
+          const b64 = Buffer.from(text, 'utf8').toString('base64')
+          const script = cmdEntry.psScript(b64)
+          const child = start(cmdEntry.cmd, [...cmdEntry.args, '-Command', script], { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true })
+          child.once('error', () => resolve(false))
+          child.once('close', (code: number | null) => resolve(code === 0))
+        }
       })
 
       if (ok) {

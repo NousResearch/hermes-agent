@@ -151,9 +151,114 @@ to any progressive-disclosure design, not specific to this implementation:
   mode" some other implementations offer is a large surface area; we
   skip it.
 
+## Embedding Reranker (issue #13332)
+
+The optional embedding reranker improves Recall@5 significantly beyond
+BM25 for semantic queries. It is **default OFF** — enabling it requires
+an OpenAI-compatible embeddings endpoint.
+
+**Benchmark results** (194 tools / 98 labeled queries,
+nomic-embed-text-v2-moe, fulfils NousResearch/hermes-agent#13332):
+
+| Mode | R@5 | vs BM25 baseline | Notes |
+|------|-----|-----------------|-------|
+| BM25 only (default) | **0.634** | — | Stock default, no new deps |
+| `rerank` (pure cosine, full catalog) | **0.810** | +0.176 | Highest accuracy |
+| `rrf` k=10 (RRF fusion) | **0.770** | +0.136 | Zero regressions, safe default |
+
+**Critical finding: nomic-embed-text-v2-moe REQUIRES task prefixes.**
+Without `search_query:` and `search_document:` prefixes, R@5 drops by
+~0.194. The config defaults include these prefixes; set to `""` for
+models that do not want them.
+
+:::caution Prefix mismatch silently degrades accuracy
+The `query_prefix` and `doc_prefix` default to `"search_query: "` and
+`"search_document: "` (nomic-embed-text-v2-moe task prefixes). Models that
+do **not** use task prefixes — such as `all-MiniLM-L6-v2`, `e5-small-v2`,
+and OpenAI's `text-embedding-3-*` family — **must** set **both** to `""`
+or accuracy silently degrades by approximately −0.19 R@5:
+
+```yaml
+tools:
+  tool_search:
+    reranker:
+      enabled: true
+      endpoint: http://localhost:11434/v1/embeddings
+      model: all-MiniLM-L6-v2
+      query_prefix: ""    # ← required for non-nomic models
+      doc_prefix: ""      # ← required for non-nomic models
+```
+
+The mismatch is silent because the model still produces valid-shaped vectors;
+cosine scores are just much lower (nomic treats an unprefixed query as a
+document, not a query), and the fallback to BM25 does not trigger. Always
+verify prefix requirements in your embedding model's documentation.
+:::
+
+**Full-catalog retrieve:** tool embeddings are cached — only one query embed
+call recurs per search. Narrow retrieval (N=10) leaves +0.119 R@5 on the
+table compared to full-catalog (N=194). The implementation always retrieves
+the full catalog.
+
+**Endpoint compatibility:** any OpenAI-compatible `/v1/embeddings` endpoint.
+The benchmark used a GPU-hosted nomic model, but CPU models such as
+`all-MiniLM-L6-v2` at ~200 ms latency are equally valid. No GPU required.
+Pi-friendly.
+
+**Graceful fallback:** any endpoint failure (timeout, non-200, bad JSON,
+shape mismatch) → the module logs a debug line and returns the BM25 result
+unchanged. Tool discovery is never blocked by an unavailable reranker.
+
+```yaml
+tools:
+  tool_search:
+    reranker:
+      enabled: true                                   # default false
+      endpoint: http://localhost:11434/v1/embeddings  # required when enabled
+      model: nomic-embed-text-v2-moe
+      mode: rerank       # "rerank" (pure cosine) or "rrf" (RRF fusion)
+      rrf_k: 10          # RRF k parameter — k=10 beat k=60 in benchmarks
+      top_k: 5           # results to return (should match search_default_limit)
+      query_prefix: "search_query: "    # nomic task prefix for queries
+      doc_prefix:   "search_document: " # nomic task prefix for tool docs
+      api_key: ""        # optional bearer token
+      timeout: 5.0       # seconds before fallback to BM25
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `reranker.enabled` | `false` | Enable embedding reranker. |
+| `reranker.endpoint` | `""` | OpenAI-compatible `/v1/embeddings` URL. Required when enabled. |
+| `reranker.model` | `nomic-embed-text-v2-moe` | Embedding model name. |
+| `reranker.mode` | `rerank` | `rerank`: sort by cosine similarity. `rrf`: Reciprocal Rank Fusion of BM25 + embedding ranks. |
+| `reranker.rrf_k` | `10` | RRF k parameter. Lower values boost top-ranked items more. k=10 outperformed the textbook k=60 in benchmarks. |
+| `reranker.top_k` | `5` | Number of results to return. Should match `search_default_limit`. |
+| `reranker.query_prefix` | `"search_query: "` | Task prefix prepended to the query embed text. Set to `""` for models that do not use prefixes. |
+| `reranker.doc_prefix` | `"search_document: "` | Task prefix prepended to each tool's embed text. Set to `""` for models that do not use prefixes. |
+| `reranker.api_key` | `""` | Bearer token for authenticated endpoints. |
+| `reranker.timeout` | `5.0` | HTTP timeout in seconds. After expiry, falls back to BM25. |
+
+### Three-tier architecture
+
+| Tier | What | Dependencies | R@5 (194 tools) |
+|------|------|-------------|-----------------|
+| 0 (default) | BM25 only | none (stdlib) | ~0.634 |
+| 1 rerank | BM25 + embedding cosine rerank | embeddings endpoint | ~0.810 |
+| 1 rrf | BM25 + RRF fusion | embeddings endpoint | ~0.770 |
+| 2 (future) | cross-encoder rerank | reranker endpoint | est. ~0.85–0.89 |
+
+Tier 0 is the stock default with no external dependencies. Tier 1 adds
+the embedding reranker (opt-in). Tier 2 (cross-encoder) is the documented
+next step but not yet implemented; it requires a `/rerank`-style endpoint
+(e.g. `bge-reranker-v2-m3` in Ollama, or Cohere's rerank API). Literature
+estimates suggest +3–8% Recall@5 over Tier 1 on well-formed tool-selection
+corpora.
+
 ## See also
 
 - `tools/tool_search.py` — the implementation
 - `tests/tools/test_tool_search.py` — the regression suite
+- `/tmp/tool-rerank-poc/BENCHMARK_WRITEUP.md` — benchmark evidence for the
+  hybrid pre-selection design (issue #13332)
 - The `openclaw-tool-search-report` PDF in the original implementation
-  PR for the research that shaped the design
+  PR for the research that shaped the base design

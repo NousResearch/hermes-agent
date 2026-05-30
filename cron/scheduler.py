@@ -154,6 +154,10 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
+# Legacy sentinel used by older migrated jobs and some user-authored prompts.
+# Keep it exact-only so reports that merely mention "NO_REPLY" are still sent.
+LEGACY_SILENT_MARKERS = frozenset({"NO_REPLY"})
+
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
@@ -168,6 +172,17 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _is_silent_cron_response(response: str) -> bool:
+    """Whether a successful cron final response should suppress delivery."""
+    stripped = str(response or "").strip()
+    if not stripped:
+        return False
+    upper = stripped.upper()
+    if SILENT_MARKER in upper:
+        return True
+    return upper in LEGACY_SILENT_MARKERS
 
 
 @contextmanager
@@ -1945,8 +1960,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                if should_deliver and success and _is_silent_cron_response(deliver_content):
+                    logger.info("Job '%s': agent returned %s-compatible silent marker — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
                 delivery_error = None

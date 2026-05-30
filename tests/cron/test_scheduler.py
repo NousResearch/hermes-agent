@@ -7,7 +7,16 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _is_silent_cron_response,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -1862,6 +1871,16 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
+    def test_legacy_no_reply_response_suppresses_delivery(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "NO_REPLY", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
@@ -1902,6 +1921,33 @@ class TestSilentDelivery:
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
         )
+
+
+class TestSilentCronResponsePredicate:
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "[SILENT]",
+            "[silent] nothing new",
+            "2 items filtered out\n\n[SILENT]",
+            "NO_REPLY",
+            " no_reply\n",
+        ],
+    )
+    def test_recognizes_silent_responses(self, response):
+        assert _is_silent_cron_response(response) is True
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "",
+            "   ",
+            "Report mentions NO_REPLY but has content",
+            "NO_REPLY: nothing new",
+        ],
+    )
+    def test_does_not_suppress_non_silent_responses(self, response):
+        assert _is_silent_cron_response(response) is False
 
 
 class TestBuildJobPromptSilentHint:

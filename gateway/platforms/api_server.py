@@ -1097,6 +1097,36 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _on_approval
 
+    def _set_session_user_id(self, session_id: str, x_user_header: str) -> None:
+        """Parse x-user header and store user_id on the session row.
+
+        Supports both plain ID and JSON:
+          x-user: 2               → user_id = "2"
+          x-user: {"id":2,...}    → user_id = "2"
+        """
+        if not session_id or not x_user_header:
+            return
+        user_id = x_user_header.strip()
+        if user_id.startswith("{"):
+            try:
+                user_data = json.loads(user_id)
+                uid = user_data.get("id")
+                if uid is not None:
+                    user_id = str(uid)
+                else:
+                    return
+            except (json.JSONDecodeError, TypeError):
+                return
+        try:
+            db = self._ensure_session_db()
+            if db is not None:
+                db._execute_write(lambda c: c.execute(
+                    "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '')",
+                    (user_id, session_id),
+                ))
+        except Exception:
+            logger.debug("Failed to set session user_id", exc_info=True)
+
     def _flush_pending_approval(self, session_id: str) -> None:
         """Write buffered approval records to session DB.
 
@@ -1713,6 +1743,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _prev_gateway_session=_prev_gateway_session,
                 _request_files=_request_files,
                 user_message=user_message,
+                x_user_token=x_user_token,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -1789,6 +1820,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Flush any pending approval records now that all messages are stored
         self._flush_pending_approval(session_id)
+        self._set_session_user_id(session_id, x_user_token)
 
         # 保存请求中的文件元数据（files 参数）到第一条 user 消息
         if _request_files and session_id:
@@ -1916,6 +1948,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _sess_tokens=None, _approval_token=None,
         _prev_session_key: str = None, _prev_gateway_session: str = None,
         user_message: str = "",
+        x_user_token: str = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -2061,6 +2094,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Flush any pending approval records now that messages are stored
             if session_id:
                 self._flush_pending_approval(session_id)
+                self._set_session_user_id(session_id, x_user_token)
 
             # Auto-generate session title after first exchange (non-blocking)
             if session_id and self._session_db:
@@ -4457,7 +4491,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # 1. Fetch session metadata
             session_row = db._conn.execute(
                 "SELECT id, title, model, source, started_at, ended_at, "
-                "message_count, tool_call_count, input_tokens, output_tokens "
+                "message_count, tool_call_count, input_tokens, output_tokens, user_id "
                 "FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
@@ -4480,6 +4514,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": session_row[8],
                 "output_tokens": session_row[9],
             }
+            # Include user_id if set
+            _user_id_val = session_row[10] if len(session_row) > 10 else None
+            if _user_id_val:
+                session["user_id"] = _user_id_val
 
             # 2. Fetch all messages in chronological order
             msg_cursor = db._conn.execute(
@@ -4561,7 +4599,8 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /v1/sessions — List sessions from state.db with pagination.
 
-        Query params: page (default 1), page_size (default 20, max 100).
+        Query params: page (default 1), page_size (default 20, max 100),
+        user_id (optional, filter by user).
         Returns paginated list of session IDs, titles, and timestamps.
         """
         auth_err = self._check_auth(request)
@@ -4583,40 +4622,46 @@ class APIServerAdapter(BasePlatformAdapter):
             page_size = 20
 
         offset = (page - 1) * page_size
+        filter_user_id = (request.query.get("user_id") or "").strip()
 
         try:
-            # Total count — exclude child sessions (compression continuations,
-            # subagent runs) unless they are explicit branch children,
-            # matching list_sessions_rich() semantics.
-            total_row = db._conn.execute(
-                "SELECT COUNT(*) FROM sessions s "
+            base_where = (
                 "WHERE (s.parent_session_id IS NULL "
                 "   OR EXISTS (SELECT 1 FROM sessions p "
                 "              WHERE p.id = s.parent_session_id "
                 "              AND p.end_reason = 'branched' "
                 "              AND s.started_at >= p.ended_at))"
+            )
+            params: List[Any] = []
+            if filter_user_id:
+                base_where += " AND s.user_id = ?"
+                params.append(filter_user_id)
+
+            # Total count
+            total_row = db._conn.execute(
+                "SELECT COUNT(*) FROM sessions s " + base_where, tuple(params)
             ).fetchone()
             total = total_row[0] if total_row else 0
 
-            # Use list_sessions_rich to handle compression-chain projection:
-            # compressed parent sessions are replaced by their live continuation
-            # tip, so each logical conversation appears exactly once.
-            rich = db.list_sessions_rich(
-                limit=page_size,
-                offset=offset,
-                include_children=False,
-                project_compression_tips=True,
-            )
-            sessions = [
-                {
-                    "id": s["id"],
-                    "title": s.get("title"),
-                    "model": s.get("model"),
-                    "started_at": s.get("started_at"),
-                    "message_count": s.get("message_count", 0),
+            # Session list
+            rows = db._conn.execute(
+                "SELECT s.id, s.title, s.model, s.started_at, s.message_count, s.user_id "
+                "FROM sessions s " + base_where +
+                " ORDER BY s.started_at DESC LIMIT ? OFFSET ?",
+                tuple(params) + (page_size, offset),
+            ).fetchall()
+            sessions = []
+            for row in rows:
+                s = {
+                    "id": row[0],
+                    "title": row[1],
+                    "model": row[2],
+                    "started_at": row[3],
+                    "message_count": row[4] or 0,
                 }
-                for s in rich
-            ]
+                if row[5]:
+                    s["user_id"] = row[5]
+                sessions.append(s)
             return _json_response({
                 "sessions": sessions,
                 "total": total,

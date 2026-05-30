@@ -625,7 +625,7 @@ class ContextCompressor(ContextEngine):
         self._has_ever_warned: bool = False  # separate from turn=0 sentinel
         self._warned_context_full: bool = False  # flag for prompt builder
         self._context_usage_pct: float = 0.0     # last known context usage %
-        self._warned_misconfigured: bool = False  # one-time log for warn >= threshold
+        self._warned_misconfigured: bool = False  # logged once when warn >= compress
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -684,6 +684,22 @@ class ContextCompressor(ContextEngine):
             return False
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens <= 0:
+            return False
+        # ── Misconfiguration guard ──
+        # warn_threshold >= compress_threshold means the warning range
+        # [warn%, compress%) is empty — compression fires before warning.
+        # Log once per session and disable to avoid silent failure.
+        if self.warn_threshold >= self.threshold_percent:
+            if not self._warned_misconfigured:
+                self._warned_misconfigured = True
+                logger.warning(
+                    "warn_threshold (%.0f%%) >= compression threshold (%.0f%%). "
+                    "Warning range is empty — topic-split reminders are disabled. "
+                    "Set warn_threshold < %.0f in compression config to enable.",
+                    self.warn_threshold * 100,
+                    self.threshold_percent * 100,
+                    self.threshold_percent * 100,
+                )
             return False
         warn_tokens = int(self.context_length * self.warn_threshold)
         if tokens < warn_tokens:

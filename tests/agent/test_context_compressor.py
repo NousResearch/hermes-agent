@@ -2054,15 +2054,23 @@ class TestWarnThreshold:
         cc.increment_turn()
         assert cc._current_turn == 3
 
-    def test_warn_threshold_ge_compress_disables_with_log(self):
-        """When warn_threshold >= threshold, should_warn always returns False."""
+    def test_warn_threshold_ge_compress_disables_with_log(self, caplog):
+        """warn_threshold >= compress threshold means empty range → disabled."""
         cc = self._make_compressor(
-            threshold_percent=0.50, warn_threshold=0.60,
+            context_length=100000, threshold_percent=0.50, warn_threshold=0.60,
         )
-        assert cc.should_warn(50000) is False  # 50% tokens < 60% warn but guard fires first
-        assert cc.should_warn(70000) is False  # 70% tokens, compression would fire
-        # Verify one-time log flag
+        # Should be disabled regardless of token count
+        assert cc.should_warn(50000) is False
+        assert cc.should_warn(70000) is False
         assert cc._warned_misconfigured is True
-        # Session reset should clear the flag
+        # Should log exactly one warning
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "warn_threshold (60%) >= compression threshold (50%)" in warnings[0].message
+        # Second call no duplicate log
+        cc.should_warn(50000)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        # on_session_reset clears the flag
         cc.on_session_reset()
         assert cc._warned_misconfigured is False

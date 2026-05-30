@@ -638,11 +638,6 @@ def run_conversation(
                 )
                 if len(messages) >= _orig_len:
                     break  # Cannot compress further
-                # Compression created a new session — clear the history
-                # reference so _flush_messages_to_session_db writes ALL
-                # compressed messages to the new session's SQLite, not
-                # skipping them because conversation_history is still the
-                # pre-compression length.
                 conversation_history = None
                 # Fix: reset retry counters after compression so the model
                 # gets a fresh budget on the compressed context.  Without
@@ -662,6 +657,17 @@ def run_conversation(
                 )
                 if _preflight_tokens < agent.context_compressor.threshold_tokens:
                     break  # Under threshold
+
+        # ── Preflight topic-split warning ──
+        elif agent.context_compressor.should_warn(_preflight_tokens):
+            _pct = agent.context_compressor._context_usage_pct
+            _limit = agent.context_compressor.context_length
+            agent._safe_print(
+                f"\n⚠️  Context at ~{_pct:.0f}% ({_preflight_tokens:,}/{_limit:,} tokens). "
+                "Consider starting a fresh session with /new before "
+                "auto-compression triggers.\n"
+            )
+            agent.context_compressor.mark_warned()
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
@@ -3831,18 +3837,16 @@ def run_conversation(
 
                 # ── Topic-split warning (pre-compression hint) ──
                 # If context usage is between warn_threshold and compression
-                # threshold, mark a warning for the next turn's system prompt.
+                # threshold, print a direct user-facing warning immediately.
                 elif agent.compression_enabled and _compressor.should_warn(_real_tokens):
                     _compressor.mark_warned()
-                    if not agent.quiet_mode:
-                        logger.info(
-                            "Context warning: ~%d tokens = %.0f%% of %d limit "
-                            "(compress at %.0f%%).  Prompting user to start fresh session.",
-                            _real_tokens,
-                            _compressor._context_usage_pct,
-                            _compressor.context_length,
-                            _compressor.threshold_percent * 100,
-                        )
+                    _pct = _compressor._context_usage_pct
+                    _limit = _compressor.context_length
+                    agent._safe_print(
+                        f"\n⚠️  Context at ~{_pct:.0f}% ({_real_tokens:,}/{_limit:,} tokens). "
+                        "Consider starting a fresh session with /new before "
+                        "auto-compression triggers.\n"
+                    )
 
                 # Increment turn counter for cooldown tracking
                 _compressor.increment_turn()
@@ -4177,6 +4181,21 @@ def run_conversation(
                     messages.pop()
 
                 messages.append(final_msg)
+                
+                # ── Topic-split warning (pre-compression hint) ──
+                # Also check on final text responses (no-tool turns).
+                _compressor = agent.context_compressor
+                if agent.compression_enabled and _compressor.should_warn(_compressor.last_prompt_tokens):
+                    _compressor.mark_warned()
+                    _pct = _compressor._context_usage_pct
+                    _limit = _compressor.context_length
+                    _tokens = _compressor.last_prompt_tokens
+                    agent._safe_print(
+                        f"\n⚠️  Context at ~{_pct:.0f}% ({_tokens:,}/{_limit:,} tokens). "
+                        "Consider starting a fresh session with /new before "
+                        "auto-compression triggers.\n"
+                    )
+                _compressor.increment_turn()
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:

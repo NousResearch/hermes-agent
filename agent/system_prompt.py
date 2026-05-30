@@ -311,25 +311,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nProvider: {agent.provider}"
     volatile_parts.append(timestamp_line)
 
-    # ── Context-full warning (topic-split hint) ──
-    # When the context compressor's warn threshold was crossed, inject a
-    # one-shot hint into the system prompt so the agent proactively suggests
-    # /new to the user before auto-compression kicks in and burns tokens.
-    _cc = getattr(agent, "context_compressor", None)
-    if _cc is not None and hasattr(_cc, "consume_warn_flag"):
-        if _cc.consume_warn_flag():
-            _usage = getattr(_cc, "_context_usage_pct", 0.0)
-            _limit = getattr(_cc, "context_length", 0)
-            volatile_parts.append(
-                f"⚠️ CONTEXT WARNING: This conversation is using approximately "
-                f"{_usage:.0f}% of the model's {_limit:,}-token context window. "
-                "Auto-compression will trigger soon and consume tokens. "
-                "At the end of this response, proactively suggest the user "
-                "start a fresh session (/new or 'New Topic' in Web UI) to "
-                "save tokens and preserve conversation detail. "
-                "Be concise — one line suggestion at the bottom of your reply."
-            )
-
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),

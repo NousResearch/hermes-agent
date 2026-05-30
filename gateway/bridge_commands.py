@@ -299,8 +299,12 @@ def _switch_gateway_session_to_bridge(
     session_key: str,
     session_store,
     decision: BridgeDecision,
+    store: BridgeStateStore,
     evict_cached_agent: Callable[[str], None] | None = None,
 ) -> BridgeDecision:
+    update_id = getattr(event, "platform_update_id", None)
+    if update_id is not None and not store.accept_update(platform="telegram", update_id=str(update_id)):
+        return BridgeDecision(BridgeVerdict.REJECT, "duplicate telegram update")
     session_store.get_or_create_session(event.source)
     switched = session_store.switch_session(session_key, decision.hermes_session_id or "")
     if switched is None:
@@ -356,6 +360,7 @@ def maybe_apply_gateway_bridge_binding(
                 session_key=session_key,
                 session_store=session_store,
                 decision=reply_decision,
+                store=store,
                 evict_cached_agent=evict_cached_agent,
             )
         if reply_decision.reason != "reply target is not registered":
@@ -376,6 +381,7 @@ def maybe_apply_gateway_bridge_binding(
         session_key=session_key,
         session_store=session_store,
         decision=decision,
+        store=store,
         evict_cached_agent=evict_cached_agent,
     )
 

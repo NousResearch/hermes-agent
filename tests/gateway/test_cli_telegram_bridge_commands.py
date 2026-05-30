@@ -266,6 +266,37 @@ def test_bound_telegram_dm_plain_text_switches_to_cli_session(tmp_path):
     assert evicted == ["agent:main:telegram:dm:48264503"]
 
 
+def test_bound_telegram_dm_duplicate_update_is_rejected_without_second_session_switch(tmp_path):
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    session_store = _DummySessionStore()
+
+    first = maybe_apply_gateway_bridge_binding(
+        _telegram_event("continue from my phone", message_id="200"),
+        session_key="agent:main:telegram:dm:48264503",
+        session_store=session_store,
+        store=store,
+    )
+    duplicate = maybe_apply_gateway_bridge_binding(
+        _telegram_event("continue from my phone", message_id="200"),
+        session_key="agent:main:telegram:dm:48264503",
+        session_store=session_store,
+        store=store,
+    )
+
+    assert first is not None
+    assert first.verdict is BridgeVerdict.ACCEPT
+    assert duplicate is not None
+    assert duplicate.verdict is BridgeVerdict.REJECT
+    assert "duplicate" in duplicate.reason
+    assert session_store.switches == [("agent:main:telegram:dm:48264503", "cli-session")]
+
+
 def test_bound_telegram_reply_to_registered_input_prompt_switches_and_consumes_anchor(tmp_path):
     store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
     store.create_binding(

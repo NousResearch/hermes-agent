@@ -1,6 +1,6 @@
 # CLI ↔ Telegram Bridge Safety Design
 
-Status: phase-7 bridge approval executor adapter implemented on top of the safe plain-DM continuation controls. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore`, the higher-level helpers in `gateway.bridge_commands`, and the Gateway approval queue handoff in `tools.approval`.
+Status: phase-8 bridge reply prompt routing and bridge-routed Telegram update dedupe implemented on top of the safe plain-DM continuation controls. This document describes the target design and the safety invariants enforced by `gateway.bridge.BridgeStateStore`, the higher-level helpers in `gateway.bridge_commands`, and the Gateway approval queue handoff in `tools.approval`.
 
 ## Goal
 
@@ -54,7 +54,7 @@ Rejected initially:
 
 `gateway.bridge.BridgeStateStore` currently implements the foundation:
 
-- `processed_updates`: durable Telegram update dedupe.
+- `processed_updates`: durable Telegram update dedupe. Bridge-routed Telegram input records accepted update IDs before switching into the linked Hermes session, so duplicate platform deliveries fail closed instead of creating a second agent turn.
 - `binding_tokens`: local opt-in, single-use, expiring tokens minted from the local CLI/TUI side before Telegram can bind. Tokens may be pre-bound to expected Telegram chat/user/thread allowlist values.
 - `bindings`: explicit bridge id ↔ Hermes session id ↔ Telegram chat/user/thread binding.
 - `outbound_messages`: bot message registry for reply-to correlation, TTL, and one-time consumption.
@@ -114,8 +114,9 @@ Recommended order:
 4. Add bridge UX controls for status, pause/resume, emergency off/on, and disconnect. (Implemented.)
 5. Outbound “input prompt” messages use `register_bridge_reply_input_prompt()`, which validates the active Telegram DM binding and records `record_outbound_message(... input_expected=True ...)` for one-shot reply correlation. (Implemented.)
 6. Telegram replies to explicit input prompts call `validate_reply_input()` before routing into the linked Hermes session. The bridge state consumes the reply anchor on success, rejects stale/consumed/paused/kill-switched prompt replies without falling back to generic plain-text bridge input, and leaves ordinary unregistered Telegram replies on the direct-input path. (Implemented.)
-7. Approval UI uses `create_bridge_approval_prompt()` and `bridge_tool_args_hash()` to create a `create_approval()` nonce bound to the bridge, session, tool call id, tool name, and canonical tool args hash. Telegram `/bridge_approve <nonce>` records the bound user's approval and, in Gateway runs, resolves the matching pending approval entry only after `consume_approval(..., turn_id=..., tool_call_id=..., tool_args_hash=..., require_user_approval=True)` accepts the exact executor-side metadata. Mismatches fail closed and leave the blocked approval entry waiting. (Implemented.)
-8. Future executor integrations should continue to prefer structured TUI gateway/JSON-RPC or Gateway `MessageEvent` paths and avoid raw tmux/PTY keystroke injection.
+7. Bridge-routed Telegram input calls `accept_update()` before switching the gateway session key, so duplicate Telegram deliveries for the same `update_id` cannot start a second agent turn. (Implemented.)
+8. Approval UI uses `create_bridge_approval_prompt()` and `bridge_tool_args_hash()` to create a `create_approval()` nonce bound to the bridge, session, tool call id, tool name, and canonical tool args hash. Telegram `/bridge_approve <nonce>` records the bound user's approval and, in Gateway runs, resolves the matching pending approval entry only after `consume_approval(..., turn_id=..., tool_call_id=..., tool_args_hash=..., require_user_approval=True)` accepts the exact executor-side metadata. Mismatches fail closed and leave the blocked approval entry waiting. (Implemented.)
+9. Future executor integrations should continue to prefer structured TUI gateway/JSON-RPC or Gateway `MessageEvent` paths and avoid raw tmux/PTY keystroke injection.
 
 ## Test coverage added
 
@@ -137,6 +138,7 @@ Recommended order:
 - detailed local and Telegram bridge status output.
 - local and Telegram disconnect behavior scoped to the relevant binding/session.
 - bound Telegram DM plain text switches the gateway session key to the linked CLI session id.
+- duplicate Telegram update IDs for bridge-routed input are rejected without a second gateway session switch.
 - bound Telegram replies to registered input prompts consume the one-shot reply anchor and switch to the linked CLI session; expired registered prompt replies reject without falling back to direct-input routing.
 - slash commands are not bridge-routed and paused bindings reject plain text.
 - `register_bridge_reply_input_prompt()` records only bound Telegram DM output as one-shot input anchors.

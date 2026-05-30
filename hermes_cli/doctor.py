@@ -383,6 +383,7 @@ def _build_apikey_providers_list() -> list:
         ("Hugging Face",     ("HF_TOKEN",),                                  "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                            "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
+        ("Alibaba Token Plan", ("ALIBABA_TOKEN_PLAN_API_KEY", "DASHSCOPE_API_KEY"), "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models", "ALIBABA_TOKEN_PLAN_BASE_URL", True),
         # MiniMax global: /v1 endpoint supports /models.
         ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
@@ -401,7 +402,8 @@ def _build_apikey_providers_list() -> list:
         "StepFun Step Plan": "stepfun", "Kimi / Moonshot (China)": "kimi-coding-cn",
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
-        "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
+        "Alibaba/DashScope": "alibaba", "Alibaba Token Plan": "alibaba-token-plan",
+        "MiniMax": "minimax",
         "MiniMax (China)": "minimax-cn",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",

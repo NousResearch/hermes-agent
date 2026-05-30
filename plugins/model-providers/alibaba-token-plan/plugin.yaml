@@ -1,0 +1,5 @@
+name: alibaba-token-plan-provider
+kind: model-provider
+version: 1.0.0
+description: Alibaba Cloud Token Plan (Team Edition)
+author: Nous Research

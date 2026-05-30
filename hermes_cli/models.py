@@ -468,6 +468,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
+    # Alibaba Token Plan (Team Edition) — subscription-based Credits billing,
+    # endpoint: token-plan.cn-beijing.maas.aliyuncs.com.
+    # Docs: https://help.aliyun.com/zh/model-studio/token-plan-overview
+    "alibaba-token-plan": [
+        "qwen3.7-max",
+        "qwen3.6-plus",
+        "qwen3.6-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v3.2",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "glm-5.1",
+        "glm-5",
+        "MiniMax-M2.5",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",

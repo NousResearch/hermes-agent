@@ -289,12 +289,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if skills_prompt:
         stable_parts.append(skills_prompt)
 
-    # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-    # of the requested model. Inject explicit model identity into the system prompt
-    # so the agent can correctly report which model it is (workaround for API bug).
+    # Alibaba DashScope / Token Plan APIs may return a different model name than
+    # requested (e.g. returning "glm-4.7" regardless of the actual model).
+    # Inject explicit model identity into the system prompt so the agent can
+    # correctly report which model it is (workaround for API bug).
     # Stable for the lifetime of an agent instance — model and provider are fixed
     # at construction time.
-    if agent.provider == "alibaba":
+    if agent.provider in ("alibaba", "alibaba-coding-plan", "alibaba-token-plan"):
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
         stable_parts.append(
             f"You are powered by the model named {_model_short}. "

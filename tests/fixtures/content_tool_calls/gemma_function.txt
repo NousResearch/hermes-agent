@@ -1,0 +1,1 @@
+<function name="web_search">{"query": "hermes"}</function>

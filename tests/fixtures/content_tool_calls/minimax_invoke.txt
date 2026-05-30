@@ -1,0 +1,5 @@
+<minimax:tool_call>
+<invoke name="web_search">
+<parameter name="query">hermes</parameter>
+</invoke>
+</minimax:tool_call>

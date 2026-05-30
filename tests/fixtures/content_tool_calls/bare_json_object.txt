@@ -1,0 +1,1 @@
+{"name": "web_search", "arguments": {"query": "北京今天的天气"}}

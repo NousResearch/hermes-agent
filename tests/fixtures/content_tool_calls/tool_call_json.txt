@@ -1,0 +1,2 @@
+Sure, let me look that up.
+<tool_call>{"name": "web_search", "arguments": {"query": "hermes nousresearch"}}</tool_call>

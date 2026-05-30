@@ -878,6 +878,27 @@ def _install_kittentts_deps() -> bool:
     return False
 
 
+def _install_supertonic_deps() -> bool:
+    """Install Supertonic dependencies with user approval. Returns True on success."""
+    import subprocess
+    import sys
+
+    print()
+    print_info("Installing supertonic Python package (~400MB ONNX model downloaded on first use)...")
+    print()
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "supertonic>=1.3.1,<2", "--quiet"],
+            check=True, timeout=300,
+        )
+        print_success("supertonic installed successfully")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print_error(f"Failed to install supertonic: {e}")
+        print_info('Try manually: python -m pip install -U "supertonic>=1.3.1,<2"')
+        return False
+
+
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are already stored locally.
 
@@ -947,6 +968,7 @@ def _setup_tts_provider(config: dict):
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
+        "supertonic": "Supertonic",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -971,9 +993,10 @@ def _setup_tts_provider(config: dict):
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
+            "Supertonic (local on-device, fast, free, multilingual, ~400MB model)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "supertonic"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1158,6 +1181,104 @@ def _setup_tts_provider(config: dict):
             else:
                 print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
                 selected = "edge"
+
+    elif selected == "supertonic":
+        # Check if already installed
+        try:
+            import importlib.util
+            already_installed = importlib.util.find_spec("supertonic") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("Supertonic is already installed")
+        else:
+            print()
+            print_info("Supertonic is a local ONNX TTS (free, no API key, 31 languages, expressive).")
+            print_info("The ~400MB model is downloaded on first use to ~/.cache/supertonic3/.")
+            print()
+            if prompt_yes_no("Install Supertonic now?", True):
+                if not _install_supertonic_deps():
+                    print_warning("Supertonic installation incomplete. Falling back to Edge TTS.")
+                    selected = "edge"
+            else:
+                print_info("Skipping install. Set tts.provider to 'supertonic' after installing manually.")
+                selected = "edge"
+
+        if selected == "supertonic":
+            st = dict(tts_config.get("supertonic", {}))
+
+            # --- Language ---
+            # All 31 Supertonic languages (+ ``na`` neutral) for validating custom input.
+            all_langs = {
+                "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi",
+                "fr", "hi", "hr", "hu", "id", "it", "lt", "lv", "nl", "pl", "pt", "ro",
+                "ru", "sk", "sl", "sv", "tr", "uk", "vi", "na",
+            }
+            curated = [
+                ("en", "English"), ("pl", "Polish"), ("de", "German"), ("es", "Spanish"),
+                ("fr", "French"), ("it", "Italian"), ("pt", "Portuguese"), ("uk", "Ukrainian"),
+                ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"),
+            ]
+            lang_choices = [f"{code} — {name}" for code, name in curated]
+            lang_choices.append("Other (enter ISO code)")
+            cur_lang = str(st.get("lang", "en"))
+            curated_codes = [c for c, _ in curated]
+            lang_default = curated_codes.index(cur_lang) if cur_lang in curated_codes else 0
+            l_idx = prompt_choice("Select language:", lang_choices, lang_default)
+            if l_idx < len(curated):
+                st["lang"] = curated[l_idx][0]
+            else:
+                while True:
+                    code = (prompt("Language ISO code (e.g. nl, sv, tr)", default=cur_lang) or "").strip().lower()
+                    if code in all_langs:
+                        st["lang"] = code
+                        break
+                    print_warning(f"'{code}' is not a supported Supertonic language. Try again.")
+
+            # --- Voice ---
+            voice_choices = [
+                "M1 — male", "M2 — male", "M3 — male", "M4 — male", "M5 — male",
+                "F1 — female", "F2 — female", "F3 — female", "F4 — female", "F5 — female",
+            ]
+            voice_ids = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]
+            cur_voice = str(st.get("voice", "M1"))
+            voice_default = voice_ids.index(cur_voice) if cur_voice in voice_ids else 0
+            v_idx = prompt_choice("Select voice:", voice_choices, voice_default)
+            st["voice"] = voice_ids[v_idx]
+
+            # --- Speed ---
+            while True:
+                raw = prompt("Speed (0.7–2.0, higher = faster)", default=str(st.get("speed", 1.0)))
+                try:
+                    speed = float(raw)
+                except (TypeError, ValueError):
+                    print_warning("Enter a number between 0.7 and 2.0.")
+                    continue
+                if 0.7 <= speed <= 2.0:
+                    st["speed"] = speed
+                    break
+                print_warning("Speed must be between 0.7 and 2.0.")
+
+            # --- Quality (total_steps) ---
+            quality_choices = [
+                "Fast (5 steps — quickest, lower quality)",
+                "Balanced (8 steps — recommended)",
+                "High (10 steps — better quality)",
+                "Very High (12 steps — best quality, slowest)",
+            ]
+            quality_steps = [5, 8, 10, 12]
+            cur_steps = int(st.get("total_steps", 8))
+            quality_default = quality_steps.index(cur_steps) if cur_steps in quality_steps else 1
+            q_idx = prompt_choice("Select quality:", quality_choices, quality_default)
+            st["total_steps"] = quality_steps[q_idx]
+
+            tts_config["supertonic"] = st
+            config["tts"] = tts_config
+            print_success(
+                f"Supertonic: voice {st['voice']}, lang {st['lang']}, "
+                f"speed {st['speed']}, {st['total_steps']} steps"
+            )
 
     # Save the selection
     if "tts" not in config:

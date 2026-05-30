@@ -87,7 +87,14 @@ def _discord_request(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 204:
                 return None
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                raise DiscordAPIError(
+                    resp.status,
+                    f"Non-JSON response: {raw[:200]}",
+                ) from None
     except urllib.error.HTTPError as e:
         error_body = ""
         try:

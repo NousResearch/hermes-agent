@@ -916,6 +916,18 @@ def load_gateway_config() -> GatewayConfig:
                     if entry.apply_yaml_config_fn is None:
                         continue
                     platform_cfg = yaml_cfg.get(entry.name)
+                    # Fall back to the platform's block under ``platforms`` /
+                    # ``gateway.platforms`` so adapter hooks still run when the
+                    # user configured the platform only under those nested paths
+                    # (e.g. ``platforms.discord.extra.allow_from``) and not via a
+                    # top-level ``discord:`` block.
+                    if not isinstance(platform_cfg, dict):
+                        for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                            if isinstance(_src, dict):
+                                _candidate = _src.get(entry.name)
+                                if isinstance(_candidate, dict):
+                                    platform_cfg = _candidate
+                                    break
                     if not isinstance(platform_cfg, dict):
                         continue
                     try:

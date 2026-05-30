@@ -109,3 +109,48 @@ async def test_tilde_path_expanded(tmp_path, monkeypatch):
 async def test_missing_local_file_not_found(tmp_path):
     with pytest.raises(SourceNotFound):
         await resolve_image_source(str(tmp_path / "nope.png"), ResolveContext())
+
+
+class _FakeEnv:
+    def __init__(self, files):
+        self.files = files
+
+    def execute(self, command, cwd=None, **kw):
+        path = command.split()[1]  # base64 <path> | tr -d '\n'
+        if path.strip("'\"") in self.files:
+            return {"output": base64.b64encode(self.files[path.strip("'\"")]).decode(), "returncode": 0}
+        return {"output": "", "returncode": 1}
+
+
+@pytest.mark.asyncio
+async def test_container_path_exec_read_fallback(monkeypatch):
+    from tools import image_source
+
+    png = base64.b64decode(PNG_B64)
+    monkeypatch.setattr(image_source, "_get_active_env",
+                        lambda tid: _FakeEnv({"/workspace/shot.png": png}))
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    res = await resolve_image_source("/workspace/shot.png", ResolveContext(task_id="t1"))
+    assert res.origin == "container"
+    assert res.data == png
+
+
+@pytest.mark.asyncio
+async def test_container_fallback_fails_closed_without_env(monkeypatch):
+    from tools import image_source
+
+    monkeypatch.setattr(image_source, "_get_active_env", lambda tid: None)
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    with pytest.raises(SourceNotFound):
+        await resolve_image_source("/workspace/x.png", ResolveContext(task_id="t1"))
+
+
+@pytest.mark.asyncio
+async def test_container_exec_read_nonimage_rejected(monkeypatch):
+    from tools import image_source
+
+    monkeypatch.setattr(image_source, "_get_active_env",
+                        lambda tid: _FakeEnv({"/workspace/x.png": b"not an image"}))
+    monkeypatch.setattr(image_source, "_maybe_translate_container_path", lambda p, ctx: p)
+    with pytest.raises(NotAnImage):
+        await resolve_image_source("/workspace/x.png", ResolveContext(task_id="t1"))

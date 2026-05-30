@@ -144,11 +144,41 @@ def _maybe_translate_container_path(p: Path, ctx: ResolveContext) -> Path:
     return Path(from_agent_visible_cache_path(str(p)))
 
 
+def _get_active_env(task_id: Optional[str]):
+    if not task_id:
+        return None
+    try:
+        from tools.terminal_tool import get_active_env
+
+        return get_active_env(task_id)
+    except Exception:
+        return None
+
+
 async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
-    """Host file is absent/unreadable; read the bytes inside the sandbox (Task 7)."""
-    raise SourceNotFound(
-        f"'{p}' is not reachable on the host and no active sandbox is available "
-        f"to read it", src=src, origin="container")
+    """Host file is absent/unreadable. Read the bytes inside the container.
+
+    The agent can already ``cat`` any container file (file_operations.py reads
+    root-owned mode-600 files this way); this reads a strict subset bounded by
+    the same sandbox, so it introduces no new exposure. ``base64 -w0`` is
+    GNU-only, so pipe through ``tr -d`` for BusyBox/Alpine.
+    """
+    import shlex
+
+    env = _get_active_env(ctx.task_id)
+    if env is None:
+        raise SourceNotFound(
+            f"'{p}' is not reachable on the host and no active sandbox is available "
+            f"to read it", src=src, origin="container")
+
+    res = env.execute(f"base64 {shlex.quote(str(p))} | tr -d '\\n'")
+    if res.get("returncode", 1) != 0:
+        raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
+    try:
+        data = base64.b64decode(res.get("output", ""), validate=True)
+    except Exception as exc:
+        raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
+    return _finalize(data, "", "container", src)
 
 
 def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> ResolvedImage:

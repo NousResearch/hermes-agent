@@ -542,6 +542,51 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
+def test_stale_claim_increments_failure_counter(kanban_home, monkeypatch):
+    """``release_stale_claims`` must increment ``consecutive_failures`` so
+    the circuit breaker eventually fires for tasks that crash before their
+    first heartbeat (inside the crash-grace window).  Without this, the
+    task respawns every dispatch interval with the counter stuck at 0.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+        # First reclaim — counter should go from 0 → 1.
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+        # Simulate repeated crashes: re-claim, rewind expiry, reclaim again.
+        # After DEFAULT_FAILURE_LIMIT reclaims the task should auto-block.
+        limit = _kb.DEFAULT_FAILURE_LIMIT
+        for _ in range(limit - 1):
+            kb.claim_task(conn, t, claimer=f"{host}:worker")
+            kb._set_worker_pid(conn, t, 12345)
+            conn.execute(
+                "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+                (int(time.time()) - 3600, t),
+            )
+            kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked", (
+            f"Expected blocked after {limit} stale reclaims, got {task.status}"
+        )
+        assert task.consecutive_failures >= limit
+
+
 def test_detect_crashed_workers_systemic_failure_fast_block(
     kanban_home, monkeypatch,
 ):

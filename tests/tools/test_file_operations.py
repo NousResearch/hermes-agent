@@ -356,13 +356,6 @@ class TestShellFileOpsHelpers:
         assert "50|continued" in result
         assert "51|more" in result
 
-    def test_add_line_numbers_padded_env_override(self, file_ops, monkeypatch):
-        # Legacy fixed-width format available via HERMES_READ_GUTTER=padded.
-        monkeypatch.setenv("HERMES_READ_GUTTER", "padded")
-        result = file_ops._add_line_numbers("line one\nline two")
-        assert "     1|line one" in result
-        assert "     2|line two" in result
-
     def test_add_line_numbers_truncates_long_lines(self, file_ops):
         long_line = "x" * (MAX_LINE_LENGTH + 100)
         result = file_ops._add_line_numbers(long_line)

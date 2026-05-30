@@ -264,6 +264,59 @@ async def test_handle_event_filters_own_corr_id():
 
 
 # ---------------------------------------------------------------------------
+# 8b. Inbound: message_id is populated from the chat item's itemId
+# ---------------------------------------------------------------------------
+
+def _inbound_dm_wrapper(item_id, *, text="hi there"):
+    """Build a minimal newChatItem wrapper for a DM, optionally carrying an itemId."""
+    meta: dict = {"itemTs": "2026-05-30T12:00:00Z"}
+    if item_id is not None:
+        meta["itemId"] = item_id
+    return {
+        "chatInfo": {"type": "direct", "contact": {"contactId": 42, "displayName": "Alice"}},
+        "chatItem": {
+            "meta": meta,
+            "content": {"msgContent": {"type": "text", "text": text}},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_inbound_sets_message_id_from_item_id():
+    """An inbound newChatItem with an itemId dispatches message_id == str(itemId)."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    captured = AsyncMock()
+    adapter.handle_message = captured  # type: ignore
+
+    await adapter._handle_new_chat_item(_inbound_dm_wrapper(12345))
+
+    captured.assert_called_once()
+    event = captured.call_args[0][0]
+    assert event.message_id == "12345"
+
+
+@pytest.mark.asyncio
+async def test_inbound_missing_item_id_yields_none_not_literal():
+    """A newChatItem with no itemId leaves message_id None (not the string 'None')."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    captured = AsyncMock()
+    adapter.handle_message = captured  # type: ignore
+
+    await adapter._handle_new_chat_item(_inbound_dm_wrapper(None))
+
+    captured.assert_called_once()
+    event = captured.call_args[0][0]
+    assert event.message_id is None
+    assert event.message_id != "None"
+
+
+# ---------------------------------------------------------------------------
 # 9. Standalone (out-of-process) send for cron
 # ---------------------------------------------------------------------------
 

@@ -424,6 +424,7 @@ class SimplexAdapter(BasePlatformAdapter):
             media_types=media_types,
             timestamp=timestamp,
             raw_message=wrapper,
+            message_id=str(meta.get("itemId")) if meta.get("itemId") is not None else None,
         )
 
         await self.handle_message(event_obj)

@@ -65,6 +65,46 @@ import os
 import sys
 
 
+def _set_process_title() -> None:
+    """Set the process title to 'hermes' so tools like 'ps', 'top', and
+    'htop' show the app name instead of 'python3.xx'.
+
+    Purely cosmetic — non-fatal on any platform.
+
+    Strategy (try in order):
+      1. ``setproctitle`` (opt-in dep — installed via ``hermes tools`` or
+         ``pip install setproctitle``, or bundled in a future release).
+      2. ctypes ``prctl(PR_SET_NAME)`` (Linux only, 15-char limit).
+      3. ctypes ``pthread_setname_np`` (macOS only, kernel thread name —
+         changes lldb/top but not ``ps aux``).
+      4. No-op on Windows (the .exe name is already ``hermes.exe``).
+    """
+    # Strategy 1: setproctitle (best — works on macOS, Linux, BSD)
+    try:
+        import setproctitle  # type: ignore[import-untyped]
+
+        setproctitle.setproctitle("hermes")
+        return
+    except ImportError:
+        pass
+
+    # Strategy 2/3: platform-specific ctypes fallback
+    import ctypes
+    import platform
+
+    try:
+        system = platform.system()
+        if system == "Linux":
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            libc.prctl(15, b"hermes", 0, 0, 0)  # PR_SET_NAME = 15
+        elif system == "Darwin":
+            libc = ctypes.CDLL("libc.dylib", use_errno=True)
+            libc.pthread_setname_np(b"hermes")
+        # Windows: the .exe name is already ``hermes.exe`` — nothing to do.
+    except Exception:
+        pass
+
+
 # Mouse-tracking residue suppression — runs BEFORE every other import on the
 # TUI hot path so the terminal stops emitting SGR/X10 mouse reports while the
 # Python launcher is still doing imports (≈100–300ms in cooked + echo mode,
@@ -9125,12 +9165,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # though `git pull` can't touch $HERMES_HOME, this is cheap
         # belt-and-suspenders insurance and gives the user something to
         # restore from via `/snapshot list` / `/snapshot restore <id>`.
+        pre_update_snapshot_id = None
         try:
             from hermes_cli.backup import create_quick_snapshot
 
-            snap_id = create_quick_snapshot(label="pre-update", keep=1)
-            if snap_id:
-                print(f"  ✓ Pre-update snapshot: {snap_id}")
+            pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=1)
+            if pre_update_snapshot_id:
+                print(f"  ✓ Pre-update snapshot: {pre_update_snapshot_id}")
         except Exception as exc:
             # Never let a snapshot failure block an update.
             logger.debug("Pre-update snapshot failed: %s", exc)
@@ -9466,6 +9507,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
+
+        # Safety net: config-version migrations have been observed to leave
+        # cron/jobs.json valid-but-empty, silently dropping every scheduled
+        # job (issue #34600). If the live file is now empty while the
+        # pre-update snapshot held jobs, restore it and warn loudly.
+        try:
+            from hermes_cli.backup import restore_cron_jobs_if_emptied
+
+            cron_restore = restore_cron_jobs_if_emptied(pre_update_snapshot_id)
+            if cron_restore:
+                print()
+                print(
+                    "  ⚠️  cron/jobs.json was emptied during this update — "
+                    f"restored {cron_restore['job_count']} job(s) from "
+                    f"pre-update snapshot {cron_restore['snapshot_id']}."
+                )
+        except Exception as exc:
+            # Never let the cron safety net break an otherwise-good update.
+            logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
         print()
         print("✓ Update complete!")
@@ -11256,6 +11316,10 @@ def _try_termux_fast_tui_launch() -> bool:
 
 def main():
     """Main entry point for hermes CLI."""
+    # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
+    # in ps/top/htop.  Non-fatal — just a nicer UX.
+    _set_process_title()
+
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:
         from hermes_cli.stdio import configure_windows_stdio
@@ -13009,8 +13073,14 @@ Examples:
         ),
     )
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
-    memory_sub.add_parser(
+    _setup_parser = memory_sub.add_parser(
         "setup", help="Interactive provider selection and configuration"
+    )
+    _setup_parser.add_argument(
+        "provider",
+        nargs="?",
+        default=None,
+        help="Provider to configure directly (e.g. honcho), skipping the picker",
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")

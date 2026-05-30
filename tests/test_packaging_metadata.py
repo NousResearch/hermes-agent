@@ -1,7 +1,14 @@
 from pathlib import Path
 import tomllib
 
-from setuptools import find_packages
+import pytest
+
+# setuptools is declared in the [dev] extra and is the build backend, but
+# guard the import so a runner without it skips these packaging checks
+# instead of erroring out collection for the whole shard (it used to be
+# picked up ambiently from the CI image; newer ubuntu-latest images don't
+# ship it in the test venv).
+find_packages = pytest.importorskip("setuptools", exc_type=ImportError).find_packages
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -108,3 +115,88 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     assert "recursive-include plugins" in manifest and "plugin.yaml" in manifest, (
         "MANIFEST.in must recursive-include plugins plugin.yaml/plugin.yml (sdist)"
     )
+
+
+# Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
+# 1.0.1. Anything below that lets a malformed Host header desync
+# ``request.url.path`` from the dispatched ASGI path, bypassing path-based
+# authz in middleware/endpoints that gate on ``request.url``. Starlette is a
+# transitive dep (fastapi in [web]; sse-starlette/mcp in [mcp]/[computer-use]/
+# [dev]) so we pin it directly in every extra that exposes a server surface and
+# enforce the floor in both pyproject and the committed lockfile.
+_STARLETTE_CVE_FLOOR = (1, 0, 1)
+
+
+def _version_tuple(spec: str) -> tuple[int, ...]:
+    # "1.0.1" -> (1, 0, 1); tolerant of pre/post suffixes by truncating.
+    head = spec.split("+", 1)[0]
+    parts = []
+    for chunk in head.split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
+    """Every extra that declares Starlette must pin a patched (>=1.0.1) version.
+
+    Regression guard for #35067 / CVE-2026-48710. A future edit that drops the
+    pin (re-exposing the unbounded transitive ``starlette>=0.27`` from mcp /
+    ``>=0.40.0`` from fastapi) or pins a pre-1.0.1 version fails here instead of
+    shipping a Host-header auth-bypass to dashboard / MCP-HTTP users.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+
+    found = {}
+    for extra, specs in extras.items():
+        for spec in specs:
+            name = spec.split("==", 1)[0].split(">", 1)[0].split("<", 1)[0].split("[", 1)[0].strip()
+            if name.lower() == "starlette":
+                assert "==" in spec, f"[{extra}] must exact-pin starlette, got {spec!r}"
+                ver = spec.split("==", 1)[1].split(";", 1)[0].strip()
+                found[extra] = ver
+
+    # The four server-surface extras must each carry the direct pin.
+    for extra in ("web", "mcp", "computer-use", "dev"):
+        assert extra in found, (
+            f"[{extra}] no longer pins starlette directly — CVE-2026-48710 "
+            f"regression risk (mcp/fastapi pull it transitively with no upper bound)"
+        )
+
+    for extra, ver in found.items():
+        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
+            f"[{extra}] pins starlette=={ver}, below the CVE-2026-48710 fix "
+            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))}"
+        )
+
+
+def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
+    """The committed uv.lock must resolve starlette to a patched version.
+
+    pyproject pins protect the declared extras, but the lockfile is what
+    hash-verified installs (``uv sync --locked``) actually pull. Assert the
+    resolved version is >= the CVE-2026-48710 fix floor so a stale-lock
+    regression can't ship a vulnerable Starlette to users.
+    """
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    versions = []
+    in_starlette = False
+    for line in lock.splitlines():
+        if line.startswith("[[package]]"):
+            in_starlette = False
+        elif line.strip() == 'name = "starlette"':
+            in_starlette = True
+        elif in_starlette and line.startswith("version = "):
+            versions.append(line.split("=", 1)[1].strip().strip('"'))
+            in_starlette = False
+
+    assert versions, "starlette not found in uv.lock"
+    for ver in versions:
+        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
+            f"uv.lock resolves starlette=={ver}, below the CVE-2026-48710 fix "
+            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
+            f"lockfile after bumping the pin"
+        )

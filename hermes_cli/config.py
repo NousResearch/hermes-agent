@@ -285,9 +285,22 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     Resolution order:
     1. Stamped ``~/.hermes/.install_method`` file (written by installers)
     2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
-    3. Container detection (/.dockerenv, /run/.containerenv, cgroup)
-    4. .git directory presence -> 'git'
-    5. Fallback -> 'pip'
+    3. .git directory presence -> 'git'
+    4. Fallback -> 'pip'
+
+    Note: running inside a container is NOT treated as "docker" on its own.
+    The two supported install paths both self-identify via the
+    ``.install_method`` stamp (caught by step 1), so neither relies on
+    container detection here:
+      - the curl installer (scripts/install.sh, the README/website install
+        command) git-clones the repo and stamps ``git``;
+      - the published ``nousresearch/hermes-agent`` image stamps ``docker``
+        at boot via ``docker/stage2-hook.sh``.
+    An unsupported manual install dropped into a container (no stamp) was
+    wrongly classified as the published image by bare container detection,
+    so ``hermes update`` bailed with "doesn't apply inside the Docker
+    container". Without that fallback such installs fall through to the
+    ``.git``/pip checks and behave like any off-path install. See issue #34397.
     """
     stamp = get_hermes_home() / ".install_method"
     try:
@@ -299,9 +312,6 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    from hermes_constants import is_container
-    if is_container():
-        return "docker"
     if project_root is None:
         project_root = Path(__file__).parent.parent.resolve()
     if (project_root / ".git").is_dir():
@@ -1183,6 +1193,11 @@ DEFAULT_CONFIG = {
         # Mirrors `hermes -c` muscle memory.  Default off so existing
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # When true (default), `hermes --tui` drops a one-time hint
+        # ("subagents working · /agents to watch live") the first time a turn
+        # starts delegating, nudging the user toward the live spawn-tree
+        # dashboard. Set false to suppress the hint.
+        "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
@@ -1202,6 +1217,13 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
+        # Turn-completion explainer.  When true (default), the agent appends a
+        # one-line explanation to its final response whenever a turn ends
+        # abnormally with no usable reply — empty content after retries, a
+        # partial/truncated stream, a still-pending tool result, or an
+        # iteration/budget limit.  Replaces the bare "(empty)" sentinel so the
+        # failure isn't silent from the UI's perspective.  Set false to suppress.
+        "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a

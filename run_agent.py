@@ -2138,6 +2138,126 @@ class AIAgent:
             lines.append(f"  • … and {remaining} more")
         return "\n".join(lines)
 
+    def _turn_completion_explainer_enabled(self) -> bool:
+        """Check whether the end-of-turn completion explainer footer is on.
+
+        Config path: ``display.turn_completion_explainer`` (bool, default
+        True).  ``HERMES_TURN_COMPLETION_EXPLAINER`` env var overrides
+        config.  Exposed as a method so tests can patch a single seam,
+        mirroring ``_file_mutation_verifier_enabled``.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_TURN_COMPLETION_EXPLAINER")
+            if env is not None:
+                return env.strip().lower() not in {"0", "false", "no", "off"}
+            # Read from the persisted config.yaml so gateway and CLI share
+            # the same setting.  Import lazily to avoid a startup-time cycle.
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "turn_completion_explainer" in _display:
+                return bool(_display.get("turn_completion_explainer"))
+        except Exception:
+            pass
+        return True  # safe default: explainer on
+
+    @staticmethod
+    def _format_turn_completion_explanation(turn_exit_reason: str) -> str:
+        """Render a user-facing explanation for an abnormal turn ending.
+
+        Maps the internal ``turn_exit_reason`` to a short, actionable
+        message so a turn that produced no usable assistant reply (empty
+        content after retries, a partial/truncated stream, a still-pending
+        tool result, or an iteration/budget limit) is never silent from
+        the UI's perspective — the symptom users report in #34452.
+
+        Returns an empty string for reasons that are NOT abnormal (e.g.
+        a normal ``text_response(...)`` exit), so callers can concatenate
+        or substitute unconditionally without warning on healthy turns
+        like a terse ``Done.``.
+        """
+        if not turn_exit_reason:
+            return ""
+        reason = str(turn_exit_reason)
+
+        # Normal completion — stay quiet.  ``text_response(...)`` is the
+        # healthy terminal; anything that produced a real reply is fine.
+        if reason.startswith("text_response"):
+            return ""
+
+        prefix = "⚠️ No reply: "
+        if reason == "empty_response_exhausted":
+            return (
+                prefix
+                + "the model returned empty content after retries and any "
+                "fallback providers. Try `continue`, switch model/provider, "
+                "or inspect the tool output above."
+            )
+        if reason == "all_retries_exhausted_no_response":
+            return (
+                prefix
+                + "all API retries were exhausted before a response was "
+                "produced (provider errors / rate limits). Try `continue` "
+                "or switch provider."
+            )
+        if reason == "partial_stream_recovery":
+            return (
+                prefix
+                + "streaming stopped early and only a partial response was "
+                "recovered. Send `continue` to resume from where it stopped."
+            )
+        if reason == "fallback_prior_turn_content":
+            return (
+                prefix
+                + "no new content was produced this turn; showing recovered "
+                "prior context. Send `continue` to retry."
+            )
+        if reason == "interrupted_during_api_call":
+            return (
+                prefix
+                + "the request was interrupted mid-call before a reply was "
+                "received. Send `continue` to retry."
+            )
+        if reason == "budget_exhausted":
+            return (
+                prefix
+                + "the per-turn iteration/cost budget was exhausted before a "
+                "final answer. Send `continue` to keep going."
+            )
+        if reason == "ollama_runtime_context_too_small":
+            return (
+                prefix
+                + "the local model's context window was too small to finish. "
+                "Increase the context size or use a larger model."
+            )
+        if reason.startswith("max_iterations_reached"):
+            return (
+                prefix
+                + "the maximum tool-iteration limit was reached before a "
+                "final answer. Send `continue` to keep going, or raise "
+                "`max_iterations`."
+            )
+        if reason.startswith("error_near_max_iterations"):
+            return (
+                prefix
+                + "an error occurred near the iteration limit before a final "
+                "answer. Check the tool output above, then send `continue`."
+            )
+        if reason == "pending_tool_result":
+            return (
+                prefix
+                + "the turn stopped while a tool result was still pending and "
+                "the model produced no follow-up text. Send `continue` to "
+                "let it summarize."
+            )
+        # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
+        # which already surfaces its own message) — don't second-guess.
+        return ""
+
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Forwarder — see ``agent.agent_runtime_helpers.apply_pending_steer_to_tool_results``."""
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results

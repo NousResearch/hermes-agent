@@ -3366,7 +3366,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             return_exceptions=True,
         )
         for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
                 logger.warning(
                     "Failed to connect to MCP server '%s'%s: %s",

@@ -320,9 +320,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",
-        # "mistral" temporarily removed — mistralai PyPI package quarantined
-        # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-        "options": ["local", "openai"],
+        "options": ["local", "openai", "mistral"],
     },
     "display.skin": {
         "type": "select",
@@ -3373,9 +3371,14 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Loopback mode: only loopback clients allowed — the legacy
+    Loopback bind: only loopback clients allowed — the legacy
     ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
     don't want LAN hosts guessing tokens.
+
+    All-interfaces insecure bind (``--host 0.0.0.0 --insecure`` or
+    ``--host :: --insecure``): allow any peer. The operator explicitly
+    opted into LAN/public exposure in this mode, so the loopback-only peer
+    restriction should not apply.
 
     Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
     (enabled when the OAuth gate is active so cookies can pick up
@@ -3386,6 +3389,9 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     blocks DNS-rebinding here, not the peer IP.
     """
     if getattr(app.state, "auth_required", False):
+        return True
+    bound_host = getattr(app.state, "bound_host", "")
+    if bound_host in {"0.0.0.0", "::"}:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:

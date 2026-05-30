@@ -753,10 +753,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):
-                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
+                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks · (/agents to monitor)"
             else:
                 goal_preview = (function_args.get("goal") or "")[:30]
-                spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+                spinner_label = (
+                    f"🔀 {goal_preview} · (/agents to monitor)"
+                    if goal_preview
+                    else "🔀 delegating · (/agents to monitor)"
+                )
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
                 face = random.choice(KawaiiSpinner.get_waiting_faces())

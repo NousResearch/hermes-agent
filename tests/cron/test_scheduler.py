@@ -912,6 +912,73 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_restores_cron_session_env_after_success(self, tmp_path, monkeypatch):
+        # Regression: gateway runs cron ticks in-process. If a cron job leaves
+        # HERMES_CRON_SESSION=1 behind, later live Telegram sessions inherit
+        # cron approval semantics and execute_code is blocked.
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        job = {
+            "id": "env-restore-job",
+            "name": "env-restore",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, *_ = run_job(job)
+
+        assert success is True
+        assert "HERMES_CRON_SESSION" not in os.environ
+
+    def test_run_job_restores_preexisting_cron_session_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "outer")
+        job = {
+            "id": "env-restore-existing-job",
+            "name": "env-restore-existing",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, *_ = run_job(job)
+
+        assert success is True
+        assert os.environ["HERMES_CRON_SESSION"] == "outer"
+
     def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
         # Regression: if ``run_conversation`` raises, the ephemeral cron
         # agent was previously leaked — over days of ticks this accumulated

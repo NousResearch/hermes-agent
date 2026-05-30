@@ -726,6 +726,60 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
+        """Write ``content`` to ``path`` atomically via temp-file + rename.
+
+        Streams ``content`` over stdin into a temp file in the SAME
+        directory as ``path`` (so the final ``mv`` is a real rename on the
+        same filesystem, not a non-atomic cross-device copy), preserves the
+        existing file's mode if it exists, then renames over the target.
+        On any failure the temp file is removed so we never leak a partial
+        ``.hermes-tmp`` file next to the user's data, and the original file
+        is left untouched. Content rides stdin so there is no ARG_MAX limit.
+
+        Returns an :class:`ExecuteResult`; ``exit_code == 0`` means the file
+        was swapped into place atomically. A non-zero exit means nothing was
+        renamed and the original (if any) is intact.
+        """
+        q_path = self._escape_shell_arg(path)
+        parent = os.path.dirname(path) or "."
+        q_parent = self._escape_shell_arg(parent)
+        # template basename: hidden so it doesn't show up in casual `ls`,
+        # carries a marker so an orphaned temp (only possible on a hard
+        # crash *between* cat and mv) is identifiable.
+        tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
+
+        # One shell script, fully quoted. Notes:
+        #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
+        #    same-FS atomic; we fall back to a PID-stamped name if the
+        #    backend lacks mktemp (rare; busybox/macOS/Linux all ship it).
+        #  - `chmod --reference` is GNU-only, so we read the octal mode with
+        #    `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly;
+        #    silent best-effort — a perms-copy failure must not abort the
+        #    write, the file still lands with default umask perms.
+        #  - `trap ... EXIT` guarantees the temp is removed on every error
+        #    path (cat failure, mv failure, signal) but NOT after a
+        #    successful mv (the temp no longer exists by then).
+        #  - we `cat >` the temp, then `mv -f` it over the target.
+        script = (
+            "set -e; "
+            f"d={q_parent}; t={q_path}; "
+            'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
+            '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
+            '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
+            '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
+            "trap 'rm -f \"$tmp\"' EXIT; "
+            # preserve mode of an existing target (best-effort, never fatal)
+            'if [ -e "$t" ]; then '
+            'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
+            '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
+            "fi; "
+            'cat > "$tmp"; '
+            'mv -f "$tmp" "$t"; '
+            "trap - EXIT"
+        )
+        return self._exec(script, stdin_data=content)
+
     def _detect_file_line_ending(self, path: str, pre_content: Optional[str] = None) -> Optional[str]:
         """Detect the dominant line ending of a file on disk.
 
@@ -1053,10 +1107,22 @@ class ShellFileOperations(FileOperations):
             if mkdir_result.exit_code == 0:
                 dirs_created = True
 
-        # Write via stdin pipe — content bypasses shell arg parsing entirely,
-        # so there's no ARG_MAX limit regardless of file size.
-        write_cmd = f"cat > {self._escape_shell_arg(path)}"
-        write_result = self._exec(write_cmd, stdin_data=content)
+        # Write atomically: stream into a temp file in the SAME directory,
+        # then ``mv`` it over the target. The rename is atomic on POSIX
+        # (and on every backend FS we run on), so a crash / power loss /
+        # truncated pipe mid-write leaves the original file intact instead
+        # of a half-written corrupt file. Same-directory is load-bearing —
+        # ``mv`` across filesystems degrades to copy+unlink, which is NOT
+        # atomic; keeping the temp beside the target guarantees a real
+        # rename. Content still rides stdin so there's no ARG_MAX limit.
+        #
+        # The temp file is created with ``mktemp`` (collision-safe) when the
+        # backend has it, falling back to a PID-stamped name otherwise. We
+        # then chmod the temp to match the existing file's mode (if any) so
+        # the atomic swap doesn't silently widen or narrow permissions, and
+        # clean the temp up on any failure so we never leak a ``.hermes-tmp``
+        # turd next to the user's file.
+        write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")

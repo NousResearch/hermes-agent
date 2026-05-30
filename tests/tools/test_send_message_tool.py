@@ -1256,6 +1256,54 @@ class TestParseTargetRefEmail:
         assert _parse_target_ref("slack", "user@example.com")[2] is False
 
 
+class TestEmailHomeChannelErrorHint:
+    """The no-home-channel error for email points at the real env var.
+
+    Email reads its home channel from EMAIL_HOME_ADDRESS (gateway/config.py),
+    not the generic EMAIL_HOME_CHANNEL. The error guidance must name the
+    variable that is actually consulted so users who follow it succeed.
+    """
+
+    def test_email_error_names_email_home_address(self):
+        email_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.EMAIL: email_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "email",
+                        "message": "hi",
+                    }
+                )
+            )
+        assert "EMAIL_HOME_ADDRESS" in result["error"]
+        assert "EMAIL_HOME_CHANNEL" not in result["error"]
+
+    def test_non_email_platform_keeps_generic_home_channel_hint(self):
+        telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "hi",
+                    }
+                )
+            )
+        assert "TELEGRAM_HOME_CHANNEL" in result["error"]
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

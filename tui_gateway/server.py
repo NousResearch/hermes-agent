@@ -5892,7 +5892,36 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
-            _compress_session_history(session, arg)
+            from hermes_cli.partial_compress import (
+                parse_partial_compress_args,
+                rejoin_compressed_head_and_tail,
+                split_history_for_partial_compress,
+            )
+            partial, keep_last, focus_topic = parse_partial_compress_args(arg or "")
+            if partial:
+                with session["history_lock"]:
+                    _history = list(session.get("history", []))
+                    _hv = int(session.get("history_version", 0))
+                head, tail = split_history_for_partial_compress(_history, keep_last)
+                if not tail:
+                    partial = False  # degenerate split — fall back to full compress
+                else:
+                    from agent.model_metadata import estimate_request_tokens_rough
+                    _sys = getattr(agent, "_cached_system_prompt", "") or ""
+                    _tools = getattr(agent, "tools", None) or None
+                    _approx = estimate_request_tokens_rough(
+                        _history, system_prompt=_sys, tools=_tools
+                    )
+                    _compressed_head, _ = agent._compress_context(
+                        head, None, approx_tokens=_approx, focus_topic=None
+                    )
+                    _rejoined = rejoin_compressed_head_and_tail(_compressed_head, tail)
+                    with session["history_lock"]:
+                        if int(session.get("history_version", 0)) == _hv:
+                            session["history"] = _rejoined
+                            session["history_version"] = _hv + 1
+            if not partial:
+                _compress_session_history(session, focus_topic)
             _sync_session_key_after_compress(sid, session)
             _emit("session.info", sid, _session_info(agent))
         elif name == "fast" and agent:

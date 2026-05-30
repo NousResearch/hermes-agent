@@ -241,6 +241,11 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
+    def on_session_finalize(self, session_id: str = "", **kwargs) -> None:
+        """Gateway session expiry hook — same extraction as on_session_end."""
+        messages = kwargs.get("messages") or []
+        self.on_session_end(messages)
+
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes as facts."""
         if action == "add" and self._store and content:

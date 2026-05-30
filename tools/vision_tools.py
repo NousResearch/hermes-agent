@@ -1177,6 +1177,9 @@ async def video_analyze_tool(
         logger.info("Analyzing video: %s", video_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
 
+        # TODO: share tools.image_source's source-fetch layer once it is split
+        # from the image-specific _finalize (video needs its own magic-byte
+        # sniff + larger size cap, so it can't route through the image resolver).
         # Resolve local path vs remote URL
         resolved_url = video_url
         if resolved_url.startswith("file://"):

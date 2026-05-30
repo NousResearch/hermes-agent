@@ -2477,6 +2477,41 @@ class SessionDB:
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
+    def set_session_title_if_empty(self, session_id: str, title: str) -> bool:
+        """Set a session title only when it is still empty.
+
+        Used by background auto-title generation so an in-flight generated
+        title cannot overwrite a user/workflow title that was set after the
+        generation request started. Returns True only when the conditional
+        update wrote the title.
+        """
+        cleaned_title = self.sanitize_title(title)
+        if not cleaned_title:
+            return False
+        title = cleaned_title
+
+        def _do(conn):
+            # Keep the uniqueness check in the same write transaction as the
+            # conditional UPDATE so racing writers cannot slip between them.
+            cursor = conn.execute(
+                "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                (title, session_id),
+            )
+            conflict = cursor.fetchone()
+            if conflict:
+                raise ValueError(
+                    f"Title '{title}' is already in use by session {conflict['id']}"
+                )
+            cursor = conn.execute(
+                "UPDATE sessions SET title = ? "
+                "WHERE id = ? AND (title IS NULL OR title = '')",
+                (title, session_id),
+            )
+            return cursor.rowcount
+
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
         with self._lock:

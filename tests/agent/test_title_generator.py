@@ -231,7 +231,8 @@ class TestAutoTitleSession:
 
         with patch("agent.title_generator.generate_title", return_value="New Title"):
             auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_called_once_with("sess-1", "New Title")
+            db.set_session_title_if_empty.assert_called_once_with("sess-1", "New Title")
+            db.set_session_title.assert_not_called()
 
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
@@ -245,8 +246,45 @@ class TestAutoTitleSession:
                 "hi there",
                 title_callback=seen.append,
             )
-        db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
+        db.set_session_title_if_empty.assert_called_once_with("sess-1", "Readable Session")
+        db.set_session_title.assert_not_called()
         assert seen == ["Readable Session"]
+
+    def test_skips_callback_when_title_becomes_nonempty_during_generation(self):
+        class _DB:
+            def __init__(self):
+                self.title = None
+                self.set_if_empty_calls = []
+
+            def get_session_title(self, session_id):
+                return self.title
+
+            def set_session_title_if_empty(self, session_id, title):
+                self.set_if_empty_calls.append((session_id, title))
+                if self.title:
+                    return False
+                self.title = title
+                return True
+
+        db = _DB()
+        seen = []
+
+        def _generate(*args, **kwargs):
+            db.title = "sample-repo ExampleOrg#1000001"
+            return "Generated Summary Title"
+
+        with patch("agent.title_generator.generate_title", side_effect=_generate):
+            auto_title_session(
+                db,
+                "sess-1",
+                "please investigate the workflow run",
+                "I will check the failure",
+                title_callback=seen.append,
+            )
+
+        assert db.title == "sample-repo ExampleOrg#1000001"
+        assert db.set_if_empty_calls == [("sess-1", "Generated Summary Title")]
+        assert seen == []
 
     def test_skips_if_generation_fails(self):
         db = MagicMock()
@@ -255,6 +293,7 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title", return_value=None):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
+            db.set_session_title_if_empty.assert_not_called()
 
 
 class TestMaybeAutoTitle:

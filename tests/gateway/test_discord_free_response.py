@@ -479,7 +479,7 @@ async def test_discord_summary_rename_skips_when_thread_name_changed(adapter):
     adapter._client = SimpleNamespace(
         user=SimpleNamespace(id=999),
         get_channel=lambda channel_id: thread,
-        fetch_channel=AsyncMock(),
+        fetch_channel=AsyncMock(return_value=thread),
     )
 
     renamed = await adapter.rename_thread(
@@ -490,6 +490,30 @@ async def test_discord_summary_rename_skips_when_thread_name_changed(adapter):
 
     assert renamed is False
     thread.edit.assert_not_awaited()
+    adapter._client.fetch_channel.assert_awaited_once_with(999)
+
+
+@pytest.mark.asyncio
+async def test_discord_summary_rename_uses_fresh_thread_name_for_guard(adapter):
+    """A stale cache entry must not let summary auto-rename overwrite manual titles."""
+    cached_thread = SimpleNamespace(name="Hermes", edit=AsyncMock())
+    fresh_thread = SimpleNamespace(name="sample-repo ExampleOrg#1000001", edit=AsyncMock())
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_channel=lambda channel_id: cached_thread,
+        fetch_channel=AsyncMock(return_value=fresh_thread),
+    )
+
+    renamed = await adapter.rename_thread(
+        thread_id="999",
+        name="Generated Summary Title",
+        expected_current_name="Hermes",
+    )
+
+    assert renamed is False
+    adapter._client.fetch_channel.assert_awaited_once_with(999)
+    cached_thread.edit.assert_not_awaited()
+    fresh_thread.edit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -152,7 +152,19 @@ def auto_title_session(
         return
 
     try:
-        session_db.set_session_title(session_id, title)
+        set_if_empty = getattr(session_db, "set_session_title_if_empty", None)
+        if callable(set_if_empty):
+            title_set = bool(set_if_empty(session_id, title))
+        else:
+            # Backward-compatible path for older/custom session stores. Re-check
+            # immediately before writing so user-set titles that landed during
+            # generation are less likely to be overwritten.
+            if session_db.get_session_title(session_id):
+                return
+            title_set = bool(session_db.set_session_title(session_id, title))
+        if not title_set:
+            logger.debug("Skipped auto-generated title because session title is no longer empty")
+            return
         logger.debug("Auto-generated session title: %s", title)
         if title_callback is not None:
             try:

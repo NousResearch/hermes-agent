@@ -42,6 +42,11 @@ def _make_runner(*, extra: dict | None = None):
     )
     adapter = SimpleNamespace(rename_thread=AsyncMock(return_value=True))
     runner.adapters = {Platform.DISCORD: adapter}
+    setattr(
+        runner,
+        "session_store",
+        SimpleNamespace(find_session_by_thread=MagicMock(return_value=SimpleNamespace(session_id="sess-discord"))),
+    )
     return runner, adapter
 
 
@@ -65,6 +70,11 @@ class _StatefulTitleDB:
         self.title = title
         self.set_calls.append((session_id, title))
         return True
+
+    def set_session_title_if_empty(self, session_id: str, title: str) -> bool:
+        if self.title:
+            return False
+        return self.set_session_title(session_id, title)
 
     def create_session(self, **kwargs):
         return None
@@ -178,6 +188,162 @@ async def test_explicit_title_renames_discord_thread_without_initial_name_match(
     assert kwargs["thread_id"] == "999"
     assert kwargs["name"] == "Manually Chosen Workflow Title"
     assert kwargs["expected_current_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_title_can_use_full_discord_thread_name_limit():
+    runner, adapter = _make_runner(extra={"auto_thread_summary_max_chars": 70})
+    title = "A" * 90
+
+    await runner._rename_discord_thread_for_session_title(
+        _make_source(thread_id="999", thread_initial_name=None),
+        "sess-discord",
+        title,
+        require_initial_name_match=False,
+    )
+
+    adapter.rename_thread.assert_awaited_once()
+    assert adapter.rename_thread.await_args.kwargs["name"] == title
+
+
+@pytest.mark.asyncio
+async def test_explicit_title_longer_than_discord_limit_is_truncated_to_limit():
+    runner, adapter = _make_runner(extra={"auto_thread_summary_max_chars": 70})
+    title = "B" * 120
+
+    await runner._rename_discord_thread_for_session_title(
+        _make_source(thread_id="999", thread_initial_name=None),
+        "sess-discord",
+        title,
+        require_initial_name_match=False,
+    )
+
+    adapter.rename_thread.assert_awaited_once()
+    renamed = adapter.rename_thread.await_args.kwargs["name"]
+    assert renamed == "B" * 97 + "..."
+    assert len(renamed) == 100
+
+
+@pytest.mark.asyncio
+async def test_interleaved_discord_bot_rename_echoes_do_not_revert_newer_title():
+    runner, adapter = _make_runner()
+    session_id = "sess-discord"
+    source = _make_source(thread_id="999")
+    session_db = _StatefulTitleDB(title="Auto Title")
+    setattr(
+        runner,
+        "session_store",
+        SimpleNamespace(find_session_by_thread=MagicMock(return_value=SimpleNamespace(session_id=session_id))),
+    )
+    setattr(runner, "_session_db", session_db)
+
+    await runner._rename_discord_thread_for_session_title(source, session_id, "Auto Title")
+    session_db.title = "Manual Title"
+    await runner._rename_discord_thread_for_session_title(
+        source,
+        session_id,
+        "Manual Title",
+        require_initial_name_match=False,
+    )
+
+    assert adapter.rename_thread.await_count == 2
+    assert getattr(runner, "_discord_thread_rename_echoes") == {
+        "999": [(session_id, "Auto Title"), (session_id, "Manual Title")]
+    }
+
+    await runner._handle_platform_thread_title_change(Platform.DISCORD, "999", "Auto Title")
+
+    assert session_db.title == "Manual Title"
+    assert session_db.set_calls == []
+    assert getattr(runner, "_discord_thread_rename_echoes") == {
+        "999": [(session_id, "Manual Title")]
+    }
+
+    await runner._handle_platform_thread_title_change(Platform.DISCORD, "999", "Manual Title")
+
+    assert session_db.title == "Manual Title"
+    assert session_db.set_calls == []
+    assert getattr(runner, "_discord_thread_rename_echoes") == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_discord_auto_title_does_not_rename_rebound_thread():
+    runner, adapter = _make_runner()
+    setattr(
+        runner,
+        "session_store",
+        SimpleNamespace(find_session_by_thread=MagicMock(return_value=SimpleNamespace(session_id="new-session"))),
+    )
+
+    await runner._rename_discord_thread_for_session_title(
+        _make_source(thread_id="999"),
+        "old-session",
+        "Generated Summary Title",
+    )
+
+    adapter.rename_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_discord_title_task_does_not_rename_after_db_title_changes():
+    runner, adapter = _make_runner()
+    setattr(runner, "_session_db", _StatefulTitleDB(title="New Workflow Title"))
+
+    await runner._rename_discord_thread_for_session_title(
+        _make_source(thread_id="999", thread_initial_name=None),
+        "sess-discord",
+        "Old Workflow Title",
+        require_initial_name_match=False,
+    )
+
+    adapter.rename_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_discord_bot_rename_echo_does_not_overwrite_newer_session_title():
+    runner, _adapter = _make_runner()
+    session_id = "sess-discord"
+    session_db = _StatefulTitleDB(title="New Workflow Title")
+    setattr(
+        runner,
+        "session_store",
+        SimpleNamespace(find_session_by_thread=MagicMock(return_value=SimpleNamespace(session_id=session_id))),
+    )
+    setattr(runner, "_session_db", session_db)
+    setattr(runner, "_discord_thread_rename_echoes", {"999": (session_id, "Old Workflow Title")})
+
+    await runner._handle_platform_thread_title_change(
+        Platform.DISCORD,
+        "999",
+        "Old Workflow Title",
+    )
+
+    assert session_db.title == "New Workflow Title"
+    assert session_db.set_calls == []
+    assert getattr(runner, "_discord_thread_rename_echoes") == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_discord_bot_rename_echo_does_not_overwrite_rebound_session_title():
+    runner, _adapter = _make_runner()
+    session_db = _StatefulTitleDB(title="New Session Title")
+    setattr(
+        runner,
+        "session_store",
+        SimpleNamespace(find_session_by_thread=MagicMock(return_value=SimpleNamespace(session_id="new-session"))),
+    )
+    setattr(runner, "_session_db", session_db)
+    setattr(runner, "_discord_thread_rename_echoes", {"999": ("old-session", "Old Workflow Title")})
+
+    await runner._handle_platform_thread_title_change(
+        Platform.DISCORD,
+        "999",
+        "Old Workflow Title",
+    )
+
+    assert session_db.title == "New Session Title"
+    assert session_db.set_calls == []
+    assert getattr(runner, "_discord_thread_rename_echoes") == {}
 
 
 @pytest.mark.asyncio

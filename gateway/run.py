@@ -3039,6 +3039,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
         self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
+        # Bot-initiated Discord thread renames can echo back through
+        # on_thread_update after a newer /title or manual thread rename has
+        # already changed the DB. Track expected echoes so stale bot echoes do
+        # not overwrite the current title. Multiple bot renames can be in
+        # flight for the same thread, so keep a small per-thread queue instead
+        # of a single most-recent echo.
+        self._discord_thread_rename_echoes: Dict[str, list[tuple[str, str]]] = {}
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
@@ -13361,9 +13368,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # values safe while still allowing users to choose shorter summaries.
         return min(max_chars, 100)
 
-    def _sanitize_discord_thread_title(self, title: str) -> str:
-        """Return a Discord-safe thread name for generated session titles."""
-        max_chars = self._discord_auto_thread_summary_max_chars()
+    def _sanitize_discord_thread_title(self, title: str, *, max_chars: int | None = None) -> str:
+        """Return a Discord-safe thread name.
+
+        Summary-generated titles use ``discord.auto_thread_summary_max_chars``.
+        Explicit/manual titles may use Discord's full 100-character limit.
+        """
+        if max_chars is None:
+            max_chars = self._discord_auto_thread_summary_max_chars()
+        max_chars = max(1, min(int(max_chars), 100))
         cleaned = re.sub(r"\s+", " ", str(title or "")).strip() or "Hermes Chat"
         if len(cleaned) <= max_chars:
             return cleaned
@@ -13434,6 +13447,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         thread_id = str(getattr(source, "thread_id", "") or "")
         if not thread_id:
             return
+        session_store = getattr(self, "session_store", None)
+        finder = getattr(session_store, "find_session_by_thread", None) if session_store is not None else None
+        if not callable(finder):
+            return
+        try:
+            current_entry = finder(Platform.DISCORD, thread_id)
+        except Exception:
+            logger.debug("Failed to verify Discord thread session binding before rename", exc_info=True)
+            return
+        if current_entry is None or str(getattr(current_entry, "session_id", "") or "") != str(session_id):
+            return
         expected_name = None
         if require_initial_name_match:
             expected_name = str(getattr(source, "thread_initial_name", "") or "")
@@ -13445,13 +13469,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     title,
                 )
                 return
-        thread_name = self._sanitize_discord_thread_title(title)
+        session_db = getattr(self, "_session_db", None)
+        if session_db is not None:
+            try:
+                expected_db_title = session_db.sanitize_title(title)
+                current_db_title = session_db.get_session_title(session_id)
+            except Exception:
+                logger.debug("Failed to verify session title before Discord thread rename", exc_info=True)
+                return
+            if not expected_db_title or current_db_title != expected_db_title:
+                return
+        thread_name = self._sanitize_discord_thread_title(
+            title,
+            max_chars=None if require_initial_name_match else 100,
+        )
         try:
-            await rename_thread(
+            renamed = await rename_thread(
                 thread_id=thread_id,
                 name=thread_name,
                 expected_current_name=expected_name,
             )
+            if renamed:
+                echoes = getattr(self, "_discord_thread_rename_echoes", None)
+                if echoes is None:
+                    echoes = {}
+                    setattr(self, "_discord_thread_rename_echoes", echoes)
+                pending_echoes = echoes.get(thread_id)
+                if not isinstance(pending_echoes, list):
+                    pending_echoes = [pending_echoes] if pending_echoes is not None else []
+                pending_echoes.append((str(session_id), thread_name))
+                # Bound memory even if Discord never emits a matching update.
+                echoes[thread_id] = pending_echoes[-8:]
         except Exception:
             logger.debug(
                 "Failed to rename Discord thread %s for session title %s",
@@ -13482,6 +13530,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         entry = finder(platform, thread_id)
         if entry is None:
             return
+        if platform == Platform.DISCORD:
+            echoes = getattr(self, "_discord_thread_rename_echoes", None)
+            pending_echoes = echoes.get(str(thread_id)) if isinstance(echoes, dict) else None
+            if isinstance(pending_echoes, tuple):
+                pending_echoes = [pending_echoes]
+            elif not isinstance(pending_echoes, list):
+                pending_echoes = []
+            match_index = next(
+                (
+                    idx
+                    for idx, echo in enumerate(pending_echoes)
+                    if isinstance(echo, tuple) and len(echo) >= 2 and echo[1] == sanitized
+                ),
+                None,
+            )
+            if match_index is not None:
+                echo = pending_echoes.pop(match_index)
+                if isinstance(echoes, dict):
+                    if pending_echoes:
+                        echoes[str(thread_id)] = pending_echoes
+                    else:
+                        echoes.pop(str(thread_id), None)
+                try:
+                    current_title = self._session_db.get_session_title(entry.session_id)
+                except Exception:
+                    current_title = None
+                # This is the echo of a bot-initiated rename. If the thread was
+                # rebound before Discord delivered the echo, or if the DB has
+                # moved on, ignore it instead of rewriting the current
+                # user/workflow title. If it has not moved on, the DB is already
+                # correct and no write is needed.
+                if str(echo[0]) != str(entry.session_id) or current_title != sanitized:
+                    logger.debug(
+                        "Ignoring stale Discord thread rename echo %r for session %s",
+                        sanitized,
+                        entry.session_id,
+                    )
+                return
         try:
             self._session_db.set_session_title(entry.session_id, sanitized)
         except ValueError:

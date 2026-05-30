@@ -5235,9 +5235,15 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
         try:
-            thread = self._client.get_channel(tid)
-            if thread is None:
+            if expected_current_name is not None:
+                # The guard is only safe against user/workflow renames if it
+                # observes fresh state. discord.py's get_channel() cache can be
+                # stale while an auto-title task is racing with a thread_update.
                 thread = await self._client.fetch_channel(tid)
+            else:
+                thread = self._client.get_channel(tid)
+                if thread is None:
+                    thread = await self._client.fetch_channel(tid)
         except Exception:
             logger.debug("[%s] Failed to resolve Discord thread %s for rename", self.name, thread_id, exc_info=True)
             return False

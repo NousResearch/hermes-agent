@@ -2,7 +2,15 @@
 
 import json
 
+from agent.message_sanitization import (
+    INVALID_TOOL_ARGUMENTS_ERROR_KEY,
+    INVALID_TOOL_ARGUMENTS_ERROR_MESSAGE,
+)
 from run_agent import _repair_tool_call_arguments
+
+
+def _invalid_arguments_sentinel() -> str:
+    return json.dumps({INVALID_TOOL_ARGUMENTS_ERROR_KEY: INVALID_TOOL_ARGUMENTS_ERROR_MESSAGE})
 
 
 class TestRepairToolCallArguments:
@@ -73,12 +81,12 @@ class TestRepairToolCallArguments:
 
     # -- Stage 6: last resort --
 
-    def test_unrepairable_garbage_returns_empty_object(self):
-        assert _repair_tool_call_arguments("totally not json", "t") == "{}"
+    def test_unrepairable_garbage_returns_invalid_arguments_sentinel(self):
+        assert _repair_tool_call_arguments("totally not json", "t") == _invalid_arguments_sentinel()
 
-    def test_unrepairable_partial_returns_empty_object(self):
+    def test_unrepairable_partial_returns_invalid_arguments_sentinel(self):
         # Truncated in the middle of a string key — bracket closing won't help
-        assert _repair_tool_call_arguments('{"truncated": "val', "t") == "{}"
+        assert _repair_tool_call_arguments('{"truncated": "val', "t") == _invalid_arguments_sentinel()
 
     # -- Valid JSON passthrough (this path is via except, but still works) --
 

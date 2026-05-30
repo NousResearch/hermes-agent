@@ -17,6 +17,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
+from agent.message_sanitization import (
+    INVALID_TOOL_ARGUMENTS_ERROR_KEY,
+    INVALID_TOOL_ARGUMENTS_ERROR_MESSAGE,
+)
 
 import run_agent
 from run_agent import AIAgent
@@ -5118,7 +5122,7 @@ class TestStreamingApiCall:
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
 
-    def test_truncated_tool_call_args_upgrade_finish_reason_to_length(self, agent):
+    def test_truncated_tool_call_args_become_invalid_arguments_sentinel(self, agent):
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
         ]
@@ -5129,8 +5133,10 @@ class TestStreamingApiCall:
         tc = resp.choices[0].message.tool_calls
         assert len(tc) == 1
         assert tc[0].function.name == "write_file"
-        assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
-        assert resp.choices[0].finish_reason == "length"
+        assert json.loads(tc[0].function.arguments) == {
+            INVALID_TOOL_ARGUMENTS_ERROR_KEY: INVALID_TOOL_ARGUMENTS_ERROR_MESSAGE
+        }
+        assert resp.choices[0].finish_reason == "stop"
 
     def test_ollama_reused_index_separate_tool_calls(self, agent):
         """Ollama sends every tool call at index 0 with different ids.

@@ -13,7 +13,9 @@ Environment variables:
     MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
     MATRIX_PROXY                HTTP(S) or SOCKS proxy URL for Matrix traffic
     MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
-    MATRIX_HOME_ROOM        Room ID for cron/notification delivery
+    MATRIX_HOME_ROOM        Room ID, MXID, or alias for cron/notification
+                            delivery. Append '/<event_id>' to deliver into
+                            a thread (e.g. '!room:server.org/$threadEvtId').
     MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
                             (eyes/checkmark/cross). Default: true
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
@@ -1010,6 +1012,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
 
+        chat_id = await self._resolve_send_target(chat_id)
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
 
@@ -1336,6 +1339,7 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
 
+        room_id = await self._resolve_send_target(room_id)
         upload_data = data
         encrypted_file = None
         if self._encryption and getattr(self._client, "crypto", None):
@@ -2073,6 +2077,52 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
             return False
+
+    async def _resolve_send_target(self, chat_id: str) -> str:
+        """Resolve a send target into a concrete room ID.
+
+        ``/rooms/{roomId}/send`` only accepts room IDs — passing a
+        ``#alias:server`` literal makes the homeserver report a misleading
+        "user not in room" error. Aliases are resolved via
+        ``GET /_matrix/client/v3/directory/room/{alias}`` and the bot
+        auto-joins the resolved room (matches existing on-invite
+        behavior). A trailing ``/<event_id>`` thread suffix is stripped
+        defensively even though the cron parser keeps it out of chat_id —
+        callers that bypass the parser still get sane behavior.
+
+        Returns the resolved room ID, or the original ``chat_id`` when
+        resolution fails (so the underlying error from /send surfaces
+        instead of being masked).
+        """
+        if not chat_id:
+            return chat_id
+        target = chat_id.split("/", 1)[0]
+        if not target.startswith("#"):
+            return chat_id
+        try:
+            info = await self._client.resolve_room_alias(target)
+            room_id = str(info.room_id) if info and info.room_id else ""
+        except Exception as exc:
+            logger.warning("Matrix: failed to resolve alias %s: %s", target, exc)
+            return chat_id
+        if not room_id:
+            # The /directory/room/{alias} lookup only succeeds for aliases
+            # published as a Local Address on the room (Element: Room
+            # Settings → General → Local Addresses). A friendly display
+            # name shown in the room header is not enough. Log explicitly
+            # so the next-step "user not in room" error from /send is
+            # distinguishable from a genuine membership problem.
+            logger.warning(
+                "Matrix: alias %s did not resolve to a room ID — the alias "
+                "must be published as a Local Address on the target room. "
+                "Either add it in Element (Room Settings → General → Local "
+                "Addresses) or target by room ID instead.",
+                target,
+            )
+            return chat_id
+        if room_id not in self._joined_rooms:
+            await self._join_room_by_id(room_id)
+        return room_id
 
     async def _join_pending_invites(self, sync_data: Dict[str, Any]) -> None:
         """Join rooms still present in rooms.invite after sync processing."""

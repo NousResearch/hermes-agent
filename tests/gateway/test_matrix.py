@@ -2,6 +2,7 @@
 import asyncio
 import sys
 import types
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -385,6 +386,155 @@ class TestMatrixTypingIndicator:
     async def test_stop_typing_suppresses_exceptions(self):
         self.adapter._client.set_typing = AsyncMock(side_effect=Exception("network"))
         await self.adapter.stop_typing("!room:example.org")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Alias resolution for send targets
+# ---------------------------------------------------------------------------
+
+
+class TestMatrixResolveSendTarget:
+    """`#alias:server` targets must be resolved to a room ID before /send,
+    since `/rooms/{roomId}/send` only accepts room IDs. Without this the
+    homeserver returns a misleading "user not in room" error."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_room_id_passes_through_unchanged(self):
+        """Room IDs (!) are not aliases — no resolution should be attempted."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock()
+        self.adapter._client = client
+
+        result = await self.adapter._resolve_send_target("!room:example.org")
+        assert result == "!room:example.org"
+        client.resolve_room_alias.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_user_mxid_passes_through_unchanged(self):
+        """MXIDs (@) are DM targets, not aliases — no resolution."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock()
+        self.adapter._client = client
+
+        result = await self.adapter._resolve_send_target("@user:example.org")
+        assert result == "@user:example.org"
+        client.resolve_room_alias.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_alias_resolves_to_room_id(self):
+        """An alias is resolved via the directory API to a concrete room ID."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock(
+            return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
+        )
+        client.join_room = AsyncMock()
+        self.adapter._client = client
+
+        result = await self.adapter._resolve_send_target("#general:example.org")
+        assert result == "!resolved:example.org"
+        client.resolve_room_alias.assert_awaited_once_with("#general:example.org")
+
+    @pytest.mark.asyncio
+    async def test_alias_auto_joins_resolved_room(self):
+        """When the bot isn't a member of the resolved room, auto-join it.
+
+        Aliases are public discovery targets the user explicitly opted into
+        via --deliver, mirroring the existing on-invite auto-join behavior.
+        """
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock(
+            return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
+        )
+        client.join_room = AsyncMock()
+        self.adapter._client = client
+        self.adapter._joined_rooms = set()
+
+        await self.adapter._resolve_send_target("#general:example.org")
+        client.join_room.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_alias_skips_join_when_already_member(self):
+        """Don't re-join rooms the bot already belongs to."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock(
+            return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
+        )
+        client.join_room = AsyncMock()
+        self.adapter._client = client
+        self.adapter._joined_rooms = {"!resolved:example.org"}
+
+        result = await self.adapter._resolve_send_target("#general:example.org")
+        assert result == "!resolved:example.org"
+        client.join_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_alias_resolution_failure_returns_original(self):
+        """If resolution fails, return the original chat_id so the underlying
+        homeserver error surfaces from /send rather than being swallowed."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock(side_effect=RuntimeError("boom"))
+        self.adapter._client = client
+
+        result = await self.adapter._resolve_send_target("#missing:example.org")
+        assert result == "#missing:example.org"
+
+    @pytest.mark.asyncio
+    async def test_unpublished_alias_logs_actionable_warning(self, caplog):
+        """When resolve_room_alias returns no room_id, the alias is not
+        published as a Local Address on the room — log a warning that
+        explains the fix instead of falling silently to the misleading
+        'user not in room' error."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock(
+            return_value=SimpleNamespace(room_id="", servers=[])
+        )
+        self.adapter._client = client
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.matrix"):
+            result = await self.adapter._resolve_send_target("#unpublished:example.org")
+
+        assert result == "#unpublished:example.org"
+        warning_text = " ".join(r.getMessage() for r in caplog.records)
+        assert "Local Address" in warning_text
+        assert "#unpublished:example.org" in warning_text
+
+    @pytest.mark.asyncio
+    async def test_thread_suffix_stripped_defensively(self):
+        """If a caller bypasses the parser and passes '#alias:server/$evt',
+        only the alias portion is used for resolution."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock(
+            return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
+        )
+        client.join_room = AsyncMock()
+        self.adapter._client = client
+
+        await self.adapter._resolve_send_target("#general:example.org/$evt")
+        client.resolve_room_alias.assert_awaited_once_with("#general:example.org")
+
+    @pytest.mark.asyncio
+    async def test_send_resolves_alias_before_send_message_event(self):
+        """End-to-end: send('#alias:server', ...) must call send_message_event
+        with the resolved room ID, not the alias literal — this is the bug
+        that produced 'user not in room' in production."""
+        client = MagicMock()
+        client.resolve_room_alias = AsyncMock(
+            return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
+        )
+        client.join_room = AsyncMock()
+        client.send_message_event = AsyncMock(return_value="$evt")
+        self.adapter._client = client
+        self.adapter._joined_rooms = {"!resolved:example.org"}
+
+        await self.adapter.send("#general:example.org", "hello")
+
+        # The first positional arg to send_message_event is the room — must be
+        # the resolved ID, not the alias.
+        call_args = client.send_message_event.await_args
+        assert str(call_args.args[0]) == "!resolved:example.org"
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,11 @@ _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Z
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
+# Matrix targets: room ID (!), user MXID (@) or room alias (#) followed by
+# ':<server>'. An optional '/<event_id>' suffix names a thread root, mirroring
+# the matrix.to permalink convention (e.g. '!room:server.org/$evt').
+# Captures: 1=chat_id (with leading sigil), 2=thread root event id (optional).
+_MATRIX_TARGET_RE = re.compile(r"^\s*([!@#][^/\s]+)(?:/([^/\s]+))?\s*$")
 # Platforms that address recipients by phone number and accept E.164 format
 # (with a leading '+'). Without this, "+15551234567" fails the isdigit() check
 # below and falls through to channel-name resolution, which has no way to
@@ -143,7 +148,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. For Matrix, append '/<event_id>' to send into a thread (matrix.to convention). Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'matrix:#general:server.org', 'matrix:!roomid:server.org/$threadEventId', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -407,9 +412,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
-    # Matrix room IDs (start with !) and user IDs (start with @) are explicit
-    if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
-        return target_ref, None, True
+    # Matrix targets: room ID (!), MXID (@), or room alias (#), with an
+    # optional '/<event_id>' thread suffix. Aliases need server-side
+    # resolution before send (handled in _send_matrix); they're still
+    # explicit in the sense that no channel-name lookup is required.
+    if platform_name == "matrix":
+        match = _MATRIX_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
     # XMPP JIDs (user@server or room@conference.server) are explicit
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
@@ -777,7 +787,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATRIX:
-            result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
+            result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.HOMEASSISTANT:
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
@@ -1370,11 +1380,83 @@ async def _send_sms(auth_token, chat_id, message):
         return _error(f"SMS send failed: {e}")
 
 
-async def _send_matrix(token, extra, chat_id, message):
+async def _send_mattermost(token, extra, chat_id, message):
+    """Send via Mattermost REST API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        base_url = (extra.get("url") or os.getenv("MATTERMOST_URL", "")).rstrip("/")
+        token = token or os.getenv("MATTERMOST_TOKEN", "")
+        if not base_url or not token:
+            return {"error": "Mattermost not configured (MATTERMOST_URL, MATTERMOST_TOKEN required)"}
+        url = f"{base_url}/api/v4/posts"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(url, headers=headers, json={"channel_id": chat_id, "message": message}) as resp:
+                if resp.status not in {200, 201}:
+                    body = await resp.text()
+                    return _error(f"Mattermost API error ({resp.status}): {body}")
+                data = await resp.json()
+        return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
+    except Exception as e:
+        return _error(f"Mattermost send failed: {e}")
+
+
+async def _resolve_matrix_room_alias(homeserver: str, token: str, alias: str):
+    """Resolve a Matrix room alias (#name:server) to a room ID (!opaque:server).
+
+    Returns (room_id, None) on success or (None, error_message) on failure.
+    Aliases need server-side resolution before any /rooms/{roomId}/send call —
+    the Client-Server API endpoints accept room IDs, not aliases.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return None, "aiohttp not installed. Run: pip install aiohttp"
+    from urllib.parse import quote
+    encoded_alias = quote(alias, safe="")
+    url = f"{homeserver}/_matrix/client/v3/directory/room/{encoded_alias}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    return None, f"alias resolution failed ({resp.status}): {body}"
+                data = await resp.json()
+        room_id = data.get("room_id")
+        if not room_id:
+            return None, f"alias resolution returned no room_id for {alias}"
+        return room_id, None
+    except Exception as e:
+        return None, f"alias resolution failed: {e}"
+
+
+async def _resolve_matrix_room_alias_target(homeserver: str, token: str, chat_id: str):
+    """Return a concrete room ID for alias targets, or the original target."""
+    if not chat_id.startswith("#"):
+        return chat_id, None
+    resolved, err = await _resolve_matrix_room_alias(homeserver, token, chat_id)
+    if err:
+        return chat_id, f"Matrix alias '{chat_id}': {err}"
+    return resolved, None
+
+
+async def _send_matrix(token, extra, chat_id, message, thread_id=None):
     """Send via Matrix Client-Server API.
 
     Converts markdown to HTML for rich rendering in Matrix clients.
     Falls back to plain text if the ``markdown`` library is not installed.
+
+    ``chat_id`` may be a room ID (``!opaque:server``), a user MXID
+    (``@user:server`` — DMs require an existing direct room), or a room
+    alias (``#name:server``); aliases are resolved to a room ID first.
+
+    When ``thread_id`` is set, the message is sent as a threaded reply
+    rooted at that event (``m.thread`` relates_to with the
+    ``is_falling_back`` hint per MSC3440 / Matrix v1.4).
     """
     try:
         import aiohttp
@@ -1385,6 +1467,11 @@ async def _send_matrix(token, extra, chat_id, message):
         token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
+
+        chat_id, err = await _resolve_matrix_room_alias_target(homeserver, token, chat_id)
+        if err:
+            return _error(err)
+
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         from urllib.parse import quote
         encoded_room = quote(chat_id, safe="")
@@ -1402,6 +1489,16 @@ async def _send_matrix(token, extra, chat_id, message):
             payload["formatted_body"] = html
         except ImportError:
             pass
+
+        # Threaded reply: m.relates_to with rel_type=m.thread roots the
+        # event at thread_id. is_falling_back=true preserves linear-reply
+        # rendering on clients that don't support threads.
+        if thread_id:
+            payload["m.relates_to"] = {
+                "rel_type": "m.thread",
+                "event_id": thread_id,
+                "is_falling_back": True,
+            }
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.put(url, headers=headers, json=payload) as resp:
@@ -1422,6 +1519,20 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
 
     media_files = media_files or []
+
+    # Resolve room aliases (#name:server) to a concrete room ID before the
+    # adapter calls /rooms/{roomId}/send — that endpoint requires a room ID.
+    if chat_id.startswith("#"):
+        homeserver = (
+            (getattr(pconfig, "extra", {}) or {}).get("homeserver")
+            or os.getenv("MATRIX_HOMESERVER", "")
+        ).rstrip("/")
+        token = getattr(pconfig, "token", "") or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        if homeserver and token:
+            resolved, err = await _resolve_matrix_room_alias_target(homeserver, token, chat_id)
+            if err:
+                return _error(err)
+            chat_id = resolved
 
     try:
         adapter = MatrixAdapter(pconfig)

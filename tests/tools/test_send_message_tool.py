@@ -797,6 +797,201 @@ class TestSendToPlatformChunking:
             ("disconnect",),
         ]
 
+    def test_send_matrix_via_adapter_resolves_alias_before_adapter_send(self):
+        calls = []
+
+        class FakeAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="$text")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
+
+        async def fake_resolve(homeserver, token, alias):
+            calls.append(("resolve", homeserver, token, alias))
+            return "!resolved:example.com", None
+
+        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}), \
+             patch("tools.send_message_tool._resolve_matrix_room_alias", fake_resolve):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(
+                        enabled=True,
+                        token="tok",
+                        extra={"homeserver": "https://matrix.example.com"},
+                    ),
+                    "#general:example.com",
+                    "hello",
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": "!resolved:example.com",
+            "message_id": "$text",
+        }
+        assert calls == [
+            ("resolve", "https://matrix.example.com", "tok", "#general:example.com"),
+            ("connect",),
+            ("send", "!resolved:example.com", "hello", None),
+            ("disconnect",),
+        ]
+
+    def test_matrix_text_send_forwards_thread_id(self):
+        """Text-only Matrix delivery must forward thread_id so cron jobs
+        targeting matrix:!room:server.org/$thread land in the thread."""
+        captured = {}
+
+        async def fake_send_matrix(token, extra, chat_id, message, thread_id=None):
+            captured["chat_id"] = chat_id
+            captured["thread_id"] = thread_id
+            captured["message"] = message
+            return {
+                "success": True,
+                "platform": "matrix",
+                "chat_id": chat_id,
+                "message_id": "$evt",
+            }
+
+        with patch("tools.send_message_tool._send_matrix", fake_send_matrix):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATRIX,
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:example.com",
+                    "threaded reply",
+                    thread_id="$thread-root",
+                )
+            )
+
+        assert result["success"] is True
+        assert captured["thread_id"] == "$thread-root"
+        assert captured["chat_id"] == "!room:example.com"
+
+    def test_send_matrix_threaded_reply_uses_m_thread_relates_to(self):
+        """_send_matrix must build m.relates_to with rel_type=m.thread when
+        thread_id is set, with is_falling_back=true so legacy clients render
+        the message linearly."""
+        from tools.send_message_tool import _send_matrix
+
+        captured = {}
+
+        class _FakeResponse:
+            status = 200
+            async def json(self):
+                return {"event_id": "$new-evt"}
+            async def text(self):
+                return ""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *exc):
+                return False
+
+        class _FakeSession:
+            def __init__(self, *_a, **_k):
+                pass
+            def put(self, url, headers=None, json=None):
+                captured["url"] = url
+                captured["payload"] = json
+                return _FakeResponse()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *exc):
+                return False
+
+        fake_aiohttp = SimpleNamespace(
+            ClientSession=lambda *a, **k: _FakeSession(),
+            ClientTimeout=lambda **kw: None,
+        )
+
+        with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+            result = asyncio.run(
+                _send_matrix(
+                    "tok",
+                    {"homeserver": "https://matrix.example.com"},
+                    "!room:example.com",
+                    "in the thread",
+                    thread_id="$thread-root",
+                )
+            )
+
+        assert result["success"] is True
+        relates_to = captured["payload"].get("m.relates_to")
+        assert relates_to is not None
+        assert relates_to["rel_type"] == "m.thread"
+        assert relates_to["event_id"] == "$thread-root"
+        assert relates_to["is_falling_back"] is True
+
+    def test_send_matrix_resolves_room_alias_before_send(self):
+        """Aliases (#name:server) must be resolved to a room ID via
+        /_matrix/client/v3/directory/room/{alias} before /rooms/{id}/send."""
+        from tools.send_message_tool import _send_matrix
+
+        get_calls = []
+        put_calls = []
+
+        class _Resp:
+            def __init__(self, status, payload):
+                self.status = status
+                self._payload = payload
+            async def json(self):
+                return self._payload
+            async def text(self):
+                return ""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *exc):
+                return False
+
+        class _Session:
+            def __init__(self, *_a, **_k):
+                pass
+            def get(self, url, headers=None):
+                get_calls.append(url)
+                return _Resp(200, {"room_id": "!resolved:example.com"})
+            def put(self, url, headers=None, json=None):
+                put_calls.append((url, json))
+                return _Resp(200, {"event_id": "$evt"})
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *exc):
+                return False
+
+        fake_aiohttp = SimpleNamespace(
+            ClientSession=lambda *a, **k: _Session(),
+            ClientTimeout=lambda **kw: None,
+        )
+
+        with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+            result = asyncio.run(
+                _send_matrix(
+                    "tok",
+                    {"homeserver": "https://matrix.example.com"},
+                    "#general:example.com",
+                    "hi",
+                )
+            )
+
+        from urllib.parse import quote
+
+        assert result["success"] is True
+        assert result["chat_id"] == "!resolved:example.com"
+        assert any("/directory/room/" in u for u in get_calls)
+        # The room ID is percent-encoded into the /rooms/{roomId}/send URL.
+        encoded_room = quote("!resolved:example.com", safe="")
+        assert any(encoded_room in u for (u, _p) in put_calls)
+
 
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send
@@ -1121,11 +1316,41 @@ class TestParseTargetRefMatrix:
         assert thread_id is None
         assert is_explicit is True
 
-    def test_matrix_alias_is_not_explicit(self):
-        """Matrix room aliases (#) are NOT explicit — they need resolution."""
+    def test_matrix_alias_is_explicit(self):
+        """Matrix room aliases (#name:server) are explicit — server-side
+        resolution happens in _send_matrix before /rooms/{id}/send.
+        """
         chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "#general:matrix.org")
-        assert chat_id is None
-        assert is_explicit is False
+        assert chat_id == "#general:matrix.org"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_matrix_room_id_with_thread(self):
+        """Trailing /<event_id> names a thread root for delivery."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "matrix", "!HLOQwxYGgFPMPJUSNR:matrix.org/$threadEventId"
+        )
+        assert chat_id == "!HLOQwxYGgFPMPJUSNR:matrix.org"
+        assert thread_id == "$threadEventId"
+        assert is_explicit is True
+
+    def test_matrix_alias_with_thread(self):
+        """Threads work with aliases too."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "matrix", "#general:matrix.org/$abc123"
+        )
+        assert chat_id == "#general:matrix.org"
+        assert thread_id == "$abc123"
+        assert is_explicit is True
+
+    def test_matrix_user_mxid_with_thread(self):
+        """DM rooms can also be threaded."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "matrix", "@hermes:matrix.org/$dm-thread"
+        )
+        assert chat_id == "@hermes:matrix.org"
+        assert thread_id == "$dm-thread"
+        assert is_explicit is True
 
     def test_matrix_prefix_only_matches_matrix_platform(self):
         """! and @ prefixes are only treated as explicit for the matrix platform."""

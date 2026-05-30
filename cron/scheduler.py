@@ -462,10 +462,36 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if not chat_id:
         return None
 
+    # Run the platform's target parser over the configured home channel so
+    # platforms whose home env var can encode a thread/topic (e.g.
+    # MATRIX_HOME_ROOM='!room:server.org/$threadEvent') deliver into the
+    # expected thread instead of dropping the suffix into chat_id.
+    thread_id = None
+    try:
+        from tools.send_message_tool import _parse_target_ref
+
+        parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(
+            platform_name.lower(), chat_id
+        )
+        if is_explicit and parsed_chat_id:
+            chat_id = parsed_chat_id
+            thread_id = parsed_thread_id
+    except Exception:
+        pass
+
+    # Two ways to set a home-channel thread/topic, in priority order:
+    #   1. Inline in the home env var (e.g. MATRIX_HOME_ROOM='!room:server.org/$evt'
+    #      or TELEGRAM_HOME_CHANNEL='-1001:17') — extracted by _parse_target_ref above.
+    #   2. Separate '<ENV>_THREAD_ID' env var (e.g. MATRIX_HOME_ROOM_THREAD_ID).
+    # Inline wins when both are set so a deliberately threaded home channel value
+    # isn't silently overridden by a stale companion var.
+    if thread_id is None:
+        thread_id = _get_home_target_thread_id(platform_name)
+
     return {
         "platform": platform_name,
         "chat_id": chat_id,
-        "thread_id": _get_home_target_thread_id(platform_name),
+        "thread_id": thread_id,
     }
 
 
@@ -715,6 +741,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+        live_adapter_error: Optional[str] = None
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
@@ -736,10 +763,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             future.cancel()
                             raise
                         if send_result and not getattr(send_result, "success", True):
-                            err = getattr(send_result, "error", "unknown")
+                            live_adapter_error = str(getattr(send_result, "error", "unknown"))
                             logger.warning(
                                 "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                                job["id"], platform_name, chat_id, err,
+                                job["id"], platform_name, chat_id, live_adapter_error,
                             )
                             adapter_ok = False  # fall through to standalone path
                         elif (
@@ -772,6 +799,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
+                live_adapter_error = str(e)
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
                     job["id"], platform_name, chat_id, e,
@@ -792,13 +820,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
                     result = future.result(timeout=30)
             except Exception as e:
-                msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                # Surface the live adapter's error too — the fallback often
+                # fails with a less useful message (e.g. "Matrix not configured"
+                # when the gateway uses password auth and no MATRIX_ACCESS_TOKEN
+                # is set), masking the real reason the live adapter rejected
+                # the send.
+                if live_adapter_error:
+                    msg = (
+                        f"delivery to {platform_name}:{chat_id} failed: "
+                        f"live adapter: {live_adapter_error}; standalone fallback: {e}"
+                    )
+                else:
+                    msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 delivery_errors.append(msg)
                 continue
 
             if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+                if live_adapter_error:
+                    msg = (
+                        f"delivery error: live adapter: {live_adapter_error}; "
+                        f"standalone fallback: {result['error']}"
+                    )
+                else:
+                    msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 delivery_errors.append(msg)
                 continue

@@ -267,10 +267,15 @@ When scheduling jobs, you specify where the output goes:
 | `"telegram:-100123:17585"` | Specific Telegram topic | `chat_id:thread_id` format |
 | `"discord"` | Discord home channel | Uses `DISCORD_HOME_CHANNEL` |
 | `"discord:#engineering"` | Specific Discord channel | By channel name |
+| `"discord:999888777:555444333"` | Specific Discord thread | `channel_id:thread_id` format |
 | `"slack"` | Slack home channel | |
 | `"whatsapp"` | WhatsApp home | |
 | `"signal"` | Signal | |
-| `"matrix"` | Matrix home room | |
+| `"matrix"` | Matrix home room | Uses `MATRIX_HOME_ROOM` |
+| `"matrix:!room:server.org"` | Specific Matrix room by ID | Direct delivery |
+| `"matrix:#alias:server.org"` | Specific Matrix room by alias | Resolved server-side |
+| `"matrix:@user:server.org"` | Matrix DM target | By MXID |
+| `"matrix:!room:server.org/$evt"` | Specific Matrix thread | `room/$threadEventId` (matrix.to convention) |
 | `"mattermost"` | Mattermost home channel | |
 | `"email"` | Email | |
 | `"sms"` | SMS via Twilio | |

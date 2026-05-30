@@ -895,13 +895,17 @@ class TestEmbedCacheInvalidation:
     """Tool embeddings are recomputed when the catalog changes."""
 
     def test_cache_invalidated_on_catalog_change(self):
-        """Changing the catalog (different tool names) forces a new reranker instance."""
+        """Changing the catalog (different tool names) gives a DIFFERENT reranker instance.
+
+        With the per-scope cache both instances coexist in the dict; a different
+        catalog key is a different scope, so _get_reranker returns a new object.
+        """
         from tools.tool_search import _get_reranker, RerankerConfig
         import tools.tool_search as ts_module
 
-        # Reset module-level singleton to known state.
-        ts_module._reranker = None
-        ts_module._reranker_catalog_key = ""
+        # Reset per-scope cache to a known-empty state.
+        ts_module._reranker_cache.clear()
+        ts_module._reranker_cache_order.clear()
 
         cfg = RerankerConfig.from_raw({
             "enabled": True,
@@ -922,12 +926,12 @@ class TestEmbedCacheInvalidation:
         assert r3 is not r1, "changed catalog should produce a new reranker instance"
 
     def test_same_catalog_reuses_reranker(self):
-        """Identical catalog returns the same singleton (cache hit)."""
+        """Identical catalog returns the same cached instance (cache hit)."""
         from tools.tool_search import _get_reranker, RerankerConfig
         import tools.tool_search as ts_module
 
-        ts_module._reranker = None
-        ts_module._reranker_catalog_key = ""
+        ts_module._reranker_cache.clear()
+        ts_module._reranker_cache_order.clear()
 
         cfg = RerankerConfig.from_raw({
             "enabled": True,
@@ -963,6 +967,118 @@ class TestEmbedCacheInvalidation:
 
         assert call_count[0] == 1, (
             f"expected 1 embed call (cache hit on second), got {call_count[0]}"
+        )
+
+    def test_concurrent_scopes_do_not_share_reranker(self):
+        """Two different toolset scopes each get their own reranker instance.
+
+        Why: Proves the fix for the architecture-review finding. With the old
+        single-slot singleton, scope B's _get_reranker call would overwrite the
+        slot and discard scope A's instance + embedding cache. With the per-scope
+        dict, both coexist.
+        What: Calls _get_reranker for catalog_a, then catalog_b, then catalog_a
+        again. Asserts that (a) scope A and scope B are different objects, and
+        (b) the second call for scope A returns the ORIGINAL instance — proving
+        scope B's creation did NOT evict scope A.
+        Test: Mock _embed so we can count calls; assert re-requesting scope A
+        after creating scope B does NOT trigger a new _embed call.
+        """
+        from tools.tool_search import _get_reranker, RerankerConfig
+        import tools.tool_search as ts_module
+
+        ts_module._reranker_cache.clear()
+        ts_module._reranker_cache_order.clear()
+
+        cfg = RerankerConfig.from_raw({
+            "enabled": True,
+            "endpoint": "http://scope-test/v1/embeddings",
+            "model": "m",
+        })
+
+        catalog_a = _make_catalog(("tool_alpha", "Alpha scope tool"))
+        catalog_b = _make_catalog(("tool_beta", "Beta scope tool"))
+
+        # Obtain scope A's reranker and populate its embedding cache.
+        r_a = _get_reranker(cfg, catalog_a)
+        assert r_a is not None
+
+        embed_call_count = [0]
+
+        def counting_embed(texts: List[str]) -> List[List[float]]:
+            embed_call_count[0] += 1
+            return [[0.5] * 4 for _ in texts]
+
+        # Seed scope A's internal embedding cache with a known entry so we can
+        # detect whether a new instance (empty cache) is returned later.
+        r_a._embed = counting_embed  # type: ignore[method-assign]
+        r_a._embed_with_cache(["alpha seed text"])
+        assert embed_call_count[0] == 1, "seed embed should fire once"
+
+        # Now obtain scope B — different toolset scope.
+        r_b = _get_reranker(cfg, catalog_b)
+        assert r_b is not None
+        assert r_b is not r_a, "different toolset scopes must produce different reranker instances"
+
+        # Re-request scope A — must return the SAME instance (not a fresh one).
+        r_a2 = _get_reranker(cfg, catalog_a)
+        assert r_a2 is r_a, (
+            "re-requesting scope A after creating scope B must return the cached "
+            "scope-A instance, not a new one"
+        )
+
+        # The embedding cache on scope A must still be warm: re-embedding the
+        # same text should NOT call _embed again.
+        r_a2._embed_with_cache(["alpha seed text"])
+        assert embed_call_count[0] == 1, (
+            f"scope A's embedding cache was evicted (embed_call_count={embed_call_count[0]}); "
+            "scope B creation must not discard scope A's cached embeddings"
+        )
+
+    def test_reranker_cache_evicts_oldest_scope_when_full(self):
+        """When the cache reaches _RERANKER_CACHE_MAX_SIZE, the oldest scope is evicted.
+
+        Why: Proves the FIFO eviction bound works so memory usage is bounded
+        even when many distinct toolset-scopes are active in the same process.
+        What: Fills the cache to capacity with N distinct scopes, then adds one
+        more (N+1). Asserts the first scope's key is no longer in the cache
+        dict, while all subsequent scopes are still present.
+        Test: Inspect _reranker_cache directly after N+1 insertions.
+        """
+        from tools.tool_search import _get_reranker, RerankerConfig, _RERANKER_CACHE_MAX_SIZE
+        import tools.tool_search as ts_module
+
+        ts_module._reranker_cache.clear()
+        ts_module._reranker_cache_order.clear()
+
+        cfg = RerankerConfig.from_raw({
+            "enabled": True,
+            "endpoint": "http://eviction-test/v1/embeddings",
+            "model": "m",
+        })
+
+        # Fill cache to the max with distinct single-tool catalogs.
+        rerankers = []
+        for i in range(_RERANKER_CACHE_MAX_SIZE):
+            cat = _make_catalog((f"evict_tool_{i}", f"Tool number {i}"))
+            r = _get_reranker(cfg, cat)
+            assert r is not None
+            rerankers.append(r)
+
+        assert len(ts_module._reranker_cache) == _RERANKER_CACHE_MAX_SIZE
+
+        # The first scope's key is the first entry in the order list before eviction.
+        first_scope_key = ts_module._reranker_cache_order[0]
+        assert first_scope_key in ts_module._reranker_cache, "sanity: first scope present before eviction"
+
+        # Adding one more scope should evict the oldest.
+        overflow_cat = _make_catalog(("evict_tool_overflow", "Overflow tool"))
+        _get_reranker(cfg, overflow_cat)
+
+        assert len(ts_module._reranker_cache) == _RERANKER_CACHE_MAX_SIZE, (
+            "cache size must not grow beyond _RERANKER_CACHE_MAX_SIZE after eviction"
+        )
+        assert first_scope_key not in ts_module._reranker_cache, (
+            "oldest scope must be evicted when cache is full and a new scope arrives"
         )
 
 

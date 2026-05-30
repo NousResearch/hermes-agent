@@ -962,6 +962,16 @@ class HonchoSessionManager:
                 context_kwargs["target"] = target
             if search_query is not None:
                 context_kwargs["search_query"] = search_query
+            # Cap the representation server-side: ask Honcho for at most N
+            # conclusions so a large observation log is filtered at the source
+            # rather than fetched whole and sliced. We deliberately do NOT pass
+            # include_most_frequent — frequency bias keeps oft-restated but
+            # stale conclusions; Honcho's default ordering favors recency/
+            # relevance, which is what we want for a per-turn snapshot.
+            # None = uncapped (Honcho's default count).
+            rep_cap = getattr(self._config, "representation_max_conclusions", None) if self._config else None
+            if rep_cap:
+                context_kwargs["max_conclusions"] = rep_cap
             ctx = peer.context(**context_kwargs) if context_kwargs else peer.context()
             representation = (
                 getattr(ctx, "representation", None)
@@ -974,8 +984,14 @@ class HonchoSessionManager:
 
         if not representation:
             try:
+                rep_cap = getattr(self._config, "representation_max_conclusions", None) if self._config else None
+                rep_kwargs: dict[str, Any] = {}
+                if target is not None:
+                    rep_kwargs["target"] = target
+                if rep_cap:
+                    rep_kwargs["max_conclusions"] = rep_cap
                 representation = (
-                    peer.representation(target=target) if target is not None else peer.representation()
+                    peer.representation(**rep_kwargs) if rep_kwargs else peer.representation()
                 ) or ""
             except Exception as e:
                 logger.debug("Direct peer.representation() failed for '%s': %s", peer_id, e)

@@ -133,6 +133,24 @@ def _parse_context_tokens(host_val, root_val) -> int | None:
     return None
 
 
+def _parse_representation_max_conclusions(host_val, root_val, default: int) -> int | None:
+    """Parse representationMaxConclusions: host wins, then root, then the default.
+
+    An explicit 0 (or negative) means uncapped (returns None). Positive values
+    are clamped to the Honcho SDK's accepted range (1..100).
+    """
+    for val in (host_val, root_val):
+        if val is not None:
+            try:
+                parsed = int(val)
+            except (ValueError, TypeError):
+                continue
+            if parsed <= 0:
+                return None
+            return max(1, min(100, parsed))
+    return default
+
+
 def _parse_int_config(host_val, root_val, default: int) -> int:
     """Parse an integer config: host wins, then root, then default."""
     for val in (host_val, root_val):
@@ -323,6 +341,16 @@ class HonchoClientConfig:
     write_frequency: str | int = "async"
     # Prefetch budget (None = no cap; set to an integer to bound auto-injected context)
     context_tokens: int | None = None
+    # Cap on how many conclusions the auto-injected peer *representation* may
+    # contain. The representation is the raw observation log, which grows
+    # unbounded at scale. Passed to the Honcho SDK as max_conclusions on
+    # peer.context()/peer.representation() so Honcho filters server-side
+    # (relevance-ranked, most-frequent-first) — we never fetch the full object
+    # and slice it locally. SDK clamps to 1..100. Defaults to a bounded value
+    # so fresh/at-scale installs don't inject the entire log every turn. Cards
+    # and session summary are fetched separately and are unaffected.
+    # Set to 0 to disable the cap (uncapped — return Honcho's default).
+    representation_max_conclusions: int | None = 25
     # Dialectic (peer.chat) settings
     # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
     dialectic_reasoning_level: str = "low"
@@ -538,6 +566,11 @@ class HonchoClientConfig:
             context_tokens=_parse_context_tokens(
                 host_block.get("contextTokens"),
                 raw.get("contextTokens"),
+            ),
+            representation_max_conclusions=_parse_representation_max_conclusions(
+                host_block.get("representationMaxConclusions"),
+                raw.get("representationMaxConclusions"),
+                default=cls.__dataclass_fields__["representation_max_conclusions"].default,
             ),
             dialectic_reasoning_level=(
                 host_block.get("dialecticReasoningLevel")

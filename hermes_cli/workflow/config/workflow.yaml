@@ -1,0 +1,76 @@
+version: 1
+
+execution:
+  mode: sequential
+  max_subtasks: 8
+  max_revision_cycles: 1
+  parallel_enabled: false
+
+safety:
+  allow_background_execution: false
+  allow_file_changes: false
+  require_destructive_confirmation: true
+  redact_credentials: true
+  allow_cross_project_access: false
+
+logging:
+  path: ""
+
+agents:
+  coder:
+    provider: ""
+    model: ""
+    prompt: prompts/worker_coder.md
+    toolsets: []
+  debugger:
+    provider: ""
+    model: ""
+    prompt: prompts/worker_debugger.md
+    toolsets: []
+  uiux_designer:
+    provider: ""
+    model: ""
+    prompt: prompts/worker_uiux_designer.md
+    toolsets: []
+  product_planner:
+    provider: ""
+    model: ""
+    prompt: prompts/worker_product_planner.md
+    toolsets: []
+  researcher:
+    provider: ""
+    model: ""
+    prompt: prompts/worker_researcher.md
+    toolsets: []
+  reviewer:
+    provider: ""
+    model: ""
+    prompt: prompts/worker_reviewer.md
+    toolsets: []
+  tester:
+    provider: ""
+    model: ""
+    prompt: prompts/worker_tester.md
+    toolsets: []
+
+routing:
+  task_type:
+    code: coder
+    debug: debugger
+    UI/UX: uiux_designer
+    product design: product_planner
+    research: researcher
+    writing: researcher
+    planning: product_planner
+    review: reviewer
+  keywords:
+    - worker: tester
+      match: ["test", "tests", "verification", "example run"]
+    - worker: reviewer
+      match: ["review", "evaluate", "risk", "security", "acceptance"]
+    - worker: debugger
+      match: ["debug", "root cause", "failing", "error"]
+    - worker: uiux_designer
+      match: ["ui", "ux", "screen", "visual", "figma"]
+    - worker: product_planner
+      match: ["product", "scope", "mvp", "requirements", "phased"]

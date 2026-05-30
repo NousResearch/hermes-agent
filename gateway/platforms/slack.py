@@ -778,32 +778,52 @@ class SlackAdapter(BasePlatformAdapter):
                     slash_ctx, content,
                 )
 
-            # Convert standard markdown → Slack mrkdwn
-            formatted = self.format_message(content)
-
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = None
-
-            # reply_broadcast: also post thread replies to the main channel.
-            # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            for i, chunk in enumerate(chunks):
-                kwargs = {
+            # Slack's markdown block (April 2026) natively renders standard
+            # markdown including tables, bold, links, code blocks, and lists.
+            # Limit: 12,000 chars per markdown block. For longer messages,
+            # fall back to legacy mrkdwn text path with chunking.
+            MARKDOWN_BLOCK_LIMIT = 12000
+            if len(content) <= MARKDOWN_BLOCK_LIMIT:
+                # Use markdown block for native rendering.
+                # format_message() output serves as text fallback for
+                # notifications, search, and accessibility.
+                blocks = [{"type": "markdown", "text": content}]
+                fallback_text = self.format_message(content)
+                kwargs: dict = {
                     "channel": chat_id,
-                    "text": chunk,
-                    "mrkdwn": True,
+                    "text": fallback_text,
+                    "blocks": blocks,
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
-                    # Only broadcast the first chunk of the first reply
-                    if broadcast and i == 0:
+                    if broadcast:
                         kwargs["reply_broadcast"] = True
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            else:
+                # Convert standard markdown → Slack mrkdwn
+                formatted = self.format_message(content)
+
+                # Split long messages, preserving code block boundaries
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+                last_result = None
+                for i, chunk in enumerate(chunks):
+                    kwargs = {
+                        "channel": chat_id,
+                        "text": chunk,
+                        "mrkdwn": True,
+                    }
+                    if thread_ts:
+                        kwargs["thread_ts"] = thread_ts
+                        # Only broadcast the first chunk of the first reply
+                        if broadcast and i == 0:
+                            kwargs["reply_broadcast"] = True
+
+                    last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -880,12 +900,24 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
-            formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
-                channel=chat_id,
-                ts=message_id,
-                text=formatted,
-            )
+            # Use markdown block for native rendering (tables, bold, etc.)
+            # Limit: 12,000 chars. Fall back to mrkdwn text for longer content.
+            MARKDOWN_BLOCK_LIMIT = 12000
+            if len(content) <= MARKDOWN_BLOCK_LIMIT:
+                fallback_text = self.format_message(content)
+                await self._get_client(chat_id).chat_update(
+                    channel=chat_id,
+                    ts=message_id,
+                    text=fallback_text,
+                    blocks=[{"type": "markdown", "text": content}],
+                )
+            else:
+                formatted = self.format_message(content)
+                await self._get_client(chat_id).chat_update(
+                    channel=chat_id,
+                    ts=message_id,
+                    text=formatted,
+                )
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)

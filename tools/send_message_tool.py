@@ -583,11 +583,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     media_files = media_files or []
 
     if platform == Platform.SLACK and message:
-        try:
-            slack_adapter = SlackAdapter.__new__(SlackAdapter)
-            message = slack_adapter.format_message(message)
-        except Exception:
-            logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
+        # Do NOT call format_message() here — the markdown block (used in
+        # _send_slack) expects raw standard markdown, not Slack mrkdwn.
+        pass
 
     # Platform message length limits (from adapter class attributes for
     # built-in platforms; from PlatformEntry.max_message_length for plugins).
@@ -1035,7 +1033,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
 
 async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+    """Send via Slack Web API using markdown blocks for native rendering."""
     try:
         import aiohttp
     except ImportError:
@@ -1046,8 +1044,20 @@ async def _send_slack(token, chat_id, message):
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+
+        # Slack markdown block (April 2026): natively renders standard
+        # markdown including tables, bold, links, code blocks, and lists.
+        # Limit: 12,000 chars. For longer messages, fall back to mrkdwn text.
+        MARKDOWN_BLOCK_LIMIT = 12000
+        if len(message) <= MARKDOWN_BLOCK_LIMIT:
+            payload = {
+                "channel": chat_id,
+                "text": message,
+                "blocks": [{"type": "markdown", "text": message}],
+            }
+        else:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

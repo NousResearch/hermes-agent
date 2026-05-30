@@ -698,3 +698,41 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesDedup:
+    def test_first_message_is_processed(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._check_dedup("guid-1", "hello") is False
+
+    def test_duplicate_guid_and_text_is_deduped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._check_dedup("guid-1", "hello")
+        assert adapter._check_dedup("guid-1", "hello") is True
+
+    def test_same_guid_different_text_is_not_deduped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._check_dedup("guid-1", "hello")
+        assert adapter._check_dedup("guid-1", "world") is False
+
+    def test_different_guid_same_text_is_not_deduped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._check_dedup("guid-1", "hello")
+        assert adapter._check_dedup("guid-2", "hello") is False
+
+    def test_empty_guid_is_not_deduped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._check_dedup(None, "hello") is False
+        assert adapter._check_dedup("", "hello") is False
+
+    def test_cache_evicts_oldest_entries(self, monkeypatch):
+        from gateway.platforms.bluebubbles import _MAX_DEDUP_CACHE
+        adapter = _make_adapter(monkeypatch)
+        for i in range(_MAX_DEDUP_CACHE + 5):
+            adapter._check_dedup(f"guid-{i}", f"text-{i}")
+        assert len(adapter._seen_keys) == _MAX_DEDUP_CACHE
+        # Oldest entries should have been evicted (re-processing returns False)
+        assert adapter._check_dedup("guid-0", "text-0") is False
+        assert adapter._check_dedup("guid-4", "text-4") is False
+        # Newest entries should still be present (re-processing returns True)
+        assert adapter._check_dedup(f"guid-{_MAX_DEDUP_CACHE + 4}", f"text-{_MAX_DEDUP_CACHE + 4}") is True

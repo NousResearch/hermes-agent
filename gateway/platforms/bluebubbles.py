@@ -9,11 +9,14 @@ downloading from PR #4588 (YuhangLin).
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -55,6 +58,11 @@ _TAPBACK_REMOVED = {
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+
+# BlueBubbles can dispatch requests for the same message ~500-900ms apart, 
+# particularly when SIP is disabled. De-duplciation tracks by (guid, text_hash)
+# to avoid sending the same message multiple times.
+_MAX_DEDUP_CACHE = 1000
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -129,6 +137,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        self._seen_keys: OrderedDict[tuple, None] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -754,6 +763,27 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return None
 
     # ------------------------------------------------------------------
+    # Inbound message dedup (BlueBubbles fires each message twice)
+    # ------------------------------------------------------------------
+
+    def _check_dedup(self, guid: Optional[str], text: str) -> bool:
+        """Return True if *(guid, text_hash)* has already been processed.
+
+        Uses a bounded OrderedDict so memory stays flat during long sessions.
+        """
+        if not guid:
+            return False
+        text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
+        key = (guid, text_hash)
+        if key in self._seen_keys:
+            logger.debug("[bluebubbles] ignoring duplicate message %s", guid)
+            return True
+        self._seen_keys[key] = None
+        if len(self._seen_keys) > _MAX_DEDUP_CACHE:
+            self._seen_keys.popitem(last=False)
+        return False
+
+    # ------------------------------------------------------------------
     # Webhook handling
     # ------------------------------------------------------------------
 
@@ -913,6 +943,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+
+        message_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        if message_guid and self._check_dedup(message_guid, text):
+            return web.Response(text="ok")
+
         source = self.build_source(
             chat_id=session_chat_id,
             chat_name=chat_identifier or sender,
@@ -926,11 +965,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_guid,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

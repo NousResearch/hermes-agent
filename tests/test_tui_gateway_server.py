@@ -5417,3 +5417,33 @@ def test_attach_worker_stores_worker_on_live_session():
         assert live["slash_worker"] is worker
     finally:
         server._sessions.pop("live", None)
+
+
+def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
+    )
+    assert resp["result"] == {"closed": True}
+    assert seen == [("s9", "tui_close")]
+
+
+def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason: seen.append((sid, end_reason)),
+    )
+    server._sessions.clear()
+    server._sessions["a"] = {}
+    server._sessions["b"] = {}
+    try:
+        server._shutdown_sessions()
+        assert sorted(sid for sid, _ in seen) == ["a", "b"]
+        assert {reason for _, reason in seen} == {"tui_shutdown"}
+    finally:
+        server._sessions.clear()

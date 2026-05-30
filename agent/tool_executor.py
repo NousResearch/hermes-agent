@@ -305,8 +305,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # ContextVars are propagated by propagate_context_to_thread() at the
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
+        result = ""
         try:
+            _approval_ctx_token = None
             try:
+                try:
+                    from tools.approval import set_current_tool_approval_context
+                    _approval_ctx_token = set_current_tool_approval_context(
+                        turn_id=effective_task_id or getattr(agent, "session_id", "") or "",
+                        tool_call_id=getattr(tool_call, "id", "") or "",
+                        tool_name=function_name,
+                        tool_args=function_args,
+                    )
+                except Exception:
+                    _approval_ctx_token = None
                 result = agent._invoke_tool(
                     function_name,
                     function_args,
@@ -318,6 +330,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+            finally:
+                if _approval_ctx_token is not None:
+                    try:
+                        from tools.approval import reset_current_tool_approval_context
+                        reset_current_tool_approval_context(_approval_ctx_token)
+                    except Exception:
+                        pass
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
             if is_error:
@@ -682,6 +701,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass  # never block tool execution
 
         tool_start_time = time.time()
+        _approval_ctx_token = None
+        try:
+            from tools.approval import set_current_tool_approval_context
+            _approval_ctx_token = set_current_tool_approval_context(
+                turn_id=effective_task_id or getattr(agent, "session_id", "") or "",
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                tool_name=function_name,
+                tool_args=function_args,
+            )
+        except Exception:
+            _approval_ctx_token = None
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
@@ -909,6 +939,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+
+        if _approval_ctx_token is not None:
+            try:
+                from tools.approval import reset_current_tool_approval_context
+                reset_current_tool_approval_context(_approval_ctx_token)
+            except Exception:
+                pass
 
         # Track file-mutation outcome for the turn-end verifier.  See
         # the concurrent path for the rationale; both paths must feed

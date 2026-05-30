@@ -494,3 +494,87 @@ def test_bridge_does_not_remap_slash_commands_or_paused_bindings(tmp_path):
     assert paused_decision.verdict is BridgeVerdict.REJECT
     assert "paused" in paused_decision.reason
     assert session_store.switches == []
+
+
+def test_bridge_approve_resolves_matching_gateway_executor_entry(tmp_path):
+    from tools.approval import _ApprovalEntry, _gateway_queues
+
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    args_hash = bridge_tool_args_hash("terminal", {"command": "rm -rf /tmp/demo"})
+    approval = store.create_approval(
+        bridge_id="bridge-cli-session",
+        turn_id="turn-1",
+        tool_call_id="call-1",
+        tool_name="terminal",
+        tool_args_hash=args_hash,
+        ttl_seconds=300,
+        nonce="nonce-1",
+    )
+    session_key = "agent:main:telegram:dm:48264503"
+    entry = _ApprovalEntry({
+        "bridge_approval_nonce": approval.nonce,
+        "bridge_hermes_session_id": "cli-session",
+        "bridge_tool_args_hash": args_hash,
+        "bridge_turn_id": "turn-1",
+        "bridge_tool_call_id": "call-1",
+    })
+    _gateway_queues[session_key] = [entry]
+
+    out = handle_gateway_bridge_command(
+        _telegram_event("/bridge_approve nonce-1"),
+        store=store,
+        gateway_session_key=session_key,
+    )
+
+    assert "approval recorded" in out.lower()
+    assert entry.event.is_set()
+    assert entry.result == "once"
+    assert not _gateway_queues.get(session_key)
+
+
+def test_bridge_approve_does_not_resolve_gateway_entry_on_tool_args_mismatch(tmp_path):
+    from tools.approval import _ApprovalEntry, _gateway_queues
+
+    store = BridgeStateStore(tmp_path / "bridge.sqlite", now_fn=_now)
+    store.create_binding(
+        bridge_id="bridge-cli-session",
+        hermes_session_id="cli-session",
+        telegram_chat_id="48264503",
+        telegram_user_id="48264503",
+    )
+    args_hash = bridge_tool_args_hash("terminal", {"command": "rm -rf /tmp/demo"})
+    approval = store.create_approval(
+        bridge_id="bridge-cli-session",
+        turn_id="turn-1",
+        tool_call_id="call-1",
+        tool_name="terminal",
+        tool_args_hash=args_hash,
+        ttl_seconds=300,
+        nonce="nonce-2",
+    )
+    session_key = "agent:main:telegram:dm:48264503"
+    entry = _ApprovalEntry({
+        "bridge_approval_nonce": approval.nonce,
+        "bridge_hermes_session_id": "cli-session",
+        "bridge_tool_args_hash": bridge_tool_args_hash("terminal", {"command": "different"}),
+        "bridge_turn_id": "turn-1",
+        "bridge_tool_call_id": "call-1",
+    })
+    _gateway_queues[session_key] = [entry]
+
+    out = handle_gateway_bridge_command(
+        _telegram_event("/bridge_approve nonce-2"),
+        store=store,
+        gateway_session_key=session_key,
+    )
+
+    assert "executor approval rejected" in out.lower()
+    assert not entry.event.is_set()
+    assert entry.result is None
+    assert _gateway_queues.get(session_key) == [entry]

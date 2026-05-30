@@ -7748,7 +7748,7 @@ class GatewayRunner:
             "bridge_disconnect",
         }:
             from gateway.bridge_commands import handle_gateway_bridge_command
-            return handle_gateway_bridge_command(event)
+            return handle_gateway_bridge_command(event, gateway_session_key=_quick_key)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -17387,6 +17387,57 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+
+                # CLI↔Telegram bridge approval adapter.  For bound Telegram DMs,
+                # create a nonce-bound bridge approval record and send the
+                # /bridge_approve instruction instead of the generic /approve
+                # prompt.  The pending executor entry receives the same dict, so
+                # these bridge_* fields become the exact verifier inputs consumed
+                # by /bridge_approve before unblocking execution.
+                try:
+                    if (
+                        getattr(getattr(source, "platform", None), "value", None) == "telegram"
+                        and approval_data.get("turn_id")
+                        and approval_data.get("tool_call_id")
+                        and approval_data.get("tool_name")
+                    ):
+                        from gateway.bridge_commands import create_bridge_approval_prompt
+
+                        _bridge_prompt = create_bridge_approval_prompt(
+                            event,
+                            turn_id=str(approval_data.get("turn_id") or ""),
+                            tool_call_id=str(approval_data.get("tool_call_id") or ""),
+                            tool_name=str(approval_data.get("tool_name") or ""),
+                            tool_args=approval_data.get("tool_args") or {},
+                        )
+                        if _bridge_prompt.approval is not None:
+                            approval_data.update({
+                                "bridge_approval_nonce": _bridge_prompt.approval.nonce,
+                                "bridge_hermes_session_id": _bridge_prompt.hermes_session_id or "",
+                                "bridge_tool_args_hash": _bridge_prompt.tool_args_hash,
+                                "bridge_turn_id": str(approval_data.get("turn_id") or ""),
+                                "bridge_tool_call_id": str(approval_data.get("tool_call_id") or ""),
+                            })
+                            _bridge_msg = (
+                                f"{_bridge_prompt.text}\n\n"
+                                f"Command preview:\n```\n{str(cmd)[:200]}\n```\n"
+                                f"Reason: {desc}"
+                            )
+                            _bridge_fut = safe_schedule_threadsafe(
+                                _status_adapter.send(
+                                    _status_chat_id,
+                                    _bridge_msg,
+                                    metadata=_status_thread_metadata,
+                                ),
+                                _loop_for_step,
+                                logger=logger,
+                                log_message="Bridge approval send scheduling error",
+                            )
+                            if _bridge_fut is not None:
+                                _bridge_fut.result(timeout=15)
+                                return
+                except Exception as _bridge_exc:
+                    logger.warning("Bridge approval prompt failed, falling back to normal approval: %s", _bridge_exc)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids

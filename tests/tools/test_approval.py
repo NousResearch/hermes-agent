@@ -1469,3 +1469,98 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestBridgeApprovalContext:
+    def setup_method(self):
+        approval_module._gateway_queues.clear()
+        approval_module._gateway_notify_cbs.clear()
+        approval_module._session_approved.clear()
+        approval_module._permanent_approved.clear()
+        approval_module._pending.clear()
+
+    def test_gateway_approval_data_includes_tool_call_context_for_bridge_nonce(self):
+        captured = {}
+        session_key = "bridge-session"
+
+        def notify(data):
+            captured.update(data)
+            approval_module.resolve_gateway_approval(session_key, "deny")
+
+        token = approval_module.set_current_session_key(session_key)
+        tool_token = approval_module.set_current_tool_approval_context(
+            turn_id="turn-1",
+            tool_call_id="call-1",
+            tool_name="terminal",
+            tool_args={"command": "rm -rf /important"},
+        )
+        approval_module.register_gateway_notify(session_key, notify)
+        try:
+            with mock_patch.dict(os.environ, {"HERMES_GATEWAY_SESSION": "1"}, clear=False):
+                result = approval_module.check_all_command_guards("rm -rf /important", "local")
+        finally:
+            approval_module.unregister_gateway_notify(session_key)
+            approval_module.reset_current_tool_approval_context(tool_token)
+            approval_module.reset_current_session_key(token)
+
+        assert result["approved"] is False
+        assert captured["turn_id"] == "turn-1"
+        assert captured["tool_call_id"] == "call-1"
+        assert captured["tool_name"] == "terminal"
+        assert captured["tool_args"] == {"command": "rm -rf /important"}
+
+    def test_tool_approval_context_copies_tool_args_at_binding_time(self):
+        args = {"command": "rm -rf /important", "nested": {"flag": True}}
+        token = approval_module.set_current_tool_approval_context(
+            turn_id="turn-1",
+            tool_call_id="call-1",
+            tool_name="terminal",
+            tool_args=args,
+        )
+        try:
+            args["command"] = "echo safe"
+            args["nested"]["flag"] = False
+            captured = approval_module.get_current_tool_approval_context()
+        finally:
+            approval_module.reset_current_tool_approval_context(token)
+
+        assert captured["tool_args"] == {"command": "rm -rf /important", "nested": {"flag": True}}
+
+    def test_generic_approve_does_not_resolve_bridge_protected_gateway_entry(self):
+        session_key = "bridge-session"
+        entry = approval_module._ApprovalEntry({"bridge_approval_nonce": "nonce-1"})
+        approval_module._gateway_queues[session_key] = [entry]
+
+        count = approval_module.resolve_gateway_approval(session_key, "once")
+
+        assert count == 0
+        assert entry.result is None
+        assert not entry.event.is_set()
+        assert approval_module._gateway_queues[session_key] == [entry]
+
+    def test_generic_approve_all_skips_bridge_protected_gateway_entries(self):
+        session_key = "bridge-session"
+        bridge_entry = approval_module._ApprovalEntry({"bridge_approval_nonce": "nonce-1"})
+        normal_entry = approval_module._ApprovalEntry({"command": "rm -rf /tmp/demo"})
+        approval_module._gateway_queues[session_key] = [bridge_entry, normal_entry]
+
+        count = approval_module.resolve_gateway_approval(session_key, "once", resolve_all=True)
+
+        assert count == 1
+        assert bridge_entry.result is None
+        assert not bridge_entry.event.is_set()
+        assert normal_entry.result == "once"
+        assert normal_entry.event.is_set()
+        assert approval_module._gateway_queues[session_key] == [bridge_entry]
+
+    def test_generic_deny_can_resolve_bridge_protected_gateway_entry(self):
+        session_key = "bridge-session"
+        entry = approval_module._ApprovalEntry({"bridge_approval_nonce": "nonce-1"})
+        approval_module._gateway_queues[session_key] = [entry]
+
+        count = approval_module.resolve_gateway_approval(session_key, "deny")
+
+        assert count == 1
+        assert entry.result == "deny"
+        assert entry.event.is_set()
+        assert not approval_module._gateway_queues.get(session_key)

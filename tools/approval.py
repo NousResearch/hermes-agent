@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import copy
 import logging
 import os
 import re
@@ -35,6 +36,11 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
+)
+
+_tool_approval_context: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "tool_approval_context",
+    default={},
 )
 
 
@@ -87,6 +93,40 @@ def get_current_session_key(default: str = "default") -> str:
         return session_key
     from gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", default)
+
+
+def set_current_tool_approval_context(
+    *,
+    turn_id: str | None = None,
+    tool_call_id: str | None = None,
+    tool_name: str | None = None,
+    tool_args=None,
+) -> contextvars.Token[dict]:
+    """Bind exact tool-call identity for downstream approval requests.
+
+    Dangerous-command approval runs inside low-level tools, after the model
+    tool-call dispatcher has already handed off execution.  Bridge approvals
+    need the original turn/tool-call identity and exact args hash, so the
+    dispatcher sets this context before invoking a tool and approval.py copies
+    it into gateway approval data.
+    """
+    return _tool_approval_context.set({
+        "turn_id": str(turn_id or ""),
+        "tool_call_id": str(tool_call_id or ""),
+        "tool_name": str(tool_name or ""),
+        "tool_args": copy.deepcopy(tool_args) if tool_args is not None else {},
+    })
+
+
+def reset_current_tool_approval_context(token: contextvars.Token[dict]) -> None:
+    """Restore the prior tool approval context."""
+    _tool_approval_context.reset(token)
+
+
+def get_current_tool_approval_context() -> dict:
+    """Return a copy of the active tool approval context, if any."""
+    value = _tool_approval_context.get({}) or {}
+    return dict(value)
 
 
 def _get_session_platform() -> str:
@@ -566,10 +606,21 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
+        bridge_protected = choice != "deny"
         if resolve_all:
-            targets = list(queue)
-            queue.clear()
+            targets = [
+                entry for entry in queue
+                if not (bridge_protected and (entry.data or {}).get("bridge_approval_nonce"))
+            ]
+            if not targets:
+                return 0
+            for entry in targets:
+                if entry in queue:
+                    queue.remove(entry)
         else:
+            target = queue[0]
+            if bridge_protected and (target.data or {}).get("bridge_approval_nonce"):
+                return 0
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
@@ -1317,6 +1368,14 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
             }
+            tool_context = get_current_tool_approval_context()
+            if tool_context:
+                approval_data.update({
+                    "turn_id": tool_context.get("turn_id") or "",
+                    "tool_call_id": tool_context.get("tool_call_id") or "",
+                    "tool_name": tool_context.get("tool_name") or "",
+                    "tool_args": tool_context.get("tool_args") or {},
+                })
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )

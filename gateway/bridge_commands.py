@@ -340,10 +340,66 @@ def maybe_apply_gateway_bridge_binding(
     return decision
 
 
+
+def _resolve_matching_gateway_bridge_approval(
+    session_key: str,
+    *,
+    nonce: str,
+    chat_id: str,
+    user_id: str,
+    thread_id: Optional[str],
+    store: BridgeStateStore,
+) -> tuple[bool, Optional[str]]:
+    """Resolve the pending gateway executor entry matching a bridge nonce.
+
+    The Telegram command records user approval first.  This adapter is the
+    executor-side handoff: it consumes the nonce only when the blocked gateway
+    approval entry presents the same Hermes session, turn id, tool-call id, and
+    tool-argument hash.  Mismatches fail closed and leave the entry waiting.
+    """
+    try:
+        from tools.approval import _gateway_queues, _lock
+    except Exception as exc:  # pragma: no cover
+        return False, f"approval queue unavailable: {exc}"
+
+    with _lock:
+        live_queue = _gateway_queues.get(session_key) or []
+        matching_entries = [
+            entry for entry in live_queue
+            if (getattr(entry, "data", {}) or {}).get("bridge_approval_nonce") == nonce
+        ]
+        if not matching_entries:
+            return False, None
+
+        entry = matching_entries[0]
+        data = getattr(entry, "data", {}) or {}
+        consume = store.consume_approval(
+            nonce=nonce,
+            chat_id=chat_id,
+            user_id=user_id,
+            thread_id=thread_id,
+            hermes_session_id=str(data.get("bridge_hermes_session_id") or ""),
+            turn_id=str(data.get("bridge_turn_id") or ""),
+            tool_call_id=str(data.get("bridge_tool_call_id") or ""),
+            tool_args_hash=str(data.get("bridge_tool_args_hash") or ""),
+            require_user_approval=True,
+        )
+        if consume.verdict is BridgeVerdict.REJECT:
+            return False, consume.reason
+
+        if entry in live_queue:
+            live_queue.remove(entry)
+        if not live_queue:
+            _gateway_queues.pop(session_key, None)
+        entry.result = "once"
+        entry.event.set()
+    return True, None
+
 def handle_gateway_bridge_command(
     event: MessageEvent,
     *,
     store: BridgeStateStore | None = None,
+    gateway_session_key: str | None = None,
 ) -> str:
     """Handle safe Telegram-side bridge commands.
 
@@ -383,6 +439,26 @@ def handle_gateway_bridge_command(
             user_id=user_id,
             thread_id=thread_id,
         )
+        if decision.verdict is BridgeVerdict.REJECT:
+            return _decision_message(decision, "")
+
+        if gateway_session_key:
+            resolved, reject_reason = _resolve_matching_gateway_bridge_approval(
+                gateway_session_key,
+                nonce=nonce,
+                chat_id=chat_id,
+                user_id=user_id,
+                thread_id=thread_id,
+                store=store,
+            )
+            if reject_reason:
+                return f"Bridge executor approval rejected: {reject_reason}"
+            if resolved:
+                return (
+                    f"Bridge approval recorded and executor resumed for Hermes session "
+                    f"`{decision.hermes_session_id}`."
+                )
+
         return _decision_message(
             decision,
             f"Bridge approval recorded for Hermes session `{decision.hermes_session_id}`. The matching pending tool request must still verify the exact turn, tool call, and arguments before execution.",

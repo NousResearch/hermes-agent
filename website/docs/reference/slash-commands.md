@@ -214,6 +214,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/bridge_off` | **Telegram DM only.** Emergency-disable the CLI↔Telegram bridge by creating the filesystem kill switch; remote input is blocked until the local side removes it. |
 | `/bridge_pause` / `/bridge_resume` | **Telegram DM only.** Pause or resume the current Telegram bridge binding without deleting it. |
 | `/bridge_disconnect` | **Telegram DM only.** Disconnect the current Telegram DM/user from its linked CLI-originated Hermes session. Plain DM text returns to the normal Telegram gateway session. |
+| `/bridge_approve <nonce>` | **Telegram DM only.** Approve a nonce-bound bridge dangerous-command prompt for the current bound CLI session. Unlike generic `/approve`, this records the bound Telegram user's approval and resumes only the matching pending executor entry after exact Hermes session, turn id, tool call id, and tool-argument hash verification. Any mismatch fails closed. |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
@@ -231,7 +232,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config. |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 | `/commands [page]` | Browse all commands and skills (paginated). |
-| `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. |
+| `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. For CLI↔Telegram bridge prompts, prefer `/bridge_approve <nonce>` so the approval is bound to the exact bridge session, turn, tool call, and arguments. |
 | `/deny` | Reject a pending dangerous command. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |

@@ -906,6 +906,16 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "input_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional reference/input images for providers that support image editing or "
+                    "reference-guided generation. Values may be local file paths, HTTP(S) URLs, "
+                    "or data:image/... URLs. Currently supported by the openai-codex GPT Image "
+                    "2 backend."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -951,7 +961,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, input_images=None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1008,6 +1018,8 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        if input_images is not None:
+            kwargs["input_images"] = input_images
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1035,12 +1047,19 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    input_images = args.get("input_images")
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, input_images=input_images)
     if dispatched is not None:
         return dispatched
+
+    if input_images:
+        return tool_error(
+            "input_images requires an image generation provider that supports "
+            "reference/edit inputs, such as image_gen.provider: openai-codex"
+        )
 
     return image_generate_tool(
         prompt=prompt,

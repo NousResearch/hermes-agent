@@ -30,7 +30,27 @@ class _FakeCodexProvider(ImageGenProvider):
         }
 
 
+class _CapturingProvider(ImageGenProvider):
+    def __init__(self):
+        self.calls = []
+
+    @property
+    def name(self) -> str:
+        return "codex"
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.calls.append({"prompt": prompt, "aspect_ratio": aspect_ratio, **kwargs})
+        return {
+            "success": True,
+            "image": "/tmp/codex-test.png",
+            "model": "gpt-image-2-high",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": "codex",
+        }
+
 class TestPluginDispatch:
+
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module
@@ -97,3 +117,34 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_dispatch_forwards_model_and_input_images(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "image_gen:\n  provider: codex\n  model: gpt-image-2-high\n"
+        )
+
+        provider = _CapturingProvider()
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-2-high")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "codex" else None)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "make a card",
+            "portrait",
+            input_images=["/tmp/mother.png", "/tmp/father.png"],
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert provider.calls == [{
+            "prompt": "make a card",
+            "aspect_ratio": "portrait",
+            "model": "gpt-image-2-high",
+            "input_images": ["/tmp/mother.png", "/tmp/father.png"],
+        }]

@@ -19,8 +19,11 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -143,7 +146,64 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[str, Any]:
+def _coerce_input_images(value: Any) -> List[str]:
+    """Normalize the optional ``input_images`` kwarg to a clean string list."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        raise ValueError("input_images must be a list of image paths/URLs or a single string")
+
+    out: List[str] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, str):
+            raise ValueError(f"input_images[{idx}] must be a string path or URL")
+        cleaned = item.strip()
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
+def _image_ref_to_input_part(ref: str) -> Dict[str, str]:
+    """Convert a local path/URL/data URL into a Responses ``input_image`` part."""
+    lowered = ref.lower()
+    if lowered.startswith(("http://", "https://")):
+        return {"type": "input_image", "image_url": ref}
+    if lowered.startswith("data:image/"):
+        return {"type": "input_image", "image_url": ref}
+
+    path = Path(ref).expanduser()
+    if not path.exists():
+        raise ValueError(f"input image not found: {ref}")
+    if not path.is_file():
+        raise ValueError(f"input image is not a file: {ref}")
+
+    mime, _ = mimetypes.guess_type(str(path))
+    if not mime or not mime.startswith("image/"):
+        raise ValueError(f"input image file type is not recognized as an image: {ref}")
+
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {"type": "input_image", "image_url": f"data:{mime};base64,{data}"}
+
+
+def _build_input_content(prompt: str, input_images: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    """Build Responses message content with text plus optional reference images."""
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    for ref in input_images or []:
+        content.append(_image_ref_to_input_part(ref))
+    return content
+
+
+def _build_responses_payload(
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Build the Codex Responses request body for an image_generation call."""
     return {
         "model": _CODEX_CHAT_MODEL,
@@ -152,7 +212,7 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": _build_input_content(prompt, input_images),
         }],
         "tools": [{
             "type": "image_generation",
@@ -242,7 +302,14 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
-def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _collect_image_b64(
+    token: str,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Optional[List[str]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
@@ -253,7 +320,12 @@ def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> O
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     })
-    payload = _build_responses_payload(prompt=prompt, size=size, quality=quality)
+    payload = _build_responses_payload(
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        input_images=input_images,
+    )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
     image_b64: Optional[str] = None
@@ -344,6 +416,20 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        try:
+            input_images = _coerce_input_images(kwargs.get("input_images"))
+            # Validate local paths and MIME types early so user mistakes surface
+            # as argument errors, not opaque API failures.
+            _build_input_content(prompt, input_images)
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
         if not _read_codex_access_token():
             return error_response(
                 error=(
@@ -388,6 +474,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                input_images=input_images,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -428,7 +515,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={
+                "size": size,
+                "quality": meta["quality"],
+                "input_image_count": len(input_images),
+            },
         )
 
 

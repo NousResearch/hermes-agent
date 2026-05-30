@@ -129,11 +129,12 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality):
+        def _collect(token, *, prompt, size, quality, input_images=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                input_images=input_images,
             ))
             return _b64_png()
 
@@ -159,6 +160,64 @@ class TestGenerate:
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
+
+    def test_codex_stream_request_includes_input_images(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        img = tmp_path / "mother.png"
+        img.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+            ))
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("make a family card", aspect_ratio="square", input_images=[str(img)])
+        assert result["success"] is True
+        assert result["input_image_count"] == 1
+
+        content = captured["input"][0]["content"]
+        assert content[0] == {"type": "input_text", "text": "make a family card"}
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+
+    def test_codex_accepts_remote_input_image_urls(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+            ))
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("use reference", input_images=["https://example.com/ref.webp"])
+        assert result["success"] is True
+        assert captured["input"][0]["content"][1] == {
+            "type": "input_image",
+            "image_url": "https://example.com/ref.webp",
+        }
+
+    def test_missing_input_image_returns_invalid_argument(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        result = provider.generate("use reference", input_images=["/no/such/image.png"])
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "input image not found" in result["error"]
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""

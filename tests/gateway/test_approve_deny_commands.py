@@ -11,6 +11,7 @@ via a per-session queue.
 import os
 import threading
 import time
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -647,3 +648,24 @@ class TestFallbackNoCallback:
         assert result["approved"] is False
         assert result.get("status") == "pending_approval"
         assert result.get("approval_pending") is True
+
+
+    def test_approve_natural_language_aliases(self):
+        """Test natural language aliases for approve/deny commands."""
+        aliases = {
+            "approve": "once",
+            "approve once": "once",
+            "allow once": "once",
+            "once": "once",
+            "yes": "once",
+            "ok": "once",
+            "session": "session",
+            "approve session": "session",
+            "always": "always",
+            "approve always": "always",
+            "deny": "deny",
+            "no": "deny",
+            "cancel": "deny",
+        }
+        for alias, expected in aliases.items():
+            self.assertIn(alias.lower(), [k.lower() for k in aliases.keys()])

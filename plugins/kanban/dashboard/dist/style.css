@@ -334,6 +334,11 @@
 .hermes-kanban-drawer {
   width: min(var(--hermes-kanban-drawer-width, 640px), 92vw);
   height: 100vh;
+  /* Dynamic viewport unit excludes the mobile browser's collapsing chrome
+     (URL/nav bars) so the drawer's bottom row stays reachable. Falls back to
+     100vh on browsers without dvh support. */
+  height: 100dvh;
+  max-height: 100dvh;
   background: var(--color-card);
   border-left: 1px solid var(--color-border);
   display: flex;
@@ -352,8 +357,21 @@
   align-items: center;
   justify-content: space-between;
   padding: 0.6rem 0.8rem;
+  /* Honor the top safe-area inset (notch) so the task id / close button are
+     not clipped on mobile. */
+  padding-top: max(0.6rem, env(safe-area-inset-top));
   border-bottom: 1px solid var(--color-border);
   font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* On mobile the dashboard shell renders a fixed top bar (min-h-14, hidden at
+   the lg breakpoint). The drawer is a body-level z-60 overlay starting at the
+   viewport top, so its header would sit behind that bar. Push the header down
+   by the bar height (3.5rem) plus the top safe-area inset. */
+@media (max-width: 1023px) {
+  .hermes-kanban-drawer-head {
+    padding-top: calc(3.5rem + env(safe-area-inset-top));
+  }
 }
 
 .hermes-kanban-drawer-close {
@@ -372,6 +390,10 @@
   flex: 1;
   overflow-y: auto;
   padding: 0.9rem;
+  /* When no comment row is rendered (loading / error states), the scrolling
+     body is the bottom-most element — extend its bottom padding past the
+     mobile browser chrome so the last content stays readable. */
+  padding-bottom: max(0.9rem, calc(0.9rem + env(safe-area-inset-bottom)));
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
@@ -530,6 +552,9 @@
   display: flex;
   gap: 0.4rem;
   padding: 0.55rem 0.75rem;
+  /* Keep the comment input clear of the mobile browser nav bar / home
+     indicator by extending the bottom padding with the safe-area inset. */
+  padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
   border-top: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-card) 90%, transparent);
 }

@@ -1,3 +1,6 @@
+import base64
+import json
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 from agent.account_usage import (
@@ -49,6 +52,25 @@ class _RoutingClient:
         return _Response(self._payloads[url])
 
 
+def _make_codex_jwt(account_id="acct_123"):
+    def _b64url(payload):
+        return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+
+    claims = {
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+            "chatgpt_plan_type": "plus",
+        }
+    }
+    return ".".join(
+        (
+            _b64url(b'{"alg":"RS256","typ":"JWT"}'),
+            _b64url(json.dumps(claims).encode("utf-8")),
+            _b64url(b"sig"),
+        )
+    )
+
+
 def test_fetch_account_usage_codex(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_codex_runtime_credentials",
@@ -93,6 +115,82 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_prefers_healthy_pool_token_when_singleton_missing(monkeypatch):
+    stale_token = _make_codex_jwt("acct_stale")
+    healthy_token = _make_codex_jwt("acct_ok")
+    requested = []
+
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": stale_token,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: (_ for _ in ()).throw(RuntimeError("singleton missing")),
+    )
+    monkeypatch.setattr("hermes_cli.auth._auth_store_lock", lambda: nullcontext())
+    monkeypatch.setattr(
+        "hermes_cli.auth._load_auth_store",
+        lambda: {
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "access_token": stale_token,
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_status": "exhausted",
+                        "priority": 0,
+                    },
+                    {
+                        "access_token": healthy_token,
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_status": "ok",
+                        "priority": 10,
+                    },
+                ]
+            }
+        },
+    )
+
+    class _PoolClient:
+        def __init__(self, timeout=15.0):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            requested.append((url, dict(headers or {})))
+            assert url == "https://chatgpt.com/backend-api/wham/usage"
+            assert headers["originator"] == "codex_cli_rs"
+            assert headers["User-Agent"].startswith("codex_cli_rs/")
+            assert headers["ChatGPT-Account-ID"] == "acct_ok"
+            assert "ChatGPT-Account-Id" not in headers
+            return _Response(
+                {
+                    "plan_type": "plus",
+                    "rate_limit": {
+                        "primary_window": {"used_percent": 33, "reset_at": 1_900_000_000},
+                    },
+                }
+            )
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", _PoolClient)
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.plan == "Plus"
+    assert snapshot.windows[0].used_percent == 33.0
+    assert len(requested) == 1
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

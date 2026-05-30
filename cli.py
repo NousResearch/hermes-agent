@@ -10153,15 +10153,48 @@ class HermesCLI:
         return True
 
     def _show_usage(self):
-        """Show rate limits (if available) and session token usage."""
-        if not self.agent:
-            print("(._.) No active agent -- send a message first.")
+        """Show account limits, rate limits (if available), and session token usage."""
+        agent = self.agent
+        provider = getattr(agent, "provider", None) if agent else None
+        base_url = getattr(agent, "base_url", None) if agent else None
+        api_key = getattr(agent, "api_key", None) if agent else None
+        provider = provider or getattr(self, "provider", None)
+        base_url = base_url or getattr(self, "base_url", None)
+        api_key = api_key or getattr(self, "api_key", None)
+
+        # Account limits do not require an active in-memory agent. Fetch them
+        # before the session checks so `/usage` can answer immediately after
+        # launch for OAuth-backed subscription providers such as openai-codex.
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+        account_snapshot = None
+        if provider:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                try:
+                    account_snapshot = _pool.submit(
+                        fetch_account_usage, provider,
+                        base_url=base_url, api_key=api_key,
+                    ).result(timeout=10.0)
+                except (concurrent.futures.TimeoutError, Exception):
+                    account_snapshot = None
+        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+
+        if not agent:
+            if account_lines:
+                for line in account_lines:
+                    print(line)
+                print()
+                print("(._.) No session token usage yet -- send a message first.")
+            else:
+                print("(._.) No active agent -- send a message first.")
             return
 
-        agent = self.agent
         calls = agent.session_api_calls
 
         if calls == 0:
+            if account_lines:
+                for line in account_lines:
+                    print(line)
+                print()
             print("(._.) No API calls made yet in this session.")
             return
 
@@ -10233,24 +10266,6 @@ class HermesCLI:
         if cost_result.status == "unknown":
             print(f"  Note:             Pricing unknown for {agent.model}")
 
-        # Account limits -- fetched off-thread with a hard timeout so slow
-        # provider APIs don't hang the prompt.
-        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
-        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
-        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
-        # Lazy import — pulls the OpenAI SDK chain, only needed here.
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider,
-                        base_url=base_url, api_key=api_key,
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
         if account_lines:
             print()
             for line in account_lines:

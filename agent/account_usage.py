@@ -124,22 +124,86 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
+def _codex_usage_credential_candidates(primary: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_candidate(token: Any, base_url: Any, status: Any = None, priority: Any = None) -> None:
+        token_text = str(token or "").strip()
+        if not token_text or token_text in seen:
+            return
+        seen.add(token_text)
+        candidates.append(
+            {
+                "api_key": token_text,
+                "base_url": str(base_url or primary.get("base_url") or "").strip(),
+                "last_status": status,
+                "priority": priority,
+            }
+        )
+
+    try:
+        from hermes_cli.auth import _auth_store_lock, _load_auth_store
+
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        entries = ((auth_store.get("credential_pool") or {}).get("openai-codex") or [])
+        if isinstance(entries, list):
+            ordered = sorted(
+                [entry for entry in entries if isinstance(entry, dict)],
+                key=lambda entry: (
+                    0 if entry.get("last_status") == "ok" else 1,
+                    int(entry.get("priority", 100)),
+                ),
+            )
+            for entry in ordered:
+                add_candidate(
+                    entry.get("access_token"),
+                    entry.get("base_url"),
+                    entry.get("last_status"),
+                    entry.get("priority"),
+                )
+    except Exception:
+        pass
+
+    add_candidate(primary.get("api_key"), primary.get("base_url"))
+    return candidates
+
+
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
-    headers = {
-        "Authorization": f"Bearer {creds['api_key']}",
-        "Accept": "application/json",
-        "User-Agent": "codex-cli",
-    }
-    if account_id:
-        headers["ChatGPT-Account-Id"] = account_id
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+    try:
+        token_data = _read_codex_tokens()
+        tokens = token_data.get("tokens") or {}
+    except Exception:
+        tokens = {}
+    singleton_account_id = str(tokens.get("account_id", "") or "").strip() or None
+
+    last_error: Optional[Exception] = None
+    payload: dict[str, Any] = {}
+    from agent.auxiliary_client import _codex_cloudflare_headers
+
+    for candidate in _codex_usage_credential_candidates(creds):
+        access_token = str(candidate.get("api_key", "") or "").strip()
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            **_codex_cloudflare_headers(access_token),
+        }
+        if singleton_account_id:
+            headers["ChatGPT-Account-ID"] = singleton_account_id
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(_resolve_codex_usage_url(candidate.get("base_url", "")), headers=headers)
+                response.raise_for_status()
+            payload = response.json() or {}
+            break
+        except Exception as exc:
+            last_error = exc
+    else:
+        if last_error:
+            raise last_error
+        return None
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):

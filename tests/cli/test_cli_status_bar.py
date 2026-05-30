@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -500,6 +501,33 @@ class TestCLIStatusBar:
 
 
 class TestCLIUsageReport:
+    def test_show_usage_without_agent_prints_account_limits(self, capsys, monkeypatch):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "openai-codex"
+        cli_obj.base_url = "https://chatgpt.com/backend-api/codex"
+        cli_obj.api_key = ""
+        cli_obj.verbose = False
+
+        monkeypatch.setattr(
+            "agent.account_usage.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: AccountUsageSnapshot(
+                provider=provider,
+                source="usage_api",
+                fetched_at=datetime.now(),
+                plan="Plus",
+                windows=(AccountUsageWindow(label="Session", used_percent=57),),
+            ),
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Account limits" in output
+        assert "openai-codex (Plus)" in output
+        assert "Session: 43% remaining (57% used)" in output
+        assert "No session token usage yet" in output
+        assert "No active agent" not in output
+
     def test_show_usage_includes_estimated_cost(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(),

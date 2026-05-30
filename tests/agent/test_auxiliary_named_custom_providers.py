@@ -491,3 +491,46 @@ class TestCustomProviderAliasCollision:
         assert isinstance(client, OpenAI)
         assert "override.example.com" in str(client.base_url)
         assert client.api_key == "override-key"
+
+
+class TestAuxiliaryTaskApiKeyEnv:
+    def test_task_config_reads_api_key_env_from_process_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUX_TEST_KEY", "env-key")
+        _write_config(tmp_path, {
+            "auxiliary": {
+                "vision": {
+                    "provider": "custom",
+                    "model": "vision-model",
+                    "base_url": "https://example.invalid/v1",
+                    "api_key_env": "AUX_TEST_KEY",
+                }
+            }
+        })
+
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+
+        assert provider == "custom"
+        assert model == "vision-model"
+        assert base_url == "https://example.invalid/v1"
+        assert api_key == "env-key"
+        assert api_mode is None
+
+    def test_task_config_reads_api_key_env_from_hermes_dotenv(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AUX_TEST_KEY", raising=False)
+        (tmp_path / ".hermes" / ".env").write_text("AUX_TEST_KEY=dotenv-key\n", encoding="utf-8")
+        _write_config(tmp_path, {
+            "auxiliary": {
+                "vision": {
+                    "provider": "custom",
+                    "model": "vision-model",
+                    "base_url": "https://example.invalid/v1",
+                    "api_key_env": "AUX_TEST_KEY",
+                }
+            }
+        })
+
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        assert _resolve_task_provider_model("vision")[3] == "dotenv-key"

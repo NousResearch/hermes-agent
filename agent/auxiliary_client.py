@@ -4505,6 +4505,28 @@ _AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
 }
 
 
+
+def _read_auxiliary_api_key_env(env_var: str) -> Optional[str]:
+    """Resolve an auxiliary task API key from process env or HERMES_HOME/.env."""
+    name = str(env_var or "").strip()
+    if not name:
+        return None
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    env_path = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes") / ".env"
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if not line or line.lstrip().startswith("#") or "=" not in line:
+                continue
+            key, raw = line.split("=", 1)
+            if key.strip() == name:
+                value = raw.strip().strip('"').strip("'")
+                return value or None
+    except OSError:
+        return None
+    return None
+
 def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
@@ -4536,6 +4558,10 @@ def _resolve_task_provider_model(
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        if not cfg_api_key:
+            env_var = str(task_config.get("api_key_env", "")).strip()
+            if env_var:
+                cfg_api_key = _read_auxiliary_api_key_env(env_var)
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     resolved_model = model or cfg_model

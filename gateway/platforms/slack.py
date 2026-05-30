@@ -1255,9 +1255,19 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         # 9) Convert bold: **text** → *text* (Slack bold)
+        # Slack's mrkdwn parser fails to recognize the closing * when it is
+        # immediately preceded by non-word characters (e.g. ), ], }, ., :, —).
+        # This causes the parser to silently truncate the rest of the message.
+        # Insert a zero-width space (U+200B) between the last character and
+        # the closing * whenever the last character is not alphanumeric or _.
+        def _convert_bold(m):
+            inner = m.group(1)
+            if inner and not (inner[-1].isalnum() or inner[-1] == '_'):
+                return _ph(f'*{inner}\u200b*')
+            return _ph(f'*{inner}*')
         text = re.sub(
             r'\*\*(.+?)\*\*',
-            lambda m: _ph(f'*{m.group(1)}*'),
+            _convert_bold,
             text,
         )
 

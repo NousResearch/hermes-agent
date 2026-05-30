@@ -1533,6 +1533,24 @@ class SleepScheduler:
             }
 
 
+# ===========================================================================
+# Helper: salience-to-engram-strength mapping
+# ===========================================================================
+
+def _salience_to_engram_strength(salience: float) -> float:
+    """Map a salience score to an initial engram strength.
+
+    High-salience memories start at full strength, moderate ones at 0.7,
+    and low-salience ones at 0.4.  This mirrors the allocation logic
+    in ``MemoryPipeline._score_and_record_salience``.
+    """
+    if salience > 0.5:
+        return 1.0
+    elif salience > 0.2:
+        return 0.7
+    return 0.4
+
+
 # Pipeline Schema (database provisioning)
 # ===========================================================================
 
@@ -1866,13 +1884,7 @@ class MemoryPipeline:
         try:
             result = self._salience.score(content)
             if self._engrams:
-                sal = result.overall
-                if sal > 0.5:
-                    init_str = 1.0
-                elif sal > 0.2:
-                    init_str = 0.7
-                else:
-                    init_str = 0.4
+                init_str = _salience_to_engram_strength(result.overall)
                 ref = sha256(content.encode()).hexdigest()[:16]
                 with self._state._lock:
                     self._state._conn.execute(

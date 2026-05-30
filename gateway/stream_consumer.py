@@ -574,9 +574,22 @@ class GatewayStreamConsumer:
                             # Either the mid-stream edit didn't run (no
                             # visible update this tick) OR the adapter needs
                             # explicit finalize=True to close the stream.
-                            self._final_response_sent = await self._send_or_edit(
-                                self._accumulated, finalize=True,
-                            )
+                            if not current_update_visible:
+                                # Edits failed before finish (flood control
+                                # backoff or exhausted retries).  Deliver
+                                # only the unsent tail once — same as the
+                                # segment-break flush path (#8124).
+                                if self._fallback_final_send:
+                                    await self._send_fallback_final(
+                                        self._accumulated,
+                                    )
+                                else:
+                                    await self._flush_segment_tail_on_edit_failure()
+                                self._final_response_sent = self._already_sent
+                            else:
+                                self._final_response_sent = await self._send_or_edit(
+                                    self._accumulated, finalize=True,
+                                )
                             if self._final_response_sent:
                                 self._final_content_delivered = True
                         elif not self._already_sent:

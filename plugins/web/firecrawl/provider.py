@@ -426,6 +426,11 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         Accepted kwargs (others ignored for forward compat):
           - ``format``: ``"markdown"`` or ``"html"``; default is both
             (request both, return markdown when available).
+          - ``json_schema``: optional JSON schema for Firecrawl structured
+            extraction. When present, requests ``{"type": "json", "schema": ...}``
+            and returns the payload as ``structured_data``.
+          - ``include_markdown``: include markdown alongside structured JSON
+            extraction (default True).
 
         Returns the legacy per-URL list-of-results shape. Per-URL failures
         (timeout, SSRF block, scrape error, policy block) become items
@@ -437,8 +442,14 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
         format = kwargs.get("format")
-        formats: List[str] = []
-        if format == "markdown":
+        json_schema = kwargs.get("json_schema")
+        include_markdown = kwargs.get("include_markdown", True)
+        formats: List[Any] = []
+        if isinstance(json_schema, dict):
+            formats.append({"type": "json", "schema": json_schema})
+            if include_markdown:
+                formats.append("markdown")
+        elif format == "markdown":
             formats = ["markdown"]
         elif format == "html":
             formats = ["html"]
@@ -552,15 +563,16 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                 else:
                     chosen_content = content_html or content_markdown or ""
 
-                results.append(
-                    {
-                        "url": final_url,
-                        "title": title,
-                        "content": chosen_content,
-                        "raw_content": chosen_content,
-                        "metadata": metadata,
-                    }
-                )
+                item: Dict[str, Any] = {
+                    "url": final_url,
+                    "title": title,
+                    "content": chosen_content,
+                    "raw_content": chosen_content,
+                    "metadata": metadata,
+                }
+                if "json" in scrape_payload:
+                    item["structured_data"] = scrape_payload.get("json")
+                results.append(item)
             except Exception as scrape_err:  # noqa: BLE001
                 logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
                 results.append(

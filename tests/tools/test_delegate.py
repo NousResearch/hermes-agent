@@ -1070,6 +1070,26 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             _resolve_delegation_credentials(cfg, parent)
         self.assertIn("no API key", str(ctx.exception))
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_honors_configured_api_key_override(self, mock_resolve):
+        """delegation.api_key must override provider env/pool credentials."""
+        mock_resolve.return_value = {
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "runtime-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+            "api_key": "delegation-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "deepseek")
+        self.assertEqual(creds["api_key"], "delegation-key")
+        self.assertEqual(creds["base_url"], "https://api.deepseek.com/v1")
+
     def test_missing_config_keys_inherit_parent(self):
         """When config dict has no model/provider keys at all, inherits parent."""
         parent = _make_mock_parent(depth=0)

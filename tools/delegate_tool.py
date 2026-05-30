@@ -2723,7 +2723,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
         ) from exc
 
-    api_key = runtime.get("api_key", "")
+    api_key = configured_api_key or runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "

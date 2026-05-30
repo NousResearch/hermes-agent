@@ -856,51 +856,77 @@ class EmbeddingReranker:
         return _rrf_fuse(bm25_all, embed_ranked, k=cfg.rrf_k, top_n=top_k)
 
 
-# Module-level reranker singleton.
-# Lazily constructed on first use; None means reranker is disabled or not
-# yet built. The reranker embeds tool texts; the cache lives here across
-# search calls within the same process, invalidated when the catalog changes.
-_reranker: Optional[EmbeddingReranker] = None
-_reranker_catalog_key: str = ""  # md5 of (endpoint + model + tool names)
+# Per-scope reranker cache.
+#
+# Previously a single-slot module-level singleton keyed by
+# md5(endpoint + model + tool_names). This caused cache churn when concurrent
+# sub-agents with DIFFERENT toolsets raced through _get_reranker(): the second
+# call saw a different catalog key, rebuilt the singleton, and discarded the
+# first agent's cached embeddings.  Fix (issue #13332): replace the one-slot
+# singleton with a bounded dict so each distinct toolset-scope retains its own
+# EmbeddingReranker (and therefore its own per-tool embedding cache)
+# independently of what other agents are doing.
+#
+# Dict key: md5(endpoint + model + sorted_tool_names) — same hash as before,
+#   but now used as a LOOKUP key, not as "the single allowed key".
+# FIFO eviction: _reranker_cache_order tracks insertion order; when the dict
+#   exceeds _RERANKER_CACHE_MAX_SIZE the oldest scope is dropped.
+# Thread-safety: all reads/writes to the dict and the order list go through
+#   _GLOBAL_LOCK; double-checked locking on the fast path.
+_RERANKER_CACHE_MAX_SIZE: int = 8
+_reranker_cache: Dict[str, EmbeddingReranker] = {}
+_reranker_cache_order: List[str] = []  # FIFO insertion order
 
 
 def _get_reranker(
     cfg: RerankerConfig,
     catalog: List[CatalogEntry],
 ) -> Optional[EmbeddingReranker]:
-    """Return a reranker singleton, creating or resetting it if the catalog changed.
+    """Return a per-scope reranker, creating one if this toolset-scope is new.
 
-    Why: A module-level singleton avoids re-embedding the full catalog on
-    every search call. Cache invalidation ensures stale embeddings don't
-    persist when tools are added or removed.
-    What: Reuses the existing reranker if the catalog key (endpoint, model,
-    and tool names) is unchanged; otherwise builds a fresh instance so the
-    per-tool embedding cache starts clean.
-    Test: Change the catalog; assert the reranker is rebuilt (new instance).
-          Keep the catalog; assert the same instance is returned.
+    Why: A per-scope cache avoids re-embedding tool texts on every search call
+    while allowing concurrent agents with different toolsets to each maintain
+    their own stable embedding cache. The old single-slot singleton caused
+    cache churn: agent A (toolset X) and agent B (toolset Y) alternately
+    evicted each other's reranker, forcing repeated endpoint calls.
+    What: Looks up scope_key = md5(endpoint + model + tool_names) in
+    _reranker_cache. On a hit returns the existing instance (fast path,
+    lock-free read). On a miss acquires _GLOBAL_LOCK, re-checks, creates a
+    new EmbeddingReranker for this scope, and evicts the oldest scope if the
+    cache exceeds _RERANKER_CACHE_MAX_SIZE (FIFO).
+    Test: Two scopes (different tool-name sets) each get their own instance;
+          re-requesting scope A after creating scope B returns the original
+          scope-A instance with its embedding cache intact (no re-embed).
     """
-    global _reranker, _reranker_catalog_key  # noqa: PLW0603
-
     if not cfg.enabled or not cfg.endpoint:
         return None
 
-    catalog_key = hashlib.md5(
+    scope_key = hashlib.md5(
         (cfg.endpoint + cfg.model + ",".join(e.name for e in catalog)).encode("utf-8"),
         usedforsecurity=False,
     ).hexdigest()
 
-    # Fast path (lock-free read) — avoids lock contention on the hot path.
-    if _reranker is not None and _reranker_catalog_key == catalog_key:
-        return _reranker
+    # Fast path (lock-free read) — avoids lock contention on the common case.
+    hit = _reranker_cache.get(scope_key)
+    if hit is not None:
+        return hit
 
-    # Slow path: acquire lock and re-check (double-checked locking, fix HIGH-1).
-    # Prevents concurrent requests from each building a separate singleton.
+    # Slow path: acquire lock, double-check, create if still absent.
     with _GLOBAL_LOCK:
-        if _reranker is None or _reranker_catalog_key != catalog_key:
-            _reranker = EmbeddingReranker(cfg)
-            _reranker_catalog_key = catalog_key
+        hit = _reranker_cache.get(scope_key)
+        if hit is not None:
+            return hit
 
-    return _reranker
+        new_reranker = EmbeddingReranker(cfg)
+        _reranker_cache[scope_key] = new_reranker
+        _reranker_cache_order.append(scope_key)
+
+        # Evict the oldest scope when the cache grows beyond the bound.
+        while len(_reranker_cache_order) > _RERANKER_CACHE_MAX_SIZE:
+            oldest = _reranker_cache_order.pop(0)
+            _reranker_cache.pop(oldest, None)
+
+    return new_reranker
 
 
 # ---------------------------------------------------------------------------

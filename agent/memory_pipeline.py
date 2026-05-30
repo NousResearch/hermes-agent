@@ -1481,8 +1481,8 @@ class SleepScheduler:
                         session_id=self._session_id)
                     result["rem"] = {
                         "mode": getattr(dream_result, "mode", "?"),
-                        "facts_strengthened": getattr(
-                            dream_result, "facts_strengthened", 0),
+                        "facts_replayed": getattr(
+                            dream_result, "facts_replayed", 0),
                     }
                 except Exception as e:
                     logger.debug("Sleep REM dreaming failed: %s", e)
@@ -2359,12 +2359,15 @@ class MemoryPipeline:
                         "WHERE confidence > 0.5"
                     )
                     self._state._conn.commit()
-            if self._feedback and dr:
-                hypo = getattr(dr, "hypotheses", [])
-                if hypo:
-                    with self._feedback._lock:
-                        self._feedback._pending_predictions.extend(
-                            [f"Dream: {h}" for h in hypo[:3]])
+            if self._feedback and dr and getattr(dr, "hypotheses", 0) > 0:
+                try:
+                    hyps = self._dreaming.get_hypotheses(limit=3)
+                    if hyps:
+                        with self._feedback._lock:
+                            self._feedback._pending_predictions.extend(
+                                [f"Dream: {h['content']}" for h in hyps])
+                except Exception as e:
+                    logger.debug("Dream prediction extension failed: %s", e)
         except Exception as e:
             logger.debug("Dream post-processing failed: %s", e)
 

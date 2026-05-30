@@ -719,6 +719,37 @@ def check_all_command_guards(command: str, env_type: str,
     if not is_cli and not is_gateway and not is_ask:
         return {"approved": True, "message": None}
 
+    # --- DCG-only mode ---
+    # When the user has opted into Destructive Command Guard as the sole
+    # backend (approvals.mode=dcg or approvals.dcg.enabled=true), delegate
+    # entirely to the external `dcg` binary and skip Hermes's own pattern
+    # matching and tirith. Philosophy: dcg blocks the genuinely destructive
+    # things, everything else is runnable without a prompt.
+    try:
+        from tools.dcg_guard import check_with_dcg, is_dcg_mode_enabled
+        if is_dcg_mode_enabled():
+            dcg_verdict = check_with_dcg(command)
+            if dcg_verdict.get("ok") and not dcg_verdict.get("allow"):
+                reason = dcg_verdict.get("reason") or "blocked by dcg"
+                rule_id = dcg_verdict.get("rule_id") or ""
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED by dcg ({rule_id}): {reason}. "
+                        "Do NOT retry this command — the Destructive Command "
+                        "Guard has explicitly rejected it. If the user truly "
+                        "wants this, ask them to run it manually or add an "
+                        "allowlist entry via `dcg allow`."
+                    ),
+                    "pattern_key": f"dcg:{rule_id}" if rule_id else "dcg",
+                    "description": reason,
+                    "dcg_denied": True,
+                }
+            # dcg allowed (or soft-allowed on error) — bypass all other guards.
+            return {"approved": True, "message": None}
+    except ImportError:
+        pass  # dcg_guard module missing — fall through to legacy guards
+
     # --- Phase 1: Gather findings from both checks ---
 
     # Tirith check — wrapper guarantees no raise for expected failures.

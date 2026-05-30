@@ -11118,6 +11118,13 @@ def cmd_completion(args, parser=None):
         print(generate_bash(parser))
 
 
+def cmd_prompt_size(args):
+    """Show a byte/char breakdown of the system prompt + tool schemas."""
+    from hermes_cli.prompt_size import cmd_prompt_size as _impl
+
+    _impl(args)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -11154,6 +11161,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
@@ -14386,6 +14394,30 @@ Examples:
         help="Filter by component: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
+
+    # =========================================================================
+    # prompt-size command
+    # =========================================================================
+    prompt_size_parser = subparsers.add_parser(
+        "prompt-size",
+        help="Show a byte breakdown of the system prompt + tool schemas",
+        description=(
+            "Report the fixed prompt budget for a fresh session: system "
+            "prompt total, skills index, memory, user profile, and tool-schema "
+            "JSON. Runs offline (no API call)."
+        ),
+    )
+    prompt_size_parser.add_argument(
+        "--platform",
+        default="cli",
+        help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
+    )
+    prompt_size_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the breakdown as JSON",
+    )
+    prompt_size_parser.set_defaults(func=cmd_prompt_size)
 
     # =========================================================================
     # Parse and execute

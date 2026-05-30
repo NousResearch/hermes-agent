@@ -594,77 +594,43 @@ def _build_native_vision_tool_result(
 async def _vision_analyze_native(
     image_url: str,
     question: str,
+    task_id: Optional[str] = None,
 ) -> Any:
     """Fast path for vision-capable main models.
 
-    Loads the image (local file OR remote URL), base64-encodes it, and
-    returns a multimodal tool-result envelope. The agent loop unwraps it;
-    provider adapters serialize it into the right tool-result-with-image
-    shape for each backend.
+    Resolves the image source to bytes (local file, file://, http(s), data:,
+    or a Docker-container path), base64-encodes it, and returns a multimodal
+    tool-result envelope. The agent loop unwraps it; provider adapters
+    serialize it into the right tool-result-with-image shape per backend.
 
     Returns:
         A ``_multimodal`` envelope dict on success.
         A JSON error string on failure (matches the existing tool-result
         contract so the agent loop displays errors normally).
     """
-    if not isinstance(image_url, str) or not image_url.strip():
-        return tool_error("image_url is required", success=False)
-
-    temp_image_path: Optional[Path] = None
-    should_cleanup = False
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Resolve the image source (mirrors vision_analyze_tool's logic
-        # exactly so behaviour is consistent).
-        resolved_url = image_url
-        if resolved_url.startswith("file://"):
-            resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
+        from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+        try:
+            resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
+        except ImageResolutionError as exc:
+            return tool_error(str(exc), success=False)
 
-        if local_path.is_file():
-            temp_image_path = local_path
-            should_cleanup = False
-        elif _validate_image_url(image_url):
-            blocked = check_website_access(image_url)
-            if blocked:
-                return tool_error(blocked["message"], success=False)
-            temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-            temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
-            await _download_image(image_url, temp_image_path)
-            should_cleanup = True
-        else:
-            return tool_error(
-                "Invalid image source. Provide an HTTP/HTTPS URL or a "
-                "valid local file path.",
-                success=False,
-            )
+        image_data_url = _image_bytes_to_base64_data_url(resolved.data, resolved.mime)
 
-        image_size_bytes = temp_image_path.stat().st_size
-        detected_mime_type = _detect_image_mime_type(temp_image_path)
-        if not detected_mime_type:
-            return tool_error(
-                "Only real image files are supported for vision analysis.",
-                success=False,
-            )
-
-        image_data_url = _image_to_base64_data_url(
-            temp_image_path, mime_type=detected_mime_type,
-        )
-
-        # Proactive embed cap: this image gets baked into conversation
-        # history and re-sent on every subsequent turn.  Anthropic rejects
-        # any single base64 image over 5 MB with a 400, and because history
-        # is immutable, an oversized embed permanently wedges the session —
-        # retries can't clear bytes that are already in the request.  Resize
-        # DOWN to the embed target (4 MB, headroom under 5 MB) whenever the
-        # payload exceeds it, not just at the 20 MB hard ceiling.
+        # Proactive embed cap (#35732): this image gets baked into conversation
+        # history and re-sent on every subsequent turn.  Anthropic rejects any
+        # single base64 image over 5 MB with a 400, and because history is
+        # immutable, an oversized embed permanently wedges the session — retries
+        # can't clear bytes that are already in the request.  Resize DOWN to the
+        # embed target (4 MB, headroom under 5 MB) whenever the payload exceeds
+        # it, not just at the 20 MB hard ceiling.
         if len(image_data_url) > _EMBED_TARGET_BYTES:
-            image_data_url = _resize_image_for_vision(
-                temp_image_path, mime_type=detected_mime_type,
-                max_base64_bytes=_EMBED_TARGET_BYTES,
+            image_data_url = _resize_image_bytes_for_vision(
+                resolved.data, resolved.mime, max_base64_bytes=_EMBED_TARGET_BYTES,
             )
             # If even resizing can't get under the absolute hard ceiling,
             # there's nothing more we can do — reject rather than embed a
@@ -684,20 +650,12 @@ async def _vision_analyze_native(
             image_url=image_url,
             question=question,
             image_data_url=image_data_url,
-            image_size_bytes=image_size_bytes,
+            image_size_bytes=len(resolved.data),
         )
 
     except Exception as exc:
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)
-    finally:
-        # Only delete temp files we created — never user-provided paths.
-        if should_cleanup and temp_image_path is not None:
-            try:
-                if temp_image_path.exists():
-                    temp_image_path.unlink()
-            except Exception:
-                pass
 
 
 async def vision_analyze_tool(

@@ -119,7 +119,17 @@ class TestVisionAnalyzeNative:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed.get("success") is False
-        assert "Invalid image source" in parsed.get("error", "")
+        assert parsed.get("error")
+
+    def test_data_url_returns_multimodal_envelope(self):
+        import base64 as _b64
+
+        data_url = "data:image/png;base64," + _b64.b64encode(_TINY_PNG).decode()
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(data_url, "what is this?")
+        )
+        assert isinstance(result, dict)
+        assert result.get("_multimodal") is True
 
     def test_empty_image_url_returns_error(self):
         result = asyncio.get_event_loop().run_until_complete(

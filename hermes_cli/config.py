@@ -3662,11 +3662,26 @@ def get_custom_provider_context_length(
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
-    
+
     Returns (current_version, latest_version).
+
+    The current version is read from the *raw* on-disk config.yaml rather
+    than the deep-merged effective config. ``load_config()`` starts from
+    ``DEFAULT_CONFIG``, so an unversioned/legacy raw file would otherwise
+    inherit the latest ``_config_version`` in memory and silently appear
+    current — making every pending schema migration a no-op (see #35406).
+    A missing raw ``_config_version`` means "never migrated" → version 0.
     """
-    config = load_config()
-    current = config.get("_config_version", 0)
+    raw = read_raw_config()
+    current = raw.get("_config_version", 0)
+    if not isinstance(current, int):
+        # A hand-edited config could carry a non-int here; treat anything
+        # unparseable as unversioned so migrations run rather than being
+        # skipped on a malformed marker.
+        try:
+            current = int(current)
+        except (TypeError, ValueError):
+            current = 0
     latest = DEFAULT_CONFIG.get("_config_version", 1)
     return current, latest
 
@@ -4494,6 +4509,92 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             print("  Set later with: hermes config set <key> <value>")
 
     return results
+
+
+# Operator opt-out for the unattended Docker-boot migration pass. Set to a
+# truthy value (1/true/yes/on) to skip automatic config migration on
+# container start — e.g. when an operator wants to apply migrations manually
+# after taking their own backup. See docker/stage2-hook.sh.
+SKIP_BOOT_MIGRATION_ENV = "HERMES_SKIP_CONFIG_MIGRATION"
+
+
+def run_boot_config_migration(quiet: bool = False) -> Dict[str, Any]:
+    """Run config migration non-interactively against the active config.yaml.
+
+    Intended for unattended environments — chiefly the official Docker image's
+    container-boot hook, which has no equivalent to the ``hermes update``
+    config-migration step (``hermes update`` intentionally exits early for
+    Docker installs). Without this, a persistent ``$HERMES_HOME`` volume can
+    carry a stale/unversioned raw config schema across image updates and never
+    have version-gated migrations applied (#35406).
+
+    Behavior:
+      * Honors the ``HERMES_SKIP_CONFIG_MIGRATION`` opt-out — returns early
+        with ``status="skipped_optout"`` and touches nothing.
+      * No-ops (``status="no_config"``) when no ``config.yaml`` exists yet —
+        a fresh install seeds the latest schema, so there is nothing to
+        migrate.
+      * No-ops (``status="up_to_date"``) when the raw on-disk config is
+        already current and no required fields are missing.
+      * Otherwise takes a full pre-migration backup of ``$HERMES_HOME`` (best
+        effort, never fatal) and runs ``migrate_config(interactive=False)``
+        so no API-key prompts can block container start.
+
+    Returns a dict ``{"status": ..., "results": <migrate_config results or
+    None>, "backup": <Path or None>}``. Never raises — boot must continue
+    even if migration fails; the gateway's own startup validation still warns
+    about a broken config.
+    """
+    outcome: Dict[str, Any] = {"status": "ok", "results": None, "backup": None}
+
+    if os.getenv(SKIP_BOOT_MIGRATION_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        if not quiet:
+            print(f"  ℹ {SKIP_BOOT_MIGRATION_ENV} set — skipping config migration")
+        outcome["status"] = "skipped_optout"
+        return outcome
+
+    config_path = get_config_path()
+    if not config_path.exists():
+        outcome["status"] = "no_config"
+        return outcome
+
+    try:
+        current_ver, latest_ver = check_config_version()
+        missing_env = get_missing_env_vars(required_only=True)
+        missing_config = get_missing_config_fields()
+    except Exception:
+        logger.warning("config migration pre-check failed", exc_info=True)
+        outcome["status"] = "error"
+        return outcome
+
+    if current_ver >= latest_ver and not missing_env and not missing_config:
+        outcome["status"] = "up_to_date"
+        return outcome
+
+    if not quiet:
+        if current_ver < latest_ver:
+            print(f"  → Migrating config.yaml schema: v{current_ver} → v{latest_ver}")
+        else:
+            print("  → Applying pending config migrations")
+
+    # Migration can rewrite config.yaml and .env in place, so snapshot first.
+    try:
+        from hermes_cli.backup import create_pre_migration_backup
+
+        backup_path = create_pre_migration_backup()
+        outcome["backup"] = backup_path
+        if backup_path and not quiet:
+            print(f"  ✓ Backed up HERMES_HOME before migration: {backup_path.name}")
+    except Exception:
+        logger.warning("pre-migration backup failed; continuing", exc_info=True)
+
+    try:
+        outcome["results"] = migrate_config(interactive=False, quiet=quiet)
+    except Exception:
+        logger.warning("config migration failed", exc_info=True)
+        outcome["status"] = "error"
+
+    return outcome
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

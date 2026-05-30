@@ -242,6 +242,20 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     chmod 600 "$HERMES_HOME/auth.json"
 fi
 
+# --- Migrate persisted config schema ---
+# Docker users update by pulling a newer image; `hermes update` (which runs
+# config migration for non-Docker installs) intentionally exits early for
+# Docker installs. Without this step, a persistent $HERMES_HOME volume can
+# carry an old/unversioned raw config.yaml across image updates and never have
+# version-gated schema migrations applied (#35406). Run the same migration
+# non-interactively, as the hermes user, against the active $HERMES_HOME.
+# Operators can opt out with HERMES_SKIP_CONFIG_MIGRATION=1 (honored inside the
+# script). Non-fatal: a migration hiccup must not block container start.
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/docker_config_migrate.py" \
+        || echo "[stage2] Warning: config migration failed; continuing"
+fi
+
 # --- Sync bundled skills ---
 # Invoke the venv's python by absolute path so we don't need a `sh -c`
 # wrapper to source the activate script. This is safe because

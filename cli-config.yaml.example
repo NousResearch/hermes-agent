@@ -2,6 +2,13 @@
 # Copy this file to cli-config.yaml and customize as needed.
 # This file configures the CLI behavior. Environment variables in .env take precedence.
 
+# On-disk config schema version. A freshly seeded config already carries the
+# latest schema, so stamp it here — otherwise an unversioned raw file is
+# treated as legacy (version 0) and runs every migration pass on first boot.
+# Keep in sync with DEFAULT_CONFIG["_config_version"] in hermes_cli/config.py
+# whenever a new migration is added.
+_config_version: 24
+
 # =============================================================================
 # Model Configuration
 # =============================================================================

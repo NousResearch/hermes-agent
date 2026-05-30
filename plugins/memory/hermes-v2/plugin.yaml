@@ -1,0 +1,30 @@
+name: hermes-v2
+version: "1.0.0"
+description: >
+  Hermes Memory V2 — SQLite FTS5 backed memory with tiered lifecycle,
+  hybrid search (BM25 + embeddings), automatic extraction, session notes,
+  and periodic consolidation. Zero external dependencies (sqlite3 is stdlib).
+author: Hermes
+type: memory
+entry_point: __init__:HermesV2MemoryProvider
+
+config:
+  - key: provider
+    description: Must be 'hermes-v2' to activate this plugin
+    required: true
+    default: hermes-v2
+
+capabilities:
+  - search
+  - add
+  - remove
+  - auto_extract
+  - consolidation
+  - session_notes
+  - hybrid_search
+
+dependencies: []
+optional_dependencies:
+  - fastembed   # Local embeddings (BAAI/bge-small-en-v1.5)
+  - litellm     # API-based embeddings
+  - numpy       # Fast cosine similarity

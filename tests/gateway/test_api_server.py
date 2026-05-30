@@ -3293,6 +3293,71 @@ class TestSessionIdHeader:
             assert call_kwargs["user_message"] == "new question"
 
     @pytest.mark.asyncio
+    async def test_provided_session_id_can_use_request_body_history(self, auth_adapter):
+        """X-Hermes-History-Source=request makes request messages authoritative."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        request_history = [
+            {"role": "user", "content": "edited client message"},
+            {"role": "assistant", "content": "edited client reply"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "stale stored message"},
+            {"role": "assistant", "content": "stale stored reply"},
+        ]
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Id": "existing-session",
+                        "X-Hermes-History-Source": "request",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            *request_history,
+                            {"role": "user", "content": "new question"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            mock_db.get_messages_as_conversation.assert_not_called()
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == request_history
+            assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_invalid_history_source_header_returns_400(self, auth_adapter):
+        """Unknown X-Hermes-History-Source values fail before agent execution."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Id": "existing-session",
+                        "X-Hermes-History-Source": "client",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hi"}],
+                    },
+                )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["code"] == "invalid_history_source"
+            mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):
         """If SessionDB raises, history falls back to empty and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}

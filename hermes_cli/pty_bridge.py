@@ -74,6 +74,16 @@ class PtyBridge:
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
+        # ptyprocess setsid()s the child, so it leads its own group — signalling
+        # the group reaps grandchildren the leader spawned (#32377). Never adopt
+        # the dashboard's own group as the target.
+        self._pgid: Optional[int] = None
+        try:
+            pgid = os.getpgid(proc.pid)
+            if pgid != os.getpgrp():
+                self._pgid = pgid
+        except Exception:
+            self._pgid = None
 
     # -- lifecycle --------------------------------------------------------
 
@@ -212,20 +222,42 @@ class PtyBridge:
         self._closed = True
 
         # SIGHUP is the conventional "your terminal went away" signal.
-        # We escalate if the child ignores it.
+        # We escalate if the child (and its group) ignore it.
         for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
-            if not self._proc.isalive():
+            if not self._process_tree_alive():
                 break
-            try:
-                self._proc.kill(sig)
-            except Exception:
-                pass
+            self._signal_tree(sig)
             deadline = time.monotonic() + 0.5
-            while self._proc.isalive() and time.monotonic() < deadline:
+            while self._process_tree_alive() and time.monotonic() < deadline:
                 time.sleep(0.02)
 
         try:
-            self._proc.close(force=True)
+            self._proc.close(force=True)  # closes the PTY master fd; dropping it re-leaks (#24775)
+        except Exception:
+            pass
+
+    def _process_tree_alive(self) -> bool:
+        if self._pgid is not None:
+            try:
+                os.killpg(self._pgid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            except Exception:
+                pass
+        return self._proc.isalive()
+
+    def _signal_tree(self, sig) -> None:
+        if self._pgid is not None:
+            try:
+                os.killpg(self._pgid, sig)
+                return
+            except Exception:
+                pass
+        try:
+            self._proc.kill(sig)
         except Exception:
             pass
 

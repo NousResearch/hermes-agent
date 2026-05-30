@@ -428,6 +428,82 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _agent_usage_dict(agent: Any) -> Dict[str, int]:
+    """Return canonical per-session usage counters from an agent instance.
+
+    The API server historically exposed only input/output/total tokens.  Hermes
+    already tracks prompt-cache reads and writes separately for CLI usage/cost
+    reporting, so include those buckets here as well.  External API gateways
+    can then reconcile billed requests against provider invoices without
+    treating discounted cache reads/writes as normal input tokens.
+    """
+    input_tokens = int(getattr(agent, "session_prompt_tokens", 0) or 0)
+    output_tokens = int(getattr(agent, "session_completion_tokens", 0) or 0)
+    cache_read_tokens = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
+    cache_write_tokens = int(getattr(agent, "session_cache_write_tokens", 0) or 0)
+    total_tokens = int(getattr(agent, "session_total_tokens", 0) or 0)
+    if total_tokens <= 0:
+        total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _chat_completion_usage_payload(usage: Dict[str, int]) -> Dict[str, Any]:
+    """OpenAI Chat Completions compatible usage with Hermes cache details."""
+    cache_read = int(usage.get("cache_read_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_write_tokens", 0) or 0)
+    prompt_tokens = int(usage.get("input_tokens", 0) or 0)
+    completion_tokens = int(usage.get("output_tokens", 0) or 0)
+    total_tokens = int(usage.get("total_tokens", 0) or 0)
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens + cache_read + cache_write
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        # OpenAI exposes cache reads through prompt_tokens_details.cached_tokens.
+        # Hermes also exposes cache writes so billing gateways can separate
+        # cache creation from cache reads when providers charge them differently.
+        "prompt_tokens_details": {
+            "cached_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+            "cache_creation_tokens": cache_write,
+        },
+        # Provider-neutral aliases used by Anthropic-compatible proxies and
+        # Hermes integrations that need four-bucket accounting.
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_write,
+    }
+
+
+def _responses_usage_payload(usage: Dict[str, int]) -> Dict[str, Any]:
+    """OpenAI Responses compatible usage with Hermes cache details."""
+    cache_read = int(usage.get("cache_read_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_write_tokens", 0) or 0)
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    total_tokens = int(usage.get("total_tokens", 0) or 0)
+    if total_tokens <= 0:
+        total_tokens = input_tokens + output_tokens + cache_read + cache_write
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "input_tokens_details": {
+            "cached_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+            "cache_creation_tokens": cache_write,
+        },
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_write,
+    }
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -1026,11 +1102,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _chat_completion_usage_payload(usage),
         }
 
         return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
@@ -1139,11 +1211,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                "usage": {
-                    "prompt_tokens": usage.get("input_tokens", 0),
-                    "completion_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                },
+                "usage": _chat_completion_usage_payload(usage),
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
@@ -1827,11 +1895,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "created_at": created_at,
             "model": body.get("model", self._model_name),
             "output": output_items,
-            "usage": {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _responses_usage_payload(usage),
         }
 
         # Store the complete response object for future chaining / GET retrieval
@@ -2199,11 +2263,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 task_id="default",
             )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
+            usage = _agent_usage_dict(agent)
             return result, usage
 
         return await loop.run_in_executor(None, _run)
@@ -2368,11 +2428,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         conversation_history=conversation_history,
                         task_id="default",
                     )
-                    u = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                    }
+                    u = _agent_usage_dict(agent)
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)

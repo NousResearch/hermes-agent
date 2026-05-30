@@ -18861,6 +18861,29 @@ def _cron_supervisor_loop(sup_stop, state):
             consecutive_deaths = 0  # healthy → reset backoff
 
 
+def _cron_preflight_or_status():
+    """Import ``cron.scheduler`` and confirm ``tick`` is callable BEFORE spawning
+    the ticker. ``import_module`` compiles the module, so a ``SyntaxError`` is
+    caught here (the #20302 silent-death repro). On failure: log CRITICAL, mark
+    ``failed_import``, and return ``(False, reason)`` so the gateway continues
+    WITHOUT cron rather than dying silently."""
+    import importlib
+    try:
+        sched = importlib.import_module("cron.scheduler")
+        if not callable(getattr(sched, "tick", None)):
+            raise ImportError("cron.scheduler.tick is not callable")
+        return True, None
+    except BaseException as e:  # surface ANY import-time fault, incl. SyntaxError
+        reason = f"{type(e).__name__}: {e}"
+        logger.critical("Cron scheduler preflight FAILED — ticker will NOT start; "
+                        "cron jobs will not fire: %s", reason, exc_info=True)
+        try:
+            write_cron_ticker_status(state="failed_import", last_error=reason)
+        except Exception:
+            pass
+        return False, reason
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -19245,18 +19268,29 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         return True
     
-    # Start background cron ticker so scheduled jobs fire automatically.
-    # Pass the event loop so cron delivery can use live adapters (E2EE support).
+    # Start background cron ticker so scheduled jobs fire automatically, guarded
+    # by a supervisor that respawns it if it dies. Preflight the scheduler import
+    # first so a broken cron.scheduler is reported loudly instead of silently
+    # killing the thread (#20302). On preflight failure the gateway runs on
+    # without cron rather than failing to start.
+    cron_ok, _ = _cron_preflight_or_status()
     cron_stop = threading.Event()
-    cron_thread = threading.Thread(
-        target=_start_cron_ticker,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
-        daemon=True,
-        name="cron-ticker",
-    )
-    cron_thread.start()
-    
+    sup_stop = threading.Event()
+    cron_thread = None
+    sup_thread = None
+    if cron_ok:
+        loop = asyncio.get_running_loop()
+        cron_thread = _spawn_cron_worker(cron_stop, runner.adapters, loop, CRON_TICK_INTERVAL)
+        sup_thread = threading.Thread(
+            target=_cron_supervisor_loop,
+            args=(sup_stop, {"worker": cron_thread, "cron_stop": cron_stop,
+                             "adapters": runner.adapters, "loop": loop,
+                             "interval": CRON_TICK_INTERVAL}),
+            daemon=True,
+            name="cron-supervisor",
+        )
+        sup_thread.start()
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -19265,9 +19299,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
     
-    # Stop cron ticker cleanly
+    # Stop the supervisor before the worker so it cannot respawn it mid-teardown.
+    sup_stop.set()
+    if sup_thread is not None:
+        sup_thread.join(timeout=5)
     cron_stop.set()
-    cron_thread.join(timeout=5)
+    if cron_thread is not None:
+        cron_thread.join(timeout=5)
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()

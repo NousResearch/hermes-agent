@@ -245,3 +245,42 @@ async def test_gateway_stop_kills_tool_subprocesses_on_graceful_path(monkeypatch
 
     # Only the final catch-all fires on the graceful path.
     assert kill_count == 1
+
+
+class TestCronPreflight:
+    def test_preflight_failure_marks_failed_import_and_returns_false(self, tmp_path, monkeypatch):
+        """A broken cron.scheduler is reported (status=failed_import) and the
+        caller gets (False, reason) so the gateway continues without cron."""
+        import importlib
+
+        import gateway.run as run
+        import gateway.status as status
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            importlib, "import_module",
+            lambda name: (_ for _ in ()).throw(SyntaxError("broken scheduler")),
+        )
+
+        ok, reason = run._cron_preflight_or_status()
+        assert ok is False
+        assert "broken scheduler" in reason
+        assert status.read_runtime_status()["cron_ticker"]["state"] == "failed_import"
+
+    def test_preflight_rejects_non_callable_tick(self, tmp_path, monkeypatch):
+        import importlib
+        from types import SimpleNamespace
+
+        import gateway.run as run
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(importlib, "import_module", lambda name: SimpleNamespace(tick="nope"))
+        ok, reason = run._cron_preflight_or_status()
+        assert ok is False
+        assert "not callable" in reason
+
+    def test_preflight_succeeds_with_real_scheduler(self):
+        """The real cron.scheduler imports and exposes a callable tick."""
+        import gateway.run as run
+
+        assert run._cron_preflight_or_status() == (True, None)

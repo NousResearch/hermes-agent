@@ -1353,7 +1353,13 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # NOTE: intentionally does NOT auto-create the parent directory.
+    # Directory creation is the responsibility of init_db() and
+    # create_board().  connect() is a read-then-write entry point;
+    # silently creating the directory would resurrect archived boards
+    # (see issue #35211).  Callers that need the directory to exist
+    # must ensure it does before calling connect() -- typically by
+    # calling init_db() first.
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.

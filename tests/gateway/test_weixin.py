@@ -358,6 +358,48 @@ class TestWeixinChunkDelivery:
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
 
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_ret_minus_2_empty_errmsg_retries_without_token(self, send_message_mock, sleep_mock):
+        # #18100: ret=-2 with empty errmsg is a stale context_token, not a
+        # rate limit. The adapter must strip the token and retry, recovering
+        # delivery instead of burning retries against a dead token.
+        adapter = self._connected_adapter()
+        calls = {"count": 0}
+
+        async def stale_then_ok(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return {"ret": -2, "errcode": None, "errmsg": None}
+            return {"ret": 0}
+
+        send_message_mock.side_effect = stale_then_ok
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is True
+        assert send_message_mock.await_count == 2
+        # First attempt carries the context token; the stale-session retry
+        # drops it (tokenless fallback).
+        assert send_message_mock.await_args_list[0].kwargs["context_token"] == "ctx-token"
+        assert send_message_mock.await_args_list[1].kwargs["context_token"] is None
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_rate_limit_backoff_is_exponential(self, send_message_mock, sleep_mock):
+        # #31131: a genuine rate limit (populated errmsg) must back off
+        # exponentially, capped, so the retry window spans a real iLink
+        # cooldown instead of the old fixed 3s × 4.
+        adapter = self._connected_adapter()
+        send_message_mock.return_value = {"ret": -2, "errcode": -2, "errmsg": "freq limit"}
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        # Exponential schedule: base(1.0) × 2^(attempt+1), capped at 30s.
+        waits = [c.args[0] for c in sleep_mock.await_args_list]
+        assert waits == [2, 4, 8, 16, 30, 30]
+
 
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):
@@ -761,7 +803,10 @@ class TestWeixinVoiceSending:
 
 
 class TestIsStaleSessionRet:
-    """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2."""
+    """Regression test for #17228 / #18100: distinguish stale-session ret=-2
+    from rate-limit ret=-2. Both ``"unknown error"`` and empty/None errmsg
+    are stale-session signals; a populated descriptive errmsg is a real
+    rate limit."""
 
     def test_ret_minus_2_with_unknown_error_is_stale(self):
         assert weixin._is_stale_session_ret(-2, None, "unknown error") is True
@@ -776,9 +821,13 @@ class TestIsStaleSessionRet:
         # Genuine rate limit — must NOT be treated as stale session.
         assert weixin._is_stale_session_ret(-2, None, "freq limit") is False
 
-    def test_ret_minus_2_with_no_errmsg_is_not_stale(self):
-        assert weixin._is_stale_session_ret(-2, None, None) is False
-        assert weixin._is_stale_session_ret(-2, None, "") is False
+    def test_ret_minus_2_with_no_errmsg_is_stale(self):
+        # #18100: iLink also signals a stale context_token via ret=-2 with an
+        # empty/None errmsg. Treat it as stale so the caller retries without
+        # the dead token instead of burning all retries in the rate-limit path.
+        assert weixin._is_stale_session_ret(-2, None, None) is True
+        assert weixin._is_stale_session_ret(-2, None, "") is True
+        assert weixin._is_stale_session_ret(-2, None, "   ") is True
 
     def test_errcode_minus_14_is_not_matched_here(self):
         # -14 is handled by the separate SESSION_EXPIRED_ERRCODE path; the

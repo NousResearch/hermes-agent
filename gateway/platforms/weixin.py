@@ -81,6 +81,16 @@ EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
 
 LONG_POLL_TIMEOUT_MS = 35_000
+# Client read timeout = server hold time + this buffer. A healthy long-poll
+# server returns ret=0 (empty msgs) when ITS hold expires, well before the
+# client timeout. If the client times out anyway, no bytes arrived for
+# hold+buffer seconds — the socket is dead (network drop / macOS sleep-wake),
+# not a quiet chat. The buffer keeps healthy idle polls from false-timing-out
+# (issue #23523).
+LONG_POLL_CLIENT_BUFFER_MS = 10_000
+# Consecutive dead-socket long-poll timeouts before we rebuild the poll
+# session. ~2 cycles (≈90s) balances fast recovery against false positives.
+POLL_TIMEOUT_RECONNECT_THRESHOLD = 2
 API_TIMEOUT_MS = 15_000
 CONFIG_TIMEOUT_MS = 10_000
 QR_TIMEOUT_MS = 35_000
@@ -96,12 +106,25 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
+    """True when iLink returns ret=-2 / errcode=-2 that is likely a stale
+    context_token rather than a genuine rate limit.
+
+    Empirically iLink signals these two scenarios weakly via ret=-2:
+    - stale session:      errmsg == "unknown error"  OR  errmsg empty/None
+    - genuine rate limit: a populated, descriptive errmsg such as
+      "frequency limit" / "too frequently" / "rate limited"
+
+    So we treat ``"unknown error"`` AND empty/None errmsg as stale-session
+    signals (issue #18100 — the empty-errmsg variant was previously missed
+    and burned all retries against a dead token, silently dropping the
+    reply). A real rate limit carries a descriptive errmsg, so it still
+    falls through to the rate-limit backoff branch. Worst case for a
+    misclassified real limit is one extra tokenless attempt before the
+    normal backoff kicks in."""
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    normalized = (errmsg or "").strip().lower()
+    return normalized in ("", "unknown error")
 
 
 MEDIA_IMAGE = 1
@@ -418,10 +441,16 @@ async def _get_updates(
             endpoint=EP_GET_UPDATES,
             payload={"get_updates_buf": sync_buf},
             token=token,
-            timeout_ms=timeout_ms,
+            # Give the server its full hold time plus a buffer before the
+            # client gives up, so a healthy idle long-poll never trips the
+            # client timeout (issue #23523).
+            timeout_ms=timeout_ms + LONG_POLL_CLIENT_BUFFER_MS,
         )
     except asyncio.TimeoutError:
-        return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
+        # No response within hold+buffer — the socket is almost certainly
+        # dead. Flag it (instead of masking as an empty success) so the
+        # poll loop can detect a zombie connection and reconnect.
+        return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf, "_poll_timed_out": True}
 
 
 async def _send_message(
@@ -1154,11 +1183,21 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "1.5")
         )
         self._send_chunk_retries = int(
-            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "4")
+            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "6")
         )
         self._send_chunk_retry_delay_seconds = float(
             extra.get("send_chunk_retry_delay_seconds")
             or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
+        )
+        # Rate-limit (ret=-2) retries use exponential backoff instead of a
+        # fixed delay — iLink frequency windows are typically 15-30s, far
+        # longer than the old fixed 3s × 4 ≈ 12s budget, which let real
+        # rate limits exhaust all retries and silently drop the reply
+        # (issue #31131). Cap each backoff so a single chunk can't stall
+        # delivery indefinitely.
+        self._rate_limit_backoff_cap_seconds = float(
+            extra.get("rate_limit_backoff_cap_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_BACKOFF_CAP_SECONDS", "30")
         )
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
@@ -1260,6 +1299,7 @@ class WeixinAdapter(BasePlatformAdapter):
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
         timeout_ms = LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
+        consecutive_timeouts = 0
 
         while self._running:
             try:
@@ -1273,6 +1313,26 @@ class WeixinAdapter(BasePlatformAdapter):
                 suggested_timeout = response.get("longpolling_timeout_ms")
                 if isinstance(suggested_timeout, int) and suggested_timeout > 0:
                     timeout_ms = suggested_timeout
+
+                # Zombie-connection detection (#23523): a client-side timeout
+                # means no bytes arrived for the server hold + buffer, so the
+                # long-poll socket is dead. Rebuild the session after a few
+                # consecutive timeouts instead of looping forever on a corpse.
+                if response.get("_poll_timed_out"):
+                    consecutive_timeouts += 1
+                    logger.warning(
+                        "[%s] long-poll timed out with no response (%d/%d); socket may be dead",
+                        self.name, consecutive_timeouts, POLL_TIMEOUT_RECONNECT_THRESHOLD,
+                    )
+                    if consecutive_timeouts >= POLL_TIMEOUT_RECONNECT_THRESHOLD:
+                        logger.error(
+                            "[%s] reconnecting poll session after %d consecutive long-poll timeouts",
+                            self.name, consecutive_timeouts,
+                        )
+                        await self._reconnect_poll_session()
+                        consecutive_timeouts = 0
+                    continue
+                consecutive_timeouts = 0
 
                 ret = response.get("ret", 0)
                 errcode = response.get("errcode", 0)
@@ -1314,6 +1374,23 @@ class WeixinAdapter(BasePlatformAdapter):
                 await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0
+
+    async def _reconnect_poll_session(self) -> None:
+        """Tear down and rebuild the long-poll HTTP session after a zombie
+        connection is detected (#23523). The poll loop reads
+        ``self._poll_session`` fresh each iteration, so swapping it here is
+        enough to resume polling over a live socket. Also refreshes the
+        platform ``connected`` timestamp so the health endpoint stops
+        reporting a stale ``updated_at``."""
+        old = self._poll_session
+        try:
+            if old is not None and not old.closed:
+                await old.close()
+        except Exception as exc:
+            logger.debug("[%s] error closing stale poll session: %s", self.name, exc)
+        self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        self._mark_connected()
+        logger.info("[%s] poll session reconnected", self.name)
 
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:
@@ -1572,10 +1649,21 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            # Exponential backoff (base × 2^attempt) capped,
+                            # so the total retry window spans a real iLink
+                            # frequency cooldown (15-30s) instead of the old
+                            # fixed 3s. Honour a server-supplied retry-after
+                            # hint when present.
+                            wait = min(
+                                self._rate_limit_backoff_cap_seconds,
+                                self._send_chunk_retry_delay_seconds * (2 ** (attempt + 1)),
+                            )
+                            retry_after = resp.get("retry_after") or resp.get("wait")
+                            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                                wait = max(wait, min(float(retry_after), self._rate_limit_backoff_cap_seconds))
                             logger.warning(
-                                "[%s] rate limited for %s; backing off %.1fs before retry",
-                                self.name, _safe_id(chat_id), wait,
+                                "[%s] rate limited for %s; backing off %.1fs before retry (attempt %d/%d)",
+                                self.name, _safe_id(chat_id), wait, attempt + 1, self._send_chunk_retries + 1,
                             )
                             await asyncio.sleep(wait)
                             continue

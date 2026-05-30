@@ -3,7 +3,12 @@ from io import StringIO
 from rich.console import Console
 from rich.markdown import Markdown
 
-from cli import _render_final_assistant_content
+from cli import (
+    _render_final_assistant_content,
+    _response_box_content_width,
+    _response_box_horizontal_padding,
+    _wrap_stream_line,
+)
 
 
 def _render_to_text(renderable) -> str:
@@ -62,6 +67,37 @@ def test_final_assistant_content_can_strip_markdown_syntax():
     assert "***" not in output
     assert "~~" not in output
     assert "`" not in output
+
+
+def test_response_box_padding_shrinks_on_narrow_terminals():
+    assert _response_box_horizontal_padding(120) == 4
+    assert _response_box_horizontal_padding(70) == 3
+    assert _response_box_horizontal_padding(50) == 2
+    assert _response_box_horizontal_padding(40) == 1
+
+
+def test_response_box_content_width_tracks_adaptive_padding():
+    assert _response_box_content_width(120) == 108
+    assert _response_box_content_width(50) == 42
+    assert _response_box_content_width(40) == 34
+
+
+def test_stream_line_wrap_prefers_word_boundaries_when_possible():
+    wrapped = _wrap_stream_line("alpha beta gamma delta", width=12)
+
+    assert wrapped == ["alpha beta", "gamma delta"]
+
+
+def test_stream_line_wrap_hard_wraps_long_tokens_deterministically():
+    wrapped = _wrap_stream_line("supercalifragilistic", width=8)
+
+    assert wrapped == ["supercal", "ifragili", "stic"]
+
+
+def test_stream_line_wrap_respects_wide_character_cell_widths():
+    wrapped = _wrap_stream_line("你你你你你你你你你你", width=12)
+
+    assert wrapped == ["你你你你你你", "你你你你"]
 
 
 def test_strip_mode_preserves_lists():

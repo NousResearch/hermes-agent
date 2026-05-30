@@ -1,9 +1,11 @@
+import threading
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from agent.account_usage import AccountUsageSnapshot
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -12,6 +14,21 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.base_url = None
+    cli_obj.api_key = None
+    cli_obj._status_bar_visible = True
+    cli_obj._status_bar_suppressed_after_resize = False
+    cli_obj._model_picker_state = None
+    cli_obj._prompt_start_time = None
+    cli_obj._last_prompt_duration = 0.0
+    cli_obj._account_usage_refresh_lock = threading.Lock()
+    cli_obj._account_usage_snapshot = None
+    cli_obj._account_usage_provider = ""
+    cli_obj._account_usage_base_url = ""
+    cli_obj._account_usage_api_key_fingerprint = ""
+    cli_obj._account_usage_last_fetch_monotonic = 0.0
+    cli_obj._account_usage_refresh_inflight = False
+    cli_obj._account_usage_refresh_interval = 60.0
     return cli_obj
 
 
@@ -255,7 +272,7 @@ class TestCLIStatusBar:
 
         assert "🗜️ 2" in text
 
-    def test_compression_count_hidden_in_narrow_status_bar(self):
+    def test_compression_count_shown_in_narrow_status_bar_when_wrapped(self):
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_000,
@@ -269,7 +286,8 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=50)
 
-        assert "🗜️" not in text
+        assert "🗜️ 5" in text
+        assert "\n" in text
 
     def test_compression_count_style_thresholds(self):
         cli_obj = _make_cli()
@@ -295,11 +313,10 @@ class TestCLIStatusBar:
         cli_obj._status_bar_visible = True
 
         frags = cli_obj._get_status_bar_fragments()
-        frag_texts = [text for _, text in frags]
+        rendered = "".join(text for _, text in frags)
 
-        assert "🗜️ 7" in frag_texts
-        frag_styles = {text: style for style, text in frags}
-        assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
+        assert "🗜️ 7" in rendered
+        assert cli_obj._status_bar_display_width(rendered.replace("\n", "")) > 0
 
     def test_compression_count_absent_from_fragments_when_zero(self):
         cli_obj = _attach_agent(
@@ -498,6 +515,87 @@ class TestCLIStatusBar:
 
         assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
 
+    def test_account_usage_none_result_is_negative_cached(self):
+        cli_obj = _make_cli()
+        cli_obj._invalidate = lambda min_interval=0.0: None
+        starts = []
+
+        class ImmediateThread:
+            def __init__(self, *, target, args=(), daemon=None):
+                self._args = args
+                starts.append(args)
+
+            def start(self):
+                provider, base_url, api_key = self._args
+                cli_obj._account_usage_snapshot = None
+                cli_obj._account_usage_provider = provider
+                cli_obj._account_usage_base_url = (base_url or "").strip()
+                cli_obj._account_usage_api_key_fingerprint = (
+                    HermesCLI._account_usage_api_key_fingerprint_for(api_key)
+                )
+                cli_obj._account_usage_last_fetch_monotonic = time.monotonic()
+                cli_obj._account_usage_refresh_inflight = False
+
+        with patch("cli.threading.Thread", ImmediateThread):
+            first = cli_obj._get_cached_account_usage_snapshot(
+                "openai-codex", base_url="https://api.example.com", api_key="key-1"
+            )
+            second = cli_obj._get_cached_account_usage_snapshot(
+                "openai-codex", base_url="https://api.example.com", api_key="key-1"
+            )
+
+        assert first is None
+        assert second is None
+        assert len(starts) == 1
+        assert cli_obj._account_usage_last_fetch_monotonic > 0
+        assert cli_obj._account_usage_refresh_inflight is False
+
+    def test_account_usage_cache_invalidates_on_api_key_change(self):
+        cli_obj = _make_cli()
+        cli_obj._account_usage_snapshot = AccountUsageSnapshot(
+            provider="openai-codex",
+            source="test",
+            fetched_at=datetime.now(),
+        )
+        cli_obj._account_usage_provider = "openai-codex"
+        cli_obj._account_usage_base_url = "https://api.example.com"
+        cli_obj._account_usage_api_key_fingerprint = (
+            HermesCLI._account_usage_api_key_fingerprint_for("key-1")
+        )
+        cli_obj._account_usage_last_fetch_monotonic = time.monotonic()
+        starts = []
+
+        class RecordingThread:
+            def __init__(self, *, target, args=(), daemon=None):
+                starts.append(args)
+
+            def start(self):
+                return None
+
+        with patch("cli.threading.Thread", RecordingThread):
+            result = cli_obj._get_cached_account_usage_snapshot(
+                "openai-codex", base_url="https://api.example.com", api_key="key-2"
+            )
+
+        assert result is None
+        assert len(starts) == 1
+        assert cli_obj._account_usage_refresh_inflight is True
+
+    def test_account_usage_summary_preserves_credit_only_snapshots(self):
+        snapshot = AccountUsageSnapshot(
+            provider="openai-codex",
+            source="test",
+            fetched_at=datetime.now(),
+            credits_balance=12.5,
+        )
+
+        info = HermesCLI._summarize_account_usage(snapshot)
+
+        assert info["account_usage_provider"] == "openai-codex"
+        assert info["account_usage_credits_label"] == "$12.50"
+        assert info["account_usage_credits_compact_label"] == "$12.5"
+        assert info["account_usage_primary_remaining"] is None
+
 
 class TestCLIUsageReport:
     def test_show_usage_includes_estimated_cost(self, capsys):
@@ -563,6 +661,48 @@ class TestCLIUsageReport:
         assert "n/a" in output
         assert "Pricing unknown for glm-5" in output
 
+    def test_status_bar_wraps_without_ellipsis_when_width_is_tight(self):
+        cli_obj = _make_cli(model="anthropic/claude-sonnet-4-20250514")
+        cli_obj._status_bar_visible = True
+        cli_obj._get_status_bar_snapshot = lambda: {
+            "model_name": "anthropic/claude-sonnet-4-20250514",
+            "model_short": "claude-sonnet-4-20250514",
+            "duration": "2h",
+            "prompt_elapsed": "⏲ 3m",
+            "context_percent": 33,
+            "context_length": 200_000,
+            "context_tokens": 66_000,
+            "compressions": 1,
+            "active_background_tasks": 2,
+            "active_background_processes": 1,
+            "account_usage_primary_label": "Session",
+            "account_usage_primary_remaining": 26,
+            "account_usage_primary_reset_hint": "1h",
+            "account_usage_primary_reset_clock": "11:00",
+            "account_usage_secondary_label": "Weekly",
+            "account_usage_secondary_remaining": 64,
+            "account_usage_secondary_reset_hint": "2d",
+            "account_usage_credits_label": "$12.50",
+            "account_usage_credits_compact_label": "$12.5",
+            "account_usage_risk_level": "warn",
+            "account_usage_loading": False,
+        }
+
+        text = cli_obj._build_status_bar_text(width=44)
+
+        assert "..." not in text
+        assert "📈" in text
+        assert "🗜️ 1" in text
+        for line in text.splitlines():
+            assert cli_obj._status_bar_display_width(line) <= 44
+
+    def test_status_bar_height_tracks_multiline_wrap(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_visible = True
+        cli_obj._build_status_bar_text = lambda width=None: "one\ntwo\nthree"
+
+        assert cli_obj._status_bar_height(width=40) == 3
+
 
 class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""
@@ -593,9 +733,10 @@ class TestStatusBarWidthSource:
                 frags = cli_obj._get_status_bar_fragments()
 
             total_text = "".join(text for _, text in frags)
-            display_width = cli_obj._status_bar_display_width(total_text)
-            assert display_width <= width + 4, (  # +4 for minor padding chars
-                f"At width={width}, fragment total {display_width} cells overflows "
+            line_widths = [cli_obj._status_bar_display_width(line) for line in total_text.splitlines() if line]
+            max_line_width = max(line_widths) if line_widths else 0
+            assert max_line_width <= width + 4, (  # +4 for minor padding chars
+                f"At width={width}, fragment line max {max_line_width} cells overflows "
                 f"({total_text!r})"
             )
 

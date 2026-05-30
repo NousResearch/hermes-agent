@@ -37,6 +37,7 @@ import tempfile
 import time
 import uuid
 import textwrap
+import hashlib
 from collections import deque
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
@@ -1478,7 +1479,109 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
+_STREAM_PAD = "    "  # Default indent for streamed response text on roomy terminals.
+
+
+def _response_box_horizontal_padding(width: Optional[int] = None) -> int:
+    """Return adaptive horizontal padding for response boxes.
+
+    Wide terminals can afford the original roomy 4-cell gutters, but on
+    narrow terminals those gutters consume too much of the available text
+    width and cause premature soft-wraps.  Tighten the gutters gradually so
+    more content fits before wrapping.
+    """
+    try:
+        cols = int(width or shutil.get_terminal_size((80, 24)).columns or 80)
+    except Exception:
+        cols = 80
+    if cols < 44:
+        return 1
+    if cols < 64:
+        return 2
+    if cols < 84:
+        return 3
+    return 4
+
+
+def _stream_pad(width: Optional[int] = None) -> str:
+    """Return the adaptive left indent for streamed assistant content."""
+    return " " * _response_box_horizontal_padding(width)
+
+
+def _response_box_content_width(width: Optional[int] = None) -> int:
+    """Return the usable inner text width inside a response box.
+
+    Accounts for the panel border (2 cells total), adaptive left/right padding,
+    and a tiny safety margin so resize races do not push borderline lines into
+    an extra terminal-driven wrap.
+    """
+    try:
+        cols = int(width or shutil.get_terminal_size((80, 24)).columns or 80)
+    except Exception:
+        cols = 80
+    pad = _response_box_horizontal_padding(cols)
+    return max(20, cols - (pad * 2) - 4)
+
+
+def _wrap_stream_line(text: str, width: Optional[int] = None) -> list[str]:
+    """Wrap a streamed content line proactively for narrow terminals.
+
+    Uses terminal cell width (not Python codepoint count) so CJK, emoji, and
+    other wide glyphs wrap at the same columns the terminal actually uses.
+    Prefers breaking at whitespace when possible, then falls back to a
+    deterministic hard-wrap for single long tokens/paths.
+    """
+    text = str(text or "")
+    if text == "":
+        return [""]
+    content_width = max(1, int(width or _response_box_content_width()))
+    try:
+        from prompt_toolkit.utils import get_cwidth
+    except Exception:
+        get_cwidth = None
+
+    def cell_width(chunk: str) -> int:
+        if not chunk:
+            return 0
+        if get_cwidth is None:
+            return len(chunk)
+        return sum(max(0, int(get_cwidth(ch) or 0)) for ch in chunk)
+
+    lines: list[str] = []
+    current: list[str] = []
+    current_width = 0
+    last_break_idx: Optional[int] = None
+
+    def recompute_last_break_idx(chars: list[str]) -> Optional[int]:
+        for idx in range(len(chars) - 1, -1, -1):
+            if chars[idx].isspace():
+                return idx + 1
+        return None
+
+    for ch in text:
+        ch_width = max(0, int(get_cwidth(ch) or 0)) if get_cwidth else len(ch)
+        if current and current_width + ch_width > content_width:
+            if last_break_idx is not None:
+                line = "".join(current[:last_break_idx]).rstrip()
+                remainder = "".join(current[last_break_idx:]).lstrip()
+                if line:
+                    lines.append(line)
+                current = list(remainder)
+                current_width = cell_width(remainder)
+                last_break_idx = recompute_last_break_idx(current)
+            else:
+                lines.append("".join(current).rstrip())
+                current = []
+                current_width = 0
+                last_break_idx = None
+        current.append(ch)
+        current_width += ch_width
+        if ch.isspace():
+            last_break_idx = len(current)
+
+    if current:
+        lines.append("".join(current).rstrip())
+    return lines or [text]
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -1872,36 +1975,23 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
 def _terminal_width_for_streaming() -> int:
     """Display cells available inside the streamed response box.
 
-    The streaming path indents every line by ``_STREAM_PAD`` (4 cells)
+    The streaming path indents every line by an adaptive left gutter
     inside an open response panel.  The realigner uses this number as
     its budget when deciding whether to keep a horizontal table or
     fall back to vertical key-value rendering.  We subtract a small
     safety margin so terminal-resize races don't push a borderline
     table into mid-cell soft-wrap.
     """
-
-    try:
-        cols = shutil.get_terminal_size((80, 24)).columns
-    except Exception:
-        cols = 80
-    return max(20, cols - len(_STREAM_PAD) - 2)
+    return _response_box_content_width()
 
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
 
-    # Estimate the cells available to the rendered table.  The Panel
-    # used by the background-task / final-response path has 4 cells of
-    # left+right padding plus 1 cell of border on each side, plus the
-    # _STREAM_PAD indent that streamed content uses.  Subtract a small
-    # safety margin so resize races don't push a borderline table into
-    # soft-wrap.
-    try:
-        cols = shutil.get_terminal_size((80, 24)).columns
-    except Exception:
-        cols = 80
-    panel_width = max(20, cols - 12)
+    # Estimate the cells available to the rendered table using the same
+    # adaptive inner width that the live streaming path uses.
+    panel_width = _response_box_content_width()
 
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
@@ -3296,6 +3386,14 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        self._account_usage_snapshot = None
+        self._account_usage_provider = None
+        self._account_usage_base_url = None
+        self._account_usage_api_key_fingerprint = None
+        self._account_usage_last_fetch_monotonic = 0.0
+        self._account_usage_refresh_inflight = False
+        self._account_usage_refresh_lock = threading.Lock()
+        self._account_usage_refresh_interval = 60.0
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -3506,6 +3604,225 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    def _refresh_account_usage_snapshot_worker(self, provider: str, base_url: Optional[str], api_key: Optional[str]) -> None:
+        """Fetch account-usage data off the render path and cache the latest snapshot."""
+        snapshot = None
+        api_key_fingerprint = self._account_usage_api_key_fingerprint_for(api_key)
+        try:
+            from agent.account_usage import fetch_account_usage
+            snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+        except Exception:
+            snapshot = None
+        finally:
+            with self._account_usage_refresh_lock:
+                self._account_usage_snapshot = snapshot
+                self._account_usage_provider = provider
+                self._account_usage_base_url = (base_url or "").strip()
+                self._account_usage_api_key_fingerprint = api_key_fingerprint
+                self._account_usage_last_fetch_monotonic = time.monotonic()
+                self._account_usage_refresh_inflight = False
+            self._invalidate(min_interval=0.0)
+
+    @staticmethod
+    def _account_usage_api_key_fingerprint_for(api_key: Optional[str]) -> str:
+        if not api_key:
+            return ""
+        try:
+            return hashlib.sha256(str(api_key).encode("utf-8")).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    def _get_cached_account_usage_snapshot(self, provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None):
+        """Return cached account-usage data and trigger an async refresh when stale."""
+        normalized = str(provider or "").strip().lower()
+        if normalized in {"", "auto", "custom"}:
+            return None
+        base_key = (base_url or "").strip()
+        api_key_fingerprint = self._account_usage_api_key_fingerprint_for(api_key)
+        now = time.monotonic()
+        with self._account_usage_refresh_lock:
+            cached = self._account_usage_snapshot
+            cached_provider = self._account_usage_provider
+            cached_base = self._account_usage_base_url
+            cached_api_key_fingerprint = getattr(self, "_account_usage_api_key_fingerprint", "")
+            last_fetch = self._account_usage_last_fetch_monotonic
+            inflight = self._account_usage_refresh_inflight
+            needs_refresh = (
+                last_fetch <= 0.0
+                or cached_provider != normalized
+                or cached_base != base_key
+                or cached_api_key_fingerprint != api_key_fingerprint
+                or (now - last_fetch) >= self._account_usage_refresh_interval
+            )
+            if needs_refresh and not inflight:
+                self._account_usage_refresh_inflight = True
+                thread = threading.Thread(
+                    target=self._refresh_account_usage_snapshot_worker,
+                    args=(normalized, base_url, api_key),
+                    daemon=True,
+                )
+                thread.start()
+            if (
+                cached_provider != normalized
+                or cached_base != base_key
+                or cached_api_key_fingerprint != api_key_fingerprint
+            ):
+                return None
+            return cached
+
+    @staticmethod
+    def _summarize_account_usage(snapshot) -> Dict[str, Any]:
+        """Extract compact status-bar fields from an account-usage snapshot."""
+        info: Dict[str, Any] = {
+            "account_usage_provider": None,
+            "account_usage_primary_label": None,
+            "account_usage_primary_remaining": None,
+            "account_usage_primary_reset_hint": None,
+            "account_usage_primary_reset_clock": None,
+            "account_usage_secondary_label": None,
+            "account_usage_secondary_remaining": None,
+            "account_usage_secondary_reset_hint": None,
+            "account_usage_credits_label": None,
+            "account_usage_credits_compact_label": None,
+            "account_usage_risk_level": None,
+        }
+        if not snapshot or not getattr(snapshot, "available", False):
+            return info
+        windows = list(getattr(snapshot, "windows", ()) or [])
+        info["account_usage_provider"] = getattr(snapshot, "provider", None)
+        if windows:
+            primary = windows[0]
+            primary_used = getattr(primary, "used_percent", None)
+            if primary_used is not None:
+                info["account_usage_primary_label"] = getattr(primary, "label", None)
+                info["account_usage_primary_remaining"] = max(0, min(100, round(100 - float(primary_used))))
+                info["account_usage_primary_reset_hint"] = HermesCLI._format_account_usage_reset_hint(getattr(primary, "reset_at", None))
+                info["account_usage_primary_reset_clock"] = HermesCLI._format_account_usage_reset_clock(getattr(primary, "reset_at", None))
+            if len(windows) > 1:
+                secondary = windows[1]
+                secondary_used = getattr(secondary, "used_percent", None)
+                if secondary_used is not None:
+                    info["account_usage_secondary_label"] = getattr(secondary, "label", None)
+                    info["account_usage_secondary_remaining"] = max(0, min(100, round(100 - float(secondary_used))))
+                    info["account_usage_secondary_reset_hint"] = HermesCLI._format_account_usage_reset_hint(getattr(secondary, "reset_at", None))
+        credits_balance = getattr(snapshot, "credits_balance", None)
+        credits_unlimited = bool(getattr(snapshot, "credits_unlimited", False))
+        if credits_unlimited:
+            info["account_usage_credits_label"] = "∞"
+            info["account_usage_credits_compact_label"] = "∞"
+        elif isinstance(credits_balance, (int, float)):
+            info["account_usage_credits_label"] = HermesCLI._format_account_usage_credits_label(float(credits_balance), compact=False)
+            info["account_usage_credits_compact_label"] = HermesCLI._format_account_usage_credits_label(float(credits_balance), compact=True)
+        remaining_values = [
+            value for value in (
+                info.get("account_usage_primary_remaining"),
+                info.get("account_usage_secondary_remaining"),
+            ) if isinstance(value, (int, float))
+        ]
+        if remaining_values:
+            lowest_remaining = min(remaining_values)
+            if lowest_remaining <= 15:
+                info["account_usage_risk_level"] = "critical"
+            elif lowest_remaining <= 30:
+                info["account_usage_risk_level"] = "warn"
+        return info
+
+    @staticmethod
+    def _account_usage_warning_marker(risk_level: Optional[str]) -> str:
+        if risk_level == "critical":
+            return "‼"
+        if risk_level == "warn":
+            return "⚠"
+        return ""
+
+    @staticmethod
+    def _account_usage_warning_style(risk_level: Optional[str]) -> str:
+        if risk_level == "critical":
+            return "class:status-bar-critical"
+        if risk_level == "warn":
+            return "class:status-bar-bad"
+        return "class:status-bar-dim"
+
+    @staticmethod
+    def _format_account_usage_credits_label(balance: float, *, compact: bool = False) -> str:
+        amount = float(balance)
+        if compact:
+            if amount >= 100:
+                return f"${amount:.0f}"
+            if amount >= 10:
+                return f"${amount:.1f}".rstrip("0").rstrip(".")
+            return f"${amount:.2f}".rstrip("0").rstrip(".")
+        if amount >= 100:
+            return f"${amount:.0f}"
+        return f"${amount:.2f}"
+
+    @staticmethod
+    def _format_account_usage_window_label(label: Optional[str], *, compact: bool = False) -> str:
+        """Normalize account-usage window labels for the status bar."""
+        raw = str(label or "").strip()
+        if not raw:
+            return "Usage"
+        key = raw.lower()
+        full_map = {
+            "session": "Session",
+            "week": "Week",
+            "weekly": "Week",
+            "day": "Day",
+            "daily": "Day",
+            "hour": "Hour",
+            "hourly": "Hour",
+            "month": "Month",
+            "monthly": "Month",
+        }
+        compact_map = {
+            "session": "Sess",
+            "week": "Wk",
+            "weekly": "Wk",
+            "day": "Day",
+            "daily": "Day",
+            "hour": "Hr",
+            "hourly": "Hr",
+            "month": "Mo",
+            "monthly": "Mo",
+        }
+        mapping = compact_map if compact else full_map
+        if key in mapping:
+            return mapping[key]
+        cleaned = raw.split()[0].strip().rstrip(":")
+        if compact:
+            return cleaned[:4].title() if cleaned else "Usage"
+        return cleaned.title() if cleaned else "Usage"
+
+    @staticmethod
+    def _format_account_usage_reset_hint(reset_at) -> Optional[str]:
+        """Return a tiny relative reset hint like 18m, 3h, or 2d."""
+        if not reset_at:
+            return None
+        try:
+            delta_seconds = int((reset_at - datetime.now(reset_at.tzinfo)).total_seconds())
+        except Exception:
+            return None
+        if delta_seconds <= 0:
+            return "now"
+        if delta_seconds < 3600:
+            minutes = max(1, round(delta_seconds / 60))
+            return f"{minutes}m"
+        if delta_seconds < 86400:
+            hours = max(1, round(delta_seconds / 3600))
+            return f"{hours}h"
+        days = max(1, round(delta_seconds / 86400))
+        return f"{days}d"
+
+    @staticmethod
+    def _format_account_usage_reset_clock(reset_at) -> Optional[str]:
+        """Return a tiny local-time reset clock like 14:30 for the next reset."""
+        if not reset_at:
+            return None
+        try:
+            return reset_at.astimezone().strftime("%H:%M")
+        except Exception:
+            return None
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -3543,6 +3860,18 @@ class HermesCLI:
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
+            "account_usage_provider": None,
+            "account_usage_primary_label": None,
+            "account_usage_primary_remaining": None,
+            "account_usage_primary_reset_hint": None,
+            "account_usage_primary_reset_clock": None,
+            "account_usage_secondary_label": None,
+            "account_usage_secondary_remaining": None,
+            "account_usage_secondary_reset_hint": None,
+            "account_usage_credits_label": None,
+            "account_usage_credits_compact_label": None,
+            "account_usage_risk_level": None,
+            "account_usage_loading": False,
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -3584,6 +3913,18 @@ class HermesCLI:
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+
+        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+        account_snapshot = self._get_cached_account_usage_snapshot(provider, base_url=base_url, api_key=api_key)
+        snapshot.update(self._summarize_account_usage(account_snapshot))
+        normalized_provider = str(provider or "").strip().lower()
+        snapshot["account_usage_loading"] = bool(
+            normalized_provider not in {"", "auto", "custom"}
+            and account_snapshot is None
+            and getattr(self, "_account_usage_refresh_inflight", False)
+        )
 
         return snapshot
 
@@ -3629,6 +3970,100 @@ class HermesCLI:
             out.append(ch)
             width += ch_width
         return "".join(out).rstrip() + ellipsis
+
+    @classmethod
+    def _wrap_status_bar_text(cls, text: str, max_width: int) -> list[str]:
+        """Wrap status-bar text to terminal cell width without dropping content."""
+        if max_width <= 0:
+            return [""]
+        text = str(text or "")
+        if not text:
+            return [""]
+        if cls._status_bar_display_width(text) <= max_width:
+            return [text]
+        try:
+            from prompt_toolkit.utils import get_cwidth
+        except Exception:
+            get_cwidth = None
+
+        lines: list[str] = []
+        current: list[str] = []
+        current_width = 0
+        for ch in text:
+            ch_width = get_cwidth(ch) if get_cwidth else len(ch)
+            ch_width = max(0, int(ch_width or 0))
+            if current and current_width + ch_width > max_width:
+                lines.append("".join(current).rstrip())
+                current = []
+                current_width = 0
+            if not current and ch_width > max_width:
+                lines.append(ch)
+                continue
+            current.append(ch)
+            current_width += ch_width
+        if current:
+            lines.append("".join(current).rstrip())
+        return lines or [""]
+
+    @classmethod
+    def _wrap_status_bar_parts(cls, parts: list[str], separator: str, max_width: int) -> list[str]:
+        """Pack status-bar parts onto as many lines as needed without truncation."""
+        if max_width <= 0:
+            return [""]
+        filtered_parts = [str(part) for part in parts if part]
+        if not filtered_parts:
+            return []
+
+        lines: list[str] = []
+        current = ""
+        for part in filtered_parts:
+            candidate = part if not current else f"{current}{separator}{part}"
+            if cls._status_bar_display_width(candidate) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.extend(cls._wrap_status_bar_text(current, max_width))
+                current = ""
+            if cls._status_bar_display_width(part) <= max_width:
+                current = part
+            else:
+                wrapped_part = cls._wrap_status_bar_text(part, max_width)
+                if wrapped_part:
+                    lines.extend(wrapped_part[:-1])
+                    current = wrapped_part[-1]
+        if current:
+            lines.extend(cls._wrap_status_bar_text(current, max_width))
+        return lines
+
+    @classmethod
+    def _merge_status_bar_line_groups(
+        cls,
+        groups: list[list[str]],
+        max_width: int,
+        *,
+        line_separator: str = " │ ",
+    ) -> str:
+        """Join pre-wrapped line groups while preserving all content."""
+        lines: list[str] = []
+        for group in groups:
+            for line in group:
+                if line:
+                    lines.extend(cls._wrap_status_bar_text(line, max_width))
+
+        if not lines:
+            return ""
+
+        merged: list[str] = []
+        current = lines[0]
+        for line in lines[1:]:
+            candidate = f"{current}{line_separator}{line}"
+            if cls._status_bar_display_width(candidate) <= max_width:
+                current = candidate
+            else:
+                merged.append(current)
+                current = line
+        merged.append(current)
+        return "\n".join(merged)
 
     @staticmethod
     def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
@@ -3704,6 +4139,24 @@ class HermesCLI:
             return max(1, math.ceil(text_width / width))
         return 1
 
+    def _status_bar_height(self, width: Optional[int] = None) -> int:
+        """Return the rendered footer height in rows.
+
+        The status bar normally stays on one row, but may intentionally expand
+        to two rows on narrower terminals when that preserves useful usage
+        detail better than hard trimming.
+        """
+        if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
+            return 0
+        if getattr(self, "_status_bar_suppressed_after_resize", False):
+            return 0
+        try:
+            width = width or self._get_tui_terminal_width()
+            text = self._build_status_bar_text(width)
+            return max(1, len(str(text or "").splitlines()))
+        except Exception:
+            return 1
+
     def _render_spinner_text(self) -> str:
         """Return the live spinner/status text exactly as rendered in the TUI."""
         txt = getattr(self, "_spinner_text", "")
@@ -3778,36 +4231,53 @@ class HermesCLI:
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
-        """Return a compact one-line session status string for the TUI footer."""
+        """Return a width-aware status string for the TUI footer without truncation."""
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
                 width = self._get_tui_terminal_width()
+            width = max(1, int(width or 1))
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
-
-            yolo_active = self._is_session_yolo_active()
-            if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
-                if yolo_active:
-                    text += " · ⚠ YOLO"
-                return self._trim_status_bar_text(text, width)
-            if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
-                compressions = snapshot.get("compressions", 0)
-                if compressions:
-                    parts.append(f"🗜️ {compressions}")
-                bg_count = snapshot.get("active_background_tasks", 0)
-                if bg_count:
-                    parts.append(f"▶ {bg_count}")
-                bg_proc_count = snapshot.get("active_background_processes", 0)
-                if bg_proc_count:
-                    parts.append(f"⚙ {bg_proc_count}")
-                parts.append(duration_label)
-                if yolo_active:
-                    parts.append("⚠ YOLO")
-                return self._trim_status_bar_text(" · ".join(parts), width)
+            primary_remaining = snapshot.get("account_usage_primary_remaining")
+            secondary_remaining = snapshot.get("account_usage_secondary_remaining")
+            primary_usage_label = self._format_account_usage_window_label(
+                snapshot.get("account_usage_primary_label"),
+                compact=width < 76,
+            )
+            secondary_usage_label = self._format_account_usage_window_label(
+                snapshot.get("account_usage_secondary_label"),
+                compact=width < 76,
+            )
+            primary_reset_hint = snapshot.get("account_usage_primary_reset_hint")
+            primary_reset_clock = snapshot.get("account_usage_primary_reset_clock")
+            secondary_reset_hint = snapshot.get("account_usage_secondary_reset_hint")
+            account_usage_loading = bool(snapshot.get("account_usage_loading"))
+            account_usage_credits_label = snapshot.get("account_usage_credits_label")
+            account_usage_credits_compact_label = snapshot.get("account_usage_credits_compact_label")
+            account_usage_risk_level = snapshot.get("account_usage_risk_level")
+            account_usage_warning_marker = self._account_usage_warning_marker(account_usage_risk_level)
+            account_usage_bits = []
+            if primary_remaining is not None:
+                primary_text = f"{primary_usage_label} {primary_remaining}%"
+                if primary_reset_hint:
+                    primary_text += f"/{primary_reset_hint}"
+                if primary_reset_clock and width >= 76:
+                    primary_text += f"@{primary_reset_clock}"
+                account_usage_bits.append(primary_text)
+            if secondary_remaining is not None:
+                secondary_text = f"{secondary_usage_label} {secondary_remaining}%"
+                if secondary_reset_hint:
+                    secondary_text += f"/{secondary_reset_hint}"
+                account_usage_bits.append(secondary_text)
+            if account_usage_credits_label and width >= 76:
+                account_usage_bits.append(f"💳 {account_usage_credits_label}")
+            elif account_usage_credits_compact_label and width >= 52:
+                account_usage_bits.append(f"💳 {account_usage_credits_compact_label}")
+            if account_usage_warning_marker and account_usage_bits:
+                account_usage_bits.append(account_usage_warning_marker)
+            account_usage_label = f"📈 {' '.join(account_usage_bits)}" if account_usage_bits else ("📈 loading..." if account_usage_loading else "")
 
             if snapshot["context_length"]:
                 ctx_total = _format_context_length(snapshot["context_length"])
@@ -3817,22 +4287,65 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
-            if compressions:
-                parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
-            if bg_count:
-                parts.append(f"▶ {bg_count}")
             bg_proc_count = snapshot.get("active_background_processes", 0)
-            if bg_proc_count:
-                parts.append(f"⚙ {bg_proc_count}")
-            parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
+            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+
+            if width < 52:
+                header_parts = [f"⚕ {snapshot['model_short']}", percent_label, duration_label]
+                usage_lines = self._wrap_status_bar_parts([account_usage_label], " · ", width) if account_usage_label else []
+                aux_parts = []
+                if compressions:
+                    aux_parts.append(f"🗜️ {compressions}")
+                if bg_count:
+                    aux_parts.append(f"▶ {bg_count}")
+                if bg_proc_count:
+                    aux_parts.append(f"⚙ {bg_proc_count}")
+                if yolo_active:
+                    aux_parts.append("⚠ YOLO")
+                return self._merge_status_bar_line_groups([
+                    self._wrap_status_bar_parts(header_parts, " · ", width),
+                    usage_lines,
+                    self._wrap_status_bar_parts(aux_parts, " · ", width),
+                ], width, line_separator=" · ")
+
+            if width < 76:
+                header_parts = [f"⚕ {snapshot['model_short']}", percent_label, duration_label]
+                usage_lines = self._wrap_status_bar_parts([account_usage_label], " · ", width) if account_usage_label else []
+                aux_parts = []
+                if compressions:
+                    aux_parts.append(f"🗜️ {compressions}")
+                if bg_count:
+                    aux_parts.append(f"▶ {bg_count}")
+                if bg_proc_count:
+                    aux_parts.append(f"⚙ {bg_proc_count}")
+                if yolo_active:
+                    aux_parts.append("⚠ YOLO")
+                return self._merge_status_bar_line_groups([
+                    self._wrap_status_bar_parts(header_parts, " · ", width),
+                    usage_lines,
+                    self._wrap_status_bar_parts(aux_parts, " · ", width),
+                ], width, line_separator=" · ")
+
+            header_parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label, duration_label]
             if prompt_elapsed:
-                parts.append(prompt_elapsed)
+                header_parts.append(prompt_elapsed)
+            usage_lines = self._wrap_status_bar_parts([account_usage_label], " │ ", width) if account_usage_label else []
+            aux_parts = []
+            if compressions:
+                aux_parts.append(f"🗜️ {compressions}")
+            if bg_count:
+                aux_parts.append(f"▶ {bg_count}")
+            if bg_proc_count:
+                aux_parts.append(f"⚙ {bg_proc_count}")
             if yolo_active:
-                parts.append("⚠ YOLO")
-            return self._trim_status_bar_text(" │ ".join(parts), width)
+                aux_parts.append("⚠ YOLO")
+            return self._merge_status_bar_line_groups([
+                self._wrap_status_bar_parts(header_parts, " │ ", width),
+                usage_lines,
+                self._wrap_status_bar_parts(aux_parts, " │ ", width),
+            ], width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
@@ -3847,8 +4360,33 @@ class HermesCLI:
             # actually renders, causing the fragments to overflow to a second
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
+            multiline_text = self._build_status_bar_text(width)
+            if "\n" in multiline_text:
+                lines = multiline_text.splitlines()
+                return [("class:status-bar", " " + "\n ".join(lines) + " ")]
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            primary_remaining = snapshot.get("account_usage_primary_remaining")
+            secondary_remaining = snapshot.get("account_usage_secondary_remaining")
+            primary_usage_label = self._format_account_usage_window_label(
+                snapshot.get("account_usage_primary_label"),
+                compact=False,
+            )
+            secondary_usage_label = self._format_account_usage_window_label(
+                snapshot.get("account_usage_secondary_label"),
+                compact=False,
+            )
+            primary_reset_hint = snapshot.get("account_usage_primary_reset_hint")
+            primary_reset_clock = snapshot.get("account_usage_primary_reset_clock")
+            secondary_reset_hint = snapshot.get("account_usage_secondary_reset_hint")
+            account_usage_loading = bool(snapshot.get("account_usage_loading"))
+            account_usage_credits_label = snapshot.get("account_usage_credits_label")
+            account_usage_credits_compact_label = snapshot.get("account_usage_credits_compact_label")
+            account_usage_risk_level = snapshot.get("account_usage_risk_level")
+            account_usage_warning_marker = self._account_usage_warning_marker(account_usage_risk_level)
+            account_usage_warning_style = self._account_usage_warning_style(account_usage_risk_level)
+            primary_style = self._status_bar_context_style((100 - primary_remaining) if primary_remaining is not None else None)
+            secondary_style = self._status_bar_context_style((100 - secondary_remaining) if secondary_remaining is not None else None)
 
             if width < 52:
                 frags = [
@@ -3874,6 +4412,26 @@ class HermesCLI:
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if primary_remaining is not None:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-dim", f"📈 {primary_usage_label} "))
+                        frags.append((primary_style, f"{primary_remaining}%"))
+                        if primary_reset_hint:
+                            frags.append(("class:status-bar-dim", f"/{primary_reset_hint}"))
+                        if account_usage_credits_compact_label:
+                            frags.append(("class:status-bar-dim", " 💳 "))
+                            frags.append(("class:status-bar-dim", account_usage_credits_compact_label))
+                        if secondary_remaining is not None:
+                            frags.append(("class:status-bar-dim", f" {secondary_usage_label} "))
+                            frags.append((secondary_style, f"{secondary_remaining}%"))
+                            if secondary_reset_hint:
+                                frags.append(("class:status-bar-dim", f"/{secondary_reset_hint}"))
+                        if account_usage_warning_marker:
+                            frags.append(("class:status-bar-dim", " "))
+                            frags.append((account_usage_warning_style, account_usage_warning_marker))
+                    elif account_usage_loading:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-dim", "📈 loading..."))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3913,6 +4471,28 @@ class HermesCLI:
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if primary_remaining is not None:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", f"📈 {primary_usage_label} "))
+                        frags.append((primary_style, f"{primary_remaining}%"))
+                        if primary_reset_hint:
+                            frags.append(("class:status-bar-dim", f"/{primary_reset_hint}"))
+                        if primary_reset_clock:
+                            frags.append(("class:status-bar-dim", f"@{primary_reset_clock}"))
+                        if secondary_remaining is not None:
+                            frags.append(("class:status-bar-dim", f" {secondary_usage_label} "))
+                            frags.append((secondary_style, f"{secondary_remaining}%"))
+                            if secondary_reset_hint:
+                                frags.append(("class:status-bar-dim", f"/{secondary_reset_hint}"))
+                        if account_usage_credits_label:
+                            frags.append(("class:status-bar-dim", " 💳 "))
+                            frags.append(("class:status-bar-dim", account_usage_credits_label))
+                        if account_usage_warning_marker:
+                            frags.append(("class:status-bar-dim", " "))
+                            frags.append((account_usage_warning_style, account_usage_warning_marker))
+                    elif account_usage_loading:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", "📈 loading..."))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3938,9 +4518,11 @@ class HermesCLI:
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
+                safe_text = self._build_status_bar_text(width)
+                if safe_text:
+                    return [("class:status-bar", " " + "\n ".join(safe_text.splitlines()) + " ")]
                 plain_text = "".join(text for _, text in frags)
-                trimmed = self._trim_status_bar_text(plain_text, width)
-                return [("class:status-bar", trimmed)]
+                return [("class:status-bar", " " + "\n ".join(self._wrap_status_bar_text(plain_text, width)) + " ")]
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
@@ -4457,9 +5039,12 @@ class HermesCLI:
 
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
+        stream_pad = _stream_pad(self._scrollback_box_width())
+        stream_width = _terminal_width_for_streaming()
 
         def _emit_one(printed_line: str) -> None:
-            _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+            for wrapped_line in _wrap_stream_line(printed_line, stream_width):
+                _cprint(f"{stream_pad}{_tc}{wrapped_line}{_RST}" if _tc else f"{stream_pad}{wrapped_line}")
 
         def _flush_table_buf() -> None:
             buf = self._stream_table_buf
@@ -4517,6 +5102,8 @@ class HermesCLI:
         self._close_reasoning_box()
 
         _tc = getattr(self, "_stream_text_ansi", "")
+        stream_pad = _stream_pad(self._scrollback_box_width())
+        stream_width = _terminal_width_for_streaming()
 
         # If the stream buffer has a trailing partial line that looks like
         # a table row, fold it into the table buffer so the whole block
@@ -4541,11 +5128,13 @@ class HermesCLI:
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
-                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
+                for wrapped_line in _wrap_stream_line(ln, stream_width):
+                    _cprint(f"{stream_pad}{_tc}{wrapped_line}{_RST}" if _tc else f"{stream_pad}{wrapped_line}")
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            for wrapped_line in _wrap_stream_line(line, stream_width):
+                _cprint(f"{stream_pad}{_tc}{wrapped_line}{_RST}" if _tc else f"{stream_pad}{wrapped_line}")
             self._stream_buf = ""
 
         # Close the response box
@@ -9011,7 +9600,7 @@ class HermesCLI:
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
+                        padding=(1, _response_box_horizontal_padding(self._scrollback_box_width())),
                         width=self._scrollback_box_width(),
                     ))
                 else:
@@ -12305,7 +12894,7 @@ class HermesCLI:
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
+                        padding=(1, _response_box_horizontal_padding(self._scrollback_box_width())),
                         width=self._scrollback_box_width(),
                     ))
 
@@ -14419,15 +15008,11 @@ class HermesCLI:
         status_bar = ConditionalContainer(
             Window(
                 content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
-                height=1,
+                height=lambda: cli_ref._status_bar_height(),
                 # Prevent fragments that overflow the terminal width from
-                # wrapping onto a second line, which causes the status bar to
-                # appear duplicated (one full + one partial row) during long
-                # sessions, especially on SSH where shutil.get_terminal_size
-                # may return stale values.  _get_status_bar_fragments now reads
-                # width from prompt_toolkit's own output object, so fragments
-                # will always fit; wrap_lines=False is the belt-and-suspenders
-                # guard against any future width mismatch.
+                # wrapping onto an unexpected third line. Intentional multi-line
+                # footers are returned explicitly with embedded newlines and a
+                # matching dynamic height from _status_bar_height().
                 wrap_lines=False,
             ),
             filter=Condition(

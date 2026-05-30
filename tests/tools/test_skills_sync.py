@@ -845,3 +845,31 @@ class TestResetBundledSkill:
             post_manifest = _read_manifest()
             assert "google-workspace" in post_manifest
         assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()
+
+    def test_reset_restore_preserves_manifest_on_rmtree_failure(self, tmp_path):
+        """#34972: when rmtree fails (e.g. read-only Nix-store files), the manifest
+        entry must NOT be deleted — otherwise the skill enters a limbo state."""
+        import os, stat
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# user version\n")
+        # Make directory read-only to simulate Nix-store permissions
+        os.chmod(dest, stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+        # Restore failed, but manifest must be preserved
+        assert result["ok"] is False
+        assert result["action"] == "not_reset"
+        assert "Manifest entry preserved" in result["message"]
+        # Manifest still has the old entry (not deleted)
+        manifest_after = manifest_file.read_text()
+        assert "google-workspace" in manifest_after
+        # Cleanup: restore permissions for tmp_path removal
+        os.chmod(dest, stat.S_IRWXU)

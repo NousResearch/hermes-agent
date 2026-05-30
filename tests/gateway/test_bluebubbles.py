@@ -302,7 +302,6 @@ class TestBlueBubblesAttachmentDownload:
         """Image MIME routes to cache_image_from_bytes."""
         adapter = _make_adapter(monkeypatch)
         import asyncio
-        import httpx
 
         # Mock the HTTP client response
         class MockResponse:

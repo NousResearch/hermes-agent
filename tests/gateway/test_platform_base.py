@@ -10,9 +10,9 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
-    MessageType,
     safe_url_for_log,
     utf16_len,
+    _log_safe_path,
     _prefix_within_utf16_limit,
 )
 
@@ -360,6 +360,54 @@ class TestExtractMedia:
         # Both directives stripped from cleaned text
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
+
+
+class TestMediaExtensionAllowlistParity:
+    """Regression coverage for issue #34517 — the MEDIA: extension black hole.
+
+    extract_media used to carry a narrow extension allowlist that omitted
+    .md/.json/.yaml/.xml/.html etc., while extract_local_files had a broad one.
+    Combined with an unconditional ``MEDIA:\\s*\\S+`` strip at the dispatch
+    sites, an unmatched MEDIA: tag for one of those extensions was deleted from
+    the body before extract_local_files could pick up the bare path — the file
+    was silently dropped. Both extractors now derive from the single
+    MEDIA_DELIVERY_EXTS source of truth, and the strip is anchored to that set.
+    """
+
+    DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
+                      "tsv", "svg"]
+
+    def test_previously_dropped_extensions_now_extract(self):
+        for ext in self.DROPPED_BEFORE:
+            path = f"/tmp/report.{ext}"
+            media, _ = BasePlatformAdapter.extract_media(f"Here: MEDIA:{path}")
+            assert media == [(path, False)], f".{ext} should extract via MEDIA:"
+
+    def test_extract_media_and_local_files_share_one_extension_set(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_EXTS
+        # Both functions reference MEDIA_DELIVERY_EXTS; assert the documents
+        # that motivated the bug are present in the shared set.
+        for ext in (".md", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"):
+            assert ext in MEDIA_DELIVERY_EXTS
+
+    def test_unknown_extension_not_black_holed_by_cleanup(self):
+        """A MEDIA: tag with an unknown extension is NOT stripped from the
+        body — it survives so extract_local_files can still see the bare path,
+        rather than vanishing entirely (the core of issue #34517)."""
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Saved to MEDIA:/tmp/data.weirdext done"
+        media, _ = BasePlatformAdapter.extract_media(text)
+        assert media == []  # unknown extension is not a deliverable MEDIA tag
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
+        assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
+
+    def test_known_extension_tag_is_stripped_from_body(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Here is your report: MEDIA:/tmp/report.md"
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
+        assert "MEDIA:" not in stripped
+        assert "/tmp/report.md" not in stripped
+        assert "Here is your report:" in stripped
 
 
 class TestMediaDeliveryPathValidation:
@@ -1051,3 +1099,52 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
+
+
+class TestMediaDeliveryDiagnosability:
+    """Diagnosable rejection logging + crafted-path robustness (#33251)."""
+
+    def test_rejected_path_appears_in_log(self, tmp_path, caplog):
+        outside = tmp_path / "outside.ogg"
+        outside.write_bytes(b"OggS")
+        with patch.dict(os.environ, {"HERMES_MEDIA_DELIVERY_STRICT": "1",
+                                     "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
+                patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
+            with caplog.at_level("WARNING"):
+                out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
+        assert out == []
+        # The dropped path must be in the log so operators can diagnose it.
+        assert str(outside) in caplog.text
+
+    def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
+        """One crafted ~\\x00 path must not drop every other attachment."""
+        good = tmp_path / "good.png"
+        good.write_bytes(b"\x89PNG")
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        out = BasePlatformAdapter.filter_media_delivery_paths([
+            ("~\x00evil.png", False),
+            (str(good), False),
+        ])
+        assert out == [(str(good.resolve()), False)]
+
+    def test_extract_media_tolerates_crafted_null_path(self):
+        """extract_media must not raise on a crafted ~\\x00 MEDIA tag."""
+        content = "here\nMEDIA:`~\x00evil.png`\ntrailing"
+        # Must not raise ValueError("embedded null byte").
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert all("\x00" not in p for p, _ in media)
+
+    def test_log_safe_path_neutralises_line_breaks(self):
+        forged = "/tmp/a.png\nWARNING forged second line"
+        assert "\n" not in _log_safe_path(forged)
+        # Unicode separators that split log lines are also neutralised.
+        for sep in ("\u2028", "\u2029", "\x85"):
+            assert sep not in _log_safe_path(f"/tmp/a{sep}b.png")
+
+    def test_canonical_cache_roots_present(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS
+        roots = {str(r) for r in MEDIA_DELIVERY_SAFE_ROOTS}
+        assert any(r.endswith("cache/images") for r in roots)
+        assert any(r.endswith("cache/documents") for r in roots)
+        # Legacy layout still present.
+        assert any(r.endswith("image_cache") for r in roots)

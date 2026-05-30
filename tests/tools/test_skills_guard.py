@@ -1,7 +1,5 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
-import os
-import stat
 import tempfile
 from pathlib import Path
 
@@ -33,8 +31,6 @@ from tools.skills_guard import (
     _resolve_trust_level,
     _check_structure,
     _unicode_char_name,
-    INSTALL_POLICY,
-    INVISIBLE_CHARS,
     MAX_FILE_COUNT,
     MAX_SINGLE_FILE_KB,
 )
@@ -53,6 +49,14 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("openai/skills") == "trusted"
         assert _resolve_trust_level("anthropics/skills") == "trusted"
         assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
+
+    def test_nvidia_skills_is_trusted(self):
+        # NVIDIA/skills ships NVIDIA-verified skills with detached OMS
+        # signatures and governance skill cards. It's wired through the
+        # same trust path as the OpenAI / Anthropic / HuggingFace taps.
+        assert _resolve_trust_level("NVIDIA/skills") == "trusted"
+        assert _resolve_trust_level("NVIDIA/skills/aiq-deploy") == "trusted"
+        assert _resolve_trust_level("skills-sh/NVIDIA/skills/cuopt") == "trusted"
 
     def test_trusted_repo_sibling_prefixes_are_not_trusted(self):
         assert _resolve_trust_level("openai/skills-evil") == "community"

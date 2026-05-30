@@ -2566,7 +2566,6 @@ def test_resolve_hermes_argv_module_actually_runs():
     Run it as a real subprocess to catch that regression.
     """
     import subprocess
-    import sys
     import hermes_cli.kanban_db as kb
     import shutil
     import unittest.mock as mock
@@ -3145,7 +3144,6 @@ def test_detect_stale_skips_recently_started_task(kanban_home, monkeypatch):
 
 def test_detect_stale_skips_when_timeout_zero(kanban_home, monkeypatch):
     """stale_timeout_seconds=0 disables stale detection entirely."""
-    import hermes_cli.kanban_db as _kb
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="disabled", assignee="worker")
@@ -3628,7 +3626,7 @@ def test_write_txn_preserves_original_exception_when_rollback_fails(kanban_home)
     )
 def test_write_txn_healthy_commit_no_exception(tmp_path):
     """Normal commit does not trigger the torn-extend check."""
-    from hermes_cli.kanban_db import connect, write_txn, create_task
+    from hermes_cli.kanban_db import connect, write_txn
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
     # Should not raise
@@ -3645,7 +3643,6 @@ def test_write_txn_healthy_commit_no_exception(tmp_path):
 def test_write_txn_raises_on_truncated_file(tmp_path):
     """A mocked smaller file size triggers the torn-extend check."""
     from hermes_cli.kanban_db import connect, write_txn
-    import hermes_cli.kanban_db as kanban_db_module
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
     # Get actual page size so we can fake a smaller file
@@ -3705,7 +3702,7 @@ def test_connect_sets_wal_autocheckpoint_100(tmp_path):
 def test_write_txn_check_reads_correct_header_fields(tmp_path):
     """Synthetic DB file with mismatched header page_count triggers the check."""
     import struct
-    from hermes_cli.kanban_db import connect, write_txn, _check_file_length_invariant
+    from hermes_cli.kanban_db import connect, _check_file_length_invariant
     db = tmp_path / "synthetic.db"
     conn = connect(db_path=db)
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]

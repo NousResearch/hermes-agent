@@ -796,6 +796,7 @@ def run_doctor(args):
                 "huggingface",
                 "lmstudio",
                 "nous",
+                "nvidia",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

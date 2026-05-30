@@ -493,6 +493,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
+        ("nvidia", "qwen/qwen3.5-122b-a10b"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -533,7 +534,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"opencode-zen", "kilocode"}:
+    if provider in {"opencode-zen", "kilocode", "nvidia"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out

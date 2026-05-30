@@ -628,6 +628,103 @@ class ConsolidationEngine:
         return "\n".join(insights) if insights else ""
 
 
+
+
+# ===========================================================================
+# Layer 3b: DeepConsolidationEngine (LLM-assisted abstraction)
+# ===========================================================================
+
+
+class DeepConsolidationEngine(ConsolidationEngine):
+    """LLM-assisted deep consolidation for abstract schema generation.
+
+
+    Extends the base ConsolidationEngine with a second pass that uses an
+    LLM to synthesise higher-level abstract schemas from the concrete
+    schemas produced by the base consolidation.
+    """
+
+
+    def __init__(self, llm_client=None, min_facts: int = 3) -> None:
+        super().__init__(min_facts=min_facts)
+        self._llm = llm_client
+
+
+    def consolidate(self, state, facts=None) -> dict:
+        """Run base consolidation, then LLM-assisted abstraction."""
+        result = super().consolidate(state, facts)
+        if not self._llm or not state:
+            return result
+        try:
+            abstract_created = self._generate_abstract_schemas(state)
+            result["abstract_schemas_created"] = abstract_created
+        except Exception as e:
+            logger.debug("Deep consolidation abstraction failed: %s", e)
+        return result
+
+
+    def _generate_abstract_schemas(self, state) -> int:
+        """Use LLM to produce abstract schemas from existing schemas."""
+        created = 0
+        with state._lock:
+            rows = state._conn.execute(
+                "SELECT schema_id, content, domain, confidence "
+                "FROM schemas ORDER BY updated_at DESC LIMIT 10"
+            ).fetchall()
+        if len(rows) < 2:
+            return 0
+        schema_desc = []
+        for r in rows:
+            schema_desc.append(
+                f"[{r["domain"]}] (conf={r["confidence"]:.2f}) "
+                f"{r["content"][:200]}"
+            )
+        _nl = chr(10)
+        prompt = (
+            "You are a memory consolidation assistant. Given these "
+            "memory schemas, generate 1-3 higher-level abstract "
+            "schemas that capture key patterns or themes."
+            + _nl + _nl
+            + "SCHEMAS:" + _nl + _nl.join(schema_desc) + _nl + _nl
+            + "Format each abstract schema as: DOMAIN|STATEMENT"
+            + _nl + "One per line."
+        )
+        try:
+            response = self._llm.complete(prompt)
+        except Exception as e:
+            logger.debug("LLM abstract schema call failed: %s", e)
+            return 0
+        if not response:
+            return 0
+        existing_prefixes = set()
+        with state._lock:
+            for r in state._conn.execute(
+                    "SELECT content FROM schemas").fetchall():
+                existing_prefixes.add(r["content"][:50])
+        for line in response.strip().splitlines():
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = line.split("|", 1)
+            if len(parts) != 2:
+                continue
+            domain = parts[0].strip().lower()
+            content_val = parts[1].strip()
+            if not content_val or len(content_val) < 10:
+                continue
+            if content_val[:50] in existing_prefixes:
+                continue
+            with state._lock:
+                state._conn.execute(
+                    "INSERT INTO schemas (content, domain, confidence) "
+                    "VALUES (?, ?, ?)",
+                    (content_val, domain, 0.70),
+                )
+                state._conn.commit()
+            existing_prefixes.add(content_val[:50])
+            created += 1
+        return created
+
 # ===========================================================================
 # Layer 4: ReconsolidationEngine (prediction-error updates)
 # ===========================================================================
@@ -766,7 +863,7 @@ class ReconsolidationEngine:
             try:
                 prompt = self._build_conflict_prompt(new_content, candidates)
                 response = llm_client.complete(prompt)
-                action, error_score = self._parse_llm_conflict_response(
+                error_score, action = self._parse_llm_conflict_response(
                     response, candidates)
                 return (error_score, action)
             except Exception as e:
@@ -1695,6 +1792,8 @@ class MemoryPipeline:
         self._dreaming = None   # DreamEngine (from holographic plugin)
         self._evolution = None  # SelfEvolution (from holographic plugin)
         self._scheduler: SleepScheduler | None = None
+        self._llm_client = None
+        self._deep_consolidation: DeepConsolidationEngine | None = None
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize pipeline state and all organic modules."""
@@ -1732,11 +1831,15 @@ class MemoryPipeline:
                 emotion_decay_multiplier=eng_cfg.get(
                     "emotion_decay_multiplier", 2.0))
 
-        # Layer 3: ConsolidationEngine
+        # Layer 3: ConsolidationEngine (base + optional deep)
         con_cfg = self._config.get("consolidation", {})
         if con_cfg.get("enabled", True):
             self._consolidation = ConsolidationEngine(
                 min_facts=con_cfg.get("min_facts_for_consolidation", 5))
+            if con_cfg.get("deep_consolidation_enabled", False):
+                self._deep_consolidation = DeepConsolidationEngine(
+                    llm_client=self._llm_client,
+                    min_facts=con_cfg.get("min_facts_for_consolidation", 5))
 
         # Layer 4: ReconsolidationEngine
         rec_cfg = self._config.get("reconsolidation", {})
@@ -1998,6 +2101,11 @@ class MemoryPipeline:
         """
         if not self._salience:
             return None
+        # Capture llm_client for deep consolidation
+        if llm_client is not None:
+            self._llm_client = llm_client
+            if self._deep_consolidation:
+                self._deep_consolidation._llm = llm_client
         try:
             # Score salience and initialize engram strength (consolidated)
             result = self._score_and_record_salience(user, "salience_init")
@@ -2284,14 +2392,19 @@ class MemoryPipeline:
             if self._engrams:
                 self._engrams.apply_decay(self._state, hours_elapsed=1.0)
 
-            # Layer 3: run consolidation
-            if self._consolidation:
+            # Layer 3: run consolidation (deep if available, else base)
+            _engine = (
+                self._deep_consolidation
+                if (self._deep_consolidation
+                    and self._deep_consolidation._llm)
+                else self._consolidation)
+            if _engine:
                 facts = []
                 for msg in messages[-10:]:
                     content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
                     if content and len(content) > 20:
                         facts.append({"content": content, "domain": "general"})
-                self._consolidation.consolidate(self._state, facts)
+                _engine.consolidate(self._state, facts)
 
             # Layer 5: discover cross-domain bridges
             if self._feedback:

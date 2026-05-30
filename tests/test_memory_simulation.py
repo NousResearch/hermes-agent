@@ -39,6 +39,7 @@ hermes_state.apply_wal_with_fallback = lambda conn, db_label="": "wal"
 from agent.memory_pipeline import (
     ActivationGraph,
     ConsolidationEngine,
+    DeepConsolidationEngine,
     FeedbackCoordinator,
     MemoryPipeline,
     PipelineState,
@@ -74,6 +75,65 @@ for mod_name, file_name, holder_var in [
                 _episodic_mod = _mod
         except Exception as exc:
             print(f"  [WARN] Could not load {file_name}: {exc}")
+
+
+# ===========================================================================
+# Mock LLM and embedding for testing deep consolidation and semantic conflict
+# ===========================================================================
+
+class _MockLLM:
+    """Mock LLM that generates abstract schemas and detects conflicts."""
+
+    def complete(self, prompt: str) -> str:
+        lower = prompt.lower()
+        if 'conflict' in lower or 'contradict' in lower:
+            # Detect preference contradictions
+            if 'hates' in lower and 'prefers' in lower:
+                return 'update' + chr(10) + '0.85'
+            if 'hate' in lower and 'python' in lower:
+                return 'update' + chr(10) + '0.75'
+            # Detect status contradictions (sick vs healthy)
+            if 'sick' in lower and 'healthy' in lower:
+                return 'update' + chr(10) + '0.70'
+            if 'sick' in lower and 'fine' in lower:
+                return 'update' + chr(10) + '0.70'
+            return 'no_conflict' + chr(10) + '0.1'
+        if 'abstract' in lower or 'schema' in lower:
+            return (
+                'tech|Alice is a senior ML engineer who builds recommendation systems with PyTorch'
+                + chr(10)
+                + 'preferences|Alice prefers Python for ML work but uses Java for backend services'
+                + chr(10)
+                + 'personal|Alice cares deeply about her cat Luna and enjoys outdoor activities'
+            )
+        return 'no_conflict' + chr(10) + '0.1'
+
+def _mock_embed(text: str) -> list:
+    """Deterministic embedding for semantic conflict testing.
+
+    Uses a fixed vocabulary so that sentences sharing content words
+    produce high cosine similarity (above the 0.7 threshold).
+    """
+    vocab = {
+        "alice": 0, "python": 1, "java": 2, "luna": 3,
+        "prefers": 4, "hates": 5, "likes": 6, "sick": 7,
+        "healthy": 8, "hiking": 9, "ml": 10, "engineer": 11,
+        "google": 12, "pytorch": 13, "model": 14, "cat": 15,
+    }
+    words = set(text.lower().split())
+    vec = [0.0] * 64
+    for w in words:
+        if w in vocab:
+            vec[vocab[w]] += 1.0
+        else:
+            vec[16 + (hash(w) % 48)] += 0.5
+    norm = sum(x * x for x in vec) ** 0.5
+    if norm > 0:
+        vec = [x / norm for x in vec]
+    return vec
+
+
+_mock_llm = _MockLLM()
 
 
 # ===========================================================================
@@ -152,6 +212,12 @@ CONVERSATIONS: list[ConversationTurn] = [
         assistant="Great tip! tracemalloc is indeed essential for Python memory debugging. The snapshot comparison feature is particularly useful.",
         expected_salience_min=0.35,
     ),
+    ConversationTurn(
+        day=2, label="Chinese preference",
+        user="我特别喜欢用Python写代码，Python是最棒的编程语言",
+        assistant="Python确实很受欢迎，特别是在数据科学和机器学习领域。",
+        expected_salience_min=0.15,
+    ),
     # ---- Day 3 ----
     ConversationTurn(
         day=3, label="Emotional - promotion!",
@@ -221,6 +287,12 @@ CONVERSATIONS: list[ConversationTurn] = [
         assistant="I don't have access to real-time data, but you can check your system clock.",
         expected_salience_min=0.0,
     ),
+    ConversationTurn(
+        day=5, label="Chinese emotional",
+        user="今天项目出了严重故障，紧急修复了一整天，太累了，非常担心明天的演示",
+        assistant="听起来今天真的很辛苦。严重故障确实让人担心，但你已经修复了它。",
+        expected_salience_min=0.30,
+    ),
     # ---- Day 6 ----
     ConversationTurn(
         day=6, label="Good news - Luna",
@@ -245,6 +317,12 @@ CONVERSATIONS: list[ConversationTurn] = [
         user="Mentoring a junior engineer today. Explained that understanding data distribution is more important than model complexity. Key lesson",
         assistant="That's wisdom that takes years to learn. A simple model with good data understanding often beats a complex model with poor data hygiene.",
         expected_salience_min=0.25,
+    ),
+    ConversationTurn(
+        day=6, label="Chinese technical",
+        user="刚刚确认了一个重要的设计决定：我们将使用微服务架构部署新系统，这是关键的架构选择",
+        assistant="微服务架构是一个重要的技术决策。确保从一开始就建立好服务发现和监控体系。",
+        expected_salience_min=0.35,
     ),
     ConversationTurn(
         day=6, label="Production incident",
@@ -309,11 +387,16 @@ def _full_config(db_path: str) -> dict:
             "emotion_modulated_decay_enabled": True,
             "emotion_decay_multiplier": 2.0,
         },
-        "consolidation": {"enabled": True, "min_facts_for_consolidation": 3},
+        "consolidation": {
+            "enabled": True,
+            "min_facts_for_consolidation": 3,
+            "deep_consolidation_enabled": True,
+        },
         "reconsolidation": {
             "enabled": True,
             "prediction_error_threshold": 0.3,
-            "semantic_conflict_enabled": False,
+            "semantic_conflict_enabled": True,
+            "semantic_conflict_threshold": 0.5,
         },
         "feedback": {"enabled": True},
         "activation": {
@@ -327,15 +410,18 @@ def _full_config(db_path: str) -> dict:
     }
 
 
-def _create_pipeline(tmp_dir: Path) -> tuple:
-    """Create a fully-enabled MemoryPipeline in tmp_dir.
 
-    Returns (pipeline, conn).
-    """
+def _create_pipeline(tmp_dir) -> tuple:
+    """Create a fully-enabled MemoryPipeline in tmp_dir."""
     db_path = str(tmp_dir / "sim_pipeline.db")
     config = _full_config(db_path)
     pipeline = MemoryPipeline(config)
     pipeline.initialize("simulation-session")
+
+    # Wire mock LLM for deep consolidation and semantic conflict
+    pipeline._llm_client = _mock_llm
+    if pipeline._deep_consolidation:
+        pipeline._deep_consolidation._llm = _mock_llm
 
     conn = pipeline._state._conn
 
@@ -352,7 +438,6 @@ def _create_pipeline(tmp_dir: Path) -> tuple:
         pipeline._episodic.init_tables()
 
     return pipeline, conn
-
 
 def _section(title: str) -> None:
     """Print a section header."""
@@ -408,7 +493,7 @@ def run_simulation() -> None:
                 print(f"{'#' * 60}")
 
             # --- pre_sync: score salience, create engram ---
-            meta = pipeline.pre_sync(user=turn.user, asst=turn.assistant)
+            meta = pipeline.pre_sync(user=turn.user, asst=turn.assistant, embed_fn=_mock_embed, llm_client=_mock_llm)
 
             salience_overall = meta.get("salience_overall", 0.0) if meta else 0.0
             salience_emotion = meta.get("salience_emotion", 0.0) if meta else 0.0
@@ -699,6 +784,110 @@ def run_simulation() -> None:
             print(f"  {desc}")
             print(f"  Conflict score: {conflict_score:.3f}")
             print(f"  Detected: [{'YES' if conflict_score > 0.3 else 'NO'}]")
+
+
+        # --- P1.3: Semantic conflict detection test ---
+        _subsection("Semantic Conflict Detection (P1.3)")
+
+        semantic_conflicts = [
+            (
+                "Alice prefers Python",
+                "Alice hates Python",
+                "Direct preference contradiction",
+                True,
+            ),
+            (
+                "Luna is healthy",
+                "Luna is sick",
+                "Health status contradiction",
+                True,
+            ),
+            (
+                "Alice prefers Python",
+                "Alice likes hiking",
+                "Unrelated content",
+                False,
+            ),
+        ]
+
+        semantic_ok = 0
+        for existing, new, desc, should_detect in semantic_conflicts:
+            score, action = pipeline._reconsolidation.detect_semantic_conflict(
+                new, [existing], embed_fn=_mock_embed, llm_client=_mock_llm)
+            detected = action != "no_conflict" and score > 0.2
+            status = "PASS" if detected == should_detect else "FAIL"
+            if detected == should_detect:
+                semantic_ok += 1
+            print(f"  Existing: {existing}")
+            print(f"  New:      {new}")
+            print(f"  {desc}")
+            print(f"  Score: {score:.3f}, Action: {action}")
+            print(f"  Result: [{status}] (detected={detected}, expected={should_detect})")
+
+        print(f"  Semantic conflict tests: {semantic_ok}/{len(semantic_conflicts)} passed")
+
+        # --- P1.4: Chinese entity extraction and salience test ---
+        _subsection("Chinese Entity Extraction and Salience (P1.4)")
+
+        chinese_tests = [
+            (
+                "我特别喜欢用Python写代码",
+                "Chinese preference with Python",
+                0.10,
+            ),
+            (
+                "今天项目出了严重故障，紧急修复了一整天",
+                "Chinese emotional (severity + urgency)",
+                0.20,
+            ),
+            (
+                "刚刚确认了一个重要的设计决定",
+                "Chinese importance + recency",
+                0.25,
+            ),
+            (
+                "你好",
+                "Chinese trivial greeting",
+                0.0,
+            ),
+        ]
+
+        chinese_ok = 0
+        scorer = SalienceScorer()
+        for text, desc, min_salience in chinese_tests:
+            result = scorer.score(text)
+            if min_salience == 0.0:
+                passed = result.is_trivial
+            else:
+                passed = result.overall >= min_salience
+            status = "PASS" if passed else "FAIL"
+            if passed:
+                chinese_ok += 1
+            print(f"  Text: {text[:50]}")
+            print(f"  {desc}")
+            print(f"  Salience: {result.overall:.3f} (emo={result.emotion:.2f} "
+                  f"nov={result.novelty:.2f} imp={result.importance:.2f})")
+            print(f"  Trivial: {result.is_trivial}")
+            print(f"  Result: [{status}]")
+
+        # Test Chinese entity extraction
+        _subsection("Chinese Entity Extraction")
+        test_entities = [
+            "我在Google工作，用Python写微服务",
+            "微服务架构部署推荐系统",
+        ]
+        for text in test_entities:
+            entities = pipeline._extract_entities_from_text(text)
+            print(f"  Text: {text}")
+            print(f"  Entities: {entities}")
+            if entities:
+                chinese_ok += 1
+                print(f"  Result: [PASS]")
+            else:
+                print(f"  Result: [FAIL] (no entities extracted)")
+
+        total_chinese = len(chinese_tests) + len(test_entities)
+        print(f"  Chinese tests: {chinese_ok}/{total_chinese} passed")
 
         # ------------------------------------------------------------------
         # Phase 7: Co-activation graph

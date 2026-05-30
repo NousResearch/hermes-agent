@@ -16661,8 +16661,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.debug("snapshot_shutdown_context failed: %s", _e)
 
         if planned_takeover:
+            runner._restart_requested = True
             logger.info(
-                "Received %s as a planned --replace takeover — exiting cleanly",
+                "Received %s as a planned --replace takeover — restarting cleanly",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
             )
         elif planned_stop:

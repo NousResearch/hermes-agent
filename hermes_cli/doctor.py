@@ -204,6 +204,60 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _read_pyproject_version() -> str | None:
+    """Read the ``version = "..."`` from ``pyproject.toml`` at the project root.
+
+    Returns None when running from an installed wheel (no pyproject.toml ships
+    with the package) or when the file can't be parsed. Reads only the
+    ``[project]`` version, ignoring any version strings that appear in other
+    tables.
+    """
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    in_project = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_project = line == "[project]"
+            continue
+        if in_project and line.startswith("version") and "=" in line:
+            value = line.split("=", 1)[1]
+            value = value.split("#", 1)[0].strip().strip("\"'")
+            return value or None
+    return None
+
+
+def _check_version_consistency(issues: list[str]) -> None:
+    """Verify pyproject.toml version matches hermes_cli.__version__.
+
+    A git conflict resolution (reset/merge) can revert one file without the
+    other, leaving ``hermes --version`` reporting a stale version while
+    ``pyproject.toml`` is current. Detect that drift so users can re-sync.
+    Silent no-op for installed wheels where pyproject.toml isn't present.
+    """
+    try:
+        from hermes_cli import __version__ as init_version
+    except Exception:
+        return
+    pyproject_version = _read_pyproject_version()
+    if pyproject_version is None:
+        # Installed wheel or unreadable pyproject — nothing to cross-check.
+        return
+    if pyproject_version == init_version:
+        check_ok("Version files consistent", f"({init_version})")
+    else:
+        _fail_and_issue(
+            "Version mismatch between source files",
+            f"(pyproject.toml {pyproject_version} != hermes_cli/__init__.py {init_version})",
+            "Re-sync version files (e.g. run 'hermes update', or set "
+            "hermes_cli/__init__.py __version__ to match pyproject.toml)",
+            issues,
+        )
+
+
 def _check_s6_supervision(issues: list[str]) -> None:
     """Inside a container under our s6 /init, surface what s6 sees.
 
@@ -509,6 +563,10 @@ def run_doctor(args):
         check_ok("Virtual environment active")
     else:
         check_warn("Not in virtual environment", "(recommended)")
+
+    # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
+    # (a git conflict resolution can silently revert one but not the other).
+    _check_version_consistency(issues)
     
     _section("Required Packages")
     required_packages = [

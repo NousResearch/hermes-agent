@@ -65,6 +65,46 @@ import os
 import sys
 
 
+def _set_process_title() -> None:
+    """Set the process title to 'hermes' so tools like 'ps', 'top', and
+    'htop' show the app name instead of 'python3.xx'.
+
+    Purely cosmetic — non-fatal on any platform.
+
+    Strategy (try in order):
+      1. ``setproctitle`` (opt-in dep — installed via ``hermes tools`` or
+         ``pip install setproctitle``, or bundled in a future release).
+      2. ctypes ``prctl(PR_SET_NAME)`` (Linux only, 15-char limit).
+      3. ctypes ``pthread_setname_np`` (macOS only, kernel thread name —
+         changes lldb/top but not ``ps aux``).
+      4. No-op on Windows (the .exe name is already ``hermes.exe``).
+    """
+    # Strategy 1: setproctitle (best — works on macOS, Linux, BSD)
+    try:
+        import setproctitle  # type: ignore[import-untyped]
+
+        setproctitle.setproctitle("hermes")
+        return
+    except ImportError:
+        pass
+
+    # Strategy 2/3: platform-specific ctypes fallback
+    import ctypes
+    import platform
+
+    try:
+        system = platform.system()
+        if system == "Linux":
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            libc.prctl(15, b"hermes", 0, 0, 0)  # PR_SET_NAME = 15
+        elif system == "Darwin":
+            libc = ctypes.CDLL("libc.dylib", use_errno=True)
+            libc.pthread_setname_np(b"hermes")
+        # Windows: the .exe name is already ``hermes.exe`` — nothing to do.
+    except Exception:
+        pass
+
+
 # Mouse-tracking residue suppression — runs BEFORE every other import on the
 # TUI hot path so the terminal stops emitting SGR/X10 mouse reports while the
 # Python launcher is still doing imports (≈100–300ms in cooked + echo mode,
@@ -11276,6 +11316,10 @@ def _try_termux_fast_tui_launch() -> bool:
 
 def main():
     """Main entry point for hermes CLI."""
+    # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
+    # in ps/top/htop.  Non-fatal — just a nicer UX.
+    _set_process_title()
+
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:
         from hermes_cli.stdio import configure_windows_stdio

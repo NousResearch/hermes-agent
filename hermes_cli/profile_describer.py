@@ -244,9 +244,9 @@ def describe_profile(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=400,
+            max_tokens=600,
             timeout=timeout or 60,
-            extra_body=get_auxiliary_extra_body() or None,
+            extra_body=get_auxiliary_extra_body(task="profile_describer") or None,
         )
     except Exception as exc:
         logger.info("describe: API call failed for %s (%s)", canon, exc)

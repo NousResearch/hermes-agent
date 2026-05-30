@@ -473,6 +473,7 @@ check_python() {
     if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
+        ensure_fts5
         return 0
     fi
 
@@ -482,10 +483,56 @@ check_python() {
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
+        ensure_fts5
     else
         log_error "Failed to install Python $PYTHON_VERSION"
         log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
         exit 1
+    fi
+}
+
+# Probe whether $1 (a python executable) links a SQLite with the FTS5
+# module compiled in. Hermes' session store (hermes_state.py) creates FTS5
+# virtual tables for full-text session search; a SQLite without FTS5 makes
+# the bundled-python path unusable for that feature. Returns 0 if FTS5 works.
+_python_has_fts5() {
+    "$1" - <<'PY' 2>/dev/null
+import sqlite3, sys
+try:
+    sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+except Exception:
+    sys.exit(1)
+PY
+}
+
+# Guarantee the resolved uv-managed interpreter ships FTS5. uv's Python
+# distributions only gained FTS5 in mid-2025 (python-build-standalone #694),
+# so a stale interpreter already in uv's store — which `uv python find`
+# happily reuses — can lack it. When that happens, force a reinstall of the
+# latest patch for $PYTHON_VERSION (which has FTS5) and re-resolve. This keeps
+# the supported install path's session search working without bundling a
+# second SQLite or asking the user to do anything.
+ensure_fts5() {
+    [ -n "${PYTHON_PATH:-}" ] || return 0
+    if _python_has_fts5 "$PYTHON_PATH"; then
+        return 0
+    fi
+
+    log_warn "Resolved Python's SQLite lacks the FTS5 module (session search needs it)."
+    log_info "Reinstalling a current Python $PYTHON_VERSION with FTS5 via uv..."
+    if "$UV_CMD" python install "$PYTHON_VERSION" --reinstall >/dev/null 2>&1; then
+        PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+    fi
+
+    if [ -n "${PYTHON_PATH:-}" ] && _python_has_fts5 "$PYTHON_PATH"; then
+        log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
+    else
+        # Could not obtain an FTS5-capable interpreter (offline, pinned env,
+        # etc.). Install proceeds — Hermes degrades gracefully and disables
+        # only full-text session search — but warn so it isn't a silent gap.
+        log_warn "Could not obtain an FTS5-capable Python. Hermes will run, but"
+        log_warn "full-text session search will be disabled until FTS5 is present."
     fi
 }
 

@@ -17,6 +17,13 @@ from tools.file_operations import (
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
+# Config/data file extensions where prefix-based secret masking should be
+# skipped -- the agent needs the actual values to read its own configuration.
+_CONFIG_FILE_EXTS = frozenset({
+    '.yaml', '.yml', '.json', '.env', '.toml', '.conf', '.cfg', '.ini',
+    '.config', '.properties', '.cnf',
+})
+
 
 logger = logging.getLogger(__name__)
 
@@ -726,7 +733,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content, code_file=True)
+            _is_config = os.path.splitext(path)[1].lower() in _CONFIG_FILE_EXTS
+            result.content = redact_sensitive_text(result.content, config_file=_is_config, code_file=not _is_config)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -1245,7 +1253,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content, code_file=True)
+                    _m_is_config = os.path.splitext(getattr(m, 'path', ''))[1].lower() in _CONFIG_FILE_EXTS
+                    m.content = redact_sensitive_text(m.content, config_file=_m_is_config, code_file=not _m_is_config)
         result_dict = result.to_dict()
 
         if count >= 3:

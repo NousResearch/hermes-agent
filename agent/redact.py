@@ -327,7 +327,7 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
+def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False, config_file: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
@@ -339,6 +339,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
     constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
     private keys, DB connstrings, JWTs, and URL secrets are still redacted.
+
+    Set config_file=True to additionally skip prefix-based masking for
+    config/data files (.yaml, .json, .env, .toml, etc.) where the agent
+    needs to read actual API key values.  Config files are where the agent
+    looks up its current configuration -- masking the values corrupts the
+    agent's understanding and can cause 401 errors if masked values are
+    written back.  Implies code_file=True.
 
     Performance: each regex pattern is gated behind a cheap substring
     pre-check (e.g. ``"=" in text`` for ENV assignments, ``"://" in text``
@@ -359,11 +366,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
 
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
-    if _has_known_prefix_substring(text):
-        text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
+    # Skip for config files — prefix masking corrupts API keys the agent
+    # needs to read from config.yaml / .env / etc.  (config_file implies
+    # code_file, so ENV/JSON patterns below are also skipped.)
+    if not config_file:
+        if _has_known_prefix_substring(text):
+            text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
-    # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
-    if not code_file:
+    # ENV assignments: OPENAI_API_KEY=***  (skip for code/config files)
+    if not code_file and not config_file:
         if "=" in text:
             def _redact_env(m):
                 name, quote, value = m.group(1), m.group(2), m.group(3)

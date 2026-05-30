@@ -13051,6 +13051,28 @@ class HermesCLI:
             """
             event.current_buffer.insert_text('\n')
 
+        # Shift+Enter → newline. Most terminals do NOT distinguish Shift+Enter
+        # from plain Enter (both send CR). For terminals that DO send a
+        # distinct sequence (Warp with Kitty keyboard protocol, iTerm2 with
+        # configured key mapping, etc.), bind every common encoding so the
+        # user gets a newline regardless of which sequence reaches us.
+        #
+        # Common Shift+Enter encodings:
+        #   - CSI-u with Shift modifier:    ESC [ 1 3 ; 2 u
+        #   - Kitty keyboard (CSI-u alt):   ESC [ 2 7 ; 2 ; 1 3 ~
+        #   - iTerm2 default custom seq:    ESC O M  (or user-configured)
+        #
+        # prompt_toolkit's key parser exposes these as the literal escape
+        # sequences below. Bindings are safe no-ops on terminals that don't
+        # emit them — they just never fire.
+        def _shift_enter_newline(event):
+            event.current_buffer.insert_text('\n')
+
+        # CSI-u: ESC [ 13 ; 2 u
+        kb.add('escape', '[', '1', '3', ';', '2', 'u')(_shift_enter_newline)
+        # Kitty alt form: ESC [ 27 ; 2 ; 13 ~
+        kb.add('escape', '[', '2', '7', ';', '2', ';', '1', '3', '~')(_shift_enter_newline)
+
         if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
             def handle_ctrl_enter_newline(event):

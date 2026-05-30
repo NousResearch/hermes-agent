@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -5317,3 +5318,42 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+
+
+def test_slash_worker_close_reaps_zombie_and_closes_fds():
+    """A hung worker is SIGKILLed, the zombie reaped, all pipes closed — once."""
+    calls = {k: 0 for k in ("terminate", "kill", "wait", "stdin", "stdout", "stderr")}
+
+    class FakeStream:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            calls[self.name] += 1
+
+    class FakeProc:
+        stdin, stdout, stderr = (FakeStream(n) for n in ("stdin", "stdout", "stderr"))
+
+        def poll(self):
+            return None  # always alive -> forces terminate then kill
+
+        def terminate(self):
+            calls["terminate"] += 1
+
+        def kill(self):
+            calls["kill"] += 1
+
+        def wait(self, timeout=None):
+            calls["wait"] += 1
+            raise subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+
+    worker = object.__new__(server._SlashWorker)
+    worker.proc = FakeProc()
+
+    worker.close()
+    worker.close()  # idempotent
+
+    assert calls["terminate"] == 1
+    assert calls["kill"] == 1
+    assert calls["wait"] >= 2  # reaped after both terminate and kill
+    assert calls["stdin"] == calls["stdout"] == calls["stderr"] == 1

@@ -683,7 +683,7 @@ def test_daytona_json_parse_errors_redact_raw_secret_values(monkeypatch):
 
 
 def test_daytona_host_cwd_requires_explicit_sync_source(monkeypatch, tmp_path):
-    """Daytona sanitizes TERMINAL_CWD and only preserves explicit sync source."""
+    """Daytona ignores implicit TERMINAL_CWD and maps explicit CWD sync to /workspace."""
     from tools.terminal_tool import _get_env_config
 
     project = tmp_path / "project"
@@ -701,5 +701,5 @@ def test_daytona_host_cwd_requires_explicit_sync_source(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", str(project))
     config = _get_env_config()
 
-    assert config["cwd"] == "/root"
+    assert config["cwd"] == "/workspace"
     assert config["host_cwd"] == str(project.resolve())

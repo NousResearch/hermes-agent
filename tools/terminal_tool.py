@@ -1100,10 +1100,14 @@ def _get_env_config() -> Dict[str, Any]:
         daytona_sync_cwd_source = os.getenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", "").strip()
         if daytona_sync_cwd_source:
             candidate = Path(os.path.expanduser(daytona_sync_cwd_source)).resolve()
-            if candidate != Path.home().resolve():
+            if candidate == Path.home().resolve():
+                logger.warning("Ignoring TERMINAL_DAYTONA_SYNC_CWD_SOURCE=%r because it resolves to the operator home", daytona_sync_cwd_source)
+            elif candidate.is_dir():
                 host_cwd = str(candidate)
             else:
-                logger.warning("Ignoring TERMINAL_DAYTONA_SYNC_CWD_SOURCE=%r because it resolves to the operator home", daytona_sync_cwd_source)
+                logger.warning("Ignoring TERMINAL_DAYTONA_SYNC_CWD_SOURCE=%r because it is not a directory", daytona_sync_cwd_source)
+        if os.getenv("TERMINAL_DAYTONA_SYNC_CWD", "false").lower() in {"true", "1", "yes"} and host_cwd:
+            cwd = "/workspace"
     else:
         daytona_labels = {}
         daytona_env_vars = {}

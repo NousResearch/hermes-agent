@@ -126,6 +126,23 @@ class TestCwdResolution:
         env = make_env(cwd="/workspace", home_dir="/root")
         assert env.cwd == "/workspace"
 
+    def test_sync_cwd_explicit_source_defaults_commands_to_workspace(self, make_env, monkeypatch, tmp_path):
+        """With a safe explicit host source, CWD-sync commands default to /workspace."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("synced")
+        monkeypatch.setattr(DaytonaEnvironment, "_daytona_bulk_upload", lambda self, files: None)
+
+        sb = _make_sandbox()
+        env = make_env(sandbox=sb, sync_cwd=True, host_cwd=str(project))
+        assert env.cwd == "/workspace"
+
+        env.execute("pwd")
+        command = sb.process.exec.call_args_list[-1].args[0]
+        assert "builtin cd -- /workspace" in command
+
     def test_home_detection_failure_keeps_default_cwd(self, make_env):
         sb = _make_sandbox()
         sb.process.exec.side_effect = RuntimeError("exec failed")

@@ -881,6 +881,7 @@ class TestDaytonaSyncCwdExclusionBehavior:
         config = terminal_mod._get_env_config()
 
         assert config["host_cwd"] == str(source.resolve())
+        assert config["cwd"] == "/workspace"
 
 
 # ---------------------------------------------------------------------------
@@ -974,3 +975,81 @@ class TestDaytonaSyncCwdSymlinkContainment:
         remote_paths = [remote for _, remote in uploaded_files]
         assert remote_paths == ["/workspace/README.md"]
         assert "/workspace/linked_outside/secret.txt" not in remote_paths
+# ---------------------------------------------------------------------------
+# 9. Behavioral tests: managed /workspace sync clears stale files
+# ---------------------------------------------------------------------------
+
+class TestDaytonaSyncCwdManagedWorkspaceClear:
+    """CWD sync owns /workspace and must remove stale remote entries before upload."""
+
+    def test_sync_clears_workspace_before_reuploading_allowed_files(self, tmp_path):
+        """A deleted local file must not survive in persistent /workspace."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        project = tmp_path / "project"
+        project.mkdir()
+        stale = project / "stale.txt"
+        keep = project / "keep.txt"
+        stale.write_text("old")
+        keep.write_text("keep")
+
+        remote_files = set()
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._host_cwd = str(project)
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+
+        def fake_exec(command):
+            if "find /workspace" in command:
+                remote_files.clear()
+
+        def fake_bulk_upload(files):
+            remote_files.update(remote for _, remote in files)
+
+        env._sandbox.process.exec.side_effect = fake_exec
+        env._daytona_bulk_upload = fake_bulk_upload
+
+        with patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            assert env._sync_cwd_to_sandbox() is True
+        assert remote_files == {"/workspace/keep.txt", "/workspace/stale.txt"}
+
+        stale.unlink()
+        with patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            assert env._sync_cwd_to_sandbox() is True
+
+        assert remote_files == {"/workspace/keep.txt"}
+
+    def test_newly_excluded_secret_file_removed_by_subsequent_sync(self, tmp_path):
+        """If a formerly synced file becomes excluded, the next sync clears it remotely."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        project = tmp_path / "project"
+        project.mkdir()
+        token = project / "token.txt"
+        token.write_text("not-yet-excluded")
+
+        remote_files = set()
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._host_cwd = str(project)
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+
+        def fake_exec(command):
+            if "find /workspace" in command:
+                remote_files.clear()
+
+        def fake_bulk_upload(files):
+            remote_files.update(remote for _, remote in files)
+
+        env._sandbox.process.exec.side_effect = fake_exec
+        env._daytona_bulk_upload = fake_bulk_upload
+
+        with patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            assert env._sync_cwd_to_sandbox() is True
+        assert remote_files == {"/workspace/token.txt"}
+
+        token.rename(project / ".env")
+        with patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            assert env._sync_cwd_to_sandbox() is True
+
+        assert remote_files == set()

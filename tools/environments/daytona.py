@@ -351,7 +351,8 @@ class DaytonaEnvironment(BaseEnvironment):
         self._sync_cwd = sync_cwd
         self._host_cwd = host_cwd
         if self._sync_cwd:
-            self._sync_cwd_to_sandbox()
+            if self._sync_cwd_to_sandbox() and requested_cwd in {"~", "/home/daytona", "/root"}:
+                self.cwd = "/workspace"
 
         self.init_session()
 
@@ -466,13 +467,25 @@ class DaytonaEnvironment(BaseEnvironment):
         lowered_patterns = {p.lower() for p in patterns}
         return rel in lowered_patterns or name in lowered_patterns
 
-    def _sync_cwd_to_sandbox(self) -> None:
+    def _clear_cwd_workspace(self) -> None:
+        """Clear the managed CWD-sync workspace without touching .hermes sync state."""
+        sandbox: Any = self._sandbox
+        if sandbox is None:
+            raise RuntimeError("Daytona sync_cwd: sandbox is not initialized")
+        sandbox.process.exec(
+            "mkdir -p /workspace && "
+            "find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+        )
+
+    def _sync_cwd_to_sandbox(self) -> bool:
         """Sync the host CWD into /workspace in the Daytona sandbox.
 
         Only runs when daytona_sync_cwd=True. Applies exclusion rules
         (directories, files) and a total size limit before uploading.
         The host_cwd (from config) determines the source directory.
         If no host_cwd is available, the sync is skipped with a warning.
+        Returns True only when /workspace was prepared from a valid explicit
+        source, even if no files survived exclusions.
         """
         from hermes_constants import get_hermes_home
 
@@ -486,7 +499,7 @@ class DaytonaEnvironment(BaseEnvironment):
             host_cwd = os.path.abspath(os.path.expanduser(host_cwd))
         if not host_cwd or not os.path.isdir(host_cwd):
             logger.warning("Daytona sync_cwd: no explicit valid host CWD source (%r) — skipping sync", host_cwd)
-            return
+            return False
 
         # Never sync the operator home or .hermes home directory. .hermes is
         # already handled by FileSyncManager above; the home guard prevents a
@@ -496,10 +509,10 @@ class DaytonaEnvironment(BaseEnvironment):
         operator_home = os.path.realpath(str(Path.home()))
         if resolved_host_cwd == operator_home:
             logger.info("Daytona sync_cwd: host CWD is operator home — skipping")
-            return
+            return False
         if resolved_host_cwd == os.path.realpath(hermes_home):
             logger.info("Daytona sync_cwd: host CWD is .hermes home — skipping (already synced)")
-            return
+            return False
 
         # Collect files, applying exclusions and size checks.
         # Perform a full size check first so we never upload a partial project.
@@ -556,11 +569,16 @@ class DaytonaEnvironment(BaseEnvironment):
                 self._CWD_MAX_BYTES // (1024 * 1024),
                 total_size // (1024 * 1024),
             )
-            return
+            return False
+
+        # /workspace is a managed mirror of the explicit host CWD source. Clear
+        # it before every successful sync so persistent sandboxes cannot retain
+        # files deleted locally or files that become newly excluded secrets.
+        self._clear_cwd_workspace()
 
         if not files_to_sync:
             logger.info("Daytona sync_cwd: no files to sync after exclusions")
-            return
+            return True
 
         logger.info(
             "Daytona sync_cwd: uploading %d file(s) (%d KiB) to /workspace",
@@ -568,9 +586,8 @@ class DaytonaEnvironment(BaseEnvironment):
             total_size // 1024,
         )
 
-        # Create /workspace directory and upload via bulk
-        self._sandbox.process.exec("mkdir -p /workspace")
         self._daytona_bulk_upload(files_to_sync)
+        return True
 
     # ------------------------------------------------------------------
     # Sandbox lifecycle

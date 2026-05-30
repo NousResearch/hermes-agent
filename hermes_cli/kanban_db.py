@@ -6846,11 +6846,12 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
-def _to_epoch(val) -> Optional[int]:
-    """Normalise a timestamp to unix epoch seconds.
+def _safe_int(val) -> Optional[int]:
+    """Best-effort integer coercion for persisted timestamp fields.
 
-    Accepts ints (pass-through), numeric strings, and ISO-8601 strings.
-    Returns ``None`` for ``None`` / empty values.
+    Accepts ints (pass-through), floats (truncated), numeric strings, and
+    ISO-8601 strings. Returns ``None`` for ``None`` / empty / corrupt values
+    instead of letting dashboard serialization crash on legacy bad rows.
     """
     if val is None:
         return None
@@ -6872,6 +6873,11 @@ def _to_epoch(val) -> Optional[int]:
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None
+
+
+def _to_epoch(val) -> Optional[int]:
+    """Normalise a timestamp to unix epoch seconds."""
+    return _safe_int(val)
 
 
 def task_age(task: Task) -> dict:

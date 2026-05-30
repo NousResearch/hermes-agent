@@ -847,7 +847,10 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
-                    ok = _set_status_direct(conn, task_id, "ready")
+                    try:
+                        ok = _set_status_direct(conn, task_id, "ready")
+                    except RuntimeError as e:
+                        raise HTTPException(status_code=409, detail=str(e))
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
             elif s == "running":
@@ -996,10 +999,21 @@ def _set_status_direct(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
-            ):
-                return False
+            blocking = [
+                f"{p['id']} '{p['title']}' status={p['status']}"
+                for p in conn.execute(
+                    "SELECT t.id, t.title, t.status FROM tasks t "
+                    "JOIN task_links l ON l.parent_id = t.id "
+                    "WHERE l.child_id = ? AND t.status != 'done' "
+                    "ORDER BY t.id",
+                    (task_id,),
+                ).fetchall()
+            ]
+            if blocking:
+                raise RuntimeError(
+                    "Cannot move to 'ready': parent dependencies are not done: "
+                    + ", ".join(blocking)
+                )
 
         was_running = prev["status"] == "running"
         reopening_satisfied_parent = (

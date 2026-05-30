@@ -69,9 +69,8 @@
   }
 
   // ``fetchJSON`` throws ``Error("<status>: <raw body>")`` on non-2xx, and
-  // FastAPI bodies look like ``{"detail":"<message>"}``.  Pull the
-  // human-readable message out so banners/toasts don't have to leak HTTP
-  // plumbing at the user (e.g. ``409: {"detail":"…"}``).  See #26744.
+  // FastAPI bodies look like ``{"detail":"<message>"}``. Pull the
+  // human-readable message out so banners/toasts do not leak HTTP plumbing.
   function parseApiErrorMessage(err) {
     const raw = (err && err.message) ? String(err.message) : String(err || "");
     const m = raw.match(/^(\d{3}):\s*(.*)$/s);
@@ -738,7 +737,7 @@
         setLastSelectedId(null);
         loadBoard();
       }).catch(function (err) {
-        setError(`Move failed: ${err.message || err}`);
+        setError(`Move failed: ${parseApiErrorMessage(err)}`);
         setFailedIds(new Set(selectedIds));
         loadBoard();
       });
@@ -2738,7 +2737,7 @@
     // Surface PATCH failures (e.g. 409 "parent not done") right next to
     // the drawer's action row — without it, the drawer's only error
     // surface (``err``) is hidden behind the loaded ``data`` and the
-    // Ready/Block/Complete buttons feel like no-ops.  See #26744.
+    // Ready/Block/Complete buttons feel like no-ops.
     const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [uploadBusy, setUploadBusy] = useState(false);
@@ -2845,7 +2844,7 @@
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPatch),
-      }).then(function () { load(); props.onRefresh(); })
+      }).then(function () { setPatchErr(null); load(); props.onRefresh(); })
         .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
     };
 
@@ -2974,6 +2973,7 @@
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
+        patchErr ? h("div", { className: "px-4 py-2 text-sm text-destructive" }, patchErr) : null,
         data ? h(TaskDetail, {
           data, editing, setEditing,
           renderMarkdown: props.renderMarkdown,

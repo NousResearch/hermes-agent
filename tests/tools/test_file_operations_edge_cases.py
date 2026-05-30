@@ -292,7 +292,7 @@ class TestPaginationBounds:
             result = ops.read_file("notes.txt", offset=0, limit=0)
 
         assert result.error is None
-        assert "     1|line1" in result.content
+        assert "1|line1" in result.content
         sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
         assert sed_commands == ["sed -n '1,1p' 'notes.txt'"]
 

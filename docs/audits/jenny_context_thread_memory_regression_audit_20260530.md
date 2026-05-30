@@ -366,6 +366,13 @@ two Discord project threads using the same Hermes profile receive the same
 built-in memory snapshot. No project-wall config or built-in memory namespace was
 added in this batch.
 
+Built-in walling is now design-only in
+`docs/design/builtin_memory_walling_design_20260530.md`. Strict xfail tests in
+`tests/agent/test_memory_walling_scope.py` pin the intended future behavior:
+walled projects should exclude profile-global built-in memory by default, and
+Discord thread-scoped mode should resolve distinct built-in memory paths from
+thread scope rather than sharing `<HERMES_HOME>/memories`.
+
 Proposed safe sequence:
 
 1. Introduce an explicit `MemoryScope` object shared by provider init, turn sync,

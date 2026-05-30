@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.background_review import build_memory_write_metadata
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
@@ -186,4 +188,57 @@ def test_builtin_memory_files_are_profile_scoped_not_thread_scoped(tmp_path, mon
     assert thread_a_store.format_for_system_prompt("user") == thread_b_store.format_for_system_prompt("user")
     assert "Shared profile note visible to every project thread." in (
         thread_a_store.format_for_system_prompt("memory") or ""
+    )
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Built-in memory has no default-off walled_project mode yet; "
+        "profile-global MEMORY.md is still injected for every thread."
+    ),
+    strict=True,
+)
+def test_future_walled_project_mode_excludes_profile_global_memory_by_default(
+    tmp_path,
+    monkeypatch,
+):
+    profile_home = tmp_path / "main-profile"
+    memory_dir = profile_home / "memories"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text(
+        ENTRY_DELIMITER.join(["Profile-global memory should not enter a walled project."]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("tools.memory_tool.get_hermes_home", lambda: profile_home)
+
+    store = MemoryStore()
+    store.load_from_disk()
+
+    assert store.format_for_system_prompt("memory") is None
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Built-in memory has no thread-scoped path resolver yet; both stores "
+        "still read and write the same profile-global MEMORY.md."
+    ),
+    strict=True,
+)
+def test_future_discord_thread_scoped_mode_uses_distinct_builtin_memory_paths(
+    tmp_path,
+    monkeypatch,
+):
+    profile_home = tmp_path / "main-profile"
+    memory_dir = profile_home / "memories"
+    memory_dir.mkdir(parents=True)
+    monkeypatch.setattr("tools.memory_tool.get_hermes_home", lambda: profile_home)
+
+    thread_a_store = MemoryStore()
+    thread_b_store = MemoryStore()
+    assert thread_a_store.add("memory", "Only Project A should see this.")["success"] is True
+    thread_b_store.load_from_disk()
+
+    assert "Only Project A should see this." not in (
+        thread_b_store.format_for_system_prompt("memory") or ""
     )

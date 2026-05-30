@@ -18643,8 +18643,18 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
+from gateway.status import write_cron_ticker_status, _utc_now_iso
+
 _cron_last_tick_monotonic: float = 0.0
 _cron_heartbeat_lock = threading.Lock()
+
+
+def cron_tick(*args, **kwargs):
+    """Lazy indirection to ``cron.scheduler.tick``: keeps the scheduler import
+    out of gateway-import time (a broken scheduler must not crash the gateway —
+    #20302) while staying patchable in tests."""
+    from cron.scheduler import tick
+    return tick(*args, **kwargs)
 
 
 def _stamp_cron_heartbeat() -> None:
@@ -18676,7 +18686,6 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     image/audio/document cache + expired ``hermes debug share`` pastes
     once per hour.
     """
-    from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
     from hermes_cli.debug import _sweep_expired_pastes
 
@@ -18687,11 +18696,34 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
+    consecutive_errors = 0
+    _stamp_cron_heartbeat()
+    try:
+        write_cron_ticker_status(state="running", interval_seconds=interval,
+                                 tick_count=0, last_tick_at=_utc_now_iso(), last_error=None)
+    except Exception:
+        pass
+
     while not stop_event.is_set():
+        last_error = None
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
+            consecutive_errors = 0
         except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+            consecutive_errors += 1
+            last_error = repr(e)
+            logger.warning("Cron tick failed (%d consecutive); continuing",
+                           consecutive_errors, exc_info=True)
+        except BaseException as e:
+            # KeyboardInterrupt cannot reach a non-main thread and SystemExit
+            # kills only this thread; stop_event is our sole shutdown signal.
+            # Honor it, else continue — re-raising a deterministic fatal would
+            # only hot-loop the supervisor's respawn.
+            if stop_event.is_set():
+                break
+            consecutive_errors += 1
+            last_error = repr(e)
+            logger.error("Cron tick hit a non-Exception fault; continuing", exc_info=True)
 
         tick_count += 1
 
@@ -18753,8 +18785,20 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 
-        stop_event.wait(timeout=interval)
+        _stamp_cron_heartbeat()
+        try:
+            write_cron_ticker_status(state="running", tick_count=tick_count,
+                                     last_tick_at=_utc_now_iso(), last_error=last_error)
+        except Exception:
+            pass
+
+        # Normal cadence is `interval`; on error never hot-loop (min 1s).
+        stop_event.wait(timeout=max(1, interval) if consecutive_errors else interval)
     logger.info("Cron ticker stopped")
+    try:
+        write_cron_ticker_status(state="stopped")
+    except Exception:
+        pass
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:

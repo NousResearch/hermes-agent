@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -55,6 +56,8 @@ _TAPBACK_REMOVED = {
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+_INBOUND_MESSAGE_STATE_TTL_SECONDS = 300
+_INBOUND_MESSAGE_STATE_MAX_SIZE = 512
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -129,6 +132,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        self._inbound_message_state: Dict[str, tuple[str, str, float]] = {}
+        self._typing_active_chats: set[str] = set()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -260,8 +265,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             data = res.get("data")
             if isinstance(data, list):
                 return [wh for wh in data if wh.get("url") == url]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[bluebubbles] failed to list registered webhooks: %s", exc)
         return []
 
     async def _register_webhook(self) -> bool:
@@ -603,6 +608,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """Show iMessage typing while Hermes is actively processing a turn."""
         if not self._private_api_enabled or not self._helper_connected or not self.client:
             return
         try:
@@ -612,10 +618,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.post(
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
-        except Exception:
-            pass
+                self._typing_active_chats.add(chat_id)
+        except Exception as exc:
+            logger.warning("[bluebubbles] failed to send typing indicator: %s", exc)
 
     async def stop_typing(self, chat_id: str) -> None:
+        """Clear iMessage typing when Hermes finishes or is interrupted."""
+        if chat_id not in self._typing_active_chats:
+            return
+        self._typing_active_chats.discard(chat_id)
         if not self._private_api_enabled or not self._helper_connected or not self.client:
             return
         try:
@@ -625,8 +636,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.delete(
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[bluebubbles] failed to stop typing indicator: %s", exc)
 
     # ------------------------------------------------------------------
     # Read receipts
@@ -778,6 +789,65 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    def _prune_inbound_message_state(self, now: float) -> None:
+        cutoff = now - _INBOUND_MESSAGE_STATE_TTL_SECONDS
+        expired = [
+            message_id
+            for message_id, (_text, _chat_id, ts) in self._inbound_message_state.items()
+            if ts < cutoff
+        ]
+        for message_id in expired:
+            self._inbound_message_state.pop(message_id, None)
+        while len(self._inbound_message_state) > _INBOUND_MESSAGE_STATE_MAX_SIZE:
+            self._inbound_message_state.pop(next(iter(self._inbound_message_state)))
+
+    def _classify_inbound_message_update(
+        self,
+        event_type: str,
+        message_id: Optional[str],
+        text: str,
+        chat_id: str,
+    ) -> tuple[str, str, Optional[str]]:
+        """Classify BlueBubbles message events before dispatch.
+
+        BlueBubbles ``updated-message`` means the macOS Messages DB row was
+        updated; it is not synonymous with a user edit.  Delivery/read status,
+        chat relationship hydration, attachment metadata, and real user edits
+        can all arrive through the same webhook type.  Hermes must therefore
+        compare message identity + text before creating a new user turn.
+
+        Returns ``(kind, canonical_chat_id, previous_text)`` where kind is:
+        - ``new``: dispatch normally
+        - ``metadata``: acknowledge only; same text for an already-seen message
+        - ``stale_update``: acknowledge only; update arrived without prior text
+        - ``edit``: dispatch an explicit correction turn
+        """
+        now = time.monotonic()
+        self._prune_inbound_message_state(now)
+        prior = self._inbound_message_state.get(message_id) if message_id else None
+        if event_type == "updated-message":
+            if not message_id:
+                return "stale_update", chat_id, None
+            if prior is None:
+                # BlueBubbles updates are row lifecycle events (read/delivered/edit/etc.),
+                # not new user turns.  If Hermes missed the original new-message
+                # (restart or cache expiry), we cannot distinguish a real edit
+                # from read/delivery metadata, so acknowledge and remember this
+                # snapshot instead of creating a duplicate turn.
+                self._inbound_message_state[message_id] = (text, chat_id, now)
+                return "stale_update", chat_id, None
+
+            previous_text, previous_chat_id, _previous_ts = prior
+            canonical_chat_id = previous_chat_id or chat_id
+            self._inbound_message_state[message_id] = (text, canonical_chat_id, now)
+            if previous_text == text:
+                return "metadata", canonical_chat_id, previous_text
+            return "edit", canonical_chat_id, previous_text
+
+        if message_id:
+            self._inbound_message_state[message_id] = (text, chat_id, now)
+        return "new", chat_id, None
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -911,7 +981,37 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
+        session_chat_id = str(chat_guid or chat_identifier)
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        update_kind, canonical_chat_id, previous_text = self._classify_inbound_message_update(
+            event_type,
+            message_id,
+            text,
+            session_chat_id,
+        )
+        logger.info(
+            "[bluebubbles] webhook message event type=%s kind=%s message=%s chat=%s chat_identifier=%s sender=%s",
+            event_type or "message",
+            update_kind,
+            _redact(message_id or ""),
+            _redact(canonical_chat_id or session_chat_id or ""),
+            _redact(chat_identifier or ""),
+            _redact(sender or ""),
+        )
+        if update_kind in {"metadata", "stale_update"}:
+            return web.Response(text="ok")
+        if update_kind == "edit":
+            session_chat_id = canonical_chat_id
+            text = (
+                "User edited a previous iMessage.\n"
+                f"Previous text: {previous_text or ''}\n"
+                f"Edited text: {text}"
+            )
+
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         source = self.build_source(
             chat_id=session_chat_id,
@@ -926,11 +1026,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

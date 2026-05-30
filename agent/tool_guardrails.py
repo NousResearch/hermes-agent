@@ -221,6 +221,45 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     return False, ""
 
 
+def classify_non_retryable_tool_failure(tool_name: str, result: str | None) -> tuple[str, str] | None:
+    """Return guardrail metadata for deterministic failures that cannot self-heal.
+
+    These failures may be recoverable after the model changes arguments or the
+    user changes state, but an identical same-turn retry just repeats the same
+    outcome. The first failure gets guidance; a repeated identical call is
+    blocked before executing.
+    """
+    data = safe_json_loads(result or "")
+    if not isinstance(data, dict):
+        return None
+
+    error = str(data.get("error") or "")
+    error_lower = error.lower()
+    if tool_name == "memory" and data.get("success") is False:
+        if "exceed the limit" in error_lower or "exceeds the limit" in error_lower:
+            return (
+                "memory_quota_exceeded_non_retryable",
+                (
+                    "Shorten the memory content, replace a smaller entry, remove "
+                    "existing memory first, or skip the memory write. Retrying the "
+                    "same memory call unchanged cannot succeed while the store is full."
+                ),
+            )
+
+    if tool_name == "image_generate":
+        if data.get("success") is False and data.get("error_type") == "empty_response":
+            return (
+                "image_generate_empty_response_non_retryable",
+                (
+                    "The image provider returned no image_generation_call result. "
+                    "Do not repeat the same image_generate call unchanged; retry later, "
+                    "change the prompt/model/provider, or explain the temporary blocker."
+                ),
+            )
+
+    return None
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -232,6 +271,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._non_retryable_failures: dict[ToolCallSignature, ToolGuardrailDecision] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -240,6 +280,19 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        if signature in self._non_retryable_failures:
+            previous = self._non_retryable_failures[signature]
+            decision = ToolGuardrailDecision(
+                action="block",
+                code=previous.code,
+                message=previous.message,
+                tool_name=tool_name,
+                count=previous.count,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
+
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -296,6 +349,21 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
+            non_retryable = classify_non_retryable_tool_failure(tool_name, result)
+            if non_retryable is not None:
+                code, message = non_retryable
+                decision = ToolGuardrailDecision(
+                    action="warn",
+                    code=code,
+                    message=message,
+                    tool_name=tool_name,
+                    count=1,
+                    signature=signature,
+                )
+                self._non_retryable_failures[signature] = decision
+                self._no_progress.pop(signature, None)
+                return decision
+
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
@@ -345,6 +413,7 @@ class ToolCallGuardrailController:
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
 
         self._exact_failure_counts.pop(signature, None)
+        self._non_retryable_failures.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
         if not self._is_idempotent(tool_name):

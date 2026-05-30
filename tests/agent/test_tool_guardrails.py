@@ -118,6 +118,52 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_memory_quota_failure_blocks_identical_retry_without_hard_stop():
+    controller = ToolCallGuardrailController()
+    args = {
+        "action": "add",
+        "target": "user",
+        "content": "same oversized memory",
+    }
+    result = json.dumps({
+        "success": False,
+        "error": "Memory at 1,371/1,375 chars. Adding this entry (256 chars) would exceed the limit. Replace or remove existing entries first.",
+    })
+
+    assert controller.before_call("memory", args).action == "allow"
+    first = controller.after_call("memory", args, result, failed=True)
+    assert first.action == "warn"
+    assert first.code == "memory_quota_exceeded_non_retryable"
+
+    blocked = controller.before_call("memory", args)
+    assert blocked.action == "block"
+    assert blocked.code == "memory_quota_exceeded_non_retryable"
+    assert "Shorten the memory content" in blocked.message
+
+
+def test_image_generate_empty_response_blocks_identical_retry_without_hard_stop():
+    controller = ToolCallGuardrailController()
+    args = {"prompt": "same image prompt", "size": "1024x1024"}
+    result = json.dumps({
+        "success": False,
+        "image": None,
+        "error": "Codex response contained no image_generation_call result",
+        "error_type": "empty_response",
+        "provider": "openai-codex",
+        "model": "gpt-image-2-medium",
+    })
+
+    assert controller.before_call("image_generate", args).action == "allow"
+    first = controller.after_call("image_generate", args, result, failed=True)
+    assert first.action == "warn"
+    assert first.code == "image_generate_empty_response_non_retryable"
+
+    blocked = controller.before_call("image_generate", args)
+    assert blocked.action == "block"
+    assert blocked.code == "image_generate_empty_response_non_retryable"
+    assert "same image_generate call unchanged" in blocked.message
+
+
 def test_success_resets_exact_signature_failure_streak():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, same_tool_failure_halt_after=99)

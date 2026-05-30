@@ -14,6 +14,7 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import secrets
 import subprocess
@@ -3725,6 +3726,11 @@ def mount_spa(application: FastAPI):
                 css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
         return Response(content=css, media_type="text/css")
+
+    # Windows Python mimetypes maps .js → text/plain instead of
+    # application/javascript, which causes the browser to block the JS
+    # module with "disallowed MIME type". Register the correct mapping.
+    mimetypes.add_type("application/javascript", ".js")
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 

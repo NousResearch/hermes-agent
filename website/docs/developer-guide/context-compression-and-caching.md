@@ -111,6 +111,17 @@ tail_token_budget    = 100,000 × 0.20 = 20,000
 max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
 
+:::note Threshold is derived from the MAIN model's context window
+`threshold_tokens` is always `threshold × context_length`, where `context_length`
+is the **main agent model's** context window — never the auxiliary/summary
+model's. On a 262,144-token model at the default `0.50`, the threshold is
+`262,144 × 0.50 = 131,072`. That number being close to a common "128K context"
+is a coincidence of the percentage, not a sign that the auxiliary model's window
+is the trigger. The auxiliary model's context window is a separate concern — see
+the "Summary model context length" warning below for how it affects whether a
+summary can be produced, not when compression fires.
+:::
+
 
 ## Compression Algorithm
 

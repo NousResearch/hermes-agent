@@ -78,6 +78,13 @@ def _make_413_error(*, use_status_code=True, message="Request entity too large")
     return err
 
 
+def _make_500_error(message="Internal server error"):
+    """Create an exception that mimics a retryable provider 5xx."""
+    err = Exception(message)
+    err.status_code = 500
+    return err
+
+
 @pytest.fixture()
 def agent():
     with (
@@ -518,6 +525,53 @@ class TestPreflightCompression:
 
         mock_compress.assert_not_called()
         assert result["completed"] is True
+
+    def test_large_context_server_error_compacts_before_final_failure(self, agent):
+        """Repeated 5xx on a large-but-under-threshold session should compact once."""
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 272_000
+        agent.context_compressor.threshold_tokens = 136_000
+        agent._api_max_retries = 3
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} " + "x" * 100})
+            big_history.append({"role": "assistant", "content": f"Answer {i} " + "y" * 100})
+
+        ok_resp = _mock_response(content="Recovered after pressure compaction", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            _make_500_error(),
+            _make_500_error(),
+            _make_500_error(),
+            ok_resp,
+        ]
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=94_000),
+            patch("agent.conversation_loop.estimate_messages_tokens_rough", return_value=94_000),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        assert mock_compress.call_count == 1
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after pressure compaction"
+        assert any(
+            ev == "lifecycle" and "Provider server error on large context" in msg
+            for ev, msg in status_messages
+        )
 
     def test_no_preflight_when_compression_disabled(self, agent):
         """Preflight should not run when compression is disabled."""

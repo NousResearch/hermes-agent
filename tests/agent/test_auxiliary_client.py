@@ -2222,6 +2222,54 @@ class TestCodexAdapterReasoningTranslation:
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
+    def test_none_final_output_synthesizes_streamed_text(self):
+        """Codex auxiliary final responses may expose output=None.
+
+        Title generation and compression use this chat-completions shim. If
+        the SDK final response leaves ``output`` as None, the adapter must use
+        streamed text deltas instead of iterating None and raising TypeError.
+        """
+        fake_final = SimpleNamespace(
+            output=None,
+            usage=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3),
+        )
+
+        class _FakeStream:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(type="response.output_text.delta", delta="Sidecar"),
+                    SimpleNamespace(type="response.output_text.delta", delta=" Title"),
+                ])
+            def get_final_response(self): return fake_final
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **_kwargs: _FakeStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert response.choices[0].message.content == "Sidecar Title"
+
+    def test_none_final_output_without_text_returns_empty_response(self):
+        """An empty Codex auxiliary response should be invalid/empty, not a crash."""
+        fake_final = SimpleNamespace(output=None, usage=None)
+
+        class _FakeStream:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def __iter__(self): return iter([])
+            def get_final_response(self): return fake_final
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **_kwargs: _FakeStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert response.choices[0].message.content is None
+
 
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on

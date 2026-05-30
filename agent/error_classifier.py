@@ -939,6 +939,9 @@ def _classify_by_error_code(
             should_compress=True,
         )
 
+    if code_lower in {"server_error", "internal_server_error", "bad_gateway"}:
+        return result_fn(FailoverReason.server_error, retryable=True)
+
     return None
 
 

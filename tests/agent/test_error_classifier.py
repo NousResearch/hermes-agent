@@ -636,6 +636,15 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    def test_error_code_server_error(self):
+        e = MockAPIError(
+            "An error occurred while processing your request",
+            body={"error": {"code": "server_error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
     # ── Message-only patterns (no status code) ──
 
     def test_message_billing_pattern(self):

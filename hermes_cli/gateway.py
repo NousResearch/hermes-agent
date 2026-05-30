@@ -2161,9 +2161,37 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _stable_service_working_dir() -> str:
+    """Return a WorkingDirectory that will not disappear out from under systemd.
+
+    The gateway does NOT need its cwd to be the source checkout — ``ExecStart``
+    uses an absolute python interpreter and ``-m hermes_cli.main``, so module
+    resolution does not depend on cwd. Pinning ``WorkingDirectory`` to
+    ``PROJECT_ROOT`` (``Path(__file__).parent.parent``) is actively harmful:
+    when the unit is generated from a transient checkout — a ``.worktrees/``
+    dir, or a clone that ``hermes update`` later relocates/removes — the path
+    rots. systemd then fails the start at the CHDIR step (``status=200/CHDIR``,
+    "Changing to the requested working directory failed") *before* Python
+    loads, so the on-boot ``refresh_systemd_unit_if_needed()`` self-heal never
+    runs and ``Restart=always`` crash-loops forever on a dead directory.
+
+    ``HERMES_HOME`` is the stable anchor: it is where config/state/logs live,
+    it never moves, and it is guaranteed to exist whenever the gateway is
+    meaningfully installed. Fall back to ``PROJECT_ROOT`` only if HERMES_HOME
+    cannot be resolved (it always can in practice).
+    """
+    try:
+        home = get_hermes_home()
+        if home and Path(home).is_dir():
+            return str(Path(home).resolve())
+    except Exception:
+        pass
+    return str(PROJECT_ROOT)
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
@@ -2192,7 +2220,10 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
         python_path = _remap_path_for_user(python_path, home_dir)
-        working_dir = _remap_path_for_user(working_dir, home_dir)
+        # Anchor cwd to the target user's HERMES_HOME (stable, always exists)
+        # rather than a remapped source-checkout path that can rot. See
+        # _stable_service_working_dir() for the full rationale.
+        working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
@@ -2804,7 +2835,10 @@ def _launchd_domain() -> str:
 
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    # Stable cwd anchor — never the volatile source checkout. See
+    # _stable_service_working_dir() for the rationale (same rot risk applies
+    # to launchd's WorkingDirectory as to systemd's).
+    working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -3960,18 +3994,6 @@ def _setup_whatsapp():
     cmd_whatsapp(argparse.Namespace())
 
 
-def _setup_email():
-    """Configure Email via the standard platform setup."""
-    email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
-    _setup_standard_platform(email_platform)
-
-
-def _setup_sms():
-    """Configure SMS (Twilio) via the standard platform setup."""
-    sms_platform = next(p for p in _PLATFORMS if p["key"] == "sms")
-    _setup_standard_platform(sms_platform)
-
-
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
     from hermes_cli.setup import (
@@ -4142,12 +4164,6 @@ def _setup_wecom():
 
     print()
     print_success("💬 WeCom configured!")
-
-
-def _setup_yuanbao():
-    """Configure Yuanbao via the standard platform setup."""
-    yuanbao_platform = next(p for p in _PLATFORMS if p["key"] == "yuanbao")
-    _setup_standard_platform(yuanbao_platform)
 
 
 def _is_service_installed() -> bool:
@@ -5150,11 +5166,83 @@ def gateway_command(args):
         sys.exit(1)
 
 
+def _maybe_redirect_run_to_s6_supervision(args) -> bool:
+    """Inside an s6 container, redirect bare ``gateway run`` to the
+    supervised path.
+
+    Background. Before the s6 image landed, ``docker run <image> gateway
+    run`` was the standard way to start a containerized gateway: the
+    gateway was the container's main process, tini reaped zombies, and
+    container exit code == gateway exit code. With s6-overlay as PID 1,
+    we'd much rather have the gateway run as a supervised s6 longrun
+    (auto-restart on crash, dashboard supervised alongside, multiple
+    profile gateways under the same /init). This redirect upgrades the
+    old invocation transparently — the user gets the new behavior
+    without changing their docker run command.
+
+    Three gates make this a no-op outside the intended scope:
+
+      1. ``_dispatch_via_service_manager_if_s6`` returns False unless
+         we're in a container with s6 as PID 1. Host runs of
+         ``hermes gateway run`` are unaffected.
+      2. ``HERMES_S6_SUPERVISED_CHILD`` is exported by
+         ``S6ServiceManager._render_run_script`` for the supervised
+         process itself — i.e. when s6-supervise execs ``hermes gateway
+         run --replace`` as a longrun, this guard short-circuits the
+         redirect so the supervised gateway actually runs in
+         foreground (otherwise we'd recurse: run → start → run → start
+         → ...).
+      3. ``--no-supervise`` (or ``HERMES_GATEWAY_NO_SUPERVISE=1``) opts
+         out for users who genuinely want pre-s6 semantics — CI smoke
+         tests, debugging the foreground startup path, etc.
+
+    Returns True iff dispatched (caller should ``return``).
+    """
+    no_supervise = getattr(args, "no_supervise", False) or \
+        os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
+    if no_supervise:
+        return False
+    if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        # We ARE the supervised child s6-supervise is running. Fall
+        # through to the foreground code path so the gateway actually
+        # starts.
+        return False
+    if not _dispatch_via_service_manager_if_s6("start"):
+        return False
+    # Loud breadcrumb: explain the upgrade and how to opt out. Print to
+    # stderr so it doesn't pollute stdout-parsing scripts. The
+    # supervised gateway's own logs are routed by s6-log to both
+    # `docker logs` and ${HERMES_HOME}/logs/gateways/<profile>/current,
+    # so the user sees a clear sequence: this banner first, then the
+    # gateway's own stdout/stderr from the supervisor.
+    print(
+        "→ gateway is now running under s6 supervision (auto-restart on crash,\n"
+        "  dashboard supervised alongside if HERMES_DASHBOARD is set).\n"
+        "  This is the recommended setup for the s6 container image — the\n"
+        "  gateway will keep running even if it crashes.\n"
+        "  Use `--no-supervise` (or HERMES_GATEWAY_NO_SUPERVISE=1) to opt out\n"
+        "  and get the pre-s6 foreground behavior instead.",
+        file=sys.stderr,
+        flush=True,
+    )
+    # Block until the container is signalled. The supervised gateway's
+    # lifetime is independent of this process — s6-supervise restarts
+    # it on crash, and we don't want the container to exit when the
+    # gateway flaps. `sleep infinity` matches the static main-hermes
+    # service's pattern (see docker/s6-rc.d/main-hermes/run): the CMD
+    # process is a no-op heartbeat that keeps /init alive until
+    # `docker stop` sends SIGTERM, at which point /init runs stage 3
+    # shutdown (which tears down the supervised gateway cleanly).
+    os.execvp("sleep", ["sleep", "infinity"])
+
+
 def _gateway_command_inner(args):
     subcmd = getattr(args, 'gateway_command', None)
     
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
+        if _maybe_redirect_run_to_s6_supervision(args):
+            return  # unreachable; execvp doesn't return
         verbose = getattr(args, 'verbose', 0)
         quiet = getattr(args, 'quiet', False)
         replace = getattr(args, 'replace', False)

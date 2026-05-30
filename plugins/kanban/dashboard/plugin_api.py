@@ -43,9 +43,11 @@ import os
 import sqlite3
 import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
@@ -183,6 +185,21 @@ def _comment_dict(c: kanban_db.Comment) -> dict[str, Any]:
         "author": c.author,
         "body": c.body,
         "created_at": c.created_at,
+    }
+
+
+def _attachment_dict(a: kanban_db.Attachment) -> dict[str, Any]:
+    """Serialise an Attachment for the drawer. ``stored_path`` is the
+    absolute on-disk path workers read; the UI uses ``id`` for download."""
+    return {
+        "id": a.id,
+        "task_id": a.task_id,
+        "filename": a.filename,
+        "content_type": a.content_type,
+        "size": a.size,
+        "uploaded_by": a.uploaded_by,
+        "stored_path": a.stored_path,
+        "created_at": a.created_at,
     }
 
 
@@ -531,6 +548,7 @@ def get_task(
             "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
+            "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
             "links": _links_for(conn, task_id),
             "runs": [
                 _run_dict(r)
@@ -605,6 +623,165 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         return body
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Attachments — upload / list / download / delete (#35338)
+# ---------------------------------------------------------------------------
+
+# Cap a single upload so a runaway request can't fill the disk. 25 MB
+# comfortably covers PDFs, images, and source docs — the kanban use case.
+_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+
+def _safe_attachment_name(raw: str) -> str:
+    """Reduce a client-supplied filename to a safe basename.
+
+    Strips any directory components (``os.path.basename`` on both
+    separators) so a malicious ``../../etc/passwd`` or ``C:\\x`` collapses
+    to its leaf. Rejects empty / dotfile-only names. The result is only
+    ever joined under the per-task attachments dir, never used verbatim
+    as a path from the client.
+    """
+    name = (raw or "").replace("\\", "/").split("/")[-1].strip()
+    # Drop control chars and leading dots so we never write a dotfile or
+    # a name with embedded NULs/newlines.
+    name = "".join(ch for ch in name if ch.isprintable() and ch not in '\x00').strip()
+    name = name.lstrip(".").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="invalid attachment filename")
+    return name[:200]
+
+
+@router.get("/tasks/{task_id}/attachments")
+def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return {
+            "attachments": [
+                _attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)
+            ]
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/attachments")
+async def upload_task_attachment(
+    task_id: str,
+    file: UploadFile = File(...),
+    board: Optional[str] = Query(None),
+    uploaded_by: Optional[str] = Form(None),
+):
+    """Store an uploaded file for a task and record its metadata.
+
+    The blob lands under ``attachments_root(board)/<task_id>/`` with a
+    sanitised, collision-resolved name. The worker reads it via the
+    absolute path surfaced in ``build_worker_context``.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+        safe_name = _safe_attachment_name(file.filename or "")
+
+        # Stream to disk with a hard size cap so a huge upload can't fill
+        # the disk. Read in chunks; abort + clean up if the cap is hit.
+        dest_dir = kanban_db.task_attachments_dir(task_id, board=board)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Resolve name collisions: foo.pdf → foo (1).pdf, foo (2).pdf, …
+        stem, dot, ext = safe_name.partition(".")
+        candidate = safe_name
+        n = 1
+        while (dest_dir / candidate).exists():
+            candidate = f"{stem} ({n}){dot}{ext}"
+            n += 1
+        dest_path = dest_dir / candidate
+
+        total = 0
+        try:
+            with open(dest_path, "wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MAX_ATTACHMENT_BYTES:
+                        out.close()
+                        dest_path.unlink(missing_ok=True)
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"attachment exceeds {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB limit"
+                            ),
+                        )
+                    out.write(chunk)
+        except HTTPException:
+            raise
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
+
+        att_id = kanban_db.add_attachment(
+            conn,
+            task_id,
+            filename=candidate,
+            stored_path=str(dest_path.resolve()),
+            content_type=file.content_type,
+            size=total,
+            uploaded_by=(uploaded_by or "dashboard"),
+        )
+        att = kanban_db.get_attachment(conn, att_id)
+        return {"attachment": _attachment_dict(att) if att else None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@router.get("/attachments/{attachment_id}")
+def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        att = kanban_db.get_attachment(conn, attachment_id)
+        if att is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+        # Confirm the blob still lives under the board's attachments root
+        # before serving — defense in depth against a tampered DB row.
+        root = kanban_db.attachments_root(board=board).resolve()
+        try:
+            stored = Path(att.stored_path).resolve()
+            stored.relative_to(root)
+        except (ValueError, OSError):
+            raise HTTPException(status_code=404, detail="attachment file unavailable")
+        if not stored.is_file():
+            raise HTTPException(status_code=404, detail="attachment file missing on disk")
+        return FileResponse(
+            path=str(stored),
+            filename=att.filename,
+            media_type=att.content_type or "application/octet-stream",
+        )
+    finally:
+        conn.close()
+
+
+@router.delete("/attachments/{attachment_id}")
+def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        att = kanban_db.delete_attachment(conn, attachment_id)
+        if att is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+        return {"ok": True, "id": attachment_id}
     finally:
         conn.close()
 
@@ -1308,6 +1485,58 @@ def inspect_run_endpoint(
         return {"run_id": run_id, "alive": False, "pid": pid, "reason": "process not found"}
     except _psutil.AccessDenied:
         return {"run_id": run_id, "alive": True, "pid": pid, "error": "access denied"}
+
+
+class TerminateRunBody(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/runs/{run_id}/terminate")
+def terminate_run_endpoint(
+    run_id: int,
+    payload: TerminateRunBody,
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+):
+    """Terminate the worker process backing an in-flight run.
+
+    Resolves ``run_id`` to its parent ``task_id`` and routes through
+    :func:`kanban_db.reclaim_task` so the SIGTERM->SIGKILL flow,
+    run-outcome bookkeeping, and event-log append all match what the
+    existing ``POST /tasks/{task_id}/reclaim`` endpoint does.
+
+    Responses:
+      * 200 ``{"ok": true, "run_id": ..., "task_id": ...}`` on success.
+      * 404 when ``run_id`` is unknown.
+      * 409 when the run has already ended, or the task is no longer in
+        a claimable state.
+
+    Closes the gap left by PR #28432, which shipped the read-only
+    sibling endpoints (``/workers/active``, ``/runs/{run_id}``,
+    ``/runs/{run_id}/inspect``) but no termination control surface.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        r = kanban_db.get_run(conn, run_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+        if r.ended_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {run_id} already ended",
+            )
+        ok = kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"cannot terminate run {run_id}: task {r.task_id} is no "
+                    "longer in a reclaimable state"
+                ),
+            )
+        return {"ok": True, "run_id": run_id, "task_id": r.task_id}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

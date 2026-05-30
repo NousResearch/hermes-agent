@@ -744,8 +744,18 @@ class SessionDB:
         # Trigram FTS5 for CJK/substring search
         try:
             cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+            try:
+                cursor.executescript(FTS_TRIGRAM_SQL)
+            except sqlite3.OperationalError as fts_exc:
+                err = str(fts_exc).lower()
+                if "fts5" not in err and "no such module" not in err:
+                    raise
+                # Same FTS5-unavailable cause already warned about above for
+                # messages_fts; the trigram table is an additional CJK index,
+                # so just degrade silently here. CJK search falls back to LIKE.
 
         self._conn.commit()
 

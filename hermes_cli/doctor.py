@@ -510,6 +510,50 @@ def run_doctor(args):
     else:
         check_warn("Not in virtual environment", "(recommended)")
     
+    _section("Version Consistency")
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            tomllib = None  # type: ignore[assignment]
+    
+    pyproject_path = PROJECT_ROOT / "pyproject.toml"
+    init_path = PROJECT_ROOT / "hermes_cli" / "__init__.py"
+    
+    pyproject_version = None
+    init_version = None
+    
+    if tomllib:
+        try:
+            with open(pyproject_path, "rb") as f:
+                pyproject_version = tomllib.load(f).get("version")
+        except Exception:
+            pass
+    
+    try:
+        with open(init_path, "r") as f:
+            for line in f:
+                if line.startswith("__version__"):
+                    init_version = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    except Exception:
+        pass
+    
+    if pyproject_version and init_version:
+        if pyproject_version == init_version:
+            check_ok(f"Version {init_version} (pyproject.toml ✓ __init__.py ✓)")
+        else:
+            _fail_and_issue(
+                f"Version mismatch: pyproject.toml={pyproject_version} vs __init__.py={init_version}",
+                "(upgrade may have left stale files)",
+                "Run: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .",
+                issues,
+            )
+    else:
+        check_warn("Could not verify version consistency")
+    
     _section("Required Packages")
     required_packages = [
         ("openai", "OpenAI SDK"),

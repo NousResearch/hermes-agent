@@ -7,6 +7,8 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tui_gateway import server
 
 
@@ -435,7 +437,9 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     assert server._load_enabled_toolsets() == ["plugin_demo"]
 
 
-def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
+def test_load_enabled_toolsets_raises_on_disabled_only_mcp_env(monkeypatch, capsys):
+    # A request naming only a disabled MCP server resolves to nothing valid ->
+    # fail closed (raise), not widen to the full configured set.
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(
         sys.modules,
@@ -450,27 +454,47 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         "read_raw_config",
         lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
     )
-    monkeypatch.setattr(
-        config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
-    )
 
-    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
-    # _get_platform_tools because it's a non-configurable platform toolset
-    # whose tools live in hermes-cli's universe (see toolsets.py).
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    with pytest.raises(server.InvalidToolsetError):
+        server._load_enabled_toolsets()
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
-    assert "using configured CLI toolsets" in err
 
 
-def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
+def test_load_enabled_toolsets_raises_when_tui_env_all_unknown(monkeypatch):
+    # Privilege-escalation-by-typo guard: an all-unknown explicit request must
+    # NOT silently widen to every tool. It raises so the daemon refuses it.
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
+
+    with pytest.raises(server.InvalidToolsetError, match="nope"):
+        server._load_enabled_toolsets()
+
+
+def test_tools_list_fails_closed_under_all_unknown_env(monkeypatch):
+    # Documented behavior change: with an all-bogus HERMES_TUI_TOOLSETS and no
+    # live session, the toolset picker surfaces an error rather than silently
+    # listing every toolset as enabled (the old fail-open widening).
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "definitely_not_a_toolset")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    resp = server.dispatch({"id": "1", "method": "tools.list", "params": {}})
+
+    assert resp["error"]["code"] == 5031
+    assert "definitely_not_a_toolset" in resp["error"]["message"]
+
+
+def test_load_enabled_toolsets_omitted_returns_configured_set(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
 
     import hermes_cli.config as config_mod
 
@@ -478,17 +502,16 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
+    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
+    # _get_platform_tools as a non-configurable platform toolset (see toolsets.py).
     assert server._load_enabled_toolsets() == ["kanban", "memory"]
-    assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
-def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
-    )
+def test_load_enabled_toolsets_fails_closed_when_config_unreadable(monkeypatch, capsys):
+    # No explicit request + config read crash must return [] (no tools), never
+    # None — the agent reads None as "no filter" = every tool, so a crash there
+    # would be a silent all-tools grant.
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
 
     import hermes_cli.config as config_mod
 
@@ -496,8 +519,8 @@ def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, cap
         config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     )
 
-    assert server._load_enabled_toolsets() is None
-    assert "could not be loaded" in capsys.readouterr().err
+    assert server._load_enabled_toolsets() == []
+    assert "could not load configured CLI toolsets" in capsys.readouterr().err
 
 
 def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):
@@ -524,7 +547,7 @@ def test_load_enabled_toolsets_all_env_warns_about_ignored_extra_entries(
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all,nope")
 
     assert server._load_enabled_toolsets() is None
-    assert "ignoring additional entries: nope" in capsys.readouterr().err
+    assert "ignoring: nope" in capsys.readouterr().err
 
 
 def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):
@@ -545,7 +568,7 @@ def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, caps
 
     assert server._load_enabled_toolsets() == ["web"]
     err = capsys.readouterr().err
-    assert "ignoring unknown HERMES_TUI_TOOLSETS entries: nope" in err
+    assert "ignoring unknown toolsets: nope" in err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
 

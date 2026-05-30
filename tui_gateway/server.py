@@ -17,6 +17,11 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.toolset_validation import (
+    InvalidToolsetError,
+    normalize_toolsets,
+    validate_explicit_toolsets_or_raise,
+)
 from utils import is_truthy_value
 from tui_gateway.transport import (
     StdioTransport,
@@ -936,130 +941,41 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
-    explicit = [
-        item.strip()
-        for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
-        if item.strip()
-    ]
-    cfg = None
-    fallback_notice = None
+    def _warn(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
 
-    try:
-        from toolsets import validate_toolset
-    except Exception:
-        validate_toolset = None
+    # Explicit HERMES_TUI_TOOLSETS -> shared fail-closed validator. An
+    # all-unknown request RAISES (the daemon refuses the session at its
+    # existing `except Exception` boundaries) instead of silently widening a
+    # narrow typo'd request to every tool — privilege-escalation-by-typo.
+    explicit = os.environ.get("HERMES_TUI_TOOLSETS", "")
+    valid = validate_explicit_toolsets_or_raise(explicit, source="[tui]", warn=_warn)
+    if valid is not None:
+        return valid
 
-    if explicit and validate_toolset is not None:
-        built_in = [name for name in explicit if validate_toolset(name)]
-        unresolved = [name for name in explicit if name not in built_in]
+    # valid is None: the validator collapses both `all`/`*` and omitted to None.
+    # An explicit `all`/`*` means every tool (no filter) -> None; only a truly
+    # omitted request falls through to the configured CLI default set.
+    if normalize_toolsets(explicit) is not None:
+        return None
 
-        if unresolved:
-            try:
-                from hermes_cli.plugins import discover_plugins
-
-                discover_plugins()
-                plugin_valid = [name for name in unresolved if validate_toolset(name)]
-            except Exception:
-                plugin_valid = []
-
-            if plugin_valid:
-                built_in.extend(plugin_valid)
-                unresolved = [name for name in unresolved if name not in plugin_valid]
-
-        if any(name in {"all", "*"} for name in built_in):
-            ignored = [name for name in explicit if name not in {"all", "*"}]
-            if ignored:
-                print(
-                    "[tui] HERMES_TUI_TOOLSETS=all enables every toolset; "
-                    f"ignoring additional entries: {', '.join(ignored)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            return None
-
-        if not unresolved:
-            return built_in
-
-        mcp_names: set[str] = set()
-        mcp_disabled: set[str] = set()
-        try:
-            from hermes_cli.config import read_raw_config
-            from hermes_cli.tools_config import _parse_enabled_flag
-
-            raw_cfg = read_raw_config()
-            mcp_servers = (
-                raw_cfg.get("mcp_servers")
-                if isinstance(raw_cfg.get("mcp_servers"), dict)
-                else {}
-            )
-            for name, server_cfg in mcp_servers.items():
-                if not isinstance(server_cfg, dict):
-                    continue
-                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
-                    mcp_names.add(str(name))
-                else:
-                    mcp_disabled.add(str(name))
-        except Exception:
-            mcp_names = set()
-            mcp_disabled = set()
-
-        mcp_valid = [name for name in unresolved if name in mcp_names]
-        disabled = [name for name in unresolved if name in mcp_disabled]
-        unknown = [
-            name
-            for name in unresolved
-            if name not in mcp_names and name not in mcp_disabled
-        ]
-        valid = built_in + mcp_valid
-
-        if unknown:
-            print(
-                f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(unknown)}",
-                file=sys.stderr,
-                flush=True,
-            )
-        if disabled:
-            print(
-                "[tui] ignoring disabled MCP servers in HERMES_TUI_TOOLSETS "
-                "(set enabled: true in config.yaml to use): "
-                f"{', '.join(disabled)}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-        if valid:
-            return valid
-
-        fallback_notice = (
-            "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
-        )
-
+    # Omitted -> the configured CLI toolsets (full default set).
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        cfg = cfg if cfg is not None else load_config()
-
-        # Runtime toolset resolution must include default MCP servers so the
-        # agent can actually call them. Passing ``False`` here is the
-        # config-editing variant — used when we need to persist a toolset
-        # list without baking in implicit MCP defaults. Using the wrong
-        # variant at agent creation time makes MCP tools silently missing
-        # from the TUI. See PR #3252 for the original design split.
-        enabled = sorted(
-            _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
-        )
-        if fallback_notice is not None:
-            print(fallback_notice, file=sys.stderr, flush=True)
+        # include_default_mcp_servers=True: runtime resolution must include
+        # default MCP servers or the agent can't call them. The ``False``
+        # variant is config-editing only; the wrong one makes MCP tools
+        # silently missing from the TUI. See PR #3252 for the design split.
+        enabled = sorted(_get_platform_tools(load_config(), "cli", include_default_mcp_servers=True))
         return enabled or None
     except Exception:
-        if fallback_notice is not None:
-            print(
-                "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
-                file=sys.stderr,
-                flush=True,
-            )
-        return None
+        # Config unreadable -> fail closed with NO tools rather than `None`
+        # (which the agent reads as "no filter" = every tool). A read crash
+        # must not become a silent all-tools grant.
+        _warn("[tui] could not load configured CLI toolsets; starting with none")
+        return []
 
 
 def _session_tool_progress_mode(sid: str) -> str:

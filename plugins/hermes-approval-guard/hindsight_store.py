@@ -23,9 +23,29 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_BACKEND = "hindsight"
-HINDSIGHT_URL = os.getenv("HINDSIGHT_URL", "http://localhost:8888")
-HONCHO_URL = os.getenv("HONCHO_URL", "http://localhost:1819")
+_DEFAULT_HINDSIGHT_URL = "http://localhost:8888"
+_DEFAULT_HONCHO_URL = "http://localhost:1819"
 TIMEOUT = 3
+
+
+def _get_hindsight_url(cfg: Dict[str, Any]) -> str:
+    """读取 Hindsight URL：config > 环境变量 > 默认值。"""
+    mem_cfg = cfg.get("memory", {}) if isinstance(cfg.get("memory"), dict) else {}
+    return (
+        mem_cfg.get("hindsight_url")
+        or os.getenv("HINDSIGHT_URL")
+        or _DEFAULT_HINDSIGHT_URL
+    )
+
+
+def _get_honcho_url(cfg: Dict[str, Any]) -> str:
+    """读取 Honcho URL：config > 环境变量 > 默认值。"""
+    mem_cfg = cfg.get("memory", {}) if isinstance(cfg.get("memory"), dict) else {}
+    return (
+        mem_cfg.get("honcho_url")
+        or os.getenv("HONCHO_URL")
+        or _DEFAULT_HONCHO_URL
+    )
 
 # ── 模式 key 生成：用于跨 session 匹配相似操作 ────────────────────
 
@@ -84,9 +104,9 @@ def _get_backend(cfg: Dict[str, Any]) -> str:
 # ══════════════════════════════════════════════════════════════════
 
 
-def _hindsight_api(endpoint: str, payload: Dict[str, Any]) -> Optional[Dict]:
+def _hindsight_api(endpoint: str, payload: Dict[str, Any], cfg: Dict[str, Any]) -> Optional[Dict]:
     try:
-        url = f"{HINDSIGHT_URL}/{endpoint}"
+        url = f"{_get_hindsight_url(cfg)}/{endpoint}"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=data,
@@ -108,7 +128,7 @@ def _hindsight_retain(content: str, tags: list, cfg: Dict[str, Any]) -> None:
             "context": "approval_decision",
             "tags": tags,
         }],
-    })
+    }, cfg)
 
 
 def _hindsight_recall_extended(query_parts: list, cfg: Dict[str, Any], limit: int = 5) -> list:
@@ -116,7 +136,7 @@ def _hindsight_recall_extended(query_parts: list, cfg: Dict[str, Any], limit: in
     bank = cfg.get("memory", {}).get("bank", "approval") if isinstance(cfg.get("memory"), dict) else "approval"
     result = _hindsight_api(f"v1/default/banks/{bank}/memories/recall", {
         "query": " ".join(query_parts),
-    })
+    }, cfg)
     if result:
         return result.get("results", [])[:limit]
     return []
@@ -127,9 +147,9 @@ def _hindsight_recall_extended(query_parts: list, cfg: Dict[str, Any], limit: in
 # ══════════════════════════════════════════════════════════════════
 
 
-def _honcho_api(endpoint: str, payload: Dict[str, Any]) -> Optional[Dict]:
+def _honcho_api(endpoint: str, payload: Dict[str, Any], cfg: Dict[str, Any]) -> Optional[Dict]:
     try:
-        url = f"{HONCHO_URL}/{endpoint}"
+        url = f"{_get_honcho_url(cfg)}/{endpoint}"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=data,
@@ -149,12 +169,12 @@ def _honcho_retain(content: str, tags: list, cfg: Dict[str, Any]) -> None:
         "user_id": user_id,
         "content": content,
         "metadata": {"type": "approval_decision", "tags": tags},
-    })
+    }, cfg)
 
 
 def _honcho_recall_extended(query_parts: list, cfg: Dict[str, Any], limit: int = 5) -> list:
     user_id = cfg.get("memory", {}).get("bank", "approval") if isinstance(cfg.get("memory"), dict) else "approval"
-    result = _honcho_api(f"memories/{user_id}", {})
+    result = _honcho_api(f"memories/{user_id}", {}, cfg)
     if result and isinstance(result, list):
         query = " ".join(query_parts).lower()
         matches = []

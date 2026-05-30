@@ -52,24 +52,30 @@ from typing import Dict, List, Tuple
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
 
-# Directories to skip during discovery — these suites require real
-# external services (a model gateway, a docker daemon with a prebuilt
-# image, etc.) and are run in their own dedicated CI jobs:
+# Directories to skip during discovery.  Two categories share this
+# single filter because the discovery walk (rglob) is the same:
 #
-#   tests/e2e/         — .github/workflows/tests.yml :: e2e job
-#   tests/integration/ — historical; legacy --ignore flags
-#   tests/docker/      — .github/workflows/docker-publish.yml ::
-#                        build-amd64 job (runs against the freshly-loaded
-#                        nousresearch/hermes-agent:test image, via
-#                        ``HERMES_TEST_IMAGE`` so the fixture skips
-#                        rebuild). The full pytest-shard runner can't
-#                        host these because the session-scoped
-#                        ``built_image`` fixture would do a 3-7min
-#                        ``docker build`` inside a 180s per-test
-#                        pytest-timeout cap (set by tests/docker/conftest.py),
-#                        so the build is guaranteed to die in fixture
-#                        setup. The dedicated job sidesteps both costs.
-_SKIP_PARTS = {"integration", "e2e", "docker"}
+#   (a) CI-level — suites run in dedicated jobs:
+#       tests/e2e/         — .github/workflows/tests.yml :: e2e job
+#       tests/integration/ — historical; legacy --ignore flags
+#       tests/docker/      — .github/workflows/docker-publish.yml ::
+#                            build-amd64 job (runs against the freshly-loaded
+#                            nousresearch/hermes-agent:test image, via
+#                            ``HERMES_TEST_IMAGE`` so the fixture skips
+#                            rebuild). The full pytest-shard runner can't
+#                            host these because the session-scoped
+#                            ``built_image`` fixture would do a 3-7min
+#                            ``docker build`` inside a 180s per-test
+#                            pytest-timeout cap (set by tests/docker/conftest.py),
+#                            so the build is guaranteed to die in fixture
+#                            setup. The dedicated job sidesteps both costs.
+#
+#   (b) Package-level — dirs pytest ignores via conftest
+#       ``collect_ignore_glob`` that the rglob-based discovery would
+#       otherwise pick up because it bypasses conftest walking:
+#       tests/*/fixtures/  — fixture subprojects (e.g. code_scan's
+#                            small_project with its own tests/ dir).
+_SKIP_PARTS = {"integration", "e2e", "docker", "fixtures"}
 
 # Per-file wall-clock cap. Generous default — pytest-timeout still
 # enforces per-test caps inside each subprocess; this is just an outer

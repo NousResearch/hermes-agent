@@ -153,6 +153,48 @@ def test_call_ollama_sends_larger_generation_options(monkeypatch):
     assert captured["timeout"] == 12
 
 
+def test_call_ollama_ignores_invalid_numeric_env(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"response": '{"output":{}}'}
+
+    def fake_post(url, json, timeout):
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setenv("HERMES_QWEN_NUM_PREDICT", "bad")
+    monkeypatch.setenv("HERMES_QWEN_NUM_CTX", "also-bad")
+    monkeypatch.setattr(alphahunt_stage.requests, "post", fake_post)
+
+    result = alphahunt_stage.call_ollama("prompt", timeout=12)
+
+    assert result == '{"output":{}}'
+    assert captured["json"]["options"] == {"num_predict": 1024, "num_ctx": 4096}
+    assert captured["timeout"] == 12
+
+
+def test_run_qwen_stage_ignores_invalid_timeout_env(monkeypatch):
+    captured = {}
+
+    def fake_call(prompt, *, timeout):
+        captured["timeout"] = timeout
+        return _model_json("fast_triage")
+
+    monkeypatch.setenv("HERMES_QWEN_TIMEOUT_SEC", "bad")
+    monkeypatch.setattr(alphahunt_stage, "call_ollama", fake_call)
+
+    result = alphahunt_stage.run_qwen_stage(_payload("fast_triage"))
+
+    assert result["output"]["stage_output"]["status"] == "ok"
+    assert captured["timeout"] == 90
+
+
 @pytest.mark.parametrize("decision", ["advance", "reject", "needs_human"])
 def test_fast_triage_decisions_validate(monkeypatch, decision):
     def model_json(*args, **kwargs):

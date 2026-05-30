@@ -13,7 +13,10 @@ to ``_run_agent``'s return dict and uses it for the slice.
 """
 
 
-from gateway.run import _preserve_queued_followup_history_offset
+from gateway.run import (
+    _agent_already_persisted_turn,
+    _preserve_queued_followup_history_offset,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +122,65 @@ class TestTranscriptHistoryOffset:
 
         assert old_new == fixed_new
         assert len(fixed_new) == 2
+
+
+class _FakeSessionDB:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def get_messages(self, session_id):
+        return list(self.rows)
+
+
+class TestAgentPersistenceDetection:
+    def test_detects_missing_agent_db_write_when_only_session_meta_exists(self):
+        history = []
+        db = _FakeSessionDB([
+            {"role": "session_meta", "tools": []},
+        ])
+
+        assert not _agent_already_persisted_turn(db, "sid", history)
+
+    def test_detects_agent_db_write_when_conversation_count_increased(self):
+        history = [
+            {"role": "session_meta", "tools": []},
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "answer"},
+        ]
+        db = _FakeSessionDB(history + [
+            {"role": "user", "content": "new"},
+            {"role": "assistant", "content": "new answer"},
+        ])
+
+        assert _agent_already_persisted_turn(db, "sid", history)
+
+    def test_session_split_counts_from_zero(self):
+        old_history = [{"role": "user", "content": f"old {i}"} for i in range(20)]
+        compressed_db = _FakeSessionDB([
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "continuing"},
+        ])
+
+        assert _agent_already_persisted_turn(
+            compressed_db,
+            "compressed-sid",
+            old_history,
+            session_was_split=True,
+        )
+
+    def test_missing_session_id_is_not_treated_as_split(self):
+        history = [{"role": "user", "content": "old"}]
+        db = _FakeSessionDB([
+            {"role": "session_meta", "tools": []},
+            {"role": "user", "content": "old"},
+        ])
+
+        assert not _agent_already_persisted_turn(
+            db,
+            "sid",
+            history,
+            session_was_split=False,
+        )
 
     def test_multiple_session_meta_larger_drift(self):
         """Two session_meta entries double the offset error.

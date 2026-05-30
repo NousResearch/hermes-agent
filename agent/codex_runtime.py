@@ -32,6 +32,7 @@ def run_codex_app_server_turn(
     original_user_message: Any,
     messages: List[Dict[str, Any]],
     effective_task_id: str,
+    conversation_history: List[Dict[str, Any]] | None = None,
     should_review_memory: bool = False,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
@@ -87,6 +88,10 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        try:
+            agent._persist_session(messages, conversation_history)
+        except Exception:
+            logger.warning("codex app-server failed-turn persistence raised", exc_info=True)
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -96,6 +101,7 @@ def run_codex_app_server_turn(
             "api_calls": 0,
             "completed": False,
             "partial": True,
+            "failed": True,
             "error": str(exc),
         }
 
@@ -181,6 +187,14 @@ def run_codex_app_server_turn(
             )
     else:
         final_response = turn.final_text
+
+    # The codex_app_server path returns before the standard chat-completions
+    # loop reaches its final persistence block. Persist here so gateway
+    # continuations can reload the just-completed turn from SessionDB.
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning("codex app-server turn persistence raised", exc_info=True)
 
     return {
         "final_response": final_response,

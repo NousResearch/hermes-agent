@@ -348,6 +348,64 @@ class TestHermesAnalysisResponseCache:
         assert (await _maybe_cached_analysis_response(payload, compute))[0]["final_response"] == "answer-2"
         assert calls == 2
 
+    @pytest.mark.asyncio
+    async def test_concurrent_analysis_payloads_share_inflight_compute(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "_analysis_response_cache", _HermesAnalysisResponseCache())
+        calls = 0
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            entered.set()
+            await gate.wait()
+            return ({"final_response": "answer"}, {"total_tokens": 1})
+
+        payload = {
+            "analysis_mode": "data_gap_request_result",
+            "context": {
+                "routing_policy": {
+                    "cache": {"key": "data_gap_request_result:event:evt-123", "ttl_sec": 900}
+                }
+            },
+        }
+
+        first = asyncio.create_task(_maybe_cached_analysis_response(payload, compute))
+        second = asyncio.create_task(_maybe_cached_analysis_response(dict(payload, request_id="retry"), compute))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert calls == 1
+
+        gate.set()
+        assert await first == ({"final_response": "answer"}, {"total_tokens": 1})
+        assert await second == ({"final_response": "answer"}, {"total_tokens": 1})
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_cached_analysis_response_drops_session_bound_metadata(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "_analysis_response_cache", _HermesAnalysisResponseCache())
+
+        async def compute():
+            return (
+                {"final_response": "answer", "session_id": "first-session"},
+                {"total_tokens": 1},
+            )
+
+        payload = {
+            "analysis_mode": "data_gap_request_result",
+            "context": {
+                "routing_policy": {
+                    "cache": {"key": "data_gap_request_result:event:evt-123", "ttl_sec": 900}
+                }
+            },
+        }
+
+        first, _ = await _maybe_cached_analysis_response(payload, compute)
+        second, _ = await _maybe_cached_analysis_response(dict(payload, request_id="retry"), compute)
+
+        assert "session_id" not in first
+        assert "session_id" not in second
+
 
 # ---------------------------------------------------------------------------
 # Adapter initialization

@@ -678,6 +678,7 @@ class _HermesAnalysisResponseCache:
     def __init__(self, max_items: int = 1000):
         from collections import OrderedDict
         self._store = OrderedDict()
+        self._inflight: Dict[str, "asyncio.Task[Any]"] = {}
         self._max = max_items
 
     def _purge(self) -> None:
@@ -706,25 +707,59 @@ class _HermesAnalysisResponseCache:
         self._store[key] = {"resp": response, "expires_at": time.time() + ttl}
         self._purge()
 
+    async def get_or_set(self, key: str, ttl: int, compute_coro):
+        cached = self.get(key)
+        if cached is not None:
+            logger.info("Hermes analysis response cache hit: %s", key)
+            return cached
+
+        task = self._inflight.get(key)
+        if task is None:
+            async def _compute_and_store():
+                response = await compute_coro()
+                if _is_cacheable_analysis_response(response):
+                    response = _analysis_cache_store_value(response)
+                    self.set(key, response, ttl)
+                return response
+
+            task = asyncio.create_task(_compute_and_store())
+            self._inflight[key] = task
+
+            def _clear_inflight(done_task: "asyncio.Task[Any]") -> None:
+                if self._inflight.get(key) is done_task:
+                    self._inflight.pop(key, None)
+
+            task.add_done_callback(_clear_inflight)
+
+        return await asyncio.shield(task)
+
 
 _analysis_response_cache = _HermesAnalysisResponseCache()
+
+
+def _is_cacheable_analysis_response(response) -> bool:
+    result = response[0] if isinstance(response, tuple) and response else None
+    return isinstance(result, dict) and not result.get("failed")
+
+
+def _analysis_cache_store_value(response):
+    """Store only reusable response fields, not request/session-bound metadata."""
+    if not (isinstance(response, tuple) and response and isinstance(response[0], dict)):
+        return response
+    result = dict(response[0])
+    result.pop("session_id", None)
+    return (result, *response[1:])
 
 
 async def _maybe_cached_analysis_response(payload: Dict[str, Any], compute_coro):
     cache_key = _hermes_cache_key(payload)
     if cache_key is None:
         return await compute_coro()
-
-    cached = _analysis_response_cache.get(cache_key)
-    if cached is not None:
-        logger.info("Hermes analysis response cache hit: %s", cache_key)
-        return cached
-
-    response = await compute_coro()
-    result = response[0] if isinstance(response, tuple) and response else None
-    if not (isinstance(result, dict) and result.get("failed")):
-        _analysis_response_cache.set(cache_key, response, _hermes_cache_ttl(payload))
-    return response
+    return await _analysis_response_cache.get_or_set(
+        cache_key,
+        _hermes_cache_ttl(payload),
+        compute_coro,
+    )
 
 
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:

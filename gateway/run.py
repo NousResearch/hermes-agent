@@ -1660,6 +1660,41 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+def _conversation_message_count(messages: list[dict]) -> int:
+    """Count transcript rows that should rehydrate into conversation context."""
+    count = 0
+    for msg in messages or []:
+        role = msg.get("role")
+        if not role or role in {"session_meta", "system"}:
+            continue
+        count += 1
+    return count
+
+
+def _agent_already_persisted_turn(
+    session_db,
+    session_id: str,
+    history: list[dict],
+    *,
+    session_was_split: bool = False,
+) -> bool:
+    """Return True when the agent already wrote this turn to SQLite.
+
+    Gateway normally skips its SQLite write because the agent writes the same
+    messages directly. Some gateway runtimes can return messages without that
+    DB write completing; if we skip blindly, the next Feishu turn sees only
+    session_meta and loses the visible chat context.
+    """
+    if session_db is None or not session_id:
+        return False
+    try:
+        persisted = session_db.get_messages(session_id)
+    except Exception:
+        return False
+    prior_count = 0 if session_was_split else _conversation_message_count(history)
+    return _conversation_message_count(persisted) > prior_count
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -9142,11 +9177,22 @@ class GatewayRunner:
                             {"role": "assistant", "content": response, "timestamp": ts}
                         )
                 else:
-                    # The agent already persisted these messages to SQLite via
-                    # _flush_messages_to_session_db(), so skip the DB write here
-                    # to prevent the duplicate-write bug (#860).  We still write
-                    # to JSONL for backward compatibility and as a backup.
-                    agent_persisted = self._session_db is not None
+                    # The agent usually persists these messages to SQLite via
+                    # _flush_messages_to_session_db(), so the gateway skips DB
+                    # writes to prevent duplicate rows (#860). Verify that the
+                    # write actually happened first: some gateway runtimes can
+                    # return a successful result while SQLite still contains
+                    # only session_meta, which makes the next Feishu turn lose
+                    # all visible chat context.
+                    agent_persisted = _agent_already_persisted_turn(
+                        self._session_db,
+                        session_entry.session_id,
+                        history,
+                        session_was_split=bool(
+                            agent_result.get("session_id")
+                            and agent_result["session_id"] != session_entry.session_id
+                        ),
+                    )
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution
                     # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)

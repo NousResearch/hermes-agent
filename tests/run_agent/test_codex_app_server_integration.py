@@ -130,6 +130,30 @@ class TestRunConversationCodexPath:
         )
         assert user_count == 1, f"user message appeared {user_count}× in {result['messages']}"
 
+    def test_codex_path_persists_completed_turn_with_history(self, fake_session):
+        """The app-server path returns before the standard loop's final
+        persistence block, so it must flush its own turn and pass the loaded
+        history offset through to avoid duplicating replayed messages."""
+        agent = _make_codex_agent()
+        calls = []
+
+        def capture_persist(messages, conversation_history=None):
+            calls.append((list(messages), conversation_history))
+
+        history = [{"role": "user", "content": "prior"}]
+        with (
+            patch.object(agent, "_spawn_background_review", return_value=None),
+            patch.object(agent, "_persist_session", side_effect=capture_persist),
+        ):
+            result = agent.run_conversation("next", conversation_history=history)
+
+        assert result["completed"] is True
+        assert len(calls) == 1
+        persisted_messages, persisted_history = calls[0]
+        assert persisted_history is history
+        assert persisted_messages[:1] == history
+        assert any(m.get("role") == "user" and m.get("content") == "next" for m in persisted_messages)
+
     def test_background_review_NOT_invoked_below_threshold(self, fake_session):
         """A single turn shouldn't trigger background review — counters
         haven't reached the nudge interval (default 10)."""
@@ -318,8 +342,29 @@ class TestErrorHandling:
             result = agent.run_conversation("hi")
         assert result["completed"] is False
         assert result["partial"] is True
+        assert result["failed"] is True
         assert "subprocess died" in result["error"]
         assert "codex-runtime auto" in result["final_response"]
+
+    def test_session_exception_persists_user_turn(self, monkeypatch):
+        def boom_run_turn(self, user_input, **kwargs):
+            raise RuntimeError("subprocess died")
+
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started",
+                            lambda self: "t1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", boom_run_turn)
+
+        agent = _make_codex_agent()
+        calls = []
+        with (
+            patch.object(agent, "_spawn_background_review", return_value=None),
+            patch.object(agent, "_persist_session", side_effect=lambda messages, conversation_history=None: calls.append((list(messages), conversation_history))),
+        ):
+            result = agent.run_conversation("hi")
+
+        assert result["failed"] is True
+        assert len(calls) == 1
+        assert any(m.get("role") == "user" and m.get("content") == "hi" for m in calls[0][0])
 
     def test_interrupted_turn_marked_partial(self, monkeypatch):
         def interrupted_turn(self, user_input, **kwargs):

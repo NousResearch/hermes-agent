@@ -206,6 +206,17 @@ OUTPUT_SCHEMAS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
+
+
 def is_qwen_analysis_payload(payload: Dict[str, Any]) -> bool:
     mode = str(payload.get("analysis_mode") or "").strip().lower()
     if mode == "fast_triage":
@@ -311,8 +322,8 @@ def expected_output_shape(mode: str) -> Dict[str, Any]:
 def call_ollama(prompt: str, *, timeout: int = DEFAULT_QWEN_TIMEOUT_SEC) -> str:
     url = os.environ.get("HERMES_QWEN_OLLAMA_URL", DEFAULT_OLLAMA_URL).strip() or DEFAULT_OLLAMA_URL
     model = os.environ.get("HERMES_QWEN_MODEL", QWEN_MODEL).strip() or QWEN_MODEL
-    num_predict = int(os.environ.get("HERMES_QWEN_NUM_PREDICT", str(DEFAULT_QWEN_NUM_PREDICT)) or DEFAULT_QWEN_NUM_PREDICT)
-    num_ctx = int(os.environ.get("HERMES_QWEN_NUM_CTX", str(DEFAULT_QWEN_NUM_CTX)) or DEFAULT_QWEN_NUM_CTX)
+    num_predict = _env_int("HERMES_QWEN_NUM_PREDICT", DEFAULT_QWEN_NUM_PREDICT)
+    num_ctx = _env_int("HERMES_QWEN_NUM_CTX", DEFAULT_QWEN_NUM_CTX)
     resp = requests.post(
         url,
         json={
@@ -435,7 +446,7 @@ def run_qwen_stage(payload: Dict[str, Any]) -> Dict[str, Any]:
     mode = str(payload.get("analysis_mode") or "").strip().lower()
     if mode not in QWEN_MODES:
         raise ValueError(f"unsupported qwen analysis_mode: {mode}")
-    timeout = int(os.environ.get("HERMES_QWEN_TIMEOUT_SEC", str(DEFAULT_QWEN_TIMEOUT_SEC)) or DEFAULT_QWEN_TIMEOUT_SEC)
+    timeout = _env_int("HERMES_QWEN_TIMEOUT_SEC", DEFAULT_QWEN_TIMEOUT_SEC)
     validation_error = ""
     for attempt in range(2):
         try:

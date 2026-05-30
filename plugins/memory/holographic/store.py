@@ -5,6 +5,7 @@ Single-user Hermes memory store plugin.
 
 import re
 import sqlite3
+import struct
 import threading
 from pathlib import Path
 
@@ -13,18 +14,29 @@ try:
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
+# Lazy embedding availability check (mirrors retrieval.py)
+_HAS_SENTENCE_TRANSFORMERS: bool
+try:
+    import sentence_transformers  # noqa: F401
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    _HAS_SENTENCE_TRANSFORMERS = False
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
-    fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    content         TEXT NOT NULL UNIQUE,
-    category        TEXT DEFAULT 'general',
-    tags            TEXT DEFAULT '',
-    trust_score     REAL DEFAULT 0.5,
-    retrieval_count INTEGER DEFAULT 0,
-    helpful_count   INTEGER DEFAULT 0,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    hrr_vector      BLOB
+    fact_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    content           TEXT NOT NULL UNIQUE,
+    category          TEXT DEFAULT 'general',
+    tags              TEXT DEFAULT '',
+    trust_score       REAL DEFAULT 0.5,
+    retrieval_count   INTEGER DEFAULT 0,
+    helpful_count     INTEGER DEFAULT 0,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    event_time        TIMESTAMP,
+    ingestion_time    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    hrr_vector        BLOB,
+    embedding_vector  BLOB
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -103,6 +115,7 @@ class MemoryStore:
         db_path: "str | Path | None" = None,
         default_trust: float = 0.5,
         hrr_dim: int = 1024,
+        embedding_model: str = "all-MiniLM-L6-v2",
     ) -> None:
         if db_path is None:
             from hermes_constants import get_hermes_home
@@ -111,6 +124,7 @@ class MemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
+        self._embedding_model = embedding_model
         self._hrr_available = hrr._HAS_NUMPY
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
@@ -133,10 +147,21 @@ class MemoryStore:
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
-        # Migrate: add hrr_vector column if missing (safe for existing databases)
+        # Migrate: add columns if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        if "embedding_vector" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN embedding_vector BLOB")
+        if "event_time" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN event_time TIMESTAMP")
+        if "ingestion_time" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN ingestion_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        # Bitemporal indexes for time-range queries
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_event_time ON facts(event_time)")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_ingestion_time ON facts(ingestion_time)")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -148,12 +173,19 @@ class MemoryStore:
         content: str,
         category: str = "general",
         tags: str = "",
+        event_time: str | None = None,
     ) -> int:
         """Insert a fact and return its fact_id.
 
         Deduplicates by content (UNIQUE constraint). On duplicate, returns
         the existing fact_id without modifying the row. Extracts entities from
         the content and links them to the fact.
+
+        Args:
+            event_time: Optional ISO-8601 timestamp for when the event occurred
+                in the real world (e.g. "2025-01-15T10:30:00").  Stored as the
+                bitemporal *event_time* column; defaults to None (unknown).
+                ingestion_time is always set to CURRENT_TIMESTAMP automatically.
         """
         with self._lock:
             content = content.strip()
@@ -163,10 +195,10 @@ class MemoryStore:
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO facts (content, category, tags, trust_score, event_time)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust),
+                    (content, category, tags, self.default_trust, event_time),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
@@ -184,6 +216,8 @@ class MemoryStore:
 
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
+            # Compute embedding vector (no-op if sentence-transformers unavailable)
+            self._compute_embedding_vector(fact_id, content)
             self._rebuild_bank(category)
 
             return fact_id
@@ -215,7 +249,8 @@ class MemoryStore:
             sql = f"""
                 SELECT f.fact_id, f.content, f.category, f.tags,
                        f.trust_score, f.retrieval_count, f.helpful_count,
-                       f.created_at, f.updated_at
+                       f.created_at, f.updated_at,
+                       f.event_time, f.ingestion_time
                 FROM facts f
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
                 WHERE facts_fts MATCH ?
@@ -295,6 +330,7 @@ class MemoryStore:
             # Recompute HRR vector if content changed
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
+                self._compute_embedding_vector(fact_id, content)
             # Rebuild bank for relevant category
             cat = category or self._conn.execute(
                 "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
@@ -340,7 +376,8 @@ class MemoryStore:
 
             sql = f"""
                 SELECT fact_id, content, category, tags, trust_score,
-                       retrieval_count, helpful_count, created_at, updated_at
+                       retrieval_count, helpful_count, created_at, updated_at,
+                       event_time, ingestion_time
                 FROM facts
                 WHERE trust_score >= ?
                   {category_clause}
@@ -390,6 +427,80 @@ class MemoryStore:
                 "new_trust":    new_trust,
                 "helpful_count": row["helpful_count"] + helpful_increment,
             }
+
+    # ------------------------------------------------------------------
+    # Bitemporal queries
+    # ------------------------------------------------------------------
+
+    def get_facts_by_event_time_range(
+        self,
+        start: str,
+        end: str,
+        category: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return facts whose event_time falls within [start, end].
+
+        Both *start* and *end* are ISO-8601 strings (e.g. "2025-01-01" or
+        "2025-06-15T10:30:00").  Facts with event_time IS NULL are
+        excluded.
+        """
+        with self._lock:
+            params: list = [start, end]
+            category_clause = ""
+            if category is not None:
+                category_clause = "AND category = ?"
+                params.append(category)
+            params.append(limit)
+
+            sql = f"""
+                SELECT fact_id, content, category, tags, trust_score,
+                       retrieval_count, helpful_count, created_at, updated_at,
+                       event_time, ingestion_time
+                FROM facts
+                WHERE event_time IS NOT NULL
+                  AND event_time >= ?
+                  AND event_time <= ?
+                  {category_clause}
+                ORDER BY event_time ASC
+                LIMIT ?
+            """
+            rows = self._conn.execute(sql, params).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
+    def get_facts_by_ingestion_time_range(
+        self,
+        start: str,
+        end: str,
+        category: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return facts whose ingestion_time falls within [start, end].
+
+        Both *start* and *end* are ISO-8601 strings.  ingestion_time is
+        always populated (defaults to CURRENT_TIMESTAMP at insert time).
+        """
+        with self._lock:
+            params: list = [start, end]
+            category_clause = ""
+            if category is not None:
+                category_clause = "AND category = ?"
+                params.append(category)
+            params.append(limit)
+
+            sql = f"""
+                SELECT fact_id, content, category, tags, trust_score,
+                       retrieval_count, helpful_count, created_at, updated_at,
+                       event_time, ingestion_time
+                FROM facts
+                WHERE ingestion_time >= ?
+                  AND ingestion_time <= ?
+                  {category_clause}
+                ORDER BY ingestion_time ASC
+                LIMIT ?
+            """
+            rows = self._conn.execute(sql, params).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Entity helpers
@@ -494,6 +605,26 @@ class MemoryStore:
                 (hrr.phases_to_bytes(vector), fact_id),
             )
             self._conn.commit()
+
+    def _compute_embedding_vector(self, fact_id: int, content: str) -> None:
+        """Compute and store embedding vector for a fact.  No-op if sentence-transformers unavailable."""
+        with self._lock:
+            if not _HAS_SENTENCE_TRANSFORMERS:
+                return
+            try:
+                from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
+                if not hasattr(self, "_emb_model"):
+                    model_name = getattr(self, "_embedding_model", "all-MiniLM-L6-v2")
+                    self._emb_model = SentenceTransformer(model_name)
+                vec = self._emb_model.encode(content, normalize_embeddings=True)
+                blob = struct.pack(f"<{len(vec)}f", *vec.tolist())
+                self._conn.execute(
+                    "UPDATE facts SET embedding_vector = ? WHERE fact_id = ?",
+                    (blob, fact_id),
+                )
+                self._conn.commit()
+            except Exception:
+                pass  # embedding is best-effort; never break fact storage
 
     def _rebuild_bank(self, category: str) -> None:
         """Full rebuild of a category's memory bank from all its fact vectors."""

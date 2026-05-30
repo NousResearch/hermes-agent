@@ -153,6 +153,10 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
+            {"key": "embedding_enabled", "description": "Enable embedding semantic search (requires sentence-transformers)", "default": "false", "choices": ["true", "false"]},
+            {"key": "embedding_model", "description": "Sentence-transformers model name", "default": "all-MiniLM-L6-v2"},
+            {"key": "embedding_dim", "description": "Embedding vector dimensions", "default": "384"},
+            {"key": "embedding_weight", "description": "Weight for embedding signal in hybrid search (0.0-1.0)", "default": "0.40"},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -171,12 +175,26 @@ class HolographicMemoryProvider(MemoryProvider):
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
 
-        self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
+        embedding_model = str(self._config.get("embedding_model", "all-MiniLM-L6-v2"))
+        embedding_enabled = str(self._config.get("embedding_enabled", "false")).lower() in ("true", "1", "yes")
+        embedding_dim = int(self._config.get("embedding_dim", 384))
+        embedding_weight = float(self._config.get("embedding_weight", 0.40))
+
+        self._store = MemoryStore(
+            db_path=db_path,
+            default_trust=default_trust,
+            hrr_dim=hrr_dim,
+            embedding_model=embedding_model,
+        )
         self._retriever = FactRetriever(
             store=self._store,
             temporal_decay_half_life=temporal_decay,
             hrr_weight=hrr_weight,
             hrr_dim=hrr_dim,
+            embedding_enabled=embedding_enabled,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+            embedding_weight=embedding_weight,
         )
         self._session_id = session_id
 

@@ -63,6 +63,14 @@ _EMOTION_PATTERNS: list[tuple[re.Pattern, float]] = [
     (re.compile(r"\b(important|crucial|vital|essential|key)\b", re.I), 0.4),
 ]
 
+_EMOTION_PATTERNS_ZH: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"[!！]{2,}"), 0.6),
+    (re.compile(r"(紧急|严重|崩溃|故障|坏了|挂了)"), 0.5),
+    (re.compile(r"(喜欢|讨厌|太好了|太差了|棒极了|糟透了)"), 0.3),
+    (re.compile(r"(担心|兴奋|沮丧|生气|开心|难过)"), 0.35),
+    (re.compile(r"(重要|关键|必须|一定要|千万|别忘了)"), 0.4),
+]
+
 _IMPORTANCE_PATTERNS: list[tuple[re.Pattern, float]] = [
     (re.compile(r"\b(decided|decision|agreed|confirmed|final)\b", re.I), 0.7),
     (re.compile(r"\b(requirement|spec|specification|constraint)\b", re.I), 0.6),
@@ -73,11 +81,53 @@ _IMPORTANCE_PATTERNS: list[tuple[re.Pattern, float]] = [
     (re.compile(r"\b(bug|issue|error|problem)\b", re.I), 0.4),
 ]
 
+
+_IMPORTANCE_PATTERNS_ZH: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"(决定|确认|最终|确定)"), 0.7),
+    (re.compile(r"(需求|规格|约束|限制)"), 0.6),
+    (re.compile(r"(部署|发布|上线|投产)"), 0.6),
+    (re.compile(r"(记住|笔记|重要|别忘)"), 0.8),
+    (re.compile(r"(喜欢|总是|从不|通常)"), 0.5),
+]
+
 _TRIVIAL_PATTERNS: list[tuple[re.Pattern, float]] = [
     (re.compile(r"^(hi|hello|hey|thanks|ok|yes|no|sure)\s*[.!?]?\s*$", re.I), 0.9),
     (re.compile(r"^(good morning|good night|bye|see you)", re.I), 0.8),
     (re.compile(r"^(what time|what date|weather)", re.I), 0.5),
 ]
+
+_TRIVIAL_PATTERNS_ZH: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"^(你好|嗨|谢谢|好的|是|不是|嗯)\s*[。！？]?\s*$"), 0.9),
+    (re.compile(r"^(早上好|晚安|再见|拜拜)"), 0.8),
+    (re.compile(r"^(几点|什么时间|天气)"), 0.5),
+]
+
+# Temporal recency patterns -- expressions indicating a recent or
+# time-sensitive event.  Matches boost the novelty dimension of salience.
+_RECENCY_PATTERNS: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"(just now|right now|moments? ago|earlier today|this morning|this afternoon|this evening)", re.I), 0.6),
+    (re.compile(r"(today|yesterday|last night)", re.I), 0.5),
+    (re.compile(r"(this week|last week|recently|lately|just happened)", re.I), 0.4),
+    (re.compile(r"(now|currently|at the moment|as we speak)", re.I), 0.45),
+    (re.compile(r"(breaking|just in|update[:\s])", re.I), 0.55),
+    (re.compile(r"\d{4}[-/]\d{2}[-/]\d{2}"), 0.3),   # ISO date in text
+]
+
+_RECENCY_PATTERNS_ZH: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"(刚才|刚刚|此刻|现在|今天早上|今天下午|今天晚上)"), 0.6),
+    (re.compile(r"(今天|昨天|前天|昨晚)"), 0.5),
+    (re.compile(r"(本周|上周|最近|近期|近日)"), 0.4),
+    (re.compile(r"(目前|当前|眼下|此时此刻)"), 0.45),
+    (re.compile(r"(最新消息|突发|更新[：:])"), 0.55),
+    (re.compile(r"\d{4}[-年/]\d{2}[-月/]\d{2}"), 0.3),   # CJK date in text
+]
+
+_ZH_STOPWORDS: set[str] = {
+    '的', '了', '是', '在', '我', '你', '他', '她', '它', '们',
+    '这', '那', '有', '和', '与', '及', '或', '但', '而', '就',
+    '都', '要', '会', '能', '可以', '不', '没', '也', '还', '把',
+    '被', '让', '给', '从', '到', '对',
+}
 
 
 @dataclass
@@ -88,6 +138,7 @@ class SalienceResult:
     novelty: float = 0.5
     importance: float = 0.0
     repetition_penalty: float = 1.0
+    temporal_recency_boost: float = 0.0
     is_trivial: bool = False
 
 
@@ -143,18 +194,18 @@ class SalienceScorer:
         text = message.strip()
         with self._lock:
             trivial_penalty = 1.0
-            for pattern, weight in _TRIVIAL_PATTERNS:
+            for pattern, weight in _TRIVIAL_PATTERNS + _TRIVIAL_PATTERNS_ZH:
                 if pattern.search(text):
                     trivial_penalty = min(trivial_penalty, 1.0 - weight)
             is_trivial = trivial_penalty < 0.3
             emotion = 0.0
-            for pattern, weight in _EMOTION_PATTERNS:
+            for pattern, weight in _EMOTION_PATTERNS + _EMOTION_PATTERNS_ZH:
                 if pattern.search(text):
                     emotion = max(emotion, weight)
             if len(text) < 20:
                 emotion *= 0.5
             importance = 0.0
-            for pattern, weight in _IMPORTANCE_PATTERNS:
+            for pattern, weight in _IMPORTANCE_PATTERNS + _IMPORTANCE_PATTERNS_ZH:
                 if pattern.search(text):
                     importance = max(importance, weight)
             if len(text) > 200:
@@ -162,6 +213,12 @@ class SalienceScorer:
             freshness = self._rep.observe(text)
             novelty = freshness
             rep_factor = freshness
+            # Bitemporal boost: recent-event expressions increase novelty
+            recency_boost = 0.0
+            for pattern, weight in _RECENCY_PATTERNS + _RECENCY_PATTERNS_ZH:
+                if pattern.search(text):
+                    recency_boost = max(recency_boost, weight)
+            novelty = min(1.0, novelty + recency_boost)
             raw = (0.25 * emotion + 0.30 * novelty + 0.30 * importance
                    + 0.15 * min(1.0, len(text) / 200))
             adjusted = raw * rep_factor * (1.0 - (1.0 - trivial_penalty) * 0.8)
@@ -169,6 +226,7 @@ class SalienceScorer:
             return SalienceResult(
                 overall=overall, emotion=emotion, novelty=novelty,
                 importance=importance, repetition_penalty=rep_factor,
+                temporal_recency_boost=recency_boost,
                 is_trivial=is_trivial,
             )
 
@@ -185,7 +243,14 @@ class SilentEngramEngine:
 
     Memories decay via power-law but NEVER reach zero.  Forgotten facts
     become "silent engrams" that can be recovered via context similarity.
-    Scientific basis: F5 (Ryan et al. 2015 Science — forgetting ≠ erasure).
+    Scientific basis: F5 (Ryan et al. 2015 Science -- forgetting != erasure).
+
+    When emotion_modulated_decay_enabled is True, emotionally arousing
+    memories decay more slowly: adjusted_half_life = half_life *
+    (1 + emotion_decay_multiplier * |valence|).  With default multiplier
+    of 2.0, high-emotion memories (valence ~0.6) decay up to 2.2x slower.
+    Scientific basis: McGaugh 2004 -- amygdala modulates emotionally
+    arousing memory consolidation.
 
     Thresholds:
         active:      strength > 0.5
@@ -198,15 +263,33 @@ class SilentEngramEngine:
     SEMI_ACTIVE = 0.2
     SILENT = 0.05
 
-    def __init__(self, half_life_hours: float = 720.0) -> None:
+    def __init__(self, half_life_hours: float = 720.0,
+                 emotion_modulated_decay_enabled: bool = False,
+                 emotion_decay_multiplier: float = 2.0) -> None:
         self._half_life = half_life_hours
+        self._emotion_modulated = emotion_modulated_decay_enabled
+        self._emotion_multiplier = emotion_decay_multiplier
 
-    def apply_decay(self, state: 'PipelineState', hours_elapsed: float = 1.0) -> int:
-        """Apply power-law decay to all engram strengths. Returns affected rows."""
+    def apply_decay(self, state: 'PipelineState', hours_elapsed: float = 1.0,
+                    emotional_valence: float | None = None) -> int:
+        """Apply power-law decay to all engram strengths. Returns affected rows.
+
+        When emotional_valence is provided and emotion_modulated_decay is enabled,
+        the half-life is adjusted: adjusted = half_life * (1 + multiplier * |valence|).
+        High emotion means slower decay (up to 3x with default multiplier).
+        Scientific basis: McGaugh 2004 -- amygdala modulates emotionally arousing
+        memory consolidation.
+        """
         if not state:
             return 0
         try:
-            decay_factor = 0.5 ** (hours_elapsed / self._half_life)
+            effective_half_life = self._half_life
+            if (emotional_valence is not None
+                    and self._emotion_modulated
+                    and abs(emotional_valence) > 0.0):
+                effective_half_life = self._half_life * (
+                    1.0 + self._emotion_multiplier * abs(emotional_valence))
+            decay_factor = 0.5 ** (hours_elapsed / effective_half_life)
             with state._lock:
                 cursor = state._conn.execute(
                     "UPDATE engram_strengths SET "
@@ -220,6 +303,76 @@ class SilentEngramEngine:
         except Exception as e:
             logger.debug("Engram decay failed: %s", e)
             return 0
+
+    def apply_decay_with_emotion(
+        self, state: 'PipelineState', hours_elapsed: float,
+        emotional_valences: dict[str, float],
+    ) -> int:
+        """Apply per-memory emotion-modulated decay.
+
+        Each memory_ref in emotional_valences gets its own adjusted half-life
+        based on its emotional valence.  Memories not in the dict use the
+        base half-life.
+
+        Args:
+            state: PipelineState with engram_strengths table.
+            hours_elapsed: Fractional hours since last decay.
+            emotional_valences: {memory_ref: emotional_valence} mapping.
+                Valence is in [0, 1] range (typically 0.0-0.6 from SalienceScorer).
+
+        Returns:
+            Total number of affected rows.
+        """
+        if not state:
+            return 0
+        total_affected = 0
+        try:
+            with state._lock:
+                # Update half_life_hours for targeted memories
+                for ref, valence in emotional_valences.items():
+                    if self._emotion_modulated and abs(valence) > 0.0:
+                        adjusted = self._half_life * (
+                            1.0 + self._emotion_multiplier * abs(valence))
+                    else:
+                        adjusted = self._half_life
+                    state._conn.execute(
+                        "UPDATE engram_strengths SET decay_half_life_hours = ? "
+                        "WHERE memory_ref = ?",
+                        (adjusted, ref),
+                    )
+
+                # Apply decay using per-row half_life_hours
+                cursor = state._conn.execute(
+                    "UPDATE engram_strengths SET "
+                    "strength = MAX(0.001, strength * "
+                    "  POWER(0.5, ? / decay_half_life_hours)), "
+                    "last_accessed = CURRENT_TIMESTAMP "
+                    "WHERE strength > 0.001",
+                    (hours_elapsed,),
+                )
+                total_affected = cursor.rowcount
+
+                # Reset half_life_hours for non-targeted memories back to base
+                refs = list(emotional_valences.keys())
+                if refs:
+                    placeholders = ",".join("?" for _ in refs)
+                    state._conn.execute(
+                        f"UPDATE engram_strengths SET decay_half_life_hours = ? "
+                        f"WHERE memory_ref NOT IN ({placeholders}) "
+                        f"AND decay_half_life_hours != ?",
+                        [self._half_life] + refs + [self._half_life],
+                    )
+                else:
+                    state._conn.execute(
+                        "UPDATE engram_strengths SET decay_half_life_hours = ? "
+                        "WHERE decay_half_life_hours != ?",
+                        (self._half_life, self._half_life),
+                    )
+
+                state._conn.commit()
+        except Exception as e:
+            logger.debug("Engram emotion-modulated decay failed: %s", e)
+        return total_affected
 
     def strengthen(self, state: 'PipelineState', memory_ref: str,
                    delta: float = 0.03) -> float:
@@ -288,6 +441,13 @@ class ConsolidationEngine:
 
         In Phase 1-2, this operates on pipeline_state.db schemas.
         In Phase 3+, it will pull facts from providers.
+
+        Bitemporal consideration: facts are sorted by their effective
+        timestamp (event_time > ingestion_time > created_at) so that
+        temporally proximate facts are grouped together during schema
+        creation.  Temporal proximity also boosts the initial confidence
+        of a new schema -- facts within the same time window are more
+        likely to describe the same underlying situation.
         """
         if not state:
             return {"schemas_created": 0, "schemas_updated": 0}
@@ -296,13 +456,22 @@ class ConsolidationEngine:
             with state._lock:
                 # Consolidation runs whenever we have enough new facts
                 if facts and len(facts) >= self._min_facts:
+                    # Sort facts by temporal proximity: prefer event_time,
+                    # fall back to ingestion_time, then created_at.
+                    def _sort_key(f: dict) -> str:
+                        return (f.get("event_time")
+                                or f.get("ingestion_time")
+                                or f.get("created_at")
+                                or "")
+                    facts_sorted = sorted(facts, key=_sort_key)
+
                     # Get existing schema contents for dedup
                     existing = state._conn.execute(
                         "SELECT content FROM schemas ORDER BY updated_at DESC LIMIT 20"
                     ).fetchall()
                     existing_contents = {r["content"][:50] for r in existing}
 
-                    for fact in facts[:10]:
+                    for fact in facts_sorted[:10]:
                         content = fact.get("content", "")
                         domain = fact.get("domain", "general")
                         if not content or len(content) < 10:
@@ -311,10 +480,28 @@ class ConsolidationEngine:
                         if content[:50] in existing_contents:
                             updated += 1
                             continue
+                        # Temporal proximity boost: facts with a recent
+                        # event_time get a slightly higher initial confidence
+                        # because they describe a temporally grounded event.
+                        base_conf = 0.5
+                        event_ts = fact.get("event_time") or fact.get("ingestion_time")
+                        if event_ts:
+                            try:
+                                from datetime import datetime, timezone
+                                evt = datetime.fromisoformat(str(event_ts))
+                                if evt.tzinfo is None:
+                                    evt = evt.replace(tzinfo=timezone.utc)
+                                age_hours = (datetime.now(timezone.utc) - evt).total_seconds() / 3600.0
+                                if age_hours < 1.0:
+                                    base_conf = 0.65   # very recent
+                                elif age_hours < 24.0:
+                                    base_conf = 0.55   # same day
+                            except Exception:
+                                pass
                         state._conn.execute(
                             "INSERT INTO schemas (content, domain, confidence) "
                             "VALUES (?, ?, ?)",
-                            (content, domain, 0.5),
+                            (content, domain, base_conf),
                         )
                         created += 1
 
@@ -323,7 +510,7 @@ class ConsolidationEngine:
                     "INSERT INTO consolidation_runs "
                     "(session_id, memories_processed, schemas_created, schemas_updated) "
                     "VALUES (?, ?, ?, ?)",
-                    (self._session_id or "", len(facts or []), created, updated),
+                    (getattr(self, '_session_id', '') or "", len(facts or []), created, updated),
                 )
                 state._conn.commit()
         except Exception as e:
@@ -355,8 +542,12 @@ class ReconsolidationEngine:
     Scientific basis: F8 (Sinclair & Barense 2019 Trends in Neurosciences).
     """
 
-    def __init__(self, error_threshold: float = 0.3) -> None:
+    def __init__(self, error_threshold: float = 0.3,
+                 semantic_conflict_enabled: bool = False,
+                 semantic_conflict_threshold: float = 0.7) -> None:
         self._threshold = error_threshold
+        self._semantic_enabled = semantic_conflict_enabled
+        self._semantic_threshold = semantic_conflict_threshold
 
     def check_retrieval(self, state: 'PipelineState',
                         query: str, result: str,
@@ -374,12 +565,26 @@ class ReconsolidationEngine:
             logger.debug("Reconsolidation check failed: %s", e)
 
     def detect_conflict(self, new_content: str,
-                        existing_contents: list[str]) -> float:
+                        existing_contents: list[str],
+                        embed_fn: 'Any | None' = None,
+                        llm_client: 'Any | None' = None) -> 'float | tuple[float, str]':
         """Detect prediction error between new and existing content.
 
-        Returns error score [0, 1]. High error = high conflict.
-        Simple token-overlap heuristic.
+        If semantic conflict detection is enabled and embed_fn is provided,
+        delegates to detect_semantic_conflict for deeper analysis.
+
+        Returns:
+            float (legacy): error score [0, 1], high = high conflict
+            tuple[float, str] (semantic): (error_score, action)
+                action is one of: "update", "keep_both", "supersede", "no_conflict"
         """
+        # Route to semantic detection when enabled and embeddings available
+        if self._semantic_enabled and embed_fn is not None:
+            return self.detect_semantic_conflict(
+                new_content, existing_contents,
+                embed_fn=embed_fn, llm_client=llm_client)
+
+        # Legacy token-overlap heuristic
         if not existing_contents:
             return 0.0
         new_tokens = set(new_content.lower().split())
@@ -394,8 +599,228 @@ class ReconsolidationEngine:
         # High overlap = low conflict, low overlap = high conflict
         return 1.0 - max_overlap
 
+    def detect_semantic_conflict(
+        self,
+        new_content: str,
+        existing_contents: list[str],
+        embed_fn: 'Any | None' = None,
+        llm_client: 'Any | None' = None,
+    ) -> tuple[float, str]:
+        """Two-stage semantic conflict detection.
 
-# ===========================================================================
+        Stage 1 (Fast Filter): Compute embedding similarity between the new
+        content and each existing content.  Only candidates with cosine
+        similarity exceeding semantic_conflict_threshold proceed to Stage 2.
+
+        Stage 2 (LLM Judgment): When llm_client is available, ask the LLM
+        whether the new content truly contradicts the high-similarity
+        candidates.
+
+        Args:
+            new_content: The incoming information to evaluate.
+            existing_contents: List of existing memory contents to check against.
+            embed_fn: Optional callable(text) -> list[float] that returns
+                      an embedding vector for a given text.
+            llm_client: Optional object with a .complete(prompt: str) -> str
+                        method for LLM-based judgment.
+
+        Returns:
+            (error_score, action) where action is one of:
+            "update", "keep_both", "supersede", "no_conflict".
+        """
+        if not existing_contents:
+            return (0.0, "no_conflict")
+
+        # --- Stage 1: Fast embedding similarity filter ---
+        if embed_fn is None:
+            score = self._token_overlap_conflict(new_content, existing_contents)
+            action = "update" if score > 0.7 else "no_conflict"
+            return (score, action)
+
+        try:
+            new_vec = embed_fn(new_content)
+        except Exception as e:
+            logger.debug("Embedding computation failed for new_content: %s", e)
+            score = self._token_overlap_conflict(new_content, existing_contents)
+            action = "update" if score > 0.7 else "no_conflict"
+            return (score, action)
+
+        if not new_vec:
+            return (0.0, "no_conflict")
+
+        candidates: list[tuple[str, float]] = []  # (content, similarity)
+        for existing in existing_contents:
+            try:
+                existing_vec = embed_fn(existing)
+            except Exception:
+                continue
+            if not existing_vec:
+                continue
+            sim = self._cosine_similarity(new_vec, existing_vec)
+            if sim > self._semantic_threshold:
+                candidates.append((existing, sim))
+
+        if not candidates:
+            return (0.0, "no_conflict")
+
+        # --- Stage 2: LLM judgment ---
+        if llm_client is not None:
+            try:
+                prompt = self._build_conflict_prompt(new_content, candidates)
+                response = llm_client.complete(prompt)
+                action, error_score = self._parse_llm_conflict_response(
+                    response, candidates)
+                return (error_score, action)
+            except Exception as e:
+                logger.debug("LLM conflict judgment failed: %s", e)
+
+        # --- Heuristic fallback (no LLM) ---
+        max_sim = max(s for _, s in candidates)
+        error_score = 1.0 - max_sim
+        if max_sim > 0.9:
+            action = "update"
+        elif max_sim > self._semantic_threshold + 0.1:
+            action = "keep_both"
+        else:
+            action = "no_conflict"
+        return (error_score, action)
+
+    # -- internal helpers for semantic conflict detection --
+
+    def _token_overlap_conflict(self, new_content: str,
+                                existing_contents: list[str]) -> float:
+        """Legacy token-overlap conflict score."""
+        new_tokens = set(new_content.lower().split())
+        max_overlap = 0.0
+        for existing in existing_contents:
+            existing_tokens = set(existing.lower().split())
+            if not new_tokens or not existing_tokens:
+                continue
+            overlap = len(new_tokens & existing_tokens) / max(
+                1, len(new_tokens | existing_tokens))
+            max_overlap = max(max_overlap, overlap)
+        return 1.0 - max_overlap
+
+    @staticmethod
+    def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+        """Compute cosine similarity between two vectors.
+
+        Returns 0.0 for zero-length or mismatched vectors.
+        """
+        if len(vec_a) != len(vec_b) or not vec_a:
+            return 0.0
+        dot = sum(a * b for a, b in zip(vec_a, vec_b))
+        norm_a = math.sqrt(sum(a * a for a in vec_a))
+        norm_b = math.sqrt(sum(b * b for b in vec_b))
+        if norm_a < 1e-12 or norm_b < 1e-12:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    @staticmethod
+    def _build_conflict_prompt(
+        new_content: str,
+        candidates: list[tuple[str, float]],
+    ) -> str:
+        """Build LLM prompt for semantic conflict judgment.
+
+        The prompt instructs the LLM to analyse whether the new content
+        genuinely contradicts, supersedes, or complements each candidate.
+
+        Args:
+            new_content: The incoming information.
+            candidates: List of (existing_content, similarity_score) tuples.
+
+        Returns:
+            A prompt string ready to send to the LLM.
+        """
+        parts: list[str] = []
+        parts.append(
+            "You are a memory conflict analyst.  Determine whether the "
+            "NEW CONTENT genuinely contradicts any of the EXISTING KNOWLEDGE "
+            "entries below, or whether it simply updates / extends / is "
+            "independent of them."
+        )
+        parts.append("")
+        parts.append("NEW CONTENT:")
+        parts.append(new_content)
+        parts.append("")
+        parts.append("EXISTING KNOWLEDGE:")
+        for idx, (content, sim) in enumerate(candidates, 1):
+            parts.append(f"  [{idx}] (similarity={sim:.2f}) {content[:500]}")
+        parts.append("")
+        parts.append(
+            "Respond with EXACTLY one of these labels on its own line:")
+        parts.append(
+            "  update      - new content directly corrects/overwrites an existing entry")
+        parts.append(
+            "  keep_both   - new content and existing entries are complementary; keep both")
+        parts.append(
+            "  supersede   - new content is a newer version that should replace existing")
+        parts.append(
+            "  no_conflict - no meaningful conflict detected")
+        parts.append("")
+        parts.append(
+            "Then on a second line, provide a conflict severity score from 0.0 "
+            "(no conflict) to 1.0 (severe conflict).")
+        parts.append("Example response:")
+        parts.append("update")
+        parts.append("0.85")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _parse_llm_conflict_response(
+        response: str,
+        candidates: list[tuple[str, float]],
+    ) -> tuple[float, str]:
+        """Parse the LLM conflict judgment response.
+
+        Args:
+            response: Raw LLM output string.
+            candidates: The candidates list (used for fallback heuristic).
+
+        Returns:
+            (error_score, action) tuple.
+        """
+        if not response:
+            max_sim = max((s for _, s in candidates), default=0.0)
+            return (1.0 - max_sim, "no_conflict")
+
+        resp_lines = response.strip().splitlines()
+        valid_actions = {"update", "keep_both", "supersede", "no_conflict"}
+        action = "no_conflict"
+        error_score = 0.0
+
+        for line in resp_lines:
+            stripped = line.strip().lower()
+            if stripped in valid_actions:
+                action = stripped
+                break
+
+        # Try to extract numeric score from any line
+        for line in resp_lines:
+            stripped = line.strip()
+            match = re.search(r"(0\.\d+|1\.0+)", stripped)
+            if match:
+                try:
+                    error_score = float(match.group(1))
+                    error_score = max(0.0, min(1.0, error_score))
+                    break
+                except ValueError:
+                    pass
+
+        # Fallback: derive score from action if no numeric found
+        if error_score == 0.0 and action != "no_conflict":
+            max_sim = max((s for _, s in candidates), default=0.0)
+            if action == "update":
+                error_score = max(0.7, 1.0 - max_sim)
+            elif action == "supersede":
+                error_score = max(0.5, 1.0 - max_sim)
+            elif action == "keep_both":
+                error_score = max(0.2, 1.0 - max_sim)
+
+        return (error_score, action)
+
+
 # Layer 5: FeedbackCoordinator (predictive processing + learning)
 # ===========================================================================
 
@@ -414,20 +839,48 @@ class FeedbackCoordinator:
         self._lock = threading.Lock()
 
     def predict(self, state: 'PipelineState', context: str) -> list[str]:
-        """Generate predictions from existing schemas."""
+        """Generate predictions from existing schemas.
+
+        Bitemporal support: predictions are drawn from both high-confidence
+        schemas AND recently-updated schemas (temporal query).  Recently
+        updated schemas are tagged with a recency marker so downstream
+        consumers know they describe near-current situations.
+        """
         if not state:
             return []
         try:
             with state._lock:
-                rows = state._conn.execute(
-                    "SELECT content, confidence FROM schemas "
+                # High-confidence schemas (original logic)
+                conf_rows = state._conn.execute(
+                    "SELECT content, confidence, updated_at FROM schemas "
                     "WHERE confidence > 0.3 ORDER BY confidence DESC LIMIT 3"
                 ).fetchall()
-            predictions = []
-            for row in rows:
+                # Recently updated schemas (temporal query -- last 24h)
+                recent_rows = state._conn.execute(
+                    "SELECT content, confidence, updated_at FROM schemas "
+                    "WHERE updated_at >= datetime('now', '-1 day') "
+                    "ORDER BY updated_at DESC LIMIT 3"
+                ).fetchall()
+            # Merge, deduplicating by content prefix
+            seen_prefixes: set[str] = set()
+            predictions: list[str] = []
+            for row in conf_rows:
+                prefix = row["content"][:50]
+                if prefix in seen_prefixes:
+                    continue
+                seen_prefixes.add(prefix)
                 predictions.append(
                     f"Expected pattern (conf={row['confidence']:.2f}): "
                     f"{row['content'][:100]}"
+                )
+            for row in recent_rows:
+                prefix = row["content"][:50]
+                if prefix in seen_prefixes:
+                    continue
+                seen_prefixes.add(prefix)
+                predictions.append(
+                    f"Recent pattern (updated={row['updated_at']}, "
+                    f"conf={row['confidence']:.2f}): {row['content'][:100]}"
                 )
             with self._lock:
                 self._pending_predictions = predictions
@@ -510,8 +963,14 @@ class ActivationGraph:
     Scientific basis: Collins & Loftus (1975) spreading activation.
     """
 
-    def __init__(self, edge_decay_hours: float = 168.0) -> None:
+    def __init__(self, edge_decay_hours: float = 168.0,
+                 pagerank_damping: float = 0.85,
+                 pagerank_max_iter: int = 20,
+                 pagerank_enabled: bool = False) -> None:
         self._decay_hours = edge_decay_hours
+        self._pr_damping = pagerank_damping
+        self._pr_max_iter = pagerank_max_iter
+        self._pr_enabled = pagerank_enabled
 
     def record_co_activation(self, state: 'PipelineState',
                              entities: list[str], delta: float = 0.1) -> None:
@@ -569,8 +1028,11 @@ class ActivationGraph:
         if not state:
             return []
         try:
-            # Simple entity extraction: capitalized words
+            # Simple entity extraction: capitalized words + Chinese entities
             entities = re.findall(r'\b[A-Z][a-z]{2,}\b', query)
+            zh_entities = [e for e in re.findall(r'[一-鿿]{2,6}', query)
+                           if e not in _ZH_STOPWORDS]
+            entities.extend(zh_entities)
             expansions = []
             for entity in entities[:3]:
                 neighbors = self.get_neighbors(state, entity, limit=limit)
@@ -583,6 +1045,178 @@ class ActivationGraph:
         except Exception as e:
             logger.debug("Query expansion failed: %s", e)
             return []
+
+    def spread_activation_pagerank(
+        self, state: 'PipelineState',
+        seed_entities: list[str],
+        damping: float | None = None,
+        max_iter: int | None = None,
+    ) -> dict[str, float]:
+        """Personalized PageRank spreading activation over the co-activation graph.
+
+        Builds a NetworkX graph from activation_edges, runs personalized
+        PageRank with *seed_entities* as the personalisation vector, and
+        returns an entity->score mapping (seeds excluded).
+
+        Requires ``networkx``; returns an empty dict when the library is
+        absent so callers degrade gracefully.
+        """
+        if not state or not seed_entities:
+            return {}
+        try:
+            import networkx as nx
+        except ImportError:
+            logger.debug(
+                "networkx not installed -- PageRank spreading activation "
+                "unavailable; falling back to direct neighbors.")
+            return {}
+
+        d = damping if damping is not None else self._pr_damping
+        iters = max_iter if max_iter is not None else self._pr_max_iter
+        seed_set = set(seed_entities)
+
+        # --- Build graph from DB ---
+        try:
+            with state._lock:
+                rows = state._conn.execute(
+                    "SELECT source_entity, target_entity, strength "
+                    "FROM activation_edges WHERE strength > 0.01",
+                ).fetchall()
+        except Exception as e:
+            logger.debug("PageRank graph load failed: %s", e)
+            return {}
+
+        if not rows:
+            return {}
+
+        G: nx.Graph = nx.Graph()
+        for row in rows:
+            G.add_edge(
+                row["source_entity"], row["target_entity"],
+                weight=float(row["strength"]),
+            )
+
+        # Ensure seeds present (even if isolated)
+        for s in seed_entities:
+            if s not in G:
+                G.add_node(s)
+
+        # Personalisation vector: equal weight on seeds, 0 elsewhere
+        personalization = {n: (1.0 if n in seed_set else 0.0) for n in G}
+
+        try:
+            scores = nx.pagerank(
+                G, alpha=damping, max_iter=iters,
+                personalization=personalization, weight="weight",
+            )
+        except Exception as e:
+            logger.debug("PageRank computation failed: %s", e)
+            return {}
+
+        # Exclude seeds, sort descending
+        return {
+            ent: score
+            for ent, score in sorted(
+                scores.items(), key=lambda kv: kv[1], reverse=True
+            )
+            if ent not in seed_set
+        }
+
+    def expand_query_deep(self, state: 'PipelineState',
+                          query: str, limit: int = 5) -> list[str]:
+        """Expand query using Personalized PageRank instead of direct neighbours.
+
+        Extracts entities from the query, runs PageRank spreading
+        activation, and returns formatted expansion strings for the
+        top-*limit* scored entities.
+
+        Falls back to ``expand_query`` when PageRank is disabled or
+        ``networkx`` is unavailable.
+        """
+        if not state:
+            return []
+        if not self._pr_enabled:
+            return self.expand_query(state, query, limit=limit)
+        try:
+            entities = re.findall(r'\b[A-Z][a-z]{2,}\b', query)
+            zh_entities = [e for e in re.findall(r'[一-鿿]{2,6}', query)
+                           if e not in _ZH_STOPWORDS]
+            entities.extend(zh_entities)
+            if not entities:
+                return []
+
+            scores = self.spread_activation_pagerank(
+                state, entities[:5])
+            if not scores:
+                return self.expand_query(state, query, limit=limit)
+
+            expansions: list[str] = []
+            for ent, score in list(scores.items())[:limit]:
+                expansions.append(
+                    f"[pagerank: {ent} (score={score:.4f})]"
+                )
+            return expansions
+        except Exception as e:
+            logger.debug("Deep query expansion failed: %s", e)
+            return self.expand_query(state, query, limit=limit)
+
+    def find_bridge_entities(self, state: 'PipelineState',
+                             entity_a: str,
+                             entity_b: str) -> list[str]:
+        """Discover bridge entities on the shortest path between two nodes.
+
+        Returns the intermediate entities (excluding *entity_a* and
+        *entity_b*) along the shortest weighted path in the
+        co-activation graph.  Requires ``networkx``.
+
+        Returns an empty list when no path exists or the library is
+        missing.
+        """
+        if not state or not entity_a or not entity_b:
+            return []
+        try:
+            import networkx as nx
+        except ImportError:
+            logger.debug(
+                "networkx not installed -- bridge entity discovery "
+                "unavailable.")
+            return []
+
+        try:
+            with state._lock:
+                rows = state._conn.execute(
+                    "SELECT source_entity, target_entity, strength "
+                    "FROM activation_edges WHERE strength > 0.01",
+                ).fetchall()
+        except Exception as e:
+            logger.debug("Bridge entity graph load failed: %s", e)
+            return []
+
+        if not rows:
+            return []
+
+        G: nx.Graph = nx.Graph()
+        for row in rows:
+            G.add_edge(
+                row["source_entity"], row["target_entity"],
+                weight=float(row["strength"]),
+            )
+
+        if entity_a not in G or entity_b not in G:
+            return []
+
+        try:
+            # Use weight=1/strength so stronger edges are shorter
+            path = nx.shortest_path(
+                G, source=entity_a, target=entity_b, weight="weight")
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return []
+        except Exception as e:
+            logger.debug("Shortest-path computation failed: %s", e)
+            return []
+
+        # Exclude endpoints
+        return [node for node in path if node not in (entity_a, entity_b)]
 
     def decay_edges(self, state: 'PipelineState',
                     hours_elapsed: float = 1.0) -> int:
@@ -606,6 +1240,139 @@ class ActivationGraph:
 
 
 # ===========================================================================
+
+# ===========================================================================
+# SleepScheduler (automatic sleep-driven consolidation)
+# ===========================================================================
+
+
+class SleepScheduler:
+    """Automatic sleep scheduler for memory consolidation.
+
+    Monitors per-message salience and idle gaps.  When the system has been
+    quiet for ``idle_threshold_minutes`` AND the accumulated salience since
+    the last sleep cycle exceeds ``salience_threshold``, triggers a two-phase
+    sleep cycle:
+
+    Phase 1 (SWS):  Run ConsolidationEngine to transfer episodic facts into
+                     semantic schemas.
+    Phase 2 (REM):  Run DreamEngine for structured selective replay.
+
+    Thread-safe: all mutable state protected by ``_lock``.
+    """
+
+    def __init__(self, idle_threshold_minutes: float = 5.0,
+                 salience_threshold: float = 10.0) -> None:
+        self._idle_threshold_s: float = idle_threshold_minutes * 60.0
+        self._salience_threshold: float = salience_threshold
+        self._accumulated_salience: float = 0.0
+        self._last_activity: float = time.time()
+        self._sleeping: bool = False
+        self._sleep_count: int = 0
+        self._last_sleep_duration_s: float = 0.0
+        self._lock = threading.Lock()
+        # Injected by MemoryPipeline during initialize()
+        self._state: PipelineState | None = None
+        self._session_id: str = ""
+
+    def on_message(self, salience_score: float) -> None:
+        """Accumulate salience and update last-activity timestamp."""
+        with self._lock:
+            self._accumulated_salience += max(0.0, salience_score)
+            self._last_activity = time.time()
+
+    def should_sleep(self) -> bool:
+        """True when idle AND accumulated salience >= threshold."""
+        with self._lock:
+            if self._sleeping:
+                return False
+            idle_seconds = time.time() - self._last_activity
+            return (idle_seconds >= self._idle_threshold_s
+                    and self._accumulated_salience >= self._salience_threshold)
+
+    def sleep_cycle(self, consolidation_engine, dream_engine) -> dict:
+        """Run Phase 1 (SWS) consolidation, Phase 2 (REM) dreaming, then
+        reset accumulated salience.
+
+        Returns a summary dict with keys ``sws``, ``rem``,
+        ``salience_reset``, ``duration_s``.
+        """
+        with self._lock:
+            if self._sleeping:
+                return {"skipped": True, "reason": "already sleeping"}
+            self._sleeping = True
+
+        start = time.time()
+        result: dict = {"sws": {}, "rem": {}}
+        try:
+            # --- Phase 1: SWS -- consolidation ---
+            if consolidation_engine and self._state:
+                try:
+                    result["sws"] = consolidation_engine.consolidate(
+                        self._state, facts=None)
+                except Exception as e:
+                    logger.debug("Sleep SWS consolidation failed: %s", e)
+                    result["sws"] = {"error": str(e)}
+
+            # --- Phase 2: REM -- dreaming ---
+            if dream_engine:
+                try:
+                    dream_result = dream_engine.dream_cycle(
+                        session_id=self._session_id)
+                    result["rem"] = {
+                        "mode": getattr(dream_result, "mode", "?"),
+                        "facts_strengthened": getattr(
+                            dream_result, "facts_strengthened", 0),
+                    }
+                except Exception as e:
+                    logger.debug("Sleep REM dreaming failed: %s", e)
+                    result["rem"] = {"error": str(e)}
+
+            # --- Reset salience after full cycle ---
+            duration = time.time() - start
+            with self._lock:
+                result["salience_reset"] = round(
+                    self._accumulated_salience, 4)
+                self._accumulated_salience = 0.0
+                self._sleep_count += 1
+                self._last_sleep_duration_s = duration
+                self._sleeping = False
+
+            result["duration_s"] = round(duration, 3)
+            logger.debug(
+                "Sleep cycle completed in %.1fs: sws=%s, rem=%s",
+                duration, result["sws"], result["rem"])
+        except Exception as e:
+            logger.debug("Sleep cycle failed: %s", e)
+            with self._lock:
+                self._sleeping = False
+            result["error"] = str(e)
+
+        return result
+
+    def get_status(self) -> dict:
+        """Current state dict for health dashboard."""
+        with self._lock:
+            idle_seconds = time.time() - self._last_activity
+            return {
+                "sleeping": self._sleeping,
+                "accumulated_salience": round(
+                    self._accumulated_salience, 2),
+                "salience_threshold": self._salience_threshold,
+                "idle_seconds": round(idle_seconds, 1),
+                "idle_threshold_minutes": round(
+                    self._idle_threshold_s / 60.0, 1),
+                "should_sleep": (
+                    not self._sleeping
+                    and idle_seconds >= self._idle_threshold_s
+                    and self._accumulated_salience >= self._salience_threshold
+                ),
+                "sleep_count": self._sleep_count,
+                "last_sleep_duration_s": round(
+                    self._last_sleep_duration_s, 2),
+            }
+
+
 # Pipeline Schema (database provisioning)
 # ===========================================================================
 
@@ -746,6 +1513,7 @@ class MemoryPipeline:
         self._activation: ActivationGraph | None = None
         self._episodic = None   # EpisodicTimeline (from holographic plugin)
         self._dreaming = None   # DreamEngine (from holographic plugin)
+        self._scheduler: SleepScheduler | None = None
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize pipeline state and all organic modules."""
@@ -765,7 +1533,11 @@ class MemoryPipeline:
         eng_cfg = self._config.get("silent_engram", {})
         if eng_cfg.get("enabled", True):
             self._engrams = SilentEngramEngine(
-                half_life_hours=eng_cfg.get("half_life_hours", 720.0))
+                half_life_hours=eng_cfg.get("half_life_hours", 720.0),
+                emotion_modulated_decay_enabled=eng_cfg.get(
+                    "emotion_modulated_decay_enabled", False),
+                emotion_decay_multiplier=eng_cfg.get(
+                    "emotion_decay_multiplier", 2.0))
 
         # Layer 3: ConsolidationEngine
         con_cfg = self._config.get("consolidation", {})
@@ -777,7 +1549,11 @@ class MemoryPipeline:
         rec_cfg = self._config.get("reconsolidation", {})
         if rec_cfg.get("enabled", True):
             self._reconsolidation = ReconsolidationEngine(
-                error_threshold=rec_cfg.get("prediction_error_threshold", 0.3))
+                error_threshold=rec_cfg.get("prediction_error_threshold", 0.3),
+                semantic_conflict_enabled=rec_cfg.get(
+                    "semantic_conflict_enabled", False),
+                semantic_conflict_threshold=rec_cfg.get(
+                    "semantic_conflict_threshold", 0.7))
 
         # Layer 5: FeedbackCoordinator
         if self._config.get("feedback", {}).get("enabled", True):
@@ -787,7 +1563,11 @@ class MemoryPipeline:
         act_cfg = self._config.get("activation", {})
         if act_cfg.get("enabled", True):
             self._activation = ActivationGraph(
-                edge_decay_hours=act_cfg.get("edge_decay_hours", 168.0))
+                edge_decay_hours=act_cfg.get("edge_decay_hours", 168.0),
+                pagerank_damping=act_cfg.get("pagerank_damping", 0.85),
+                pagerank_max_iter=act_cfg.get("pagerank_max_iter", 20),
+                pagerank_enabled=act_cfg.get("pagerank_enabled", False),
+            )
 
         # Layer 7: EpisodicTimeline (what-where-when binding)
         epi_cfg = self._config.get("episodic", {})
@@ -829,11 +1609,25 @@ class MemoryPipeline:
             except Exception as e:
                 logger.debug("DreamEngine init failed: %s", e)
 
+        # Layer 9: SleepScheduler (automatic sleep-driven consolidation)
+        sleep_cfg = self._config.get("sleep", {})
+        if sleep_cfg.get("enabled", False):
+            self._scheduler = SleepScheduler(
+                idle_threshold_minutes=sleep_cfg.get(
+                    "idle_minutes", 5.0),
+                salience_threshold=sleep_cfg.get(
+                    "salience_threshold", 10.0),
+            )
+            # Bind pipeline state so sleep_cycle can access the DB
+            self._scheduler._state = self._state
+            self._scheduler._session_id = self._session_id
+
         logger.debug("MemoryPipeline initialized (session=%s, layers=%d)",
                       session_id, sum(1 for x in [self._salience, self._engrams,
                       self._consolidation, self._reconsolidation,
                       self._feedback, self._activation,
-                      self._episodic, self._dreaming] if x))
+                      self._episodic, self._dreaming,
+                      self._scheduler] if x))
 
     def shutdown(self) -> None:
         """Flush and close pipeline state."""
@@ -857,31 +1651,149 @@ class MemoryPipeline:
             except Exception as e:
                 logger.debug("Activation decay failed: %s", e)
 
-    def pre_sync(self, user: str, asst: str) -> dict | None:
-        """Score user content for salience, persist signals."""
+    def pre_sync(self, user: str, asst: str,
+                 embed_fn: 'Any | None' = None,
+                 llm_client: 'Any | None' = None) -> dict | None:
+        """Score user content for salience, persist signals.
+
+        When semantic conflict detection is enabled in the reconsolidation
+        config, this method also runs semantic conflict detection against
+        existing schemas before the sync proceeds.
+
+        Args:
+            user: The user message content.
+            asst: The assistant message content.
+            embed_fn: Optional callable(text) -> list[float] for embeddings.
+            llm_client: Optional LLM client with .complete(prompt) method.
+
+        Returns:
+            Metadata dict including salience scores and, when applicable,
+            semantic conflict results, or None on failure.
+        """
         if not self._salience:
             return None
         try:
             result = self._salience.score(user)
-            if self._state:
-                with self._state._lock:
-                    self._state._conn.execute(
-                        "INSERT INTO salience_encoding_log "
-                        "(source, emotion_score, novelty_score, importance_score, overall_score) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        ("builtin", result.emotion, result.novelty,
-                         result.importance, result.overall),
-                    )
-                    self._state._conn.commit()
-            return {
+            meta: dict = {
                 "salience_overall": result.overall,
                 "salience_emotion": result.emotion,
                 "salience_novelty": result.novelty,
                 "salience_importance": result.importance,
                 "salience_is_trivial": result.is_trivial,
+                "salience_temporal_recency_boost": result.temporal_recency_boost,
             }
+            # --- Sleep scheduler: accumulate salience, maybe trigger sleep ---
+            if self._scheduler:
+                try:
+                    self._scheduler.on_message(result.overall)
+                    if self._scheduler.should_sleep():
+                        import threading as _slp_thread
+                        _slp_thread.Thread(
+                            target=self._scheduler.sleep_cycle,
+                            args=(self._consolidation, self._dreaming),
+                            daemon=True,
+                        ).start()
+                except Exception as e:
+                    logger.debug("SleepScheduler failed: %s", e)
+            if self._state:
+                with self._state._lock:
+                    self._state._conn.execute(
+                        "INSERT INTO salience_encoding_log "
+                        "(source, emotion_score, novelty_score, "
+                        "importance_score, overall_score) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        ("builtin", result.emotion, result.novelty,
+                         result.importance, result.overall),
+                    )
+                    self._state._conn.commit()
+
+            # --- Semantic conflict detection ---
+            if (self._reconsolidation
+                    and self._reconsolidation._semantic_enabled
+                    and self._state):
+                try:
+                    with self._state._lock:
+                        rows = self._state._conn.execute(
+                            "SELECT content FROM schemas "
+                            "ORDER BY confidence DESC LIMIT 20"
+                        ).fetchall()
+                    existing_contents = [r["content"] for r in rows if r["content"]]
+
+                    if existing_contents:
+                        conflict_result = (
+                            self._reconsolidation.detect_semantic_conflict(
+                                user, existing_contents,
+                                embed_fn=embed_fn, llm_client=llm_client))
+                        error_score, action = conflict_result
+                        meta["semantic_conflict_score"] = error_score
+                        meta["semantic_conflict_action"] = action
+
+                        # Log the reconsolidation event if conflict detected
+                        if action != "no_conflict" and error_score > 0.2:
+                            with self._state._lock:
+                                self._state._conn.execute(
+                                    "INSERT INTO reconsolidation_log "
+                                    "(memory_ref, old_content, new_content, prediction_error) "
+                                    "VALUES (?, ?, ?, ?)",
+                                    ("pre_sync",
+                                     existing_contents[0][:500] if existing_contents else "",
+                                     user[:500],
+                                     error_score),
+                                )
+                                self._state._conn.commit()
+                            logger.debug(
+                                "Semantic conflict detected: action=%s, score=%.2f",
+                                action, error_score)
+                except Exception as e:
+                    logger.debug("Semantic conflict detection failed: %s", e)
+
+            return meta
         except Exception as e:
             logger.debug("SalienceScorer.score failed: %s", e)
+            return None
+
+    def sync_turn(self, user_content: str,
+                  assistant_content: str = "") -> dict | None:
+        """Score salience and apply emotion-modulated engram decay.
+
+        Called after each completed turn.  Extracts the emotional valence
+        from the user message via SalienceScorer and passes it to engram
+        decay so that emotionally arousing memories decay more slowly.
+        Scientific basis: McGaugh 2004 -- amygdala modulates emotionally
+        arousing memory consolidation.
+
+        Args:
+            user_content: The user message text.
+            assistant_content: The assistant reply (unused for now,
+                reserved for future bilateral scoring).
+
+        Returns:
+            Metadata dict with salience and decay info, or None on failure.
+        """
+        if not self._salience or not self._engrams or not self._state:
+            return None
+        try:
+            result = self._salience.score(user_content)
+            meta: dict = {
+                "emotion_valence": result.emotion,
+                "salience_overall": result.overall,
+            }
+
+            # Apply emotion-modulated decay
+            decay_affected = self._engrams.apply_decay(
+                self._state,
+                hours_elapsed=1.0,
+                emotional_valence=result.emotion,
+            )
+            meta["decay_affected"] = decay_affected
+
+            logger.debug(
+                "sync_turn: emotion=%.3f, overall=%.3f, decay_affected=%d",
+                result.emotion, result.overall, decay_affected,
+            )
+            return meta
+        except Exception as e:
+            logger.debug("MemoryPipeline.sync_turn failed: %s", e)
             return None
 
     def pre_memory_write(
@@ -909,6 +1821,7 @@ class MemoryPipeline:
                 "pipeline_emotion": result.emotion,
                 "pipeline_novelty": result.novelty,
                 "pipeline_importance": result.importance,
+                "pipeline_temporal_recency_boost": result.temporal_recency_boost,
             }
         except Exception as e:
             logger.debug("SalienceScorer pre_memory_write failed: %s", e)

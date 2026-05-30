@@ -528,6 +528,40 @@ read-only evidence snapshot, labels stale mappings by thread/session metadata,
 and only then considers whether inactive stale rows should be archived outside
 the live routing index.
 
+## Stale Mapping Archive Plan Follow-up
+
+`tools/plan_archive_stale_discord_session_mappings.py` now generates a dry-run
+metadata-only archive plan for Discord thread mappings whose mapped
+`session_id` is absent from the current `state.db`.
+
+The planner does not modify `sessions.json`, `state.db`, transcripts, memories,
+or routing records. It emits `would_modify_state: false` and marks each stale
+mapping with the recommended action
+`archive_mapping_only_after_operator_approval`.
+
+Live dry-run plan against `/home/jenny/.hermes` found:
+
+- Total mapped Discord thread sessions: 146
+- `matched_with_messages`: 37
+- `matched_zero_messages`: 3
+- `mapped_session_absent_from_db`: 106
+- Dry-run stale mappings included with `--limit 25`: 25
+- Full review plan written to
+  `/tmp/hermes_stale_discord_mapping_archive_plan_20260530.json`
+
+Recommended sequence:
+
+1. Snapshot evidence: preserve metadata-only inventory, backup-trace, and
+   archive-plan output before any state change.
+2. Generate plan: run the dry-run planner with explicit state paths and review
+   the stale mapping list.
+3. Operator review: confirm which stale mappings are inactive or superseded,
+   using metadata only unless a separate content-review approval is granted.
+4. Separate archive command later: implement a distinct archive command only
+   after approval, with a backup, dry-run diff, and rollback path.
+5. No automatic restore: do not reattach, migrate, or restore missing session
+   rows from stale mappings in this flow.
+
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:

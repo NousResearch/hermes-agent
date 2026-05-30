@@ -8009,6 +8009,152 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert "tokens" in warning
 
 
+def test_mirror_slash_compress_here_triggers_partial_compress(monkeypatch):
+    """/compress here [N] must split history into head/tail and rejoin after
+    compression — the partial_compress module is used, not full compress.
+
+    Before this fix, /compress here 3 passed "here 3" as focus_topic to the
+    full compress, silently ignoring the boundary intent.
+    """
+    import types
+
+    _FAKE_HISTORY = [
+        {"role": "user", "content": "msg1"},
+        {"role": "assistant", "content": "resp1"},
+        {"role": "user", "content": "msg2"},
+        {"role": "assistant", "content": "resp2"},
+        {"role": "user", "content": "keep this"},
+        {"role": "assistant", "content": "keep this too"},
+    ]
+    _COMPRESSED_HEAD = [{"role": "user", "content": "[summary]"},
+                        {"role": "assistant", "content": "ok"}]
+    _REJOINED = _COMPRESSED_HEAD + _FAKE_HISTORY[-2:]
+
+    compress_context_calls = []
+    rejoin_calls = []
+    full_compress_calls = []
+
+    agent = types.SimpleNamespace(
+        _cached_system_prompt=None,
+        tools=None,
+        session_id="s1",
+    )
+
+    def _fake_compress_context(history, sys, approx_tokens=0, focus_topic=None, **kw):
+        compress_context_calls.append((list(history), focus_topic))
+        return _COMPRESSED_HEAD, {}
+
+    agent._compress_context = _fake_compress_context
+
+    def _fake_full_compress(session, focus_topic=None, **_kw):
+        full_compress_calls.append(focus_topic)
+        return (0, {})
+
+    def _fake_rejoin(head, tail):
+        rejoin_calls.append((list(head), list(tail)))
+        return head + tail
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_full_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+    monkeypatch.setattr(
+        "hermes_cli.partial_compress.rejoin_compressed_head_and_tail",
+        _fake_rejoin,
+    )
+
+    import threading
+    lock = threading.Lock()
+    session = _session(running=False)
+    session["history_lock"] = lock
+    session["history"] = list(_FAKE_HISTORY)
+    session["history_version"] = 7
+    session["agent"] = agent
+
+    warning = server._mirror_slash_side_effects("sid", session, "/compress here 1")
+
+    assert warning == ""
+    # Partial compress must NOT fall back to full _compress_session_history
+    assert full_compress_calls == [], (
+        "full compress was called — partial compress path not taken"
+    )
+    # agent._compress_context must have been called with the HEAD only
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert focus_passed is None  # partial compress has no focus topic
+    # rejoin must have been called to re-attach the tail
+    assert len(rejoin_calls) == 1
+    # Session history must now contain the rejoined transcript
+    assert session["history"] == _REJOINED
+    assert session["history_version"] == 8
+
+
+def test_mirror_slash_compress_here_falls_back_on_degenerate_split(monkeypatch):
+    """/compress here on a very short history with keep_last >= exchanges
+    produces an empty tail — must fall back to full compress."""
+    import types
+
+    # Only 2 messages — keep_last=5 means nothing to compress
+    _SHORT_HISTORY = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    full_compress_calls = []
+
+    agent = types.SimpleNamespace(
+        _cached_system_prompt=None, tools=None, session_id="s1"
+    )
+
+    def _fake_full_compress(session, focus_topic=None, **_kw):
+        full_compress_calls.append(focus_topic)
+        return (0, {})
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_full_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    import threading
+    session = _session(running=False)
+    session["history_lock"] = threading.Lock()
+    session["history"] = list(_SHORT_HISTORY)
+    session["history_version"] = 0
+    session["agent"] = agent
+
+    server._mirror_slash_side_effects("sid", session, "/compress here 5")
+
+    # Degenerate split → full compress, focus_topic=None
+    assert full_compress_calls == [None]
+
+
+def test_mirror_slash_compress_plain_focus_topic_not_parsed_as_partial(monkeypatch):
+    """/compress my topic must still do full compress with focus_topic set."""
+    import types
+
+    full_compress_calls = []
+    agent = types.SimpleNamespace(session_id="s1")
+
+    def _fake_full_compress(session, focus_topic=None, **_kw):
+        full_compress_calls.append(focus_topic)
+        return (0, {})
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_full_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    import threading
+    session = _session(running=False)
+    session["history_lock"] = threading.Lock()
+    session["history"] = []
+    session["history_version"] = 0
+    session["agent"] = agent
+
+    server._mirror_slash_side_effects("sid", session, "/compress my topic")
+
+    assert full_compress_calls == ["my topic"]
+
+
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
 # slash_worker subprocess or the global approval-notify registration.

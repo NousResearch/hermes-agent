@@ -109,7 +109,6 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
 
-
 # ---------------------------------------------------------------------------
 # /whoami response shape — proves the handler is reachable AND uses the
 # resolver. We use /whoami because it's deterministic and short-circuits
@@ -123,6 +122,28 @@ async def test_whoami_unrestricted_when_no_admin_list():
     result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="999")))
     assert "Tier: unrestricted" in result
     assert "no admin list configured" in result
+
+
+@pytest.mark.asyncio
+async def test_running_agent_fastpath_footer_allows_listed_user():
+    """/footer is documented as a running-agent fast-path command, so a
+    listed non-admin must reach the handler instead of the busy fallback."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["footer"],
+        }
+    )
+    src = _make_source(user_id="999")
+    sk = build_session_key(src)
+    runner._running_agents[sk] = MagicMock()
+    runner._running_agents_ts[sk] = 0
+    runner._handle_footer_command = AsyncMock(return_value="footer-handled")
+
+    result = await runner._handle_message(_make_event("/footer", src))
+    assert result == "footer-handled"
+    runner._handle_footer_command.assert_awaited_once()
+    assert "mid-turn" not in (result or "")
 
 
 @pytest.mark.asyncio

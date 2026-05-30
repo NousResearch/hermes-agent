@@ -954,11 +954,13 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The Hermes home itself contains credentials (auth.json, .env) — only the
-    # cache subdirectories under it are explicitly allowlisted above.
+    # The Hermes home itself contains credentials (auth.json, .env) and
+    # configuration (config.yaml) — only the cache subdirectories under it
+    # are explicitly allowlisted above.
     denied.append(_HERMES_HOME / ".env")
     denied.append(_HERMES_HOME / "auth.json")
     denied.append(_HERMES_HOME / "credentials")
+    denied.append(_HERMES_HOME / "config.yaml")
     return denied
 
 

@@ -68,6 +68,26 @@ from gateway.platforms.base import (
 from tools.url_safety import is_safe_url
 
 
+def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
+    """Return discord.py's bundled Windows opus DLL path when present."""
+    if sys.platform != "win32":
+        return None
+    discord_module = discord if discord_module is None else discord_module
+    if discord_module is None:
+        return None
+
+    opus_module = getattr(discord_module, "opus", None)
+    opus_file = getattr(opus_module, "__file__", None)
+    if not opus_file:
+        return None
+
+    target = "x64" if struct.calcsize("P") * 8 > 32 else "x86"
+    bundled = _Path(opus_file).resolve().parent / "bin" / f"libopus-0.{target}.dll"
+    if bundled.is_file():
+        return str(bundled)
+    return None
+
+
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
 
@@ -403,7 +423,13 @@ class VoiceReceiver:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
         except Exception as e:
-            logger.debug("Opus decode error for SSRC %s: %s", ssrc, e)
+            with self._lock:
+                self._decoders.pop(ssrc, None)
+            logger.debug(
+                "Opus decode error for SSRC %s; reset decoder: %s",
+                ssrc,
+                e,
+            )
             return
 
     # ------------------------------------------------------------------
@@ -604,7 +630,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # Load opus codec for voice channel support
         if not discord.opus.is_loaded():
             import ctypes.util
+            opus_candidates = []
+            bundled_opus = _find_discord_windows_bundled_opus(discord)
+            if bundled_opus:
+                opus_candidates.append(bundled_opus)
             opus_path = ctypes.util.find_library("opus")
+            if opus_path:
+                opus_candidates.append(opus_path)
             # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
             # so fall back to known Homebrew paths if needed.
             if not opus_path:
@@ -615,11 +647,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 if sys.platform == "darwin":
                     for _hp in _homebrew_paths:
                         if os.path.isfile(_hp):
-                            opus_path = _hp
+                            opus_candidates.append(_hp)
                             break
-            if opus_path:
+            for opus_path in opus_candidates:
                 try:
                     discord.opus.load_opus(opus_path)
+                    if discord.opus.is_loaded():
+                        break
                 except Exception:
                     logger.warning("Opus codec found at %s but failed to load", opus_path)
             if not discord.opus.is_loaded():
@@ -4777,14 +4811,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # to keep the partition rule clean.
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm:
-            _needed_mention = (
-                require_mention
-                and not is_free_channel
-                and not in_bot_thread
-            )
-            _backfill_enabled = self._discord_history_backfill()
-            if _needed_mention and _backfill_enabled:
+        if not _is_dm and self._discord_history_backfill():
+            # Run backfill when there's a real gap to fill:
+            #   - mention-gated channels with no free-response override
+            #     (messages between bot turns aren't in the transcript)
+            #   - any thread (in_bot_thread bypasses the mention check, but
+            #     processing-window gaps and post-restart context still need
+            #     recovery)
+            # DMs skip entirely because every DM message triggers the bot,
+            # so the session transcript already has everything.
+            # Auto-threaded messages also skip — we just created the thread,
+            # there's nothing prior to backfill.
+            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
+            if (_has_mention_gap or is_thread) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                 )
@@ -6054,16 +6093,17 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
-    throughout the connect / handle code paths (``DISCORD_REQUIRE_MENTION``,
-    ``DISCORD_FREE_RESPONSE_CHANNELS``, ``DISCORD_AUTO_THREAD``,
-    ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
-    ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
-    ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
-    ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
-    ``DISCORD_THREAD_REQUIRE_MENTION``).  Rather than rewrite ~50 call sites
-    inside the adapter to read from ``PlatformConfig.extra`` instead, this
-    hook keeps the existing env-driven model and merely owns the
-    YAML→env translation here, next to the adapter that consumes it.
+    throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
+    ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
+    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
+    ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
+    ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
+    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
+    Rather than rewrite ~50 call sites inside the adapter to read from
+    ``PlatformConfig.extra`` instead, this hook keeps the existing
+    env-driven model and merely owns the YAML→env translation here, next to
+    the adapter that consumes it.
 
     Env vars take precedence over YAML — every assignment is guarded by
     ``not os.getenv(...)`` so explicit env vars survive a config.yaml
@@ -6074,6 +6114,22 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    platforms_cfg = yaml_cfg.get("platforms")
+    platform_extra_cfg = {}
+    if isinstance(platforms_cfg, dict):
+        discord_platform_cfg = platforms_cfg.get("discord")
+        if isinstance(discord_platform_cfg, dict):
+            candidate_extra = discord_platform_cfg.get("extra")
+            if isinstance(candidate_extra, dict):
+                platform_extra_cfg = candidate_extra
+    allowed_users_cfg = (
+        discord_cfg["allow_from"] if "allow_from" in discord_cfg
+        else platform_extra_cfg.get("allow_from")
+    )
+    if allowed_users_cfg is not None and not os.getenv("DISCORD_ALLOWED_USERS"):
+        if isinstance(allowed_users_cfg, list):
+            allowed_users_cfg = ",".join(str(v) for v in allowed_users_cfg)
+        os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
     frc = discord_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):
@@ -6163,7 +6219,7 @@ def register(ctx) -> None:
         check_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
-        install_hint="pip install 'hermes-agent[discord]'",
+        install_hint="pip install 'hermes-agent[messaging]'",
         # Interactive setup wizard — replaces the central
         # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.
         setup_fn=interactive_setup,

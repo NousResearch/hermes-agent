@@ -4,7 +4,14 @@ from uuid import uuid4
 
 import pytest
 
-from hindsight_api.engine.db.ops_postgresql import PostgreSQLOps
+ops_postgresql = pytest.importorskip(
+    "hindsight_api.engine.db.ops_postgresql",
+    reason=(
+        "Hindsight embedded API internals are optional and are not installed "
+        "in the default hermes-agent CI environment."
+    ),
+)
+PostgreSQLOps = ops_postgresql.PostgreSQLOps
 
 
 def _task(bank_id: str) -> dict:

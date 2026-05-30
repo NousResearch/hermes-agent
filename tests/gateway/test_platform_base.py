@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import os
+import time
 from unittest.mock import patch
 
 import pytest
@@ -9,9 +10,9 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
-    MessageType,
     safe_url_for_log,
     utf16_len,
+    _log_safe_path,
     _prefix_within_utf16_limit,
 )
 
@@ -361,12 +362,69 @@ class TestExtractMedia:
         assert "[[as_document]]" not in cleaned
 
 
+class TestMediaExtensionAllowlistParity:
+    """Regression coverage for issue #34517 — the MEDIA: extension black hole.
+
+    extract_media used to carry a narrow extension allowlist that omitted
+    .md/.json/.yaml/.xml/.html etc., while extract_local_files had a broad one.
+    Combined with an unconditional ``MEDIA:\\s*\\S+`` strip at the dispatch
+    sites, an unmatched MEDIA: tag for one of those extensions was deleted from
+    the body before extract_local_files could pick up the bare path — the file
+    was silently dropped. Both extractors now derive from the single
+    MEDIA_DELIVERY_EXTS source of truth, and the strip is anchored to that set.
+    """
+
+    DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
+                      "tsv", "svg"]
+
+    def test_previously_dropped_extensions_now_extract(self):
+        for ext in self.DROPPED_BEFORE:
+            path = f"/tmp/report.{ext}"
+            media, _ = BasePlatformAdapter.extract_media(f"Here: MEDIA:{path}")
+            assert media == [(path, False)], f".{ext} should extract via MEDIA:"
+
+    def test_extract_media_and_local_files_share_one_extension_set(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_EXTS
+        # Both functions reference MEDIA_DELIVERY_EXTS; assert the documents
+        # that motivated the bug are present in the shared set.
+        for ext in (".md", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"):
+            assert ext in MEDIA_DELIVERY_EXTS
+
+    def test_unknown_extension_not_black_holed_by_cleanup(self):
+        """A MEDIA: tag with an unknown extension is NOT stripped from the
+        body — it survives so extract_local_files can still see the bare path,
+        rather than vanishing entirely (the core of issue #34517)."""
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Saved to MEDIA:/tmp/data.weirdext done"
+        media, _ = BasePlatformAdapter.extract_media(text)
+        assert media == []  # unknown extension is not a deliverable MEDIA tag
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
+        assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
+
+    def test_known_extension_tag_is_stripped_from_body(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+        text = "Here is your report: MEDIA:/tmp/report.md"
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
+        assert "MEDIA:" not in stripped
+        assert "/tmp/report.md" not in stripped
+        assert "Here is your report:" in stripped
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(
             "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             tuple(roots),
         )
+        # All tests in this class cover strict-mode behavior (allowlist +
+        # recency window + denylist). Force strict on so they keep
+        # exercising the legacy path even though the public default
+        # flipped to off in 2026-05.
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        # Disable recency-based trust by default so the original allowlist
+        # tests continue to exercise the strict-allowlist path. Tests that
+        # specifically cover recency trust re-enable it themselves.
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
 
     def test_allows_existing_file_inside_safe_root(self, tmp_path, monkeypatch):
         root = tmp_path / "media-cache"
@@ -425,6 +483,253 @@ class TestMediaDeliveryPathValidation:
         monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(extra_root))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_recency_trust_allows_freshly_produced_file(self, tmp_path, monkeypatch):
+        """A PDF the agent just wrote to /tmp should be deliverable.
+
+        Covers the natural case: agent runs ``pandoc -o /tmp/report.pdf`` or
+        ``write_file('/home/user/report.pdf', ...)`` and asks the gateway to
+        send the result. With recency trust on, fresh files outside the cache
+        allowlist are accepted because the file's mtime is within the window.
+        """
+        self._patch_roots(monkeypatch)  # zero cache allowlist
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fresh = tmp_path / "scratch" / "report.pdf"
+        fresh.parent.mkdir(parents=True)
+        fresh.write_bytes(b"%PDF-1.4")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(fresh)) == str(fresh.resolve())
+
+    def test_recency_trust_rejects_old_file(self, tmp_path, monkeypatch):
+        """A pre-existing host file (~/.bashrc, /etc/passwd shape) is rejected.
+
+        Recency trust is the load-bearing anti-injection signal: prompt-injected
+        paths point at files that have existed for days or months, well outside
+        the trust window.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "60")
+
+        stale = tmp_path / "stale.pdf"
+        stale.write_bytes(b"%PDF-1.4")
+        old_mtime = time.time() - 7200  # 2 hours ago
+        os.utime(stale, (old_mtime, old_mtime))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(stale)) is None
+
+    def test_recency_trust_disabled_falls_back_to_pure_allowlist(self, tmp_path, monkeypatch):
+        """Setting trust_recent_files=false reverts to pre-existing strict behavior."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        fresh = tmp_path / "report.pdf"
+        fresh.write_bytes(b"%PDF-1.4")  # mtime = now
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(fresh)) is None
+
+    def test_recency_trust_denies_system_paths_even_when_fresh(self, tmp_path, monkeypatch):
+        """A freshly-touched file under /etc must NOT be uploaded.
+
+        Belt-and-braces: even if an attacker rewrites the file's mtime
+        (e.g. via a separately compromised tool result that touches a system
+        file), the denylist refuses to deliver paths under /etc, /proc, /sys,
+        ~/.ssh, ~/.aws, etc.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        # Simulate $HOME so ~/.ssh resolves into our tmp dir.
+        fake_home = tmp_path / "home"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        secret = ssh_dir / "id_rsa.txt"
+        secret.write_bytes(b"-----BEGIN ...")  # mtime = now
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_recency_trust_allows_pdf_in_project_dir(self, tmp_path, monkeypatch):
+        """The motivating case: agent produces a PDF in a project directory.
+
+        Reproduces the Discord-PDF-not-delivered bug. Before recency trust,
+        files outside ~/.hermes/cache/* were silently dropped, leaving the
+        user with a raw filepath in chat instead of an attachment.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        project = tmp_path / "my-project"
+        report = project / "build" / "weekly-report.pdf"
+        report.parent.mkdir(parents=True)
+        report.write_bytes(b"%PDF-1.4")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(report)) == str(report.resolve())
+
+    def test_filter_keeps_recently_produced_files(self, tmp_path, monkeypatch):
+        """End-to-end: filter_local_delivery_paths routes a fresh PDF through."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fresh = tmp_path / "report.pdf"
+        fresh.write_bytes(b"%PDF-1.4")
+
+        out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
+        assert out == [str(fresh.resolve())]
+
+
+class TestMediaDeliveryDefaultMode:
+    """Default (non-strict) mode — denylist gates delivery, nothing else.
+
+    Symmetric with inbound delivery: Telegram/Discord/Slack accept any
+    document type the user uploads, and the agent can hand back any file
+    that isn't a credential. Strict mode is opt-in for operators running
+    public-facing gateways.
+    """
+
+    def _patch_roots(self, monkeypatch, *roots):
+        # Empty cache allowlist so the only positive path through
+        # validate_media_delivery_path in these tests is the
+        # default-mode "anything not denied" branch.
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            tuple(roots),
+        )
+        # Pin strict OFF — the public default. Tests that exercise the
+        # strict path live in TestMediaDeliveryPathValidation.
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+
+    def test_accepts_stale_file_outside_allowlist(self, tmp_path, monkeypatch):
+        """The motivating case — agent says ``MEDIA:/home/user/notes.md``
+        for an .md it has been working with for hours. Strict mode would
+        reject this (outside allowlist, outside recency window). Default
+        mode delivers it.
+        """
+        self._patch_roots(monkeypatch)
+
+        notes = tmp_path / "notes.md"
+        notes.write_text("# Old notes\n")
+        old_mtime = time.time() - 7200  # 2 hours ago — far outside any window
+        os.utime(notes, (old_mtime, old_mtime))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(notes)) == str(notes.resolve())
+
+    def test_accepts_any_extension_not_on_denylist(self, tmp_path, monkeypatch):
+        """No extension allowlist — .md, .txt, .json, .py all deliver."""
+        self._patch_roots(monkeypatch)
+
+        for name in ("report.md", "log.txt", "data.json", "script.py", "blob.bin"):
+            f = tmp_path / name
+            f.write_bytes(b"x")
+            assert BasePlatformAdapter.validate_media_delivery_path(str(f)) == str(f.resolve())
+
+    def test_denylist_still_blocks_credentials(self, tmp_path, monkeypatch):
+        """Default mode is permissive but not naive — credential paths
+        remain blocked. Simulate $HOME so ~/.ssh resolves into tmp_path.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        secret = ssh_dir / "id_rsa"
+        secret.write_bytes(b"-----BEGIN ...")
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_denylist_blocks_system_prefixes(self, tmp_path, monkeypatch):
+        """Files under /etc, /proc, /sys, /root, /boot, /var/{log,lib,run}
+        are denied. We construct the test by patching the denylist root
+        to a tmp dir so we don't need to read /etc.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_etc = tmp_path / "fake-etc"
+        fake_etc.mkdir()
+        secret = fake_etc / "shadow"
+        secret.write_bytes(b"root:!:0:0::/root:/bin/sh")
+
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_etc),),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_denylist_blocks_hermes_credentials(self, tmp_path, monkeypatch):
+        """~/.hermes/.env and ~/.hermes/auth.json stay blocked even in
+        default mode. They live under $HOME (not the system prefix list)
+        so this exercises the home-relative denied paths.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        env_file = hermes_dir / ".env"
+        env_file.write_text("OPENAI_API_KEY=sk-...")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_HOME",
+            hermes_dir,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
+
+    def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
+        """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
+        allowlist+recency logic. A stale file outside the allowlist is
+        rejected.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        stale = tmp_path / "old.pdf"
+        stale.write_bytes(b"%PDF-1.4")
+        old_mtime = time.time() - 7200
+        os.utime(stale, (old_mtime, old_mtime))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(stale)) is None
+
+    def test_strict_mode_truthy_aliases(self, monkeypatch, tmp_path):
+        """``HERMES_MEDIA_DELIVERY_STRICT=true|yes|on|1`` all enable strict mode."""
+        self._patch_roots(monkeypatch)
+        from gateway.platforms.base import _media_delivery_strict_mode
+
+        for raw in ("1", "true", "TRUE", "yes", "on"):
+            monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", raw)
+            assert _media_delivery_strict_mode() is True
+
+        for raw in ("0", "false", "no", "off", ""):
+            monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", raw)
+            assert _media_delivery_strict_mode() is False
+
+    def test_filter_passes_default_files_through(self, tmp_path, monkeypatch):
+        """End-to-end: filter_local_delivery_paths accepts a stale .md in
+        default mode where strict mode would drop it.
+        """
+        self._patch_roots(monkeypatch)
+
+        notes = tmp_path / "notes.md"
+        notes.write_text("# old\n")
+        os.utime(notes, (time.time() - 86400, time.time() - 86400))
+
+        out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
+        assert out == [str(notes.resolve())]
 
 
 # ---------------------------------------------------------------------------
@@ -794,3 +1099,52 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
+
+
+class TestMediaDeliveryDiagnosability:
+    """Diagnosable rejection logging + crafted-path robustness (#33251)."""
+
+    def test_rejected_path_appears_in_log(self, tmp_path, caplog):
+        outside = tmp_path / "outside.ogg"
+        outside.write_bytes(b"OggS")
+        with patch.dict(os.environ, {"HERMES_MEDIA_DELIVERY_STRICT": "1",
+                                     "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
+                patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
+            with caplog.at_level("WARNING"):
+                out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
+        assert out == []
+        # The dropped path must be in the log so operators can diagnose it.
+        assert str(outside) in caplog.text
+
+    def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
+        """One crafted ~\\x00 path must not drop every other attachment."""
+        good = tmp_path / "good.png"
+        good.write_bytes(b"\x89PNG")
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        out = BasePlatformAdapter.filter_media_delivery_paths([
+            ("~\x00evil.png", False),
+            (str(good), False),
+        ])
+        assert out == [(str(good.resolve()), False)]
+
+    def test_extract_media_tolerates_crafted_null_path(self):
+        """extract_media must not raise on a crafted ~\\x00 MEDIA tag."""
+        content = "here\nMEDIA:`~\x00evil.png`\ntrailing"
+        # Must not raise ValueError("embedded null byte").
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert all("\x00" not in p for p, _ in media)
+
+    def test_log_safe_path_neutralises_line_breaks(self):
+        forged = "/tmp/a.png\nWARNING forged second line"
+        assert "\n" not in _log_safe_path(forged)
+        # Unicode separators that split log lines are also neutralised.
+        for sep in ("\u2028", "\u2029", "\x85"):
+            assert sep not in _log_safe_path(f"/tmp/a{sep}b.png")
+
+    def test_canonical_cache_roots_present(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS
+        roots = {str(r) for r in MEDIA_DELIVERY_SAFE_ROOTS}
+        assert any(r.endswith("cache/images") for r in roots)
+        assert any(r.endswith("cache/documents") for r in roots)
+        # Legacy layout still present.
+        assert any(r.endswith("image_cache") for r in roots)

@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
@@ -85,6 +86,39 @@ class TurnResult:
 # items when an interrupt or upstream error tears the turn down before the
 # normal completion path fires. Mirrors openclaw beta.8 fix.
 _TURN_ABORTED_MARKERS = ("<turn_aborted>", "<turn_aborted/>")
+
+
+def _coerce_turn_input_text(user_input: Any) -> str:
+    """Collapse Hermes/OpenAI rich content into app-server text input.
+
+    The current `turn/start` path sends text items only. TUI image attachment
+    can hand us OpenAI-style content parts, so keep the text/path hints and
+    replace opaque image payloads with a small marker instead of putting a
+    Python list into the `text` field.
+    """
+    if isinstance(user_input, str):
+        return user_input
+    if isinstance(user_input, list):
+        parts: list[str] = []
+        for item in user_input:
+            if isinstance(item, str):
+                if item.strip():
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                if item is not None:
+                    parts.append(str(item))
+                continue
+            item_type = item.get("type")
+            if item_type in {"text", "input_text"}:
+                text = item.get("text") or item.get("content") or ""
+                if text:
+                    parts.append(str(text))
+            elif item_type in {"image", "image_url", "input_image"}:
+                parts.append("[image attached]")
+        text = "\n\n".join(p for p in parts if p).strip()
+        return text or "What do you see in this image?"
+    return "" if user_input is None else str(user_input)
 
 
 # Substrings in codex stderr / JSON-RPC error messages that signal the
@@ -327,7 +361,7 @@ class CodexAppServerSession:
 
     def run_turn(
         self,
-        user_input: str,
+        user_input: Any,
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
@@ -365,6 +399,8 @@ class CodexAppServerSession:
         self._interrupt_event.clear()
         projector = CodexEventProjector()
 
+        user_input_text = _coerce_turn_input_text(user_input)
+
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
@@ -372,7 +408,7 @@ class CodexAppServerSession:
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input}],
+                    "input": [{"type": "text", "text": user_input_text}],
                 },
                 timeout=10,
             )
@@ -546,7 +582,7 @@ class CodexAppServerSession:
                         (note.get("params") or {}).get("turn") or {}
                     ).get("error")
                     if err_obj:
-                        err_msg = err_obj.get("message") or str(err_obj)
+                        err_msg = _format_responses_error(err_obj, str(turn_status))
                         # If the turn failed for an auth/refresh reason,
                         # rewrite the error into a re-auth hint AND mark
                         # the session for retirement.

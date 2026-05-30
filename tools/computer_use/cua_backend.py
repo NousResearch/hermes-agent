@@ -22,13 +22,10 @@ import base64
 import json
 import logging
 import os
-import platform
 import re
 import shutil
-import subprocess
 import sys
 import threading
-from concurrent.futures import Future
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -79,10 +76,6 @@ _ELEMENT_LINE_RE = re.compile(
 
 def _is_macos() -> bool:
     return sys.platform == "darwin"
-
-
-def _is_arm_mac() -> bool:
-    return _is_macos() and platform.machine() == "arm64"
 
 
 def cua_driver_binary_available() -> bool:
@@ -707,29 +700,3 @@ class CuaDriverBackend(ComputerUseBackend):
             message = data
         return ActionResult(ok=ok, action=name, message=message,
                             meta=data if isinstance(data, dict) else {})
-
-
-def _parse_element(d: Dict[str, Any]) -> UIElement:
-    bounds = d.get("bounds") or (0, 0, 0, 0)
-    if isinstance(bounds, dict):
-        bounds = (
-            int(bounds.get("x", 0)),
-            int(bounds.get("y", 0)),
-            int(bounds.get("w", bounds.get("width", 0))),
-            int(bounds.get("h", bounds.get("height", 0))),
-        )
-    elif isinstance(bounds, (list, tuple)) and len(bounds) == 4:
-        bounds = tuple(int(v) for v in bounds)
-    else:
-        bounds = (0, 0, 0, 0)
-    return UIElement(
-        index=int(d.get("index", 0)),
-        role=str(d.get("role", "") or ""),
-        label=str(d.get("label", "") or ""),
-        bounds=bounds,  # type: ignore[arg-type]
-        app=str(d.get("app", "") or ""),
-        pid=int(d.get("pid", 0) or 0),
-        window_id=int(d.get("windowId", 0) or 0),
-        attributes={k: v for k, v in d.items()
-                    if k not in {"index", "role", "label", "bounds", "app", "pid", "windowId"}},
-    )

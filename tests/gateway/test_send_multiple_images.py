@@ -13,7 +13,6 @@ Signal's native implementation is covered by test_signal.py.
 """
 
 import asyncio
-import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -344,7 +343,7 @@ class TestSlackMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from gateway.platforms.mattermost import MattermostAdapter  # noqa: E402
+from plugins.platforms.mattermost.adapter import MattermostAdapter  # noqa: E402
 
 
 class TestMattermostMultiImage:

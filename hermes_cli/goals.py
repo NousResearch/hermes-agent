@@ -66,6 +66,14 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+# After this many consecutive judge API/transport errors, auto-pause so a
+# misconfigured goal_judge route doesn't burn the turn budget forever.
+DEFAULT_MAX_CONSECUTIVE_JUDGE_API_ERRORS = 2
+
+_GOAL_COMPLETE_SIGNAL_RE = re.compile(
+    r"\b(?:goal|objective)\s+(?:is\s+)?(?:complete|completed|achieved|done|finished)\b",
+    re.IGNORECASE,
+)
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -153,6 +161,7 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    consecutive_judge_api_errors: int = 0     # judge API/transport errors in a row
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -181,6 +190,9 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            consecutive_judge_api_errors=int(
+                data.get("consecutive_judge_api_errors", 0) or 0
+            ),
             subgoals=subgoals,
         )
 
@@ -284,6 +296,18 @@ def clear_goal(session_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _response_signals_goal_complete(text: str) -> bool:
+    """Heuristic fallback when the judge API is unavailable.
+
+    The agent is instructed to state completion explicitly; when the judge
+    cannot run we still honor that signal so a successful answer doesn't
+    loop forever.
+    """
+    if not text or not text.strip():
+        return False
+    return _GOAL_COMPLETE_SIGNAL_RE.search(text) is not None
+
+
 def _truncate(text: str, limit: int) -> str:
     if not text:
         return ""
@@ -317,6 +341,26 @@ def _goal_judge_max_tokens() -> int:
     except Exception:
         pass
     return DEFAULT_JUDGE_MAX_TOKENS
+
+
+def _goal_judge_route() -> Tuple[str, Optional[str]]:
+    """Resolve provider/model for the goal judge.
+
+    Never inherit the session's main Codex/chat model — ``auto`` there
+    routes to openai-codex + qwen3.7-max which rejects auxiliary
+    chat.completions calls with BadRequestError.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        task_cfg = (load_config().get("auxiliary") or {}).get("goal_judge") or {}
+        provider = str(task_cfg.get("provider") or "").strip().lower()
+        model = str(task_cfg.get("model") or "").strip() or None
+        if provider and provider not in {"", "auto"}:
+            return provider, model
+    except Exception:
+        pass
+    return "openrouter", "google/gemini-3-flash-preview"
 
 
 def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
@@ -402,19 +446,10 @@ def judge_goal(
         return "continue", "empty response (nothing to evaluate)", False
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import call_llm
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False
-
-    try:
-        client, model = get_text_auxiliary_client("goal_judge")
-    except Exception as exc:
-        logger.debug("goal judge: get_text_auxiliary_client failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False
-
-    if client is None or not model:
-        return "continue", "no auxiliary client configured", False
 
     # Build the prompt — pick the with-subgoals variant when applicable.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
@@ -437,8 +472,11 @@ def judge_goal(
         )
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
+        judge_provider, judge_model = _goal_judge_route()
+        resp = call_llm(
+            "goal_judge",
+            provider=judge_provider,
+            model=judge_model,
             messages=[
                 {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -446,11 +484,18 @@ def judge_goal(
             temperature=0,
             max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
-        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False
+        logger.info(
+            "goal judge: API call failed (%s) — falling through to continue",
+            exc,
+        )
+        detail = str(exc).strip()
+        if detail and type(exc).__name__ == "BadRequestError":
+            reason = f"judge error: {type(exc).__name__} ({_truncate(detail, 160)})"
+        else:
+            reason = f"judge error: {type(exc).__name__}"
+        return "continue", reason, False
 
     try:
         raw = resp.choices[0].message.content or ""
@@ -607,6 +652,19 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return prev
 
+    def set_max_turns(self, max_turns: int) -> GoalState:
+        """Update the turn budget on an active or paused goal."""
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        n = int(max_turns)
+        if n < 1:
+            raise ValueError("max_turns must be at least 1")
+        if n > 200:
+            raise ValueError("max_turns must be 200 or less")
+        self._state.max_turns = n
+        save_goal(self.session_id, self._state)
+        return self._state
+
     def render_subgoals(self) -> str:
         """Public helper for the /subgoal slash command."""
         if self._state is None:
@@ -655,16 +713,34 @@ class GoalManager:
         verdict, reason, parse_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None
         )
+        judge_api_error = reason.startswith("judge error:")
+
+        # When the judge cannot run but the agent explicitly declared completion,
+        # honor that signal instead of looping until the turn budget is gone.
+        if (
+            verdict != "done"
+            and _response_signals_goal_complete(last_response)
+            and (judge_api_error or parse_failed)
+        ):
+            verdict = "done"
+            reason = "agent stated goal complete (judge unavailable)"
+            parse_failed = False
+            judge_api_error = False
+
         state.last_verdict = verdict
         state.last_reason = reason
 
-        # Track consecutive judge parse failures. Reset on any usable reply,
-        # including API / transport errors (parse_failed=False) so a flaky
-        # network doesn't trip the auto-pause meant for bad judge models.
+        # Track consecutive judge parse failures. Reset on any usable reply.
         if parse_failed:
             state.consecutive_parse_failures += 1
         else:
             state.consecutive_parse_failures = 0
+
+        # Track consecutive judge API/transport errors separately.
+        if judge_api_error:
+            state.consecutive_judge_api_errors += 1
+        else:
+            state.consecutive_judge_api_errors = 0
 
         if verdict == "done":
             state.status = "done"
@@ -700,6 +776,30 @@ class GoalManager:
                     f"⏸ Goal paused — the judge model ({state.consecutive_parse_failures} turns) "
                     "isn't returning the required JSON verdict. Route the judge to a stricter "
                     "model in ~/.hermes/config.yaml:\n"
+                    "  auxiliary:\n"
+                    "    goal_judge:\n"
+                    "      provider: openrouter\n"
+                    "      model: google/gemini-3-flash-preview\n"
+                    "Then /goal resume to continue."
+                ),
+            }
+
+        if state.consecutive_judge_api_errors >= DEFAULT_MAX_CONSECUTIVE_JUDGE_API_ERRORS:
+            state.status = "paused"
+            state.paused_reason = (
+                f"judge API failed {state.consecutive_judge_api_errors} turns in a row"
+            )
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "continue",
+                "reason": reason,
+                "message": (
+                    f"⏸ Goal paused — the judge API failed "
+                    f"({state.consecutive_judge_api_errors} turns). Route the judge to a "
+                    "working model in ~/.hermes/config.yaml:\n"
                     "  auxiliary:\n"
                     "    goal_judge:\n"
                     "      provider: openrouter\n"

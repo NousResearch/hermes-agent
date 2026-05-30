@@ -48,10 +48,10 @@ export type ScrollBoxHandle = {
    */
   isSticky: () => boolean
   /**
-   * Subscribe to imperative scroll changes (scrollTo/scrollBy/scrollToBottom).
-   * Does NOT fire for stickyScroll updates done by the Ink renderer — those
-   * happen during Ink's render phase after React has committed. Callers that
-   * care about the sticky case should treat "at bottom" as a fallback.
+   * Subscribe to scroll viewport changes. Fires for imperative scroll changes
+   * (scrollTo/scrollBy/scrollToBottom) and for renderer-computed scroll bounds
+   * changes such as content growth or terminal resize. Callers use this to
+   * keep virtualized ranges aligned with the currently visible viewport.
    */
   subscribe: (listener: () => void) => () => void
   /**

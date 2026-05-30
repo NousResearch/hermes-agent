@@ -167,6 +167,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_WEBHOOK_HOST": "127.0.0.1",
         "FEISHU_WEBHOOK_PORT": "9001",
         "FEISHU_WEBHOOK_PATH": "/hook",
+        "FEISHU_VERIFICATION_TOKEN": "vtok",
     }, clear=True)
     def test_connect_webhook_mode_starts_local_server(self):
         from gateway.config import PlatformConfig
@@ -1537,6 +1538,34 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         adapter._on_message_event.assert_called_once()
+
+    @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
+    def test_url_verification_requires_configured_verification_token(self):
+        """url_verification must be rejected when token is set but mismatched.
+
+        Regression: previously the challenge was reflected before the token
+        check, so an unauthenticated remote could prove endpoint control by
+        sending an attacker-controlled challenge string.
+        """
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        body = json.dumps({
+            "type": "url_verification",
+            "token": "wrong-token",
+            "challenge": "attacker-controlled-challenge",
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="203.0.113.10",
+            content_length=None,
+            headers={},
+            read=AsyncMock(return_value=body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 401)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_uses_event_sender_identity_only(self):
@@ -3097,8 +3126,6 @@ class TestWebhookSecurity(unittest.TestCase):
 
     def test_signature_valid_passes(self):
         import hashlib
-        from gateway.platforms.feishu import FeishuAdapter
-        from gateway.config import PlatformConfig
 
         encrypt_key = "test_secret"
         adapter = self._make_adapter(encrypt_key)
@@ -3190,6 +3217,39 @@ class TestWebhookSecurity(unittest.TestCase):
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 401)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_connect_requires_inbound_auth_secret(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"app_id": "cli_app", "app_secret": "secret_app", "connection_mode": "webhook"},
+            )
+        )
+        self.assertFalse(asyncio.run(adapter.connect()))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_loads_auth_secrets_from_platform_extra(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "app_id": "cli_app",
+                    "app_secret": "secret_app",
+                    "connection_mode": "webhook",
+                    "verification_token": "token_from_extra",
+                    "encrypt_key": "encrypt_from_extra",
+                },
+            )
+        )
+        self.assertEqual(adapter._verification_token, "token_from_extra")
+        self.assertEqual(adapter._encrypt_key, "encrypt_from_extra")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_url_verification_challenge_passes_without_signature(self):
@@ -4823,3 +4883,62 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestChatLockEviction(unittest.TestCase):
+    """_get_chat_lock is LRU-bounded so _chat_locks cannot grow unbounded."""
+
+    def _make_adapter(self, max_size=5):
+        import collections as _collections
+
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        adapter._chat_locks = _collections.OrderedDict()
+        adapter.CHAT_LOCK_MAX_SIZE = max_size
+        return adapter
+
+    def test_chat_locks_is_ordered_dict(self):
+        import collections as _collections
+
+        adapter = self._make_adapter()
+        self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
+
+    def test_same_id_returns_same_lock_and_stays_bounded(self):
+        adapter = self._make_adapter(max_size=5)
+        locks = [adapter._get_chat_lock(f"c{i}") for i in range(5)]
+        self.assertEqual(len(adapter._chat_locks), 5)
+        # Re-requesting an existing id returns the identical lock, no growth.
+        self.assertIs(adapter._get_chat_lock("c2"), locks[2])
+        self.assertEqual(len(adapter._chat_locks), 5)
+
+    def test_lru_eviction_respects_recent_access(self):
+        adapter = self._make_adapter(max_size=5)
+        for i in range(5):
+            adapter._get_chat_lock(f"c{i}")
+        # Touch c0 so it is no longer the LRU entry, then add a new chat.
+        adapter._get_chat_lock("c0")
+        adapter._get_chat_lock("c_new")
+        self.assertEqual(len(adapter._chat_locks), 5)
+        self.assertNotIn("c1", adapter._chat_locks)  # c1 was the true LRU
+        self.assertIn("c0", adapter._chat_locks)
+        self.assertIn("c_new", adapter._chat_locks)
+
+    def test_eviction_skips_held_locks(self):
+        adapter = self._make_adapter(max_size=3)
+
+        async def _run():
+            held = adapter._get_chat_lock("held")
+            await held.acquire()
+            try:
+                adapter._get_chat_lock("x")
+                adapter._get_chat_lock("y")
+                # At capacity; "held" is LRU but locked, so "x" should go instead.
+                adapter._get_chat_lock("z")
+                self.assertIn("held", adapter._chat_locks)
+                self.assertNotIn("x", adapter._chat_locks)
+                self.assertEqual(len(adapter._chat_locks), 3)
+            finally:
+                held.release()
+
+        asyncio.run(_run())

@@ -117,8 +117,8 @@ class TestJudgeGoal:
         from hermes_cli import goals
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, None),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
         ):
             verdict, _, _ = goals.judge_goal("my goal", "my response")
         assert verdict == "continue"
@@ -127,11 +127,9 @@ class TestJudgeGoal:
         """Judge exception → fail-open continue (don't wedge progress on judge bugs)."""
         from hermes_cli import goals
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create.side_effect = RuntimeError("boom")
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "judge-model"),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("boom"),
         ):
             verdict, reason, _ = goals.judge_goal("goal", "response")
         assert verdict == "continue"
@@ -140,18 +138,14 @@ class TestJudgeGoal:
     def test_judge_says_done(self):
         from hermes_cli import goals
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create.return_value = MagicMock(
-            choices=[
-                MagicMock(
-                    message=MagicMock(content='{"done": true, "reason": "achieved"}')
-                )
-            ]
-        )
-        with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "judge-model"),
-        ):
+        class _FakeMsg:
+            content = '{"done": true, "reason": "achieved"}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        with patch("agent.auxiliary_client.call_llm", return_value=_FakeResp()):
             verdict, reason, _ = goals.judge_goal("goal", "agent response")
         assert verdict == "done"
         assert reason == "achieved"
@@ -159,18 +153,14 @@ class TestJudgeGoal:
     def test_judge_says_continue(self):
         from hermes_cli import goals
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create.return_value = MagicMock(
-            choices=[
-                MagicMock(
-                    message=MagicMock(content='{"done": false, "reason": "not yet"}')
-                )
-            ]
-        )
-        with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "judge-model"),
-        ):
+        class _FakeMsg:
+            content = '{"done": false, "reason": "not yet"}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        with patch("agent.auxiliary_client.call_llm", return_value=_FakeResp()):
             verdict, reason, _ = goals.judge_goal("goal", "agent response")
         assert verdict == "continue"
         assert reason == "not yet"
@@ -396,14 +386,12 @@ class TestJudgeParseFailureAutoPause:
         assert parse_failed is False
 
     def test_api_error_does_not_count_as_parse_failure(self):
-        """Transient network/API errors must not trip the auto-pause guard."""
+        """Transient network/API errors must not trip the parse-failure auto-pause guard."""
         from hermes_cli import goals
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create.side_effect = RuntimeError("connection reset")
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "judge-model"),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("connection reset"),
         ):
             verdict, _, parse_failed = goals.judge_goal("goal", "response")
         assert verdict == "continue"
@@ -413,14 +401,14 @@ class TestJudgeParseFailureAutoPause:
         """End-to-end: judge returns empty content → parse_failed=True."""
         from hermes_cli import goals
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content=""))]
-        )
-        with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "judge-model"),
-        ):
+        class _FakeMsg:
+            content = ""
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        with patch("agent.auxiliary_client.call_llm", return_value=_FakeResp()):
             verdict, _, parse_failed = goals.judge_goal("goal", "response")
         assert verdict == "continue"
         assert parse_failed is True
@@ -478,8 +466,50 @@ class TestJudgeParseFailureAutoPause:
             assert d["should_continue"] is True
             assert mgr.state.consecutive_parse_failures == 0
 
+    def test_judge_api_errors_auto_pause_after_two(self, hermes_home):
+        """Repeated judge API failures pause instead of burning the turn budget."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_CONSECUTIVE_JUDGE_API_ERRORS
+
+        assert DEFAULT_MAX_CONSECUTIVE_JUDGE_API_ERRORS == 2
+        mgr = GoalManager(session_id="judge-api-fail-sid", default_max_turns=20)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "judge error: BadRequestError", False),
+        ):
+            d1 = mgr.evaluate_after_turn("step 1")
+            assert d1["should_continue"] is True
+            assert mgr.state.consecutive_judge_api_errors == 1
+
+            d2 = mgr.evaluate_after_turn("step 2")
+            assert d2["should_continue"] is False
+            assert d2["status"] == "paused"
+            assert mgr.state.consecutive_judge_api_errors == 2
+            assert "goal_judge" in d2["message"]
+
+    def test_agent_goal_complete_heuristic_when_judge_fails(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-heuristic-sid", default_max_turns=20)
+        mgr.set("check release")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "judge error: BadRequestError", False),
+        ):
+            d = mgr.evaluate_after_turn("Hermes Agent v0.15.2 released. Goal complete.")
+
+        assert d["status"] == "done"
+        assert d["should_continue"] is False
+        assert "agent stated goal complete" in d["reason"]
+
     def test_parse_failure_counter_not_incremented_by_api_errors(self, hermes_home):
-        """API/transport errors must NOT count toward the auto-pause threshold."""
+        """API/transport errors must NOT count toward the parse-failure threshold."""
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager
 
@@ -489,11 +519,8 @@ class TestJudgeParseFailureAutoPause:
         with patch.object(
             goals, "judge_goal", return_value=("continue", "judge error: RuntimeError", False)
         ):
-            for _ in range(5):
-                d = mgr.evaluate_after_turn("still going")
-                assert d["should_continue"] is True
+            mgr.evaluate_after_turn("still going")
             assert mgr.state.consecutive_parse_failures == 0
-            assert mgr.state.status == "active"
 
     def test_consecutive_parse_failures_persists_across_goalmanager_reloads(
         self, hermes_home
@@ -525,7 +552,6 @@ class TestGoalStateSubgoalsBackcompat:
     def test_old_state_meta_row_loads_without_subgoals(self):
         """A goal serialized BEFORE the subgoals field existed must
         round-trip with an empty list, not crash."""
-        import json
         from hermes_cli.goals import GoalState
 
         legacy = json.dumps({
@@ -616,6 +642,24 @@ class TestGoalManagerSubgoals:
         assert mgr2.state.subgoals == ["first", "second"]
 
 
+class TestGoalMaxTurns:
+    def test_set_max_turns(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="max-turns-sid", default_max_turns=20)
+        mgr.set("ship it")
+        state = mgr.set_max_turns(40)
+        assert state.max_turns == 40
+
+    def test_set_max_turns_requires_active_goal(self, hermes_home):
+        import pytest
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="max-turns-noactive")
+        with pytest.raises(RuntimeError):
+            mgr.set_max_turns(10)
+
+
 class TestContinuationPromptWithSubgoals:
     def test_empty_subgoals_uses_original_template(self, hermes_home):
         from hermes_cli.goals import GoalManager
@@ -647,7 +691,7 @@ class TestJudgeGoalWithSubgoals:
         We don't actually call the model — we patch the aux client to
         capture the prompt that would be sent.
         """
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
         from hermes_cli import goals
 
         captured = {}
@@ -658,22 +702,12 @@ class TestJudgeGoalWithSubgoals:
             message = _FakeMsg()
         class _FakeResp:
             choices = [_FakeChoice()]
-        class _FakeClient:
-            class chat:
-                class completions:
-                    @staticmethod
-                    def create(**kwargs):
-                        captured.update(kwargs)
-                        return _FakeResp()
 
-        with patch.object(goals, "get_text_auxiliary_client",
-                          return_value=(_FakeClient, "fake-model"), create=True), \
-             patch.object(goals, "get_auxiliary_extra_body",
-                          return_value=None, create=True), \
-             patch("agent.auxiliary_client.get_text_auxiliary_client",
-                   return_value=(_FakeClient, "fake-model")), \
-             patch("agent.auxiliary_client.get_auxiliary_extra_body",
-                   return_value=None):
+        def _fake_call_llm(task, **kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
             verdict, reason, parse_failed = goals.judge_goal(
                 "ship the feature",
                 "ok shipped",
@@ -701,18 +735,12 @@ class TestJudgeGoalWithSubgoals:
             message = _FakeMsg()
         class _FakeResp:
             choices = [_FakeChoice()]
-        class _FakeClient:
-            class chat:
-                class completions:
-                    @staticmethod
-                    def create(**kwargs):
-                        captured.update(kwargs)
-                        return _FakeResp()
 
-        with patch("agent.auxiliary_client.get_text_auxiliary_client",
-                   return_value=(_FakeClient, "fake-model")), \
-             patch("agent.auxiliary_client.get_auxiliary_extra_body",
-                   return_value=None):
+        def _fake_call_llm(task, **kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
             goals.judge_goal("ship it", "done", subgoals=None)
 
         sent_messages = captured.get("messages") or []

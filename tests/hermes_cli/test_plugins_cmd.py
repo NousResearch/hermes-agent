@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,7 +17,6 @@ from hermes_cli.plugins_cmd import (
     _resolve_git_executable,
     _resolve_git_url,
     _sanitize_plugin_name,
-    plugins_command,
 )
 
 
@@ -259,7 +256,6 @@ class TestCmdInstall:
 
     def test_install_requires_identifier(self):
         from hermes_cli.plugins_cmd import cmd_install
-        import argparse
 
         with pytest.raises(SystemExit):
             cmd_install("")
@@ -544,7 +540,6 @@ class TestCopyExampleFiles:
     """Test example file copying."""
 
     def test_copies_example_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -560,7 +555,6 @@ class TestCopyExampleFiles:
         console.print.assert_called()
 
     def test_skips_existing_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -577,7 +571,6 @@ class TestCopyExampleFiles:
         assert real_file.read_text() == "existing: true"
 
     def test_handles_copy_error_gracefully(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock, patch
 
         console = MagicMock()
@@ -663,7 +656,7 @@ class TestPromptPluginEnvVars:
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "langfuse.com" in printed
 
-    def test_secret_uses_getpass(self):
+    def test_secret_uses_masked_prompt(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
 
@@ -674,11 +667,11 @@ class TestPromptPluginEnvVars:
         }
 
         with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("getpass.getpass", return_value="s3cret") as mock_gp, \
+             patch("hermes_cli.plugins_cmd.masked_secret_prompt", return_value="s3cret") as mock_prompt, \
              patch("hermes_cli.config.save_env_value"):
             _prompt_plugin_env_vars(manifest, console)
 
-        mock_gp.assert_called_once()
+        mock_prompt.assert_called_once()
 
     def test_empty_input_skips(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars

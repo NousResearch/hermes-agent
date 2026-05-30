@@ -76,6 +76,78 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     ]
 
 
+def test_background_review_summarizer_receives_captured_messages_after_close(monkeypatch):
+    """The action summarizer must see review messages even after close cleanup.
+
+    Regression for the bug where ``review_messages`` was snapshot AFTER
+    ``review_agent.close()``. close() is allowed to clean per-session state
+    (including ``_session_messages``), so the summarizer would receive an
+    empty list and the user-visible self-improvement summary would silently
+    disappear. The fix snapshots ``_session_messages`` before teardown.
+    """
+    import json
+    import agent.background_review as bg_review
+
+    review_tool_message = {
+        "role": "tool",
+        "tool_call_id": "call_bg",
+        "content": json.dumps(
+            {"success": True, "message": "Entry added", "target": "memory"}
+        ),
+    }
+    captured: dict = {}
+    events: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append("run_conversation")
+            self._session_messages = [review_tool_message]
+
+        def shutdown_memory_provider(self):
+            events.append("shutdown_memory_provider")
+
+        def close(self):
+            events.append("close")
+            # close() is allowed to clean _session_messages — the fix
+            # must have snapshot them before this runs.
+            self._session_messages = []
+
+    def fake_summarize(review_messages, prior_snapshot):
+        events.append("summarize")
+        captured["review_messages"] = list(review_messages)
+        captured["prior_snapshot"] = list(prior_snapshot)
+        return []
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        bg_review,
+        "summarize_background_review_actions",
+        fake_summarize,
+    )
+
+    messages_snapshot = [{"role": "user", "content": "hi"}]
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=messages_snapshot,
+        review_memory=True,
+    )
+
+    assert events == [
+        "run_conversation",
+        "shutdown_memory_provider",
+        "close",
+        "summarize",
+    ]
+    assert captured["review_messages"] == [review_tool_message]
+    assert captured["prior_snapshot"] == messages_snapshot
+
+
 def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
     """Regression guard for #15216.
 

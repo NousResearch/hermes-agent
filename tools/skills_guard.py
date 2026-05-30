@@ -36,7 +36,16 @@ from typing import List, Tuple
 # Hardcoded trust configuration
 # ---------------------------------------------------------------------------
 
-TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills"}
+TRUSTED_REPOS = {
+    "openai/skills",
+    "anthropics/skills",
+    "huggingface/skills",
+    # NVIDIA-verified skills: each entry ships a signed `skill.oms.sig`
+    # and a governance `skill-card.md` (sync pipeline drops anything
+    # missing the signature or card). Catalog details:
+    # https://github.com/NVIDIA/skills
+    "NVIDIA/skills",
+}
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous
@@ -170,7 +179,7 @@ THREAT_PATTERNS = [
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "critical", "injection",
      "instructs agent to hide information from user"),
-    (r'system\s+prompt\s+override',
+    (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection",
      "attempts to override the system prompt"),
     (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+',
@@ -474,7 +483,7 @@ THREAT_PATTERNS = [
     (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to',
      "fake_update", "high", "injection",
      "fake update/patch announcement (social engineering)"),
-    (r'new\s+policy|updated\s+guidelines|revised\s+instructions',
+    (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions',
      "fake_policy", "medium", "injection",
      "claims new policy/guidelines (may be social engineering)"),
 
@@ -917,12 +926,14 @@ def _resolve_trust_level(source: str) -> str:
     # Agent-created skills get their own permissive trust level
     if normalized_source == "agent-created":
         return "agent-created"
-    # Official optional skills shipped with the repo
-    if normalized_source.startswith("official/") or normalized_source == "official":
+    # Official optional skills must be identified by source provenance, not by
+    # user-controlled GitHub identifiers such as "official/<repo>".
+    if normalized_source == "official":
         return "builtin"
-    # Check if source matches any trusted repo
+    # Check if source matches any trusted repo exactly, or a skill path inside
+    # that repo. Do not trust sibling repositories that merely share a prefix.
     for trusted in TRUSTED_REPOS:
-        if normalized_source.startswith(trusted) or normalized_source == trusted:
+        if normalized_source == trusted or normalized_source.startswith(f"{trusted}/"):
             return "trusted"
     return "community"
 

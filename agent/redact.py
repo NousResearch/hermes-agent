@@ -176,6 +176,15 @@ _URL_USERINFO_RE = re.compile(
     r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
 )
 
+# HTTP access logs often use a relative request target rather than a full URL:
+# `"POST /webhook?password=... HTTP/1.1"`. The full-URL redactor above only
+# sees strings containing `://`, so handle request-target query strings too.
+_HTTP_REQUEST_TARGET_QUERY_RE = re.compile(
+    r"\b((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\s+[^ \t\r\n\"']*?)"
+    r"\?([^ \t\r\n\"']+)",
+    re.IGNORECASE,
+)
+
 # Form-urlencoded body detection: conservative — only applies when the entire
 # text looks like a query string (k=v&k=v pattern with no newlines).
 _FORM_BODY_RE = re.compile(
@@ -293,6 +302,15 @@ def _redact_url_userinfo(text: str) -> str:
     )
 
 
+def _redact_http_request_target_query_params(text: str) -> str:
+    """Redact sensitive query params in HTTP access-log request targets."""
+    def _sub(m: re.Match) -> str:
+        prefix = m.group(1)
+        query = _redact_query_string(m.group(2))
+        return f"{prefix}?{query}"
+    return _HTTP_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
+
+
 def _redact_form_body(text: str) -> str:
     """Redact sensitive values in a form-urlencoded body.
 
@@ -313,7 +331,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Disabled by default — enable via security.redact_secrets: true in config.yaml.
+    Enabled by default. Disable via security.redact_secrets: false in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
 
@@ -388,14 +406,14 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
 
-    # URL userinfo (http(s)://user:pass@host) — redact for non-DB schemes.
-    # DB schemes are handled above by _DB_CONNSTR_RE.
-    if "://" in text:
-        text = _redact_url_userinfo(text)
-
-        # URL query params containing opaque tokens (?access_token=…&code=…)
-        if "?" in text:
-            text = _redact_url_query_params(text)
+    # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log
+    # request targets) is intentionally OFF. Many legitimate workflows pass
+    # opaque tokens through query strings — magic-link checkouts, OAuth
+    # callbacks the agent is meant to follow, pre-signed share URLs — and
+    # blanket-redacting param values by name breaks those skills mid-flow.
+    # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
+    # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
+    # are still caught by _DB_CONNSTR_RE.
 
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:
@@ -454,6 +472,25 @@ def _has_known_prefix_substring(text: str) -> bool:
     Used as a cheap pre-check before invoking the expensive ``_PREFIX_RE``.
     """
     return any(p in text for p in _PREFIX_SUBSTRINGS)
+
+
+_HTTP_METHOD_SUBSTRINGS = (
+    "GET ",
+    "POST ",
+    "PUT ",
+    "PATCH ",
+    "DELETE ",
+    "HEAD ",
+    "OPTIONS ",
+    "TRACE ",
+    "CONNECT ",
+)
+
+
+def _has_http_method_substring(text: str) -> bool:
+    """Cheap pre-check before scanning for access-log request targets."""
+    upper = text.upper()
+    return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
 class RedactingFormatter(logging.Formatter):

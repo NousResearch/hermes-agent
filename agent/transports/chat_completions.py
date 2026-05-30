@@ -9,10 +9,10 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
-import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.message_sanitization import sanitize_chat_completion_messages_for_wire
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -113,9 +113,8 @@ class ChatCompletionsTransport(ProviderTransport):
         self, messages: list[dict[str, Any]], **kwargs
     ) -> list[dict[str, Any]]:
         """Messages are already in OpenAI format — strip internal fields
-        that strict chat-completions providers reject with HTTP 400/422.
-
-        Strips:
+        that strict chat-completions providers reject with HTTP 400/422
+        (or, in the case of some OpenAI-compatible gateways, 5xx):
 
         - Codex Responses API fields: ``codex_reasoning_items`` /
           ``codex_message_items`` on the message, ``call_id`` /
@@ -127,46 +126,18 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - Hermes-internal scaffolding markers — any top-level message key
+          starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
+          ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
+          bookkeeping flags the agent loop attaches to messages so the
+          persistence layer can later strip its own scaffolding; they must
+          never reach the wire. Permissive providers (real OpenAI,
+          Anthropic) silently drop unknown message keys, but strict
+          gateways (e.g. opencode-go, codex.nekos.me) reject with
+          ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
+          which then poisons every subsequent request in the session.
         """
-        needs_sanitize = False
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            if (
-                "codex_reasoning_items" in msg
-                or "codex_message_items" in msg
-                or "tool_name" in msg
-            ):
-                needs_sanitize = True
-                break
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tc in tool_calls:
-                    if isinstance(tc, dict) and (
-                        "call_id" in tc or "response_item_id" in tc
-                    ):
-                        needs_sanitize = True
-                        break
-                if needs_sanitize:
-                    break
-
-        if not needs_sanitize:
-            return messages
-
-        sanitized = copy.deepcopy(messages)
-        for msg in sanitized:
-            if not isinstance(msg, dict):
-                continue
-            msg.pop("codex_reasoning_items", None)
-            msg.pop("codex_message_items", None)
-            msg.pop("tool_name", None)
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tc in tool_calls:
-                    if isinstance(tc, dict):
-                        tc.pop("call_id", None)
-                        tc.pop("response_item_id", None)
-        return sanitized
+        return sanitize_chat_completion_messages_for_wire(messages)
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Tools are already in OpenAI format — identity."""
@@ -459,13 +430,17 @@ class ChatCompletionsTransport(ProviderTransport):
         ephemeral = params.get("ephemeral_max_output_tokens")
         user_max = params.get("max_tokens")
         anthropic_max = params.get("anthropic_max_output")
+        # Per-model default cap — profiles override get_max_tokens() when
+        # they front several backends with different completion-token limits
+        # (e.g. opencode-go: mimo-v2.5-pro = 131072).
+        profile_max = profile.get_max_tokens(model)
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))
         elif user_max is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(user_max))
-        elif profile.default_max_tokens and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(profile.default_max_tokens))
+        elif profile_max and max_tokens_fn:
+            api_kwargs.update(max_tokens_fn(profile_max))
         elif anthropic_max is not None:
             api_kwargs["max_tokens"] = anthropic_max
 

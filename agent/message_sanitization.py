@@ -14,6 +14,7 @@ re-exports from ``run_agent`` remain in place so existing imports
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 # below as well as by run_agent and the CLI for paste-from-clipboard
 # scrubbing.
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+_DISALLOWED_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -138,6 +140,157 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
                 if _sanitize_structure_surrogates(value):
                     found = True
     return found
+
+
+def _strip_disallowed_control_chars(text: str) -> str:
+    """Remove provider-invalid C0 controls while preserving normal whitespace."""
+    return _DISALLOWED_CONTROL_RE.sub("", text)
+
+
+def _sanitize_structure_control_chars(payload: Any) -> bool:
+    """Remove raw control characters from nested dict/list payloads in-place."""
+    found = False
+
+    def _walk(node):
+        nonlocal found
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, str):
+                    sanitized = _strip_disallowed_control_chars(value)
+                    if sanitized != value:
+                        node[key] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+        elif isinstance(node, list):
+            for idx, value in enumerate(node):
+                if isinstance(value, str):
+                    sanitized = _strip_disallowed_control_chars(value)
+                    if sanitized != value:
+                        node[idx] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+
+    _walk(payload)
+    return found
+
+
+def _sanitize_messages_control_chars(messages: list) -> bool:
+    """Remove provider-invalid control characters from all message strings.
+
+    Tool results from MCP-style integrations can contain raw NUL-prefixed
+    content markers (for example ``"\x00json:"``). The OpenAI SDK can serialize
+    those strings, but OpenRouter/provider APIs may reject them as invalid
+    ``messages.N.content``. Keep normal formatting whitespace intact.
+    """
+    found = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            sanitized = _strip_disallowed_control_chars(content)
+            if sanitized != content:
+                msg["content"] = sanitized
+                found = True
+        elif isinstance(content, list):
+            if _sanitize_structure_control_chars(content):
+                found = True
+        for key, value in msg.items():
+            if key in {"content", "role"}:
+                continue
+            if isinstance(value, str):
+                sanitized = _strip_disallowed_control_chars(value)
+                if sanitized != value:
+                    msg[key] = sanitized
+                    found = True
+            elif isinstance(value, (dict, list)):
+                if _sanitize_structure_control_chars(value):
+                    found = True
+    return found
+
+
+def sanitize_chat_completion_messages_for_wire(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return chat-completions messages with Hermes-only fields stripped.
+
+    This preserves object identity for already-clean messages, and deep-copies
+    only when the provider-facing payload needs cleanup.
+    """
+    needs_sanitize = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and _strip_disallowed_control_chars(content) != content:
+            needs_sanitize = True
+            break
+        if isinstance(content, (list, dict)):
+            needs_sanitize = True
+            break
+        if (
+            "codex_reasoning_items" in msg
+            or "codex_message_items" in msg
+            or "tool_name" in msg
+        ):
+            needs_sanitize = True
+            break
+        if any(isinstance(k, str) and k.startswith("_") for k in msg):
+            needs_sanitize = True
+            break
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if isinstance(tc, dict) and (
+                    "call_id" in tc or "response_item_id" in tc
+                ):
+                    needs_sanitize = True
+                    break
+            if needs_sanitize:
+                break
+
+    if not needs_sanitize:
+        return messages
+
+    sanitized = copy.deepcopy(messages)
+    for msg in sanitized:
+        if not isinstance(msg, dict):
+            continue
+        msg.pop("codex_reasoning_items", None)
+        msg.pop("codex_message_items", None)
+        msg.pop("tool_name", None)
+        for key in [k for k in msg if isinstance(k, str) and k.startswith("_")]:
+            msg.pop(key, None)
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = _strip_disallowed_control_chars(content)
+        elif isinstance(content, list):
+            text_parts = []
+            can_flatten = True
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
+                    text_parts.append(
+                        _strip_disallowed_control_chars(str(part.get("text", "")))
+                    )
+                else:
+                    can_flatten = False
+                    break
+            if msg.get("role") == "tool" and can_flatten:
+                msg["content"] = "\n".join(text_parts)
+        elif isinstance(content, dict):
+            try:
+                msg["content"] = json.dumps(content, ensure_ascii=False)
+            except (TypeError, ValueError):
+                msg["content"] = str(content)
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tc.pop("call_id", None)
+                    tc.pop("response_item_id", None)
+    return sanitized
 
 
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
@@ -434,6 +587,9 @@ __all__ = [
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",
+    "_sanitize_messages_control_chars",
+    "_sanitize_structure_control_chars",
+    "sanitize_chat_completion_messages_for_wire",
     "_escape_invalid_chars_in_json_strings",
     "_repair_tool_call_arguments",
     "_strip_non_ascii",

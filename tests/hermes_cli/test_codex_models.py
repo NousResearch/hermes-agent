@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids, list_codex_picker_models
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -57,19 +57,59 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     assert "gpt-5.3-codex-spark" in models
 
 
+def test_list_codex_picker_models_uses_cache_metadata(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-5.5",
+                        "display_name": "GPT-5.5",
+                        "description": "Frontier model",
+                        "context_window": 272000,
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "low", "description": "Fast"},
+                            {"effort": "high", "description": "Deep"},
+                        ],
+                        "priority": 1,
+                    }
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_catalog_entries_from_api",
+        lambda access_token: [],
+    )
+
+    models = list_codex_picker_models()
+
+    assert models[0]["id"] == "gpt-5.5"
+    assert models[0]["display_name"] == "GPT-5.5"
+    assert models[0]["default_reasoning_effort"] == "medium"
+    assert [item["effort"] for item in models[0]["reasoning_efforts"]] == ["low", "high"]
+
+
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.2-codex"],
+        lambda access_token: ["gpt-5.3-codex"],
     )
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
+    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
+    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
+    # (each is templated off gpt-5.3-codex).
     assert models == [
-        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        "gpt-5.5",
         "gpt-5.4-mini",
         "gpt-5.4",
-        "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ]
 

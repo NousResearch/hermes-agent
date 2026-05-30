@@ -127,3 +127,100 @@ class TestSetRuntimeMainCustomProvider:
             assert g["api_mode"] == ""
         finally:
             mod.clear_runtime_main()
+
+
+class TestResolveAutoCustomEndToEnd:
+    """End-to-end routing assertions — build a *real* client (no mock on
+    resolve_provider_client) and verify the auxiliary auto-detect chain lands
+    on the user's custom endpoint instead of falling through to the aggregator
+    chain.  These guard the actual user-visible symptom in #34777 (aux tasks
+    silently routed to a fallback provider) rather than just the wiring.
+    """
+
+    @staticmethod
+    def _client_base_url(client):
+        for chain in (("base_url",), ("_client", "base_url")):
+            obj = client
+            try:
+                for attr in chain:
+                    obj = getattr(obj, attr)
+                return str(obj)
+            except AttributeError:
+                continue
+        return None
+
+    def test_config_less_custom_endpoint_routes_via_global(self, tmp_path, monkeypatch):
+        """custom:<name> with NO config entry: the live base_url carried by
+        set_runtime_main() must build a real client at that endpoint — not
+        fall through to Step 2 (the regression in #34777)."""
+        import agent.auxiliary_client as mod
+
+        # Hermetic: no aggregator creds, no stale OPENAI_BASE_URL.
+        for var in ("OPENROUTER_API_KEY", "NOUS_API_KEY", "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: glm-5.1\n"
+            "  provider: 'custom:ephemeral'\n"
+            "  base_url: ''\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mod.clear_runtime_main()
+        try:
+            mod.set_runtime_main(
+                "custom:ephemeral",
+                "glm-5.1",
+                base_url="https://ephemeral.live/v1",
+                api_key="sk-live",
+            )
+            client, resolved = mod.resolve_provider_client("auto", None)
+            assert client is not None, (
+                "config-less custom endpoint fell through to Step 2 — "
+                "the #34777 bug is back"
+            )
+            assert resolved == "glm-5.1"
+            base = self._client_base_url(client)
+            assert base and base.rstrip("/") == "https://ephemeral.live/v1"
+        finally:
+            mod.clear_runtime_main()
+
+    def test_named_custom_with_config_entry_still_routes(self, tmp_path, monkeypatch):
+        """Regression guard: custom:<name> WITH a custom_providers entry must
+        still resolve to that entry's endpoint.  An earlier competing fix
+        collapsed the provider to bare ``custom`` before resolution, which
+        broke the named-custom branch and returned None here."""
+        import agent.auxiliary_client as mod
+
+        for var in ("OPENROUTER_API_KEY", "NOUS_API_KEY", "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: glm-5.1\n"
+            "  provider: 'custom:openclaw'\n"
+            "  base_url: ''\n"
+            "custom_providers:\n"
+            "  - name: openclaw\n"
+            "    base_url: 'https://withcfg.example/v1'\n"
+            "    model: glm-5.1\n"
+            "    api_key: cfg-key\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # No live base_url carried — resolution must come from config alone,
+        # via the named-custom branch in resolve_provider_client.
+        mod.clear_runtime_main()
+        try:
+            mod.set_runtime_main("custom:openclaw", "glm-5.1")
+            client, resolved = mod.resolve_provider_client("auto", None)
+            assert client is not None
+            base = self._client_base_url(client)
+            assert base and base.rstrip("/") == "https://withcfg.example/v1"
+        finally:
+            mod.clear_runtime_main()

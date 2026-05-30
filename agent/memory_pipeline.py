@@ -130,44 +130,47 @@ class SalienceScorer:
 
     Pure rule-based — no LLM calls, O(message_length) time.
     Scientific basis: F4 (CREB/excitability allocation).
+    Thread-safe: all mutable state protected by _lock.
     """
 
     def __init__(self, novelty_window: int = 50) -> None:
         self._rep = _RepetitionDetector(window_size=novelty_window)
+        self._lock = threading.Lock()
 
     def score(self, message: str) -> SalienceResult:
         if not message or not message.strip():
             return SalienceResult(overall=0.0, is_trivial=True)
         text = message.strip()
-        trivial_penalty = 1.0
-        for pattern, weight in _TRIVIAL_PATTERNS:
-            if pattern.search(text):
-                trivial_penalty = min(trivial_penalty, 1.0 - weight)
-        is_trivial = trivial_penalty < 0.3
-        emotion = 0.0
-        for pattern, weight in _EMOTION_PATTERNS:
-            if pattern.search(text):
-                emotion = max(emotion, weight)
-        if len(text) < 20:
-            emotion *= 0.5
-        importance = 0.0
-        for pattern, weight in _IMPORTANCE_PATTERNS:
-            if pattern.search(text):
-                importance = max(importance, weight)
-        if len(text) > 200:
-            importance = min(1.0, importance + 0.1)
-        freshness = self._rep.observe(text)
-        novelty = freshness
-        rep_factor = freshness
-        raw = (0.25 * emotion + 0.30 * novelty + 0.30 * importance
-               + 0.15 * min(1.0, len(text) / 200))
-        adjusted = raw * rep_factor * (1.0 - (1.0 - trivial_penalty) * 0.8)
-        overall = max(0.0, min(1.0, adjusted))
-        return SalienceResult(
-            overall=overall, emotion=emotion, novelty=novelty,
-            importance=importance, repetition_penalty=rep_factor,
-            is_trivial=is_trivial,
-        )
+        with self._lock:
+            trivial_penalty = 1.0
+            for pattern, weight in _TRIVIAL_PATTERNS:
+                if pattern.search(text):
+                    trivial_penalty = min(trivial_penalty, 1.0 - weight)
+            is_trivial = trivial_penalty < 0.3
+            emotion = 0.0
+            for pattern, weight in _EMOTION_PATTERNS:
+                if pattern.search(text):
+                    emotion = max(emotion, weight)
+            if len(text) < 20:
+                emotion *= 0.5
+            importance = 0.0
+            for pattern, weight in _IMPORTANCE_PATTERNS:
+                if pattern.search(text):
+                    importance = max(importance, weight)
+            if len(text) > 200:
+                importance = min(1.0, importance + 0.1)
+            freshness = self._rep.observe(text)
+            novelty = freshness
+            rep_factor = freshness
+            raw = (0.25 * emotion + 0.30 * novelty + 0.30 * importance
+                   + 0.15 * min(1.0, len(text) / 200))
+            adjusted = raw * rep_factor * (1.0 - (1.0 - trivial_penalty) * 0.8)
+            overall = max(0.0, min(1.0, adjusted))
+            return SalienceResult(
+                overall=overall, emotion=emotion, novelty=novelty,
+                importance=importance, repetition_penalty=rep_factor,
+                is_trivial=is_trivial,
+            )
 
     def reset(self) -> None:
         self._rep = _RepetitionDetector(window_size=self._rep.window_size)
@@ -291,28 +294,36 @@ class ConsolidationEngine:
         created, updated = 0, 0
         try:
             with state._lock:
-                # Check consolidation pressure
-                count = state._conn.execute(
-                    "SELECT COUNT(*) FROM schemas"
-                ).fetchone()[0]
-                if count == 0 and facts and len(facts) >= self._min_facts:
-                    # Create initial schema from grouped facts
+                # Consolidation runs whenever we have enough new facts
+                if facts and len(facts) >= self._min_facts:
+                    # Get existing schema contents for dedup
+                    existing = state._conn.execute(
+                        "SELECT content FROM schemas ORDER BY updated_at DESC LIMIT 20"
+                    ).fetchall()
+                    existing_contents = {r["content"][:50] for r in existing}
+
                     for fact in facts[:10]:
+                        content = fact.get("content", "")
+                        domain = fact.get("domain", "general")
+                        if not content or len(content) < 10:
+                            continue
+                        # Simple dedup: skip if similar content already exists
+                        if content[:50] in existing_contents:
+                            updated += 1
+                            continue
                         state._conn.execute(
                             "INSERT INTO schemas (content, domain, confidence) "
                             "VALUES (?, ?, ?)",
-                            (fact.get("content", ""), fact.get("domain", "general"),
-                             0.5),
+                            (content, domain, 0.5),
                         )
                         created += 1
-                state._conn.commit()
 
-                # Log the run
+                # Log the run (single commit for atomicity)
                 state._conn.execute(
                     "INSERT INTO consolidation_runs "
                     "(session_id, memories_processed, schemas_created, schemas_updated) "
                     "VALUES (?, ?, ?, ?)",
-                    ("", len(facts or []), created, updated),
+                    (self._session_id or "", len(facts or []), created, updated),
                 )
                 state._conn.commit()
         except Exception as e:
@@ -348,15 +359,17 @@ class ReconsolidationEngine:
         self._threshold = error_threshold
 
     def check_retrieval(self, state: 'PipelineState',
-                        query: str, result: str) -> None:
+                        query: str, result: str,
+                        engrams: 'SilentEngramEngine | None' = None) -> None:
         """Record retrieval event for potential reconsolidation."""
         if not state:
             return
         try:
-            # Strengthen retrieved engrams
-            eng = SilentEngramEngine()
             ref = sha256(query.encode()).hexdigest()[:16]
-            eng.strengthen(state, ref)
+            if engrams:
+                engrams.strengthen(state, ref)
+            else:
+                SilentEngramEngine().strengthen(state, ref)
         except Exception as e:
             logger.debug("Reconsolidation check failed: %s", e)
 
@@ -393,10 +406,12 @@ class FeedbackCoordinator:
     2. PredictiveModel: generates expectations from schemas
     3. CrossDomainBridge: discovers unexpected connections
     Scientific basis: Predictive coding (Friston 2010).
+    Thread-safe: _pending_predictions protected by _lock.
     """
 
     def __init__(self) -> None:
         self._pending_predictions: list[str] = []
+        self._lock = threading.Lock()
 
     def predict(self, state: 'PipelineState', context: str) -> list[str]:
         """Generate predictions from existing schemas."""
@@ -414,7 +429,8 @@ class FeedbackCoordinator:
                     f"Expected pattern (conf={row['confidence']:.2f}): "
                     f"{row['content'][:100]}"
                 )
-            self._pending_predictions = predictions
+            with self._lock:
+                self._pending_predictions = predictions
             return predictions
         except Exception as e:
             logger.debug("Prediction failed: %s", e)
@@ -423,13 +439,14 @@ class FeedbackCoordinator:
     def observe_outcome(self, state: 'PipelineState',
                         actual: str) -> float:
         """Compare predictions against actual outcome. Returns error score."""
-        if not self._pending_predictions or not state:
+        with self._lock:
+            pending = list(self._pending_predictions)
+        if not pending or not state:
             return 0.0
         try:
-            # Simple token overlap between prediction and actual
             actual_tokens = set(actual.lower().split())
             max_error = 0.0
-            for pred in self._pending_predictions:
+            for pred in pending:
                 pred_tokens = set(pred.lower().split())
                 if not pred_tokens or not actual_tokens:
                     continue
@@ -456,7 +473,8 @@ class FeedbackCoordinator:
                     )
                     state._conn.commit()
 
-            self._pending_predictions = []
+            with self._lock:
+                self._pending_predictions = []
             return max_error
         except Exception as e:
             logger.debug("Observe outcome failed: %s", e)
@@ -718,6 +736,7 @@ class MemoryPipeline:
         self._config: dict = config or {}
         self._state: PipelineState | None = None
         self._enabled: bool = self._config.get("enabled", True)
+        self._session_id: str = ""
         # All 6 layers
         self._salience: SalienceScorer | None = None
         self._engrams: SilentEngramEngine | None = None
@@ -730,6 +749,7 @@ class MemoryPipeline:
         """Initialize pipeline state and all organic modules."""
         if not self._enabled:
             return
+        self._session_id = session_id
         db_path = self._config.get("db_path") or None
         self._state = PipelineState(db_path=db_path)
 
@@ -891,7 +911,8 @@ class MemoryPipeline:
                 action = args.get("action", "")
                 if action in ("search", "probe"):
                     self._reconsolidation.check_retrieval(
-                        self._state, args.get("query", ""), result)
+                        self._state, args.get("query", ""), result,
+                        engrams=self._engrams)
 
             # Layer 6: record co-activation from search results
             if self._activation and name == "fact_store":

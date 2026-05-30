@@ -411,11 +411,10 @@ class MemoryManager:
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Sync a completed turn to all providers."""
-        # Pipeline pre-intercept (Phase 2+: salience scoring)
-        pipeline_metadata: dict | None = None
+        # Pipeline pre-intercept (salience scoring, persisted to pipeline_state.db)
         if self._pipeline:
             try:
-                pipeline_metadata = self._pipeline.pre_sync(user_content, assistant_content)
+                self._pipeline.pre_sync(user_content, assistant_content)
             except Exception as e:
                 logger.debug("MemoryPipeline pre_sync failed: %s", e)
 
@@ -742,6 +741,8 @@ class MemoryManager:
         """
         # Initialize pipeline first (before providers)
         try:
+            if self._pipeline:
+                self._pipeline.shutdown()
             pipeline_config = _load_pipeline_config()
             self._pipeline = MemoryPipeline(config=pipeline_config)
             self._pipeline.initialize(session_id, **kwargs)

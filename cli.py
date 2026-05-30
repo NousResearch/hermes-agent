@@ -14958,6 +14958,16 @@ class HermesCLI:
                     pass  # No running loop -- nothing to patch
                 except Exception:
                     pass
+                try:
+                    import os as _title_os
+                    import sys as _title_sys
+                    _agent_name = _title_os.environ.get("AGENT_PERSONA") or _title_os.path.basename(_title_sys.argv[0]) or "unleash"
+                    if _agent_name.endswith(".py"):
+                        _agent_name = _agent_name[:-3]
+                    _title_sys.stdout.write(f"\x1b]2;✳ {_agent_name}\x07")
+                    _title_sys.stdout.flush()
+                except Exception:
+                    pass
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass

@@ -1208,6 +1208,31 @@ def test_discord_toolsets_user_enabled_are_honored():
     assert "discord_admin" not in enabled
 
 
+def test_discord_composite_toolset_honors_explicit_config():
+    """Regression: platform_toolsets.discord = ['hermes-discord'] must not
+    silently drop discord / discord_admin due to _TOOLSET_PLATFORM_RESTRICTIONS.
+
+    The composite name "hermes-discord" is not in CONFIGURABLE_TOOLSETS, so it
+    enters the else-branch (non-explicit-config path).  The platform restriction
+    previously blocked the default_off carve-out, stripping the toolsets even
+    though the user explicitly listed them.  (#35527)
+    """
+    config = {"platform_toolsets": {"discord": ["hermes-discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled, "discord toolset missing with explicit hermes-discord composite"
+    assert "discord_admin" in enabled, "discord_admin toolset missing with explicit hermes-discord composite"
+
+
+def test_discord_composite_not_auto_enabled_without_config():
+    """discord / discord_admin must stay OFF when no platform_toolsets entry
+    exists (default install).  The platform restriction keeps them opt-in."""
+    enabled = _get_platform_tools({}, "discord")
+    # On a fresh install without explicit config, discord should NOT be
+    # auto-enabled — it's a restricted platform toolset.
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
 def test_save_platform_tools_strips_restricted_toolsets():
     """Hand-edited or all-platforms checklist with `discord` selected for
     Telegram must be stripped at save time."""

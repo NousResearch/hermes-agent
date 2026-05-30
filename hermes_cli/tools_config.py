@@ -1246,8 +1246,28 @@ def _get_platform_tools(
         # keep that toolset enabled on first install.  Skip this dodge for
         # platform-restricted toolsets — those are always opt-in even on
         # their own platform (e.g. `discord` + `discord` should stay OFF).
-        if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+        #
+        # However, when the user has *explicitly* listed toolsets for this
+        # platform in platform_toolsets (even via composite names like
+        # "hermes-discord"), respect their opt-in by also removing
+        # platform-restricted toolsets from default_off.  Without this,
+        # composites fall through to the else-branch (non-explicit-config
+        # path) and the restriction silently strips discord / discord_admin
+        # despite the user's config.  (#35527)
+        if platform in default_off and (
+            platform not in _TOOLSET_PLATFORM_RESTRICTIONS
+            or platform in platform_toolsets
+        ):
             default_off.remove(platform)
+        # When the user explicitly configured this platform's toolsets,
+        # also remove any platform-restricted toolsets (e.g. discord_admin)
+        # from default_off — otherwise they're silently stripped even though
+        # the composite includes them.
+        if platform in platform_toolsets:
+            default_off -= {
+                ts for ts, restricted in _TOOLSET_PLATFORM_RESTRICTIONS.items()
+                if platform in restricted
+            }
         # Home Assistant is already runtime-gated by its check_fn (requires
         # HASS_TOKEN to register any tools). When a user has configured
         # HASS_TOKEN, they've explicitly opted in — don't also strip it via

@@ -78,8 +78,6 @@ jobs:
           load: true
           platforms: linux/amd64
           tags: ${{ env.IMAGE_NAME }}:test
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=docker-amd64
           cache-to: type=gha,mode=max,scope=docker-amd64
 
@@ -163,8 +161,6 @@ jobs:
           platforms: linux/amd64
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=docker-amd64
           cache-to: type=gha,mode=max,scope=docker-amd64
@@ -208,7 +204,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      # Log in to ghcr.io so the registry-backed build cache below can be
+# Log in to ghcr.io so the registry-backed build cache below can be
       # read (cache-from) on every event and written (cache-to) on
       # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
       # the whole job — unlike the gha cache backend's short-lived Azure SAS
@@ -240,7 +236,7 @@ jobs:
           load: true
           platforms: linux/arm64
           tags: ${{ env.IMAGE_NAME }}:test
-          build-args: |
+build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
           cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
@@ -268,8 +264,6 @@ jobs:
           platforms: linux/arm64
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
           cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max

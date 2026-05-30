@@ -1,5 +1,6 @@
 name: Supply Chain Audit
 
+
 # Narrow, high-signal scanner. Only fires on critical indicators of supply
 # chain attacks (e.g. the litellm-style payloads). Low-signal heuristics
 # (plain base64, plain exec/eval, dependency/Dockerfile/workflow edits,
@@ -41,7 +42,7 @@ permissions:
 jobs:
   scan:
     name: Scan PR for critical supply chain risks
-    if: inputs.scan
+if: inputs.scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -162,8 +163,9 @@ jobs:
 
   dep-bounds:
     name: Check PyPI dependency upper bounds
-    if: inputs.deps
+if: inputs.deps
     runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.changed_files_url, 'pyproject.toml') || true
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -224,8 +226,7 @@ jobs:
         run: |
           echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
           exit 1
-
-  mcp-catalog-review:
+mcp-catalog-review:
     name: MCP catalog security review
     if: inputs.mcp_catalog
     runs-on: ubuntu-latest

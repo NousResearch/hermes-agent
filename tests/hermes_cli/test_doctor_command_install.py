@@ -239,6 +239,53 @@ class TestDoctorCommandInstallation:
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_homebrew_install_no_venv_shows_ok(self, monkeypatch, tmp_path):
+        """Homebrew install without venv entry point should pass when hermes is on PATH."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+        # Do NOT create any venv entry point
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        except Exception:
+            pass
+        try:
+            import httpx
+            monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
+        except Exception:
+            pass
+
+        # Mock detect_install_method to return "homebrew"
+        import hermes_cli.config as config_mod
+        monkeypatch.setattr(config_mod, "detect_install_method", lambda *a, **kw: "homebrew")
+        monkeypatch.setattr(config_mod, "is_uv_tool_install", lambda: False)
+
+        # Mock shutil.which to return a path
+        monkeypatch.setattr("shutil.which", lambda cmd: "/opt/homebrew/bin/hermes" if cmd == "hermes" else None)
+
+        out = _run_doctor(fix=False)
+        assert "Command Installation" in out
+        assert "Hermes on PATH" in out
+        assert "homebrew" in out
+        assert "Venv entry point not found" not in out
+
     def test_windows_skips_check(self, monkeypatch, tmp_path):
         """On Windows, the Command Installation section is skipped."""
         home = tmp_path / ".hermes"

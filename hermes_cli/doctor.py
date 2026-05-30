@@ -1128,6 +1128,17 @@ def run_doctor(args):
                 _venv_bin = _candidate
                 break
 
+        # For non-venv installs (Homebrew, uv tool, pipx), check if the
+        # hermes command is available on PATH instead of requiring a local venv.
+        _is_non_venv_install = False
+        _method = "pip"
+        try:
+            from hermes_cli.config import detect_install_method, is_uv_tool_install
+            _method = detect_install_method(PROJECT_ROOT)
+            _is_non_venv_install = _method in ("homebrew", "docker", "nixos") or is_uv_tool_install()
+        except Exception:
+            pass
+
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
         _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
@@ -1139,7 +1150,17 @@ def run_doctor(args):
             _cmd_link_display = "~/.local/bin"
         _cmd_link = _cmd_link_dir / "hermes"
 
-        if _venv_bin is None:
+        if _venv_bin is None and _is_non_venv_install:
+            # Non-venv install: verify hermes is on PATH
+            _hermes_on_path = shutil.which("hermes")
+            if _hermes_on_path:
+                check_ok(f"Hermes on PATH ({_hermes_on_path}) — {_method} install, venv not required")
+            else:
+                check_warn(
+                    "Hermes not found on PATH",
+                    f"(detected {_method} install but 'hermes' is not on PATH)"
+                )
+        elif _venv_bin is None:
             check_warn(
                 "Venv entry point not found",
                 "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"

@@ -261,9 +261,11 @@ class TestBuildSkillsSystemPrompt:
             "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
         )
         result = build_skills_system_prompt()
-        assert "python-debug" in result
-        assert "Debug Python scripts" in result
-        assert "available_skills" in result
+        assert "coding (1)" in result
+        assert "python-debug" not in result
+        assert "Debug Python scripts" not in result
+        assert "skill_categories" in result
+        assert "skills_list(query=...)" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -273,8 +275,9 @@ class TestBuildSkillsSystemPrompt:
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
         result = build_skills_system_prompt()
-        # "search" should appear only once per category
-        assert result.count("- search") == 1
+        # Category-only prompt should count the skill once without listing it.
+        assert "tools (1)" in result
+        assert "- search" not in result
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
@@ -302,7 +305,8 @@ class TestBuildSkillsSystemPrompt:
             mock_sys.platform = "linux"
             result = build_skills_system_prompt()
 
-        assert "web-search" in result
+        assert "apple (1)" in result
+        assert "web-search" not in result
         assert "imessage" not in result
 
     def test_includes_matching_platform_skills(self, monkeypatch, tmp_path):
@@ -321,8 +325,9 @@ class TestBuildSkillsSystemPrompt:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
-        assert "imessage" in result
-        assert "Send iMessages" in result
+        assert "apple (1)" in result
+        assert "imessage" not in result
+        assert "Send iMessages" not in result
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
@@ -350,7 +355,7 @@ class TestBuildSkillsSystemPrompt:
         ):
             result = build_skills_system_prompt()
 
-        assert "web-search" in result
+        assert "tools (1)" in result
         assert "old-tool" not in result
 
     def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
@@ -362,14 +367,14 @@ class TestBuildSkillsSystemPrompt:
         )
 
         first = build_skills_system_prompt()
-        assert "cached-skill" in first
+        assert "tools (1)" in first
 
         (tmp_path / "config.yaml").write_text(
             "skills:\n  disabled: [cached-skill]\n"
         )
 
         second = build_skills_system_prompt()
-        assert "cached-skill" not in second
+        assert second == ""
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -390,8 +395,9 @@ class TestBuildSkillsSystemPrompt:
         )
 
         result = build_skills_system_prompt()
-        assert "free-skill" in result
-        assert "gated-skill" in result
+        assert "media (2)" in result
+        assert "free-skill" not in result
+        assert "gated-skill" not in result
 
     def test_includes_skills_with_met_prerequisites(self, monkeypatch, tmp_path):
         """Skills with satisfied prerequisites should appear normally."""
@@ -407,7 +413,8 @@ class TestBuildSkillsSystemPrompt:
         )
 
         result = build_skills_system_prompt()
-        assert "ready-skill" in result
+        assert "media (1)" in result
+        assert "ready-skill" not in result
 
     def test_non_local_backend_keeps_skill_visible_without_probe(
         self, monkeypatch, tmp_path
@@ -425,7 +432,8 @@ class TestBuildSkillsSystemPrompt:
         )
 
         result = build_skills_system_prompt()
-        assert "backend-skill" in result
+        assert "media (1)" in result
+        assert "backend-skill" not in result
 
 
 class TestBuildNousSubscriptionPrompt:
@@ -1090,7 +1098,8 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "duckduckgo" in result
+        assert "search (1)" in result
+        assert "duckduckgo" not in result
 
     def test_requires_skill_hidden_when_toolset_missing(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1116,7 +1125,8 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets={"terminal"},
         )
-        assert "openhue" in result
+        assert "iot (1)" in result
+        assert "openhue" not in result
 
     def test_unconditional_skill_always_shown(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1129,10 +1139,11 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "notes" in result
+        assert "general (1)" in result
+        assert "notes" not in result
 
-    def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
-        """Backward compat: calling with no args shows everything."""
+    def test_no_args_shows_all_skill_categories(self, monkeypatch, tmp_path):
+        """Calling with no args shows categories, not every skill name."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
         skill_dir.mkdir(parents=True)
@@ -1140,7 +1151,8 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
         )
         result = build_skills_system_prompt()
-        assert "duckduckgo" in result
+        assert "search (1)" in result
+        assert "duckduckgo" not in result
 
     def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
         """Regression: metadata key present but null should not AttributeError."""
@@ -1155,7 +1167,8 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "safe-skill" in result
+        assert "general (1)" in result
+        assert "safe-skill" not in result
 
     def test_null_hermes_under_metadata_does_not_crash(self, monkeypatch, tmp_path):
         """Regression: metadata.hermes present but null should not crash."""
@@ -1169,7 +1182,8 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "nested-null" in result
+        assert "general (1)" in result
+        assert "nested-null" not in result
 
 
 # =========================================================================

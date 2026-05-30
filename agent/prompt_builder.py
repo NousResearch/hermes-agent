@@ -1213,51 +1213,67 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
-        index_lines = []
+        category_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
+            skill_count = len({name for name, _desc in skills_by_category[category]})
             if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
+                category_lines.append(f"  - {category} ({skill_count}): {cat_desc}")
             else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
+                category_lines.append(f"  - {category} ({skill_count})")
+
+        # Keep a tiny set of high-risk routing skills visible by name.  The
+        # complete skill catalog remains discoverable through skills_list()
+        # and skill_view(); this pinned list prevents regressions for core
+        # Hermes administration and prompt/skill-governance tasks while
+        # avoiding the old 150+ line always-on catalog.
+        pinned_names = {
+            "hermes-agent",
+            "hermes-administration",
+            "system-prompt-skill-governance",
+            "global-skill-authoring-standards",
+        }
+        pinned_lines = []
+        seen_pinned = set()
+        for category in sorted(skills_by_category.keys()):
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
+                if name not in pinned_names or name in seen_pinned:
                     continue
-                seen.add(name)
+                seen_pinned.add(name)
                 if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                    pinned_lines.append(f"  - {name}: {desc}")
                 else:
-                    index_lines.append(f"    - {name}")
+                    pinned_lines.append(f"  - {name}")
+
+        pinned_block = ""
+        if pinned_lines:
+            pinned_block = "\n<pinned_critical_skills>\n" + "\n".join(pinned_lines) + "\n</pinned_critical_skills>\n"
 
         result = (
             "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
+            "Hermes skills use progressive disclosure: the system prompt only shows "
+            "skill categories and a few critical routing skills. Do not assume an "
+            "unlisted skill is unavailable. For any task that may need a reusable "
+            "workflow, domain/toolchain procedure, output standard, API details, "
+            "pitfalls, or verification pattern, discover the catalog just-in-time "
+            "with skills_list(category=...) or skills_list(query=...), then load "
+            "the best match with skill_view(name). Do not load skills for simple "
+            "questions or a single obvious tool call.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "If a skill has issues, fix it with skill_manage(action='patch'). After "
+            "difficult/iterative tasks, offer to save or update a skill.\n"
             "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
+            "<skill_categories>\n"
+            + "\n".join(category_lines) + "\n"
+            "</skill_categories>\n"
+            + pinned_block +
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Only proceed without loading a skill if genuinely none are relevant after "
+            "considering the categories or performing just-in-time discovery."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

@@ -1,4 +1,8 @@
-"""Hermes plugin hooks — plan progress + todo read-back without core Hermes patches."""
+"""Hermes plugin hooks — pre-transition guards for Kynver todo writes.
+
+Projection and read-back live on :class:`KynverTodoStore`; hooks only block
+illegal focus transitions before the built-in ``todo`` tool runs.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ from typing import Any, Optional
 
 from .agentos_bridge import KynverAgentOSClient, agentos_enabled, load_kynver_agentos_config
 from .operating_config import kynver_operating_tools_enabled, load_operating_linkage
-from .plan_progress import safe_project_todo_write, transform_todo_result
+from .plan_progress import inspect_todo_write
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +43,16 @@ def on_pre_tool_call(
         return None
 
     linkage = load_operating_linkage()
-    projection = safe_project_todo_write(
+    blocked = inspect_todo_write(
         client,
         linkage,
         list(todos),
         merge=bool(args.get("merge")),
     )
-    if projection.get("blocked"):
+    if blocked:
         return {
             "action": "block",
-            "message": projection.get("error", "Kynver pre-transition blocked todo write"),
+            "message": blocked,
         }
     return None
 
@@ -59,17 +63,9 @@ def on_transform_tool_result(
     result: Any = None,
     **_: Any,
 ) -> Optional[str]:
-    if tool_name != "todo":
-        return None
-    if not isinstance(result, str):
-        return None
+    """No-op — KynverTodoStore reconciles on read/write."""
 
-    client = _client()
-    if not client:
-        return None
-
-    linkage = load_operating_linkage()
-    return transform_todo_result(result, client, linkage)
+    return None
 
 
 def register_operating_hooks(ctx) -> None:
@@ -79,4 +75,4 @@ def register_operating_hooks(ctx) -> None:
         return
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("transform_tool_result", on_transform_tool_result)
-    logger.info("Kynver operating hooks registered (plan progress + todo read-back)")
+    logger.info("Kynver operating hooks registered (todo pre-transition guards)")

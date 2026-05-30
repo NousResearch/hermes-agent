@@ -50,6 +50,21 @@ def test_project_todo_write_sets_focus_not_running():
     assert "running" not in str(focus_calls)
 
 
+def test_running_row_without_focus_maps_to_pending():
+    client = MagicMock()
+    client.get.side_effect = [
+        {"plan": {"id": "plan-1", "inProgressRowKey": None}},
+        {
+            "items": [
+                {"rowKey": "hermes-todo:a", "title": "Executor lease", "status": "running"},
+            ]
+        },
+    ]
+    linkage = OperatingLinkage(plan_id="plan-1", task_id=None, session_id=None, executor_ref="hermes:forge")
+    merged = reconcile_todos_from_kynver(client, linkage, [])
+    assert merged[0]["status"] == "pending"
+
+
 def test_read_back_merges_kynver_focus():
     client = MagicMock()
     client.get.side_effect = [

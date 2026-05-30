@@ -234,3 +234,22 @@ class KynverAgentOSClient:
 
     def delete(self, path: str, *, slug: str | None = None, timeout: float | None = None) -> Any:
         return self.request("DELETE", path, slug=slug, timeout=timeout)
+
+
+def agentos_available(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether the active profile has enough Kynver config for calls."""
+
+    return agentos_enabled(env)
+
+
+def probe_agentos_health(client: KynverAgentOSClient | None = None) -> bool:
+    """Lightweight health check via GET ``/stats`` (same route as MCP context tool)."""
+
+    try:
+        probe = client or KynverAgentOSClient()
+        if not probe.config.enabled:
+            return False
+        probe.get("/stats")
+        return True
+    except Exception:
+        return False

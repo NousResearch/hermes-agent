@@ -28,7 +28,7 @@ _STATUS_TO_ROW: dict[str, str] = {
 _ROW_TO_HERMES: dict[str, str] = {
     "todo": "pending",
     "in_progress": "in_progress",
-    "running": "in_progress",
+    # `running` is harness executor lease only — never Hermes current focus.
     "partial": "completed",
     "blocked": "cancelled",
     "done": "completed",
@@ -50,6 +50,43 @@ def _parse_todo_id(row_key: str) -> str | None:
     return None
 
 
+def inspect_todo_write(
+    client: KynverAgentOSClient,
+    linkage: OperatingLinkage,
+    todos: list[dict[str, Any]],
+    *,
+    merge: bool,
+) -> str | None:
+    """Validate a todo write without mutating Kynver. Returns block message or None."""
+
+    if not linkage.plan_id:
+        return None
+
+    assert_single_in_progress(todos)
+
+    plan_path = f"/plans/{linkage.plan_id}"
+    rows_payload = client.get(f"{plan_path}/progress-rows")
+    items = rows_payload.get("items") if isinstance(rows_payload, dict) else rows_payload
+    rows = list(items or [])
+    by_key = _row_index(rows)
+
+    for item in todos:
+        todo_id = str(item.get("id") or "").strip()
+        if not todo_id:
+            continue
+        row_key = hermes_row_key(todo_id)
+        status = normalize_hermes_status(str(item.get("status", "")))
+        existing = by_key.get(row_key)
+        try:
+            assert_focus_allowed(
+                row_status=str(existing.get("status")) if existing else None,
+                next_hermes_status=status,
+            )
+        except PreTransitionError as exc:
+            return str(exc)
+    return None
+
+
 def project_todo_write(
     client: KynverAgentOSClient,
     linkage: OperatingLinkage,
@@ -60,7 +97,9 @@ def project_todo_write(
     if not linkage.plan_id:
         return {"projected": False, "reason": "no KYNVER_PLAN_ID"}
 
-    assert_single_in_progress(todos)
+    blocked = inspect_todo_write(client, linkage, todos, merge=merge)
+    if blocked:
+        raise PreTransitionError(blocked)
 
     plan_path = f"/plans/{linkage.plan_id}"
     rows_payload = client.get(f"{plan_path}/progress-rows")
@@ -76,10 +115,6 @@ def project_todo_write(
         row_key = hermes_row_key(todo_id)
         status = normalize_hermes_status(str(item.get("status", "")))
         existing = by_key.get(row_key)
-        assert_focus_allowed(
-            row_status=str(existing.get("status")) if existing else None,
-            next_hermes_status=status,
-        )
         upserts.append(
             {
                 "rowKey": row_key,

@@ -1101,16 +1101,17 @@ def init_agent(
         "max_tokens": max_tokens,
     }
     
-    # In-memory todo list for task planning (one per agent/session)
-    from tools.todo_tool import TodoStore
-    agent._todo_store = TodoStore()
-    
-    # Load config once for memory, skills, and compression sections
+    # Load config once for memory, skills, compression, and todo store plugins
     try:
         from hermes_cli.config import load_config as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    from agent.todo_store_provider import init_todo_store
+
+    init_todo_store(agent, _agent_cfg, platform=platform)
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

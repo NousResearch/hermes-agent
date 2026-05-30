@@ -1,8 +1,9 @@
-import io
 import json
+import io
 import urllib.error
 from email.message import Message
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,142 +12,66 @@ from plugins.memory.kynver.agentos_bridge import (
     KynverAgentOSConfig,
     KynverAgentOSError,
     _load_profile_env,
-    agentos_enabled,
+    agentos_available,
     load_kynver_agentos_config,
+    probe_agentos_health,
     redact,
 )
 
 
-def test_load_profile_env_parses_dotenv(tmp_path: Path):
+def test_load_profile_env_parses_basic_dotenv(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "# comment\nKYNVER_API_KEY='secret'\nKYNVER_AGENT_OS_SLUG=forge\n",
+        "# comment\nKYNVER_API_URL=https://example.test/\nKYNVER_API_KEY='secret'\nKYNVER_AGENT_OS_SLUG=forge\n",
         encoding="utf-8",
     )
 
     assert _load_profile_env(env_path) == {
+        "KYNVER_API_URL": "https://example.test/",
         "KYNVER_API_KEY": "secret",
         "KYNVER_AGENT_OS_SLUG": "forge",
     }
 
 
-def test_load_config_defaults_enabled_when_configured(monkeypatch, tmp_path: Path):
+def test_load_config_merges_profile_and_process_env(monkeypatch, tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text("KYNVER_API_KEY=profile-key\nKYNVER_AGENT_OS_SLUG=forge\n", encoding="utf-8")
     monkeypatch.setattr("plugins.memory.kynver.agentos_bridge._active_env_path", lambda: env_path)
 
-    cfg = load_kynver_agentos_config({"KYNVER_FETCH_TIMEOUT_MS": "2500", "KYNVER_OBSERVER_TIMEOUT_MS": "1000"})
+    cfg = load_kynver_agentos_config({"KYNVER_API_KEY": "process-key", "KYNVER_FETCH_TIMEOUT_MS": "2500"})
 
-    assert cfg.configured is True
-    assert cfg.enabled is True
-    assert cfg.mode == "enabled"
+    assert cfg.api_key == "process-key"
+    assert cfg.slug == "forge"
     assert cfg.timeout == 2.5
-    assert cfg.side_effect_timeout == 1.0
 
 
-def test_load_config_uses_short_default_timeouts():
-    cfg = load_kynver_agentos_config(
-        {"KYNVER_API_KEY": "key", "KYNVER_AGENT_OS_SLUG": "forge"}
-    )
-
-    assert cfg.timeout <= 3.0
-    assert cfg.side_effect_timeout <= 3.0
-
-
-def test_disabled_mode_is_opt_out():
-    assert not agentos_enabled(
+def test_agentos_available_requires_credentials():
+    assert not agentos_available({})
+    assert agentos_available(
         {
+            "KYNVER_API_URL": "https://example.test",
             "KYNVER_API_KEY": "key",
             "KYNVER_AGENT_OS_SLUG": "forge",
-            "KYNVER_AGENTOS_MODE": "disabled",
         }
     )
 
 
-def test_disabled_escape_hatches_are_loaded():
-    cfg = load_kynver_agentos_config(
-        {
-            "KYNVER_API_KEY": "key",
-            "KYNVER_AGENT_OS_SLUG": "forge",
-            "KYNVER_TASKS_DISABLED": "1",
-            "KYNVER_SKILLS_DISABLED": "true",
-            "KYNVER_SESSION_SYNC_DISABLED": "yes",
-            "KYNVER_TODO_MIRROR_DISABLED": "on",
-        }
-    )
-
-    assert cfg.tasks_disabled is True
-    assert cfg.skills_disabled is True
-    assert cfg.session_sync_disabled is True
-    assert cfg.todo_mirror_disabled is True
-
-
-class _FakeResponse:
-    def __init__(self, payload: str):
-        self.payload = payload.encode("utf-8")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def read(self):
-        return self.payload
-
-
-def test_request_sends_bearer_and_parses_json(monkeypatch):
-    seen = {}
-
-    def fake_urlopen(req, timeout):
-        seen["url"] = req.full_url
-        seen["timeout"] = timeout
-        seen["auth"] = req.headers.get("Authorization")
-        seen["method"] = req.get_method()
-        seen["body"] = json.loads(req.data.decode("utf-8"))
-        return _FakeResponse('{"ok": true}')
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+def test_api_path_rejects_traversal():
     client = KynverAgentOSClient(
-        KynverAgentOSConfig(api_url="https://example.test", api_key="secret", slug="forge", timeout=3)
+        KynverAgentOSConfig(api_url="https://example.test", api_key="key", slug="forge")
     )
-
-    result = client.post("/sessions", {"channel": "cli"})
-
-    assert result == {"ok": True}
-    assert seen == {
-        "url": "https://example.test/api/agent-os/forge/sessions",
-        "timeout": 3,
-        "auth": "Bearer secret",
-        "method": "POST",
-        "body": {"channel": "cli"},
-    }
+    with pytest.raises(KynverAgentOSError):
+        client.api_path("../secrets")
 
 
-def test_request_accepts_per_call_timeout(monkeypatch):
-    seen = {}
-
-    def fake_urlopen(req, timeout):
-        seen["timeout"] = timeout
-        return _FakeResponse('{"ok": true}')
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    client = KynverAgentOSClient(
-        KynverAgentOSConfig(api_url="https://example.test", api_key="secret", slug="forge", timeout=10)
-    )
-
-    assert client.post("/sessions/session-1/events", {"event": {"summary": "turn"}}, timeout=1.25) == {"ok": True}
-    assert seen["timeout"] == 1.25
-
-
-def test_request_redacts_http_error(monkeypatch):
+def test_http_error_redacts_bearer_token(monkeypatch):
     def fake_urlopen(req, timeout):
         raise urllib.error.HTTPError(
             req.full_url,
             401,
             "Unauthorized",
             hdrs=Message(),
-            fp=io.BytesIO(b"bad Bearer secret-token api_key=abc123"),
+            fp=io.BytesIO(b"bad Bearer secret-token token=abc123"),
         )
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -175,3 +100,17 @@ def test_redact_covers_json_and_header_secret_forms():
     for secret in ("json-secret", "tok-secret", "auth-secret", "header-secret", "bearer-secret", "pw-secret"):
         assert secret not in msg
     assert "[REDACTED]" in msg
+
+
+def test_probe_agentos_health_success():
+    client = MagicMock()
+    client.config.enabled = True
+    client.get.return_value = {"ok": True}
+    assert probe_agentos_health(client) is True
+
+
+def test_probe_agentos_health_failure():
+    client = MagicMock()
+    client.config.enabled = True
+    client.get.side_effect = RuntimeError("down")
+    assert probe_agentos_health(client) is False

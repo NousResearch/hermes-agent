@@ -1175,7 +1175,7 @@ def get_pre_tool_call_directives(
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
-) -> tuple:
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Fire ``pre_tool_call`` hook ONCE, return (block_message, rewritten_args).
 
     Plugins can return either a block or rewrite directive::

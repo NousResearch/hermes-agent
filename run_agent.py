@@ -32,6 +32,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import atexit
 import base64
 import copy
 import hashlib
@@ -40,6 +41,7 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 import re
+import signal
 import sys
 import tempfile
 import time
@@ -1403,6 +1405,55 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+
+    def _register_termination_handlers(self) -> None:
+        """Register SIGTERM/SIGINT handlers and atexit hook for emergency message persistence.
+
+        When the process is killed mid-turn (SIGTERM from a process manager, OOM
+        kill, etc.), any messages accumulated since the last _persist_session call
+        are lost. This registers a best-effort handler that attempts to flush
+        in-flight messages before the process exits.
+
+        The handler is idempotent: ``_termination_flushed`` prevents double-flush
+        when both a signal and atexit fire.
+        """
+        self._termination_flushed = False
+
+        def _flush_on_signal(signum, frame):
+            """Best-effort flush of in-flight messages on SIGTERM/SIGINT."""
+            if self._termination_flushed:
+                return
+            self._termination_flushed = True
+            try:
+                msgs = getattr(self, '_session_messages', None)
+                if msgs and self._session_db:
+                    self._persist_session(msgs)
+            except Exception:
+                pass  # Best-effort — never crash in a signal handler
+            # Re-raise KeyboardInterrupt for SIGINT so Python's default
+            # handling can still fire (needed for interactive CLI ^C).
+            if signum == signal.SIGINT:
+                raise KeyboardInterrupt
+
+        def _flush_on_exit():
+            """atexit fallback: flush messages if signal handler didn't already."""
+            if self._termination_flushed:
+                return
+            self._termination_flushed = True
+            try:
+                msgs = getattr(self, '_session_messages', None)
+                if msgs and self._session_db:
+                    self._persist_session(msgs)
+            except Exception:
+                pass
+
+        # Register signal handlers (only on POSIX; SIGTERM doesn't exist on Windows)
+        if hasattr(signal, 'SIGTERM'):
+            signal.signal(signal.SIGTERM, _flush_on_signal)
+        if hasattr(signal, 'SIGINT'):
+            # Save previous handler to chain with KeyboardInterrupt behavior
+            signal.signal(signal.SIGINT, _flush_on_signal)
+        atexit.register(_flush_on_exit)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.

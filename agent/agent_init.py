@@ -1652,6 +1652,11 @@ def init_agent(
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 
+    # Register SIGTERM/SIGINT handlers for emergency message persistence (#35313).
+    # Best-effort: flushes in-flight _session_messages to the session DB before
+    # the process exits, preventing data loss on unexpected termination.
+    agent._register_termination_handlers()
+
 
 
 __all__ = ["init_agent"]

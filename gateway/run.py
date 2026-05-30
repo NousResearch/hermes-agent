@@ -9009,6 +9009,7 @@ class GatewayRunner:
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "chat_id": source.chat_id or "",
+                "thread_id": source.thread_id or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }

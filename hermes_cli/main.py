@@ -6291,6 +6291,17 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_dev(args):
+    """Dev workspace control-plane helpers."""
+    sub = getattr(args, "dev_command", None)
+    if sub == "goals":
+        from hermes_cli.dev_goals import dev_goals_command
+
+        return dev_goals_command(args)
+    print("Usage: hermes dev goals {create,list,tree,abandon} …", file=sys.stderr)
+    return 2
+
+
 def cmd_case(args):
     """Durable Work Case files."""
     from hermes_cli.case import case_command
@@ -11164,7 +11175,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "case", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "cron", "curator", "dashboard", "debug", "dev", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
@@ -12422,6 +12433,20 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # dev command — Dev workspace control-plane helpers
+    # =========================================================================
+    dev_parser = subparsers.add_parser(
+        "dev",
+        help="Dev workspace control-plane helpers",
+        description="Manage Dev control-plane artifacts such as project goals.",
+    )
+    dev_subparsers = dev_parser.add_subparsers(dest="dev_command")
+    from hermes_cli.dev_goals import build_parser as _build_dev_goals_parser
+
+    _build_dev_goals_parser(dev_subparsers)
+    dev_parser.set_defaults(func=cmd_dev)
 
     # =========================================================================
     # case command — durable Work Case files

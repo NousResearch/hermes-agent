@@ -34,6 +34,8 @@ hermes-agent/
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
+│   ├── dev_control/    # Oryn Dev control plane (clarifications, plan artifacts,
+│   │                     #   project goals, verification, lab loop, …)
 │   ├── platforms/        # Adapter per platform (telegram, discord, slack, whatsapp,
 │   │                     #   homeassistant, signal, matrix, mattermost, email, sms,
 │   │                     #   dingtalk, wecom, weixin, feishu, qqbot, bluebubbles,
@@ -855,6 +857,37 @@ Isolation model:
   loops.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
+
+---
+
+## Dev project goals (Oryn `dev_control`)
+
+Durable project-level intent spine for the Dev workspace: **vision → goal →
+milestone → subgoal**, persisted in the same `state.db` as other Dev control
+stores. Sits above the execution spine (`clarification → plan_artifact →
+execution plan → tasks → verification/CI`) and links down via subgoal
+`plan_artifact_id` and/or `payload.plan_id`.
+
+- **Store:** `gateway/dev_control/project_goals.py` — `DevProjectGoalStore`,
+  `recompute_rollup()`, CRUD + `tree()`. Parent kinds are enforced
+  (vision → goal → milestone → subgoal).
+- **Evaluation:** `gateway/dev_control/project_goal_eval.py` —
+  `assemble_evidence()`, `check_machine_criteria()`, `judge_project_goal()`,
+  `reevaluate_project_goal()`, `goals_tick()`. Machine-checkable criteria run
+  deterministically before any LLM judge call; subgoals with only machine
+  criteria auto-`achieved` when verification passes.
+- **API:** `/v1/dev/goals`, `/v1/dev/goals/tree`, `/v1/dev/goals/{id}/reevaluate`,
+  `/v1/dev/goals/{id}/abandon` (registered in `gateway/dev_control/routes.py`).
+- **CLI:** `hermes dev goals {create,list,tree,abandon}` (`hermes_cli/dev_goals.py`).
+- **Lab loop tick:** end of each `run_lab_loop_pass()` when
+  `HERMES_DEV_PROJECT_GOALS_TICK=1` (default off). Fail-open judge semantics
+  match session goals (`hermes_cli/goals.py`).
+- **Tests:** `scripts/run_tests.sh tests/gateway/dev_control/test_project_goals.py`
+  `tests/gateway/dev_control/test_project_goal_eval.py`
+  `tests/gateway/dev_control/test_project_goals_api.py`
+
+Design spec: `docs/dev-project-goals-spec.md`. OpenSpec change:
+`openspec/changes/add-dev-project-goals/`.
 
 ---
 

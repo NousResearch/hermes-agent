@@ -102,6 +102,14 @@ from gateway.dev_control.plan_artifacts import (
     revise_execution_plan_draft,
     revise_plan_artifact,
 )
+from gateway.dev_control.project_goals import (
+    DevProjectGoalStore,
+    abandon_project_goal,
+    create_project_goal,
+    get_project_goal_tree,
+    list_project_goals,
+)
+from gateway.dev_control.project_goal_eval import reevaluate_project_goal
 from gateway.dev_control.project_scope import project_id_from_payload, resolve_project_id
 from gateway.dev_control.product_events import DevProductEventStore
 from gateway.dev_control.production_signals import (
@@ -213,6 +221,11 @@ def dev_control_capabilities() -> dict[str, dict[str, str]]:
         "dev_cancel_plan_artifact": {"method": "POST", "path": "/v1/dev/plan-artifacts/{plan_artifact_id}/cancel"},
         "dev_create_execution_plan_from_artifact": {"method": "POST", "path": "/v1/dev/plan-artifacts/{plan_artifact_id}/create-execution-plan"},
         "dev_plan_artifact_builds": {"method": "GET", "path": "/v1/dev/plan-artifacts/{plan_artifact_id}/builds"},
+        "dev_project_goals": {"method": "GET", "path": "/v1/dev/goals"},
+        "dev_create_project_goal": {"method": "POST", "path": "/v1/dev/goals"},
+        "dev_project_goal_tree": {"method": "GET", "path": "/v1/dev/goals/tree"},
+        "dev_project_goal_reevaluate": {"method": "POST", "path": "/v1/dev/goals/{goal_id}/reevaluate"},
+        "dev_abandon_project_goal": {"method": "POST", "path": "/v1/dev/goals/{goal_id}/abandon"},
         "dev_execution_plan_draft_review": {"method": "GET", "path": "/v1/dev/execution-plans/{plan_id}/draft-review"},
         "dev_revise_execution_plan_draft": {"method": "POST", "path": "/v1/dev/execution-plans/{plan_id}/revise-draft"},
         "dev_approve_execution_plan_draft": {"method": "POST", "path": "/v1/dev/execution-plans/{plan_id}/approve-draft"},
@@ -279,6 +292,11 @@ def register_dev_control_routes(app: web.Application, adapter: Any) -> None:
     app.router.add_post("/v1/dev/plan-artifacts/{plan_artifact_id}/cancel", adapter._handle_dev_plan_artifact_cancel)
     app.router.add_post("/v1/dev/plan-artifacts/{plan_artifact_id}/create-execution-plan", adapter._handle_dev_plan_artifact_create_execution_plan)
     app.router.add_get("/v1/dev/plan-artifacts/{plan_artifact_id}/builds", adapter._handle_dev_plan_artifact_builds)
+    app.router.add_get("/v1/dev/goals/tree", adapter._handle_dev_project_goal_tree)
+    app.router.add_get("/v1/dev/goals", adapter._handle_dev_project_goals)
+    app.router.add_post("/v1/dev/goals", adapter._handle_dev_project_goals)
+    app.router.add_post("/v1/dev/goals/{goal_id}/reevaluate", adapter._handle_dev_project_goal_reevaluate)
+    app.router.add_post("/v1/dev/goals/{goal_id}/abandon", adapter._handle_dev_project_goal_abandon)
     app.router.add_get("/v1/dev/runtimes/openhands/server", adapter._handle_dev_openhands_server_status)
     app.router.add_post("/v1/dev/runtimes/openhands/server/start", adapter._handle_dev_openhands_server_start)
     app.router.add_post("/v1/dev/runtimes/openhands/server/stop", adapter._handle_dev_openhands_server_stop)
@@ -569,6 +587,20 @@ class DevControlRouteMixin:
             logger.warning("Dev plan artifact store unavailable: %s", exc)
             return None
         return self._dev_plan_artifact_store
+
+    def _ensure_dev_project_goal_store(self) -> Optional[DevProjectGoalStore]:
+        """Create the Dev project goal store on the same state.db as execution plans."""
+        if getattr(self, "_dev_project_goal_store", None) is not None:
+            return self._dev_project_goal_store
+        execution_store = self._ensure_dev_execution_store()
+        if execution_store is None:
+            return None
+        try:
+            self._dev_project_goal_store = DevProjectGoalStore(db_path=execution_store.db_path)
+        except Exception as exc:
+            logger.warning("Dev project goal store unavailable: %s", exc)
+            return None
+        return self._dev_project_goal_store
 
     def _ensure_dev_verification_store(self) -> Optional[DevVerificationStore]:
         """Create the Dev verification store on the same state.db as execution plans."""
@@ -955,6 +987,112 @@ class DevControlRouteMixin:
                 plan_artifact_id=request.match_info["plan_artifact_id"],
                 limit=request.rel_url.query.get("limit") or 25,
             )
+        except KeyError as exc:
+            return web.json_response({"error": {"message": str(exc)}}, status=404)
+        return web.json_response(result)
+
+    async def _handle_dev_project_goals(self, request: "web.Request") -> "web.Response":
+        """GET/POST /v1/dev/goals — list or create durable project goals."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        store = self._ensure_dev_project_goal_store()
+        if store is None:
+            return web.json_response({"error": {"message": "Dev project goal store unavailable"}}, status=503)
+        if request.method == "GET":
+            include_abandoned = str(request.rel_url.query.get("include_abandoned") or "true").lower() not in {
+                "0", "false", "no",
+            }
+            result = list_project_goals(
+                store=store,
+                project_id=request.rel_url.query.get("project_id") or None,
+                kind=request.rel_url.query.get("kind") or None,
+                status=request.rel_url.query.get("status") or None,
+                parent_goal_id=request.rel_url.query.get("parent_goal_id"),
+                include_abandoned=include_abandoned,
+                limit=request.rel_url.query.get("limit") or 200,
+            )
+            return web.json_response(result)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            result = create_project_goal(
+                store=store,
+                kind=body.get("kind") or "",
+                title=body.get("title") or "",
+                project_id=project_id_from_payload(body),
+                parent_goal_id=body.get("parent_goal_id"),
+                markdown=body.get("markdown") or "",
+                status=body.get("status") or "proposed",
+                acceptance_criteria=body.get("acceptance_criteria") or [],
+                plan_artifact_id=body.get("plan_artifact_id"),
+                ordering=body.get("ordering") or 0,
+                payload=body.get("payload") or {},
+            )
+        except ValueError as exc:
+            return web.json_response({"error": {"message": str(exc)}}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": {"message": f"Dev project goal creation failed: {exc}"}}, status=500)
+        return web.json_response(result)
+
+    async def _handle_dev_project_goal_tree(self, request: "web.Request") -> "web.Response":
+        """GET /v1/dev/goals/tree — assembled project goal hierarchy."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        store = self._ensure_dev_project_goal_store()
+        if store is None:
+            return web.json_response({"error": {"message": "Dev project goal store unavailable"}}, status=503)
+        project_id = resolve_project_id(request.rel_url.query.get("project_id"))
+        include_abandoned = str(request.rel_url.query.get("include_abandoned") or "false").lower() in {
+            "1", "true", "yes",
+        }
+        result = get_project_goal_tree(
+            store=store,
+            project_id=project_id,
+            include_abandoned=include_abandoned,
+        )
+        return web.json_response(result)
+
+    async def _handle_dev_project_goal_reevaluate(self, request: "web.Request") -> "web.Response":
+        """POST /v1/dev/goals/{goal_id}/reevaluate — manual re-evaluation trigger."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        store = self._ensure_dev_project_goal_store()
+        if store is None:
+            return web.json_response({"error": {"message": "Dev project goal store unavailable"}}, status=503)
+        verification_store = self._ensure_dev_verification_store()
+        execution_store = self._ensure_dev_execution_store()
+        plan_artifact_store = self._ensure_dev_plan_artifact_store()
+        try:
+            result = reevaluate_project_goal(
+                store=store,
+                goal_id=request.match_info["goal_id"],
+                verification_store=verification_store,
+                execution_store=execution_store,
+                plan_artifact_store=plan_artifact_store,
+            )
+        except KeyError as exc:
+            return web.json_response({"error": {"message": str(exc)}}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": {"message": str(exc)}}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": {"message": f"Dev project goal re-evaluation failed: {exc}"}}, status=500)
+        return web.json_response(result)
+
+    async def _handle_dev_project_goal_abandon(self, request: "web.Request") -> "web.Response":
+        """POST /v1/dev/goals/{goal_id}/abandon — mark a goal abandoned."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        store = self._ensure_dev_project_goal_store()
+        if store is None:
+            return web.json_response({"error": {"message": "Dev project goal store unavailable"}}, status=503)
+        try:
+            result = abandon_project_goal(store=store, goal_id=request.match_info["goal_id"])
         except KeyError as exc:
             return web.json_response({"error": {"message": str(exc)}}, status=404)
         return web.json_response(result)

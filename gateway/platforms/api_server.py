@@ -837,6 +837,7 @@ class APIServerAdapter(DevControlRouteMixin, BasePlatformAdapter):
         self._dev_execution_store: Optional[Any] = None
         self._dev_clarification_store: Optional[Any] = None
         self._dev_plan_artifact_store: Optional[Any] = None
+        self._dev_project_goal_store: Optional[Any] = None
         self._dev_verification_store: Optional[Any] = None
         self._dev_signal_store: Optional[Any] = None
         self._dev_product_event_store: Optional[Any] = None

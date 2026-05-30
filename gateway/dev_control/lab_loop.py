@@ -445,6 +445,14 @@ def run_lab_loop_pass(
         max_cost_usd=max_cost_usd,
         regression_threshold=regression_threshold,
     )
+    try:
+        from gateway.dev_control.project_goal_eval import maybe_run_goals_tick
+
+        tick = maybe_run_goals_tick(db_path=Path(db_path))
+        if tick is not None:
+            report["project_goals_tick"] = tick
+    except Exception as exc:
+        report["project_goals_tick"] = {"ok": False, "error": str(exc)}
     return store.record_pass(report)
 
 
@@ -1205,7 +1213,12 @@ def _lab_worker_evidence_is_terminal(fields: dict[str, Any], *, task: dict[str, 
 
 def _parse_lab_worker_evidence(transcript: str) -> dict[str, Any]:
     fields = parse_worker_output_contract(transcript)
-    if fields.get("output_contract_status") not in {"missing", "invalid"} and not _worker_evidence_is_prompt_template(fields):
+    has_structured_summary = bool(str(fields.get("structured_summary") or "").strip())
+    if (
+        fields.get("output_contract_status") not in {"missing", "invalid"}
+        and has_structured_summary
+        and not _worker_evidence_is_prompt_template(fields)
+    ):
         return fields
     loose = _parse_loose_lab_worker_evidence(transcript)
     return loose or fields

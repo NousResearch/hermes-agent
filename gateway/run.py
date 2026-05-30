@@ -12449,6 +12449,12 @@ class GatewayRunner:
         Accepts an optional focus topic: ``/compress <focus>`` guides the
         summariser to preserve information related to *focus* while being
         more aggressive about discarding everything else.
+
+        Also accepts the boundary-aware form ``/compress here [N]``:
+        summarize everything except the most recent ``N`` exchanges
+        (default 2), kept verbatim. Inspired by Claude Code's Rewind
+        "Summarize up to here" action (v2.1.139, May 2026,
+        https://code.claude.com/docs/en/whats-new/2026-w20).
         """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
@@ -12457,8 +12463,15 @@ class GatewayRunner:
         if not history or len(history) < 4:
             return t("gateway.compress.not_enough")
 
-        # Extract optional focus topic from command args
-        focus_topic = (event.get_command_args() or "").strip() or None
+        # Parse args: either a focus topic (full compress) or the
+        # boundary-aware "here [N]" form (partial compress).
+        from hermes_cli.partial_compress import (
+            parse_partial_compress_args,
+            rejoin_compressed_head_and_tail,
+            split_history_for_partial_compress,
+        )
+        _raw_args = (event.get_command_args() or "").strip()
+        partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
 
         try:
             from run_agent import AIAgent
@@ -12478,6 +12491,19 @@ class GatewayRunner:
                 for m in history
                 if m.get("role") in {"user", "assistant"} and m.get("content")
             ]
+
+            # Boundary-aware split: only the head is summarized; the most
+            # recent `keep_last` exchanges are preserved verbatim. The
+            # split snaps the tail to a user-turn start so the rejoined
+            # transcript keeps role alternation valid.
+            tail: list = []
+            head = msgs
+            if partial:
+                head, tail = split_history_for_partial_compress(msgs, keep_last)
+                if not tail:
+                    # Degenerate split — fall back to full compression.
+                    partial = False
+                    head = msgs
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
@@ -12502,14 +12528,19 @@ class GatewayRunner:
                 )
 
                 compressor = tmp_agent.context_compressor
-                if not compressor.has_content_to_compress(msgs):
+                if not compressor.has_content_to_compress(head):
                     return t("gateway.compress.nothing_to_do")
 
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
+                    lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
                 )
+
+                # Re-append the verbatim tail after the compressed head,
+                # guarding the seam against illegal role adjacency.
+                if partial and tail:
+                    compressed = rejoin_compressed_head_and_tail(compressed, tail)
 
                 # _compress_context already calls end_session() on the old session
                 # (preserving its full transcript in SQLite) and creates a new

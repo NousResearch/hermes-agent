@@ -314,6 +314,15 @@ def _process_single_prompt(
             print(f"   Prompt {prompt_index}: Using container image {container_image}")
     
     try:
+        # Mark this process as a non-interactive batch session so the
+        # dangerous-command approval system (tools/approval.py) enforces
+        # the cron-style deny-by-default policy instead of auto-approving
+        # every command.  Without this, batch_runner.py would bypass all
+        # safety checks because none of HERMES_INTERACTIVE,
+        # HERMES_GATEWAY_SESSION, or HERMES_EXEC_ASK are set.
+        # See: https://github.com/NousResearch/hermes-agent/issues/35164
+        os.environ.setdefault("HERMES_CRON_SESSION", "1")
+
         # Sample toolsets from distribution for this prompt
         selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
         

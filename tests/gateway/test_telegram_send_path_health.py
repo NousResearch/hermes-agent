@@ -5,6 +5,7 @@ can enter a wedged state where ``bot.send_message()`` returns a valid Message
 but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 ``send()`` so cron's live-adapter branch falls through to standalone HTTP.
 """
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -65,15 +66,19 @@ async def test_send_short_circuits_when_path_degraded():
 
 
 @pytest.mark.asyncio
-async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
-    """_handle_polling_network_error sets the flag; a successful heartbeat
-    probe in _verify_polling_after_reconnect clears it."""
+async def test_reconnect_clears_degraded_flag_on_successful_start_polling(monkeypatch):
+    """After a successful start_polling() reconnect, _send_path_degraded must
+    be cleared immediately — not deferred to the 60-second heartbeat probe.
+
+    Regression test for #35205: send_path_degraded stayed True for 60 s after
+    reconnect, blocking all outbound messages.
+    """
     adapter = _make_adapter()
     adapter._app = MagicMock()
     adapter._app.updater = MagicMock()
     adapter._app.updater.running = True
     adapter._app.updater.stop = AsyncMock()
-    adapter._app.updater.start_polling = AsyncMock()
+    adapter._app.updater.start_polling = AsyncMock()  # succeeds
     adapter._app.bot = MagicMock()
     adapter._app.bot.get_me = AsyncMock(return_value=MagicMock())
     adapter._polling_error_callback_ref = AsyncMock()
@@ -82,8 +87,48 @@ async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
     )
 
     await adapter._handle_polling_network_error(OSError("Bad Gateway"))
-    assert adapter._send_path_degraded is True
+    # Flag must be cleared immediately after successful start_polling()
+    assert adapter._send_path_degraded is False
 
+    # Heartbeat probe still runs and confirms the flag stays cleared
     with patch("gateway.platforms.telegram.asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
     assert adapter._send_path_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_degraded_flag_stays_true_when_start_polling_fails(monkeypatch):
+    """When start_polling() fails, _send_path_degraded must remain True
+    so send() continues to short-circuit until recovery succeeds."""
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock(side_effect=Exception("Timed out"))
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+    adapter._polling_error_callback_ref = AsyncMock()
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Update", MagicMock(ALL_TYPES=[])
+    )
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("Bad Gateway"))
+
+    # Flag must stay True since reconnect failed
+    assert adapter._send_path_degraded is True
+
+    # Clean up pending retry tasks
+    for t in list(adapter._background_tasks):
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+

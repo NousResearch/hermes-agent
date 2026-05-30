@@ -962,6 +962,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            # Polling is confirmed working — clear the degraded flag so
+            # send() can attempt delivery immediately instead of waiting
+            # 60 s for the heartbeat probe.  If the send-side httpx pool
+            # is also stale, send()'s own retry + error_callback will
+            # re-enter the reconnect ladder.
+            self._send_path_degraded = False
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx

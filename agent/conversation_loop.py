@@ -793,6 +793,11 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Agentic stall-retry guard: ensures the HERMES_STALL_RETRY_MODEL retry
+    # fires at most once per conversation (avoids loops if the retry lane also
+    # stalls). See agent/stall_retry.py.
+    _stall_retry_used = False
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
@@ -3983,7 +3988,33 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
-                
+
+                # ── Agentic stall-retry (opt-in via HERMES_STALL_RETRY_MODEL) ──
+                # dflash Q4 sometimes emits EOS right after an action preamble
+                # ("Let me check X:") with no tool_call, ending the turn early
+                # and stalling the agent mid-task. If this no-tool-call turn
+                # looks like that stall (not a genuine final answer) and a retry
+                # lane is configured, re-issue the SAME turn once on a
+                # higher-quality model; if it yields tool calls, adopt it and
+                # continue the loop instead of stopping. No-op unless the env is
+                # set, so default behavior is unchanged.
+                if not _stall_retry_used:
+                    try:
+                        from agent.stall_retry import looks_like_stall, retry_on_stall
+                        if looks_like_stall(
+                            final_response, finish_reason,
+                            bool(getattr(assistant_message, "tool_calls", None)),
+                            int(os.environ.get("HERMES_STALL_RETRY_MAX_CHARS", "400") or 400),
+                        ):
+                            _retried = retry_on_stall(agent, api_messages, finish_reason)
+                            if _retried is not None and getattr(_retried, "tool_calls", None):
+                                _stall_retry_used = True
+                                assistant_message = _retried
+                                finish_reason = "tool_calls"
+                                continue  # re-enter loop top; tool-calls path handles it
+                    except Exception:
+                        pass  # any failure: keep the original response
+
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

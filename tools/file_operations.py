@@ -702,8 +702,25 @@ class ShellFileOperations(FileOperations):
         return ext in IMAGE_EXTENSIONS
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
-        """Add line numbers to content in LINE_NUM|CONTENT format."""
+        """Add line numbers to content in ``LINE_NUM|CONTENT`` format.
+
+        The gutter uses a compact ``<n>|`` prefix (e.g. ``34|foo``) rather
+        than a fixed-width zero/space-padded one (``    34|foo``). The
+        padding was pure token overhead: on dense source the padded gutter
+        cost ~48% more tokens than the bare content and ~16% more than the
+        compact form, because the leading spaces + zero-padding tokenize
+        into extra tokens on every single line. An A/B (Sonnet 4.6, 2
+        passes) showed the compact gutter matches the padded gutter on
+        line-reference / patch / value-lookup / structure tasks (4/4 both),
+        while dropping line numbers entirely regressed line-referencing
+        (the model hand-counted and was off-by-one, 3/4) — so we keep the
+        numbers, just not the padding. ``HERMES_READ_GUTTER=padded``
+        restores the legacy fixed-width format for anyone who relied on
+        column alignment.
+        """
+        import os as _os
         from tools.tool_output_limits import get_max_line_length
+        padded = (_os.environ.get("HERMES_READ_GUTTER") or "").lower() == "padded"
         max_line_length = get_max_line_length()
         lines = content.split('\n')
         numbered = []
@@ -711,7 +728,7 @@ class ShellFileOperations(FileOperations):
             # Truncate long lines
             if len(line) > max_line_length:
                 line = line[:max_line_length] + "... [truncated]"
-            numbered.append(f"{i:6d}|{line}")
+            numbered.append(f"{i:6d}|{line}" if padded else f"{i}|{line}")
         return '\n'.join(numbered)
     
     def _expand_path(self, path: str) -> str:

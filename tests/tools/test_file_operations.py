@@ -345,15 +345,23 @@ class TestShellFileOpsHelpers:
     def test_add_line_numbers(self, file_ops):
         content = "line one\nline two\nline three"
         result = file_ops._add_line_numbers(content)
-        assert "     1|line one" in result
-        assert "     2|line two" in result
-        assert "     3|line three" in result
+        # Compact gutter: "<n>|content" (no fixed-width padding).
+        assert "1|line one" in result
+        assert "2|line two" in result
+        assert "3|line three" in result
 
     def test_add_line_numbers_with_offset(self, file_ops):
         content = "continued\nmore"
         result = file_ops._add_line_numbers(content, start_line=50)
-        assert "    50|continued" in result
-        assert "    51|more" in result
+        assert "50|continued" in result
+        assert "51|more" in result
+
+    def test_add_line_numbers_padded_env_override(self, file_ops, monkeypatch):
+        # Legacy fixed-width format available via HERMES_READ_GUTTER=padded.
+        monkeypatch.setenv("HERMES_READ_GUTTER", "padded")
+        result = file_ops._add_line_numbers("line one\nline two")
+        assert "     1|line one" in result
+        assert "     2|line two" in result
 
     def test_add_line_numbers_truncates_long_lines(self, file_ops):
         long_line = "x" * (MAX_LINE_LENGTH + 100)
@@ -405,7 +413,7 @@ class TestShellFileOpsHelpers:
         assert "HERMES_FENCE" not in result.content
         assert "\x1b]" not in result.content
         assert "\x07" not in result.content
-        assert "     1|print('ok')" in result.content
+        assert "1|print('ok')" in result.content
 
     def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
         leaked = (

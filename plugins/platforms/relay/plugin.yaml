@@ -1,0 +1,27 @@
+name: relay-platform
+label: Agent Relay
+kind: platform
+version: 1.0.0
+description: >
+  Agent-to-agent relay platform for Hermes.
+  Enables real-time communication between Hermes and external agents
+  (cc-connect, other Hermes instances, custom agents) via HTTP.
+author: 地产K线
+requires_env:
+  - name: RELAY_PORT
+    description: "HTTP port for receiving messages (default: 8766)"
+    prompt: "Relay port"
+    password: false
+optional_env:
+  - name: RELAY_SIDECAR_URL
+    description: "URL of the cc-connect sidecar (default: http://127.0.0.1:8767)"
+    prompt: "Sidecar URL"
+    password: false
+  - name: RELAY_HOST
+    description: "Bind address (default: 127.0.0.1)"
+    prompt: "Bind host"
+    password: false
+  - name: RELAY_HOME_CHANNEL
+    description: "Default chat_id for cron / notification delivery (e.g. relay:zhizhiruo)"
+    prompt: "Home channel chat_id"
+    password: false

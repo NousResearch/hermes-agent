@@ -517,6 +517,18 @@ except (ValueError, TypeError):
     )
     _GATEWAY_HEALTH_TIMEOUT = 3.0
 
+_SESSION_SEARCH_DEFAULT_LIMIT = 20
+_SESSION_SEARCH_MAX_LIMIT = 100
+
+
+def _clamp_session_search_limit(value: int) -> int:
+    """Clamp dashboard session search limit to a safe positive range."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _SESSION_SEARCH_DEFAULT_LIMIT
+    return max(1, min(_SESSION_SEARCH_MAX_LIMIT, parsed))
+
 # DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
 # Cross-container / cross-host gateway liveness detection will be folded into a
 # first-class dashboard config key so it's no longer Docker-adjacent lore buried
@@ -847,6 +859,7 @@ async def search_sessions(q: str = "", limit: int = 20):
     """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
+    limit = _clamp_session_search_limit(limit)
     try:
         from hermes_state import SessionDB
         db = SessionDB()

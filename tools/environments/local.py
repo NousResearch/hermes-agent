@@ -39,6 +39,27 @@ def _msys_to_windows_path(cwd: str) -> str:
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
+def _windows_to_msys(cwd: str) -> str:
+    """Translate a native Windows path (``C:\\Users\\x`` or ``C:/Users/x``)
+    to a Git Bash / MSYS-style POSIX path (``/c/Users/x``) so ``cd`` and
+    other built-in shell commands can understand it.
+
+    No-ops on non-Windows hosts or for paths that are already in POSIX form.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    # Already a POSIX path — pass through.
+    if re.match(r'^/[a-zA-Z](/|$)', cwd):
+        return cwd
+    # Match Windows drive letter: C:\... or C:/...
+    m = re.match(r'^([a-zA-Z]):[\\/](.*)', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).lower()
+    tail = m.group(2).replace('\\', '/').replace('\\\\', '/')
+    return f"/{drive}/{tail}"
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
@@ -686,6 +707,69 @@ class LocalEnvironment(BaseEnvironment):
                 # Stale / non-existent path — keep previous cwd; _run_bash
                 # will resolve a safe fallback on the next call if needed.
                 self.cwd = prev_cwd
+
+    def init_session(self):
+        """Override base init_session to convert Windows cwd to POSIX
+        form before passing to ``builtin cd`` in the bootstrap script.
+
+        Git Bash cannot parse Windows paths (``C:/Users/x``) in its ``cd``
+        builtin, so we translate to MSYS POSIX form (``/c/Users/x``) first.
+        """
+        import shlex
+
+        _quoted_snap = shlex.quote(self._snapshot_path)
+        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Convert Windows path to POSIX for bash cd.
+        _posix_cwd = _windows_to_msys(self.cwd)
+        _quoted_cwd = shlex.quote(_posix_cwd)
+
+        bootstrap = (
+            f"export -p > {_quoted_snap}\n"
+            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
+            f"alias -p >> {_quoted_snap}\n"
+            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
+            f"echo 'set +e' >> {_quoted_snap}\n"
+            f"echo 'set +u' >> {_quoted_snap}\n"
+            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
+            f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
+            f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
+        )
+        try:
+            proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
+            result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            self._snapshot_ready = True
+            self._update_cwd(result)
+            logger.info(
+                "Session snapshot created (session=%s, cwd=%s)",
+                self._session_id,
+                self.cwd,
+            )
+        except Exception as exc:
+            logger.warning(
+                "init_session failed (session=%s): %s — "
+                "falling back to bash -l per command",
+                self._session_id,
+                exc,
+            )
+            self._snapshot_ready = False
+
+    def _quote_cwd_for_cd(self, cwd: str) -> str:
+        """Quote a ``cd`` target for Git Bash, converting Windows paths
+        to POSIX form (``C:/Users/x`` → ``/c/Users/x``).
+
+        The base class implementation only handles ``~`` expansion and
+        ``shlex.quote``; on Windows it passes the native path straight
+        into ``builtin cd``, which Git Bash cannot parse.
+        """
+        if cwd == "~":
+            return cwd
+        if cwd == "~/":
+            return "$HOME"
+        if cwd.startswith("~/"):
+            return f"$HOME/{shlex.quote(cwd[2:])}"
+        # Convert Windows path to MSYS POSIX path for bash cd.
+        posix_cwd = _windows_to_msys(cwd)
+        return shlex.quote(posix_cwd)
 
     def cleanup(self):
         """Clean up temp files."""

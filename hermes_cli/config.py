@@ -5598,7 +5598,7 @@ def edit_config():
         return
     
     print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)])
+    subprocess.run([editor, str(config_path)], timeout=300)
 
 
 def set_config_value(key: str, value: str):

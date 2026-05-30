@@ -1116,8 +1116,16 @@ class WellKnownSkillSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
-# Direct URL source adapter
+# URL source adapter
 # ---------------------------------------------------------------------------
+
+# Matches raw.githubusercontent.com URLs pointing to SKILL.md files.
+# Used to route URL installs to GitHubSource for full directory download.
+_RAW_GITHUB_RE = re.compile(
+    r"^https?://raw\.githubusercontent\.com/"
+    r"(?P<owner>[^/]+)/(?P<repo>[^/]+)/[^/]+/(?P<path>.+)/SKILL\.md$"
+)
+
 
 class UrlSource(SkillSource):
     """Fetch a single-file SKILL.md skill directly from an HTTP(S) URL.
@@ -1198,6 +1206,22 @@ class UrlSource(SkillSource):
         if not self._matches(identifier):
             return None
         url = identifier.strip()
+
+        # Route raw.githubusercontent.com URLs to GitHubSource for full
+        # directory download (references/, templates/, scripts/ etc.).
+        gh_match = _RAW_GITHUB_RE.match(url)
+        if gh_match:
+            owner = gh_match.group("owner")
+            repo = gh_match.group("repo")
+            path = gh_match.group("path")
+            github_source = GitHubSource(auth=GitHubAuth())
+            gh_identifier = f"{owner}/{repo}/{path}"
+            bundle = github_source.fetch(gh_identifier)
+            if bundle is not None:
+                return bundle
+            # Fall through to single-file download if GitHubSource fails
+            # (e.g. rate limit, private repo).
+
         text = self._fetch_text(url)
         if text is None:
             return None

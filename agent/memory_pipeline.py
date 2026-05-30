@@ -35,6 +35,7 @@ Architecture:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -2005,12 +2006,140 @@ class MemoryPipeline:
             # Layer 6: record co-activation from search results
             if self._activation and name == "fact_store":
                 query = args.get("query", "")
-                entities = re.findall(r'\b[A-Z][a-z]{2,}\b', query)
+                entities = re.findall(r'[A-Z][a-z]{2,}', query)
                 if len(entities) >= 2:
                     self._activation.record_co_activation(self._state, entities)
+
+            # GAP 3: 'add' action -- score salience, init engram strength,
+            # record co-activation, append to current episode
+            if name == "fact_store" and args.get("action") == "add":
+                content = args.get("content", "")
+                if content:
+                    # 1. Score salience
+                    sal_result = None
+                    if self._salience:
+                        try:
+                            sal_result = self._salience.score(content)
+                        except Exception as e:
+                            logger.debug(
+                                "post_tool_call add salience failed: %s", e)
+
+                    # 2. Initialize engram strength proportional to salience
+                    if self._engrams and sal_result:
+                        try:
+                            sal = sal_result.overall
+                            if sal > 0.5:
+                                init_str = 1.0
+                            elif sal > 0.2:
+                                init_str = 0.7
+                            else:
+                                init_str = 0.4
+                            ref = sha256(
+                                content.encode()).hexdigest()[:16]
+                            with self._state._lock:
+                                self._state._conn.execute(
+                                    "INSERT INTO engram_strengths "
+                                    "(memory_ref, provider, strength) "
+                                    "VALUES (?, 'add_action', ?) "
+                                    "ON CONFLICT(memory_ref) "
+                                    "DO UPDATE SET "
+                                    "strength = MAX("
+                                    "  strength, excluded.strength), "
+                                    "last_accessed = "
+                                    "  CURRENT_TIMESTAMP",
+                                    (ref, init_str),
+                                )
+                                self._state._conn.commit()
+                        except Exception as e:
+                            logger.debug(
+                                "post_tool_call add engram init "
+                                "failed: %s", e)
+
+                    # 3. Record co-activation of entities from content
+                    if self._activation:
+                        try:
+                            ents = re.findall(
+                                r'[A-Z][a-z]{2,}', content)
+                            if len(ents) >= 2:
+                                self._activation.record_co_activation(
+                                    self._state, ents)
+                        except Exception as e:
+                            logger.debug(
+                                "post_tool_call add co-activation "
+                                "failed: %s", e)
+
+                    # 4. If episodic is active, append the fact to
+                    #    the current episode
+                    if self._episodic:
+                        try:
+                            fact_id = None
+                            try:
+                                parsed = json.loads(result)
+                                fact_id = parsed.get("fact_id")
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            if fact_id is not None:
+                                self._episodic.append_fact(fact_id)
+                        except Exception as e:
+                            logger.debug(
+                                "post_tool_call add episodic append "
+                                "failed: %s", e)
+
+            # GAP 5: fact_feedback -- route user feedback to salience
+            # and adaptive weight systems
+            if name == "fact_feedback":
+                try:
+                    action_val = args.get("action", "")
+                    was_helpful = 1 if action_val == "helpful" else 0
+                    fact_id = args.get("fact_id", 0)
+                    memory_ref = str(fact_id)
+
+                    # 1. Insert feedback record into salience_feedback
+                    with self._state._lock:
+                        self._state._conn.execute(
+                            "INSERT INTO salience_feedback "
+                            "(memory_ref, signal_type, "
+                            " signal_value, was_helpful, "
+                            " was_retrieved) "
+                            "VALUES (?, 'fact_feedback', 1.0, "
+                            "  ?, 1)",
+                            (memory_ref, was_helpful),
+                        )
+                        self._state._conn.commit()
+
+                    # 2. Update salience weights: increase for
+                    #    helpful, decrease for unhelpful
+                    adj = 0.02 if was_helpful else -0.02
+                    for sig in ("emotion", "novelty",
+                                "importance"):
+                        with self._state._lock:
+                            self._state._conn.execute(
+                                "INSERT INTO salience_weights "
+                                "(signal_type, weight, "
+                                " sample_count, success_count) "
+                                "VALUES (?, 0.5, 1, ?) "
+                                "ON CONFLICT(signal_type) "
+                                "DO UPDATE SET "
+                                "weight = MAX(0.1, "
+                                "  MIN(1.0, weight + ?)), "
+                                "sample_count = "
+                                "  sample_count + 1, "
+                                "success_count = "
+                                "  success_count + ?, "
+                                "updated_at = "
+                                "  CURRENT_TIMESTAMP",
+                                (sig,
+                                 1 if adj > 0 else 0,
+                                 adj,
+                                 1 if adj > 0 else 0),
+                            )
+                            self._state._conn.commit()
+                except Exception as e:
+                    logger.debug(
+                        "post_tool_call fact_feedback "
+                        "failed: %s", e)
         except Exception as e:
             logger.debug("Pipeline post_tool_call failed: %s", e)
-
     def post_session_end(self, messages: list) -> None:
         """Consolidation, engram decay, bridge discovery, dreaming."""
         if not self._state:

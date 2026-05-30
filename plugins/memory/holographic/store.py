@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS facts (
     category          TEXT DEFAULT 'general',
     tags              TEXT DEFAULT '',
     trust_score       REAL DEFAULT 0.5,
+    strength          REAL DEFAULT 1.0,
     retrieval_count   INTEGER DEFAULT 0,
     helpful_count     INTEGER DEFAULT 0,
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -157,6 +158,8 @@ class MemoryStore:
             self._conn.execute("ALTER TABLE facts ADD COLUMN event_time TIMESTAMP")
         if "ingestion_time" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN ingestion_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        if "strength" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN strength REAL DEFAULT 1.0")
         # Bitemporal indexes for time-range queries
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_event_time ON facts(event_time)")
@@ -195,8 +198,8 @@ class MemoryStore:
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score, event_time)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO facts (content, category, tags, trust_score, strength, event_time)
+                    VALUES (?, ?, ?, ?, 1.0, ?)
                     """,
                     (content, category, tags, self.default_trust, event_time),
                 )

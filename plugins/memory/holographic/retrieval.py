@@ -11,6 +11,7 @@ import math
 import struct
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -238,6 +239,17 @@ class FactRetriever:
             fact["score"] = score
             scored.append(fact)
 
+        # Stage 3: Apply engram strength boost (optional, degrades gracefully)
+        try:
+            fact_ids = [f["fact_id"] for f in scored]
+            engram_map = self._engram_boost(fact_ids)
+            if engram_map:
+                for f in scored:
+                    strength = engram_map.get(f["fact_id"], 1.0)
+                    f["score"] *= (0.5 + 0.5 * strength)
+        except Exception:
+            pass  # degrade gracefully -- no engram boost applied
+
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
@@ -246,6 +258,47 @@ class FactRetriever:
             fact.pop("hrr_vector", None)
             fact.pop("embedding_vector", None)
         return results
+
+    def _engram_boost(self, fact_ids: list[int]) -> dict[int, float]:
+        """Look up engram strengths for candidate facts from pipeline_state.db.
+
+        Queries the engram_strengths table for memory_ref entries matching
+        'fact:<fact_id>' and returns a mapping of fact_id to strength value.
+        Falls back to 1.0 for any fact not found.  Returns an empty dict
+        (all defaults) if pipeline_state.db or the table is unavailable.
+        """
+        if not fact_ids:
+            return {}
+        try:
+            pipeline_db = self.store.db_path.parent / "pipeline_state.db"
+            if not pipeline_db.exists():
+                return {}
+            conn = sqlite3.connect(str(pipeline_db), timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            try:
+                placeholders = ",".join("?" for _ in fact_ids)
+                refs = [f"fact:{fid}" for fid in fact_ids]
+                rows = conn.execute(
+                    f"SELECT memory_ref, strength FROM engram_strengths "
+                    f"WHERE memory_ref IN ({placeholders})",
+                    refs,
+                ).fetchall()
+                # Map back: 'fact:<id>' -> int id -> strength
+                result: dict[int, float] = {}
+                for row in rows:
+                    ref = row["memory_ref"]
+                    if ref.startswith("fact:"):
+                        try:
+                            fid = int(ref[5:])
+                            result[fid] = row["strength"]
+                        except (ValueError, KeyError):
+                            pass
+                return result
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug("Engram boost lookup failed (graceful skip): %s", e)
+            return {}
 
     def embedding_search(
         self,

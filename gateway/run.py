@@ -10064,17 +10064,21 @@ class GatewayRunner:
           /model --provider <provider>        — switch to provider, auto-detect model
         """
         import yaml
+
         from hermes_cli.model_switch import (
-            switch_model as _switch_model, parse_model_flags,
             list_authenticated_providers,
             list_picker_providers,
+            parse_model_flags,
+        )
+        from hermes_cli.model_switch import (
+            switch_model as _switch_model,
         )
         from hermes_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
 
         # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
 
         # Read current model/provider from config
         current_model = ""
@@ -10095,6 +10099,7 @@ class GatewayRunner:
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
+
                     custom_provs = get_compatible_custom_providers(cfg)
                 except Exception:
                     custom_provs = cfg.get("custom_providers")
@@ -10159,7 +10164,9 @@ class GatewayRunner:
                             custom_providers=custom_provs,
                         )
                         if not result.success:
-                            return t("gateway.model.error_prefix", error=result.error_message)
+                            return t(
+                                "gateway.model.error_prefix", error=result.error_message
+                            )
 
                         # Update cached agent in-place
                         cached_entry = None
@@ -10178,7 +10185,10 @@ class GatewayRunner:
                                     api_mode=result.api_mode,
                                 )
                             except Exception as exc:
-                                logger.warning("Picker model switch failed for cached agent: %s", exc)
+                                logger.warning(
+                                    "Picker model switch failed for cached agent: %s",
+                                    exc,
+                                )
 
                         # Store model note + session override
                         if not hasattr(_self, "_pending_model_notes"):
@@ -10206,7 +10216,10 @@ class GatewayRunner:
                         lines = [t("gateway.model.switched", model=result.new_model)]
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
-                        from hermes_cli.model_switch import resolve_display_context_length
+                        from hermes_cli.model_switch import (
+                            resolve_display_context_length,
+                        )
+
                         _sw_config_ctx = None
                         try:
                             _sw_cfg = _load_gateway_config()
@@ -10227,17 +10240,33 @@ class GatewayRunner:
                             config_context_length=_sw_config_ctx,
                         )
                         if ctx:
-                            lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
+                            lines.append(
+                                t("gateway.model.context_label", tokens=f"{ctx:,}")
+                            )
                         if mi:
                             if mi.max_output:
-                                lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
+                                lines.append(
+                                    t(
+                                        "gateway.model.max_output_label",
+                                        tokens=f"{mi.max_output:,}",
+                                    )
+                                )
                             if mi.has_cost_data():
-                                lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
-                            lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
+                                lines.append(
+                                    t("gateway.model.cost_label", cost=mi.format_cost())
+                                )
+                            lines.append(
+                                t(
+                                    "gateway.model.capabilities_label",
+                                    capabilities=mi.format_capabilities(),
+                                )
+                            )
                         lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
-                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    metadata = self._thread_metadata_for_source(
+                        source, self._reply_anchor_for_event(event)
+                    )
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -10260,16 +10289,20 @@ class GatewayRunner:
                     current_model=current_model,
                     user_providers=user_provs,
                     custom_providers=custom_provs,
-                    max_models=5,
+                    max_models=200,
                 )
             except Exception:
                 providers = []
 
             if providers:
+                _MENU_PAGE_SIZE = 8
+                _prov_page = 0
                 # Save state so the next digit reply can advance to step 2.
                 self._model_menu_state[session_key] = {
                     "step": "provider",
                     "providers": providers,
+                    "provider_page": _prov_page,
+                    "menu_page_size": _MENU_PAGE_SIZE,
                     "current_model": current_model,
                     "current_provider": current_provider,
                     "current_base_url": current_base_url,
@@ -10277,12 +10310,18 @@ class GatewayRunner:
                     "user_provs": user_provs,
                     "custom_provs": custom_provs,
                 }
+                _page_provs = providers[_prov_page * _MENU_PAGE_SIZE : (_prov_page + 1) * _MENU_PAGE_SIZE]
+                _has_more_provs = len(providers) > (_prov_page + 1) * _MENU_PAGE_SIZE
                 lines = [
-                    t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label),
+                    t(
+                        "gateway.model.current_label",
+                        model=current_model or "unknown",
+                        provider=provider_label,
+                    ),
                     "",
                     "Select a provider:",
                 ]
-                for i, p in enumerate(providers, 1):
+                for i, p in enumerate(_page_provs, 1):
                     tag = " ✓" if p["is_current"] else ""
                     preview = ""
                     if p["models"]:
@@ -10290,11 +10329,24 @@ class GatewayRunner:
                         if p["total_models"] > 3:
                             preview += f" +{p['total_models'] - 3}"
                     lines.append(f"{i}. {p['name']}{tag}{preview}")
+                _nav_idx = len(_page_provs) + 1
+                if _has_more_provs:
+                    lines.append(f"{_nav_idx}. Next page ▶")
+                    _nav_idx += 1
+                if _prov_page > 0:
+                    lines.append(f"{_nav_idx}. ◀ Previous page")
                 lines.append("")
                 lines.append("Reply with a number, or `/model <name>` to set directly.")
                 return "\n".join(lines)
             else:
-                lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
+                lines = [
+                    t(
+                        "gateway.model.current_label",
+                        model=current_model or "unknown",
+                        provider=provider_label,
+                    ),
+                    "",
+                ]
                 lines.append(t("gateway.model.usage_switch_model"))
                 lines.append(t("gateway.model.usage_switch_provider"))
                 lines.append(t("gateway.model.usage_persist"))
@@ -10373,6 +10425,7 @@ class GatewayRunner:
                 if result.base_url:
                     model_cfg["base_url"] = result.base_url
                 from hermes_cli.config import save_config
+
                 save_config(cfg)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
@@ -10386,6 +10439,7 @@ class GatewayRunner:
         # Copilot, and Nous-enforced caps win over the raw models.dev entry.
         mi = result.model_info
         from hermes_cli.model_switch import resolve_display_context_length
+
         _sw2_config_ctx = None
         try:
             _sw2_cfg = _load_gateway_config()
@@ -10409,21 +10463,30 @@ class GatewayRunner:
             lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
         if mi:
             if mi.max_output:
-                lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
+                lines.append(
+                    t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}")
+                )
             if mi.has_cost_data():
                 lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
-            lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
+            lines.append(
+                t(
+                    "gateway.model.capabilities_label",
+                    capabilities=mi.format_capabilities(),
+                )
+            )
 
         # Cache notice
         cache_enabled = (
-            (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-            or result.api_mode == "anthropic_messages"
-        )
+            base_url_host_matches(result.base_url or "", "openrouter.ai")
+            and "claude" in result.new_model.lower()
+        ) or result.api_mode == "anthropic_messages"
         if cache_enabled:
             lines.append(t("gateway.model.prompt_caching_enabled"))
 
         if result.warning_message:
-            lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+            lines.append(
+                t("gateway.model.warning_prefix", warning=result.warning_message)
+            )
 
         if persist_global:
             lines.append(t("gateway.model.saved_global"))
@@ -10441,8 +10504,10 @@ class GatewayRunner:
         Step 2 (model selection): user replies with a model number → switch model.
         """
         from hermes_cli.model_switch import (
-            switch_model as _switch_model,
             resolve_display_context_length,
+        )
+        from hermes_cli.model_switch import (
+            switch_model as _switch_model,
         )
 
         state = self._model_menu_state.get(session_key)
@@ -10470,10 +10535,58 @@ class GatewayRunner:
 
         if step == "provider":
             providers = state["providers"]
-            if choice < 1 or choice > len(providers):
-                return f"Please reply with a number between 1 and {len(providers)}, or /model to restart."
+            page_size = state.get("menu_page_size", 8)
+            prov_page = state.get("provider_page", 0)
+            page_provs = providers[prov_page * page_size : (prov_page + 1) * page_size]
+            has_more = len(providers) > (prov_page + 1) * page_size
+            next_opt = len(page_provs) + 1  # number assigned to "Next page"
 
-            selected = providers[choice - 1]
+            # Calculate nav option numbers
+            has_prev = prov_page > 0
+            next_opt = len(page_provs) + 1
+            prev_opt = next_opt + (1 if has_more else 0)
+
+            def _build_prov_page_lines(pp, pg_provs, has_nxt, has_prv):
+                ls = ["Select a provider:"]
+                for ii, p in enumerate(pg_provs, 1):
+                    tag = " ✓" if p["is_current"] else ""
+                    preview = ""
+                    if p["models"]:
+                        preview = " — " + ", ".join(p["models"][:3])
+                        if p["total_models"] > 3:
+                            preview += f" +{p['total_models'] - 3}"
+                    ls.append(f"{ii}. {p['name']}{tag}{preview}")
+                nav = len(pg_provs) + 1
+                if has_nxt:
+                    ls.append(f"{nav}. Next page ▶")
+                    nav += 1
+                if has_prv:
+                    ls.append(f"{nav}. ◀ Previous page")
+                ls.append("")
+                ls.append("Reply with a number, or /model to restart.")
+                return "\n".join(ls)
+
+            # "Next page" option
+            if has_more and choice == next_opt:
+                prov_page += 1
+                state["provider_page"] = prov_page
+                page_provs = providers[prov_page * page_size : (prov_page + 1) * page_size]
+                has_more = len(providers) > (prov_page + 1) * page_size
+                return _build_prov_page_lines(prov_page, page_provs, has_more, prov_page > 0)
+
+            # "Previous page" option
+            if has_prev and choice == prev_opt:
+                prov_page -= 1
+                state["provider_page"] = prov_page
+                page_provs = providers[prov_page * page_size : (prov_page + 1) * page_size]
+                has_more = len(providers) > (prov_page + 1) * page_size
+                return _build_prov_page_lines(prov_page, page_provs, has_more, prov_page > 0)
+
+            max_opt = len(page_provs) + (1 if has_more else 0) + (1 if has_prev else 0)
+            if choice < 1 or choice > len(page_provs):
+                return f"Please reply with a number between 1 and {max_opt}, or /model to restart."
+
+            selected = page_provs[choice - 1]
             models = selected.get("models", [])
             total = selected.get("total_models", len(models))
 
@@ -10488,14 +10601,25 @@ class GatewayRunner:
             # Advance to step 2: show numbered model list.
             state["step"] = "model"
             state["selected_provider"] = selected
+            state["model_page"] = 0
+            page_size = state.get("menu_page_size", 8)
+            page_models = models[0:page_size]
+            has_more_models = len(models) > page_size
             lines = [f"*{selected['name']} models*"]
             if total > len(models):
                 lines[0] += f" (showing {len(models)} of {total})"
             lines.append("")
             cur_model = state.get("current_model", "")
-            for i, m in enumerate(models, 1):
-                marker = " \u2713" if (selected["is_current"] and m == cur_model) else ""
+            for i, m in enumerate(page_models, 1):
+                marker = (
+                    " \u2713" if (selected["is_current"] and m == cur_model) else ""
+                )
                 lines.append(f"{i}. {m}{marker}")
+            _mnav = len(page_models) + 1
+            if has_more_models:
+                lines.append(f"{_mnav}. Next page ▶")
+                _mnav += 1
+            # model_page is always 0 here (first display), no prev page
             lines.append("")
             lines.append("Reply with a number to switch, or /model to restart.")
             return "\n".join(lines)
@@ -10503,10 +10627,55 @@ class GatewayRunner:
         elif step == "model":
             selected_provider = state.get("selected_provider", {})
             models = selected_provider.get("models", [])
-            if choice < 1 or choice > len(models):
-                return f"Please reply with a number between 1 and {len(models)}, or /model to restart."
+            page_size = state.get("menu_page_size", 8)
+            model_page = state.get("model_page", 0)
+            page_models = models[model_page * page_size : (model_page + 1) * page_size]
+            has_more_models = len(models) > (model_page + 1) * page_size
+            next_opt = len(page_models) + 1
 
-            model_id = models[choice - 1]
+            has_prev_model = model_page > 0
+            prev_model_opt = next_opt + (1 if has_more_models else 0)
+
+            def _build_model_page_lines(pg_models, has_nxt, has_prv, prov_name, is_cur_prov, cur_mdl):
+                ls = [f"*{prov_name} models*", ""]
+                for ii, m in enumerate(pg_models, 1):
+                    marker = " \u2713" if (is_cur_prov and m == cur_mdl) else ""
+                    ls.append(f"{ii}. {m}{marker}")
+                nav = len(pg_models) + 1
+                if has_nxt:
+                    ls.append(f"{nav}. Next page ▶")
+                    nav += 1
+                if has_prv:
+                    ls.append(f"{nav}. ◀ Previous page")
+                ls.append("")
+                ls.append("Reply with a number to switch, or /model to restart.")
+                return "\n".join(ls)
+
+            cur_model = state.get("current_model", "")
+            prov_name = selected_provider.get("name", "")
+            is_cur_prov = selected_provider.get("is_current", False)
+
+            # "Next page" option
+            if has_more_models and choice == next_opt:
+                model_page += 1
+                state["model_page"] = model_page
+                page_models = models[model_page * page_size : (model_page + 1) * page_size]
+                has_more_models = len(models) > (model_page + 1) * page_size
+                return _build_model_page_lines(page_models, has_more_models, model_page > 0, prov_name, is_cur_prov, cur_model)
+
+            # "Previous page" option
+            if has_prev_model and choice == prev_model_opt:
+                model_page -= 1
+                state["model_page"] = model_page
+                page_models = models[model_page * page_size : (model_page + 1) * page_size]
+                has_more_models = len(models) > (model_page + 1) * page_size
+                return _build_model_page_lines(page_models, has_more_models, model_page > 0, prov_name, is_cur_prov, cur_model)
+
+            max_opt = len(page_models) + (1 if has_more_models else 0) + (1 if has_prev_model else 0)
+            if choice < 1 or choice > len(page_models):
+                return f"Please reply with a number between 1 and {max_opt}, or /model to restart."
+
+            model_id = page_models[choice - 1]
             provider_slug = selected_provider.get("slug", "")
 
             # Execute the switch — same logic as the Telegram picker callback.
@@ -10544,7 +10713,9 @@ class GatewayRunner:
                             api_mode=result.api_mode,
                         )
                     except Exception as exc:
-                        logger.warning("Text menu model switch failed for cached agent: %s", exc)
+                        logger.warning(
+                            "Text menu model switch failed for cached agent: %s", exc
+                        )
 
             # Store model-switch note so the model knows about the change.
             if not hasattr(self, "_pending_model_notes"):
@@ -10581,7 +10752,9 @@ class GatewayRunner:
             if ctx:
                 lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
             if mi and mi.max_output:
-                lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
+                lines.append(
+                    t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}")
+                )
             lines.append(t("gateway.model.session_only_hint"))
             return "\n".join(lines)
 

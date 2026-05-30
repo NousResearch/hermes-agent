@@ -170,6 +170,10 @@ matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0",
 wecom = ["defusedxml==0.7.1"]
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
+# Supertonic — local ONNX neural TTS (multilingual, expressive). Pulls
+# onnxruntime/numpy/soundfile/huggingface-hub transitively; the ~400MB model
+# is downloaded on first use. Kept out of [all] like the other TTS backends.
+supertonic-tts = ["supertonic>=1.3.1,<2"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
   # so keep it out of the base install for source-build packagers like Homebrew.

@@ -13,6 +13,7 @@ Built-in TTS providers:
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
+- Supertonic (local, free, no API key): ONNX neural TTS, 31 languages, expressive
 
 Custom command providers:
 - Users can declare any number of named providers with ``type: command``
@@ -163,6 +164,19 @@ def _import_piper():
     return PiperVoice
 
 
+def _import_supertonic():
+    """Lazy import Supertonic. Returns the TTS class or raises ImportError.
+
+    Supertonic (Supertonic-3) is a light, fully-local neural TTS engine built
+    on ONNX Runtime (99M params, no torch). ``pip install supertonic`` pulls
+    cross-platform wheels; the ~400MB model is downloaded on first use to
+    ``~/.cache/supertonic3/``. Supports 31 languages, male/female voices
+    (M1–M5 / F1–F5) and expression tags ``<laugh>`` / ``<breath>`` / ``<sigh>``.
+    """
+    from supertonic import TTS
+    return TTS
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -180,6 +194,23 @@ MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
+DEFAULT_SUPERTONIC_VOICE = "M1"  # M1–M5 (male) / F1–F5 (female)
+DEFAULT_SUPERTONIC_LANG = "en"
+DEFAULT_SUPERTONIC_SPEED = 1.0  # 0.7–2.0 (higher = faster)
+DEFAULT_SUPERTONIC_TOTAL_STEPS = 8  # 5–12 (higher = better quality, slower)
+# Built-in voice styles shipped with the Supertonic model.
+SUPERTONIC_VOICES = ("M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5")
+# Supertonic supports 31 languages (+ ``na`` neutral/accentless fallback).
+SUPERTONIC_LANGUAGES = (
+    "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi",
+    "fr", "hi", "hr", "hu", "id", "it", "lt", "lv", "nl", "pl", "pt", "ro",
+    "ru", "sk", "sl", "sv", "tr", "uk", "vi", "na",
+)
+# Supertonic speed / quality bounds (from the official synthesize() API).
+SUPERTONIC_SPEED_MIN = 0.7
+SUPERTONIC_SPEED_MAX = 2.0
+SUPERTONIC_TOTAL_STEPS_MIN = 5
+SUPERTONIC_TOTAL_STEPS_MAX = 12
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
@@ -236,6 +267,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "supertonic": 5000,   # local ONNX model; chunked internally, practical cap
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -405,6 +437,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
     "deepinfra",
+    "supertonic",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -2216,6 +2249,108 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 
 # ===========================================================================
+# Provider: Supertonic (local, ONNX, multilingual)
+# ===========================================================================
+
+# Module-level cache for the Supertonic TTS engine instance. The ~400MB model
+# is global (not voice-specific), so one instance is reused for the process.
+_supertonic_tts_cache: Dict[str, Any] = {}
+
+
+def _check_supertonic_available() -> bool:
+    """Check whether the supertonic package is importable."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("supertonic") is not None
+    except Exception:
+        return False
+
+
+def _generate_supertonic_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local Supertonic engine.
+
+    Loads the engine once per process (the model is global, cached by a stable
+    key) and writes a 44.1kHz 16-bit WAV. Caller is responsible for converting
+    to MP3/Opus via ffmpeg when a different output format is required.
+    """
+    TTS = _import_supertonic()
+
+    st_config = tts_config.get("supertonic", {}) if isinstance(tts_config, dict) else {}
+    voice = st_config.get("voice") or DEFAULT_SUPERTONIC_VOICE
+    lang = st_config.get("lang") or DEFAULT_SUPERTONIC_LANG
+    voice_style_path = st_config.get("voice_style_path")
+
+    # Clamp tunables to the engine's supported ranges.
+    try:
+        speed = float(st_config.get("speed", DEFAULT_SUPERTONIC_SPEED))
+    except (TypeError, ValueError):
+        speed = DEFAULT_SUPERTONIC_SPEED
+    speed = max(SUPERTONIC_SPEED_MIN, min(SUPERTONIC_SPEED_MAX, speed))
+
+    try:
+        total_steps = int(st_config.get("total_steps", DEFAULT_SUPERTONIC_TOTAL_STEPS))
+    except (TypeError, ValueError):
+        total_steps = DEFAULT_SUPERTONIC_TOTAL_STEPS
+    total_steps = max(
+        SUPERTONIC_TOTAL_STEPS_MIN, min(SUPERTONIC_TOTAL_STEPS_MAX, total_steps)
+    )
+
+    # Optional, rarely-tuned synthesis knobs — only forwarded when configured
+    # so we stay compatible with the installed engine version.
+    extra: Dict[str, Any] = {}
+    if "max_chunk_length" in st_config:
+        extra["max_chunk_length"] = int(st_config["max_chunk_length"])
+    if "silence_duration" in st_config:
+        extra["silence_duration"] = float(st_config["silence_duration"])
+
+    # The model is global; cache a single engine instance per process.
+    cache_key = "supertonic"
+    global _supertonic_tts_cache
+    if cache_key not in _supertonic_tts_cache:
+        logger.info("[Supertonic] Loading engine (downloads ~400MB model on first use)...")
+        _supertonic_tts_cache[cache_key] = TTS(auto_download=True)
+        logger.info("[Supertonic] Engine loaded")
+    engine = _supertonic_tts_cache[cache_key]
+
+    if voice_style_path:
+        style = engine.get_voice_style_from_path(str(Path(voice_style_path).expanduser()))
+    else:
+        style = engine.get_voice_style(voice_name=voice)
+
+    wav, _ = engine.synthesize(
+        text=text,
+        voice_style=style,
+        lang=lang,
+        total_steps=total_steps,
+        speed=speed,
+        **extra,
+    )
+
+    # Supertonic outputs WAV. Caller handles downstream MP3/Opus conversion.
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    engine.save_audio(wav, wav_path)
+
+    # Convert to desired format if caller requested mp3/ogg
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+        else:
+            # No ffmpeg — keep WAV and return that path
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
 # Provider: KittenTTS (local, lightweight)
 # ===========================================================================
 
@@ -2496,6 +2631,19 @@ def text_to_speech_tool(
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
+        elif provider == "supertonic":
+            try:
+                _import_supertonic()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Supertonic provider selected but 'supertonic' package not installed. "
+                             "Run 'hermes setup tts' and choose Supertonic, or install manually: "
+                             "pip install \"supertonic>=1.3.1,<2\"",
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Supertonic (local)...")
+            _generate_supertonic_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -2561,7 +2709,7 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "supertonic"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
@@ -2667,6 +2815,8 @@ def check_tts_requirements() -> bool:
         return _check_kittentts_available()
     if provider == "piper":
         return _check_piper_available()
+    if provider == "supertonic":
+        return _check_supertonic_available()
 
     try:
         from agent.tts_registry import get_provider
@@ -2983,6 +3133,8 @@ if __name__ == "__main__":
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
+    _supertonic_status = "installed" if _check_supertonic_available() else 'not installed (pip install "supertonic>=1.3.1,<2")'
+    print(f"  Supertonic: {_supertonic_status}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

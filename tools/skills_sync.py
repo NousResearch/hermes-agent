@@ -517,7 +517,10 @@ def sync_skills(quiet: bool = False) -> dict:
                         if not quiet:
                             print(f"  ↑ {skill_name} (updated)")
                         # Remove backup after successful copy
-                        shutil.rmtree(backup, ignore_errors=True)
+                        try:
+                            _rmtree_writable(backup)
+                        except (OSError, IOError):
+                            logger.debug("Could not remove backup %s", backup, exc_info=True)
                     except (OSError, IOError):
                         # Restore from backup
                         if backup.exists() and not dest.exists():
@@ -563,6 +566,30 @@ def sync_skills(quiet: bool = False) -> dict:
     }
 
 
+def _rmtree_writable(path: Path) -> None:
+    """Remove a directory tree, making read-only entries writable first.
+
+    Handles immutable package sources (Nix store, deb/rpm installs) that
+    preserve read-only permissions on copied files *and* directories
+    (``r-xr-xr-x``).  Removing a child requires write permission on its
+    parent directory, so the retry handler makes the failing path **and its
+    parent** writable before re-attempting.  See #34860, #34972.
+    """
+    import stat
+
+    def _on_error(func, fpath, exc_info):
+        # Unlinking a child requires the parent dir to be writable, so chmod
+        # the parent as well as the failing path, then retry.
+        for target in (os.path.dirname(fpath), fpath):
+            try:
+                os.chmod(target, stat.S_IRWXU)
+            except OSError:
+                pass
+        func(fpath)
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
 def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     """
     Reset a bundled skill's manifest tracking so future syncs work normally.
@@ -606,12 +633,9 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
             "synced": None,
         }
 
-    # Step 1: drop the manifest entry so next sync treats it as new
-    if in_manifest:
-        del manifest[name]
-        _write_manifest(manifest)
-
-    # Step 2 (optional): delete the user's copy so next sync re-copies bundled
+    # Step 1 (optional): delete the user's copy so next sync re-copies bundled.
+    # Must happen BEFORE manifest deletion so that a failed rmtree does not
+    # leave the skill in a manifest-less limbo state (see #34972).
     deleted_user_copy = False
     if restore:
         if not is_bundled:
@@ -619,27 +643,31 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
                 "ok": False,
                 "action": "bundled_missing",
                 "message": (
-                    f"'{name}' has no bundled source — manifest entry cleared "
+                    f"'{name}' has no bundled source — manifest entry preserved "
                     f"but cannot restore from bundled (skill was removed upstream)."
                 ),
                 "synced": None,
             }
-        # The destination mirrors the bundled path relative to bundled_dir.
         dest = _compute_relative_dest(bundled_by_name[name], bundled_dir)
         if dest.exists():
             try:
-                shutil.rmtree(dest)
+                _rmtree_writable(dest)
                 deleted_user_copy = True
             except (OSError, IOError) as e:
                 return {
                     "ok": False,
-                    "action": "manifest_cleared",
+                    "action": "not_reset",
                     "message": (
-                        f"Cleared manifest entry for '{name}' but could not "
-                        f"delete user copy at {dest}: {e}"
+                        f"Could not delete user copy at {dest}: {e}. "
+                        f"Manifest entry preserved — nothing was changed."
                     ),
                     "synced": None,
                 }
+
+    # Step 2: drop the manifest entry so next sync treats it as new
+    if in_manifest:
+        del manifest[name]
+        _write_manifest(manifest)
 
     # Step 3: run sync to re-baseline (or re-copy if we deleted)
     synced = sync_skills(quiet=True)

@@ -329,6 +329,34 @@ def stamp_install_method(method: str) -> None:
         pass
 
 
+def is_uv_tool_install() -> bool:
+    """Return True when the *running* Hermes lives in a ``uv tool`` layout.
+
+    ``uv tool install hermes-agent`` places the install at
+    ``.../uv/tools/hermes-agent/...`` (default ``~/.local/share/uv/tools``,
+    or ``$UV_TOOL_DIR/...``). Such installs live outside any virtualenv, so
+    ``uv pip install`` fails with ``No virtual environment found`` and the
+    update path must use ``uv tool upgrade`` instead.
+
+    Detection is intentionally restricted to properties of the running
+    interpreter (``sys.prefix`` / ``sys.executable``). We deliberately do
+    NOT consult ``uv tool list``: it would also return True when
+    ``hermes-agent`` happens to be uv-tool-installed on the machine while
+    the *active* Hermes is a regular pip/venv install, causing
+    ``hermes update`` to upgrade the wrong copy. It would also block on a
+    subprocess call (~seconds) just to compute a recommendation string.
+    """
+    def _has_uv_tool_marker(path: str) -> bool:
+        norm = os.path.normpath(path).replace(os.sep, "/").lower()
+        return "/uv/tools/hermes-agent/" in norm + "/"
+
+    if _has_uv_tool_marker(sys.prefix):
+        return True
+    if _has_uv_tool_marker(sys.executable or ""):
+        return True
+    return False
+
+
 def recommended_update_command_for_method(method: str) -> str:
     """Return the update command or guidance for a given install method."""
     if method == "nixos":
@@ -338,9 +366,10 @@ def recommended_update_command_for_method(method: str) -> str:
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
     if method == "pip":
+        if is_uv_tool_install():
+            return "uv tool upgrade hermes-agent"
         import shutil
-        uv = shutil.which("uv")
-        if uv:
+        if shutil.which("uv"):
             return "uv pip install --upgrade hermes-agent"
         return "pip install --upgrade hermes-agent"
     return "hermes update"

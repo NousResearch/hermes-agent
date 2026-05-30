@@ -2394,7 +2394,12 @@ def select_provider_and_model(args=None):
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         active = "custom"
 
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+    from hermes_cli.models import (
+        CANONICAL_PROVIDERS,
+        _PROVIDER_LABELS,
+        group_providers,
+        provider_group_for_slug,
+    )
 
     provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
     if active and active in _custom_provider_map:
@@ -2407,8 +2412,43 @@ def select_provider_and_model(args=None):
     print(f"  Active provider:  {active_label}")
     print()
 
-    # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
-    all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
+    # Step 1: Provider selection.
+    #
+    # Canonical providers are folded into top-level groups (display only — see
+    # PROVIDER_GROUPS in hermes_cli/models.py). A multi-member group shows one
+    # row ("Kimi / Moonshot ▸"); picking it opens a member sub-picker that
+    # resolves back to a concrete slug, so the dispatch chain below is
+    # unchanged. Custom providers and the trailing actions stay flat.
+    canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
+    grouped_rows = group_providers([p.slug for p in CANONICAL_PROVIDERS])
+
+    # The group/slug that should be pre-selected: the active provider's group
+    # if it's grouped, otherwise the active slug itself.
+    active_group = provider_group_for_slug(active) if active else ""
+
+    # ordered entries: (key, label, members)
+    #   members == [] → leaf row, key is a provider slug / action
+    #   members != [] → group row, key is "group:<gid>"
+    ordered: list[tuple[str, str, list[str]]] = []
+    default_idx = 0
+    for row in grouped_rows:
+        if row["kind"] == "group":
+            gid = row["group_id"]
+            label = f"{row['label']} ▸"
+            key = f"group:{gid}"
+            is_active = bool(active_group) and gid == active_group
+            members = row["members"]
+        else:
+            slug = row["slug"]
+            label = canonical_descs.get(slug, provider_labels.get(slug, slug))
+            key = slug
+            is_active = bool(active) and slug == active
+            members = []
+        if is_active:
+            ordered.append((key, f"{label}  ← currently active", members))
+            default_idx = len(ordered) - 1
+        else:
+            ordered.append((key, label, members))
 
     for key, provider_info in _custom_provider_map.items():
         name = provider_info["name"]
@@ -2416,36 +2456,49 @@ def select_provider_and_model(args=None):
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
         saved_model = provider_info.get("model", "")
         model_hint = f" — {saved_model}" if saved_model else ""
-        all_providers.append((key, f"{name} ({short_url}){model_hint}"))
-
-    # Build the menu
-    ordered = []
-    default_idx = 0
-    for key, label in all_providers:
+        label = f"{name} ({short_url}){model_hint}"
         if active and key == active:
-            ordered.append((key, f"{label}  ← currently active"))
+            ordered.append((key, f"{label}  ← currently active", []))
             default_idx = len(ordered) - 1
         else:
-            ordered.append((key, label))
+            ordered.append((key, label, []))
 
-    ordered.append(("custom", "Custom endpoint (enter URL manually)"))
+    ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(
         config.get("custom_providers")
     )
     if _has_saved_custom_list:
-        ordered.append(("remove-custom", "Remove a saved custom provider"))
-    ordered.append(("aux-config", "Configure auxiliary models..."))
-    ordered.append(("cancel", "Leave unchanged"))
+        ordered.append(("remove-custom", "Remove a saved custom provider", []))
+    ordered.append(("aux-config", "Configure auxiliary models...", []))
+    ordered.append(("cancel", "Leave unchanged", []))
 
     provider_idx = _prompt_provider_choice(
-        [label for _, label in ordered],
+        [label for _, label, _ in ordered],
         default=default_idx,
     )
     if provider_idx is None or ordered[provider_idx][0] == "cancel":
         print("No change.")
         return
 
-    selected_provider = ordered[provider_idx][0]
+    selected_key = ordered[provider_idx][0]
+    selected_members = ordered[provider_idx][2]
+
+    # Group row → drill into a member sub-picker. Default to the active member
+    # if the active provider lives in this group.
+    if selected_members:
+        member_default = 0
+        if active in selected_members:
+            member_default = selected_members.index(active)
+        member_labels = [
+            canonical_descs.get(m, provider_labels.get(m, m)) for m in selected_members
+        ]
+        member_idx = _prompt_provider_choice(member_labels, default=member_default)
+        if member_idx is None:
+            print("No change.")
+            return
+        selected_provider = selected_members[member_idx]
+    else:
+        selected_provider = selected_key
 
     if selected_provider == "aux-config":
         _aux_config_menu()
@@ -7880,39 +7933,6 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    # Build a set of PIDs to exclude: the Python process itself plus its
-    # entire parent chain. On Windows the setuptools-generated hermes.exe
-    # launcher is a separate native process that spawns python.exe (the
-    # interpreter that runs our code).  os.getpid() returns the Python PID,
-    # but the launcher (which holds the file lock) is the parent.  Without
-    # walking the parent chain, every ``hermes update`` reports its own
-    # launcher as a concurrent instance — a false positive.
-    if exclude_pid is not None:
-        exclude_pids: set[int] = {exclude_pid}
-    else:
-        exclude_pids = {os.getpid()}
-    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
-    # AccessDenied) we stop walking and use whatever we've collected so far.
-    # Broader Exception catch on the outer block guards against partially-
-    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
-    # NoSuchProcess) — the surrounding update flow documents this helper as
-    # "never raises".
-    try:
-        current = psutil.Process(next(iter(exclude_pids)))
-        while True:
-            try:
-                parent = current.parent()
-            except Exception:
-                break
-            if parent is None or parent.pid <= 0:
-                break
-            if parent.pid in exclude_pids:
-                break  # loop detected
-            exclude_pids.add(parent.pid)
-            current = parent
-    except Exception:
-        pass
-
     # Resolve every shim path to its canonical form once for cheap comparison.
     shim_paths: set[str] = set()
     for shim in _hermes_exe_shims(scripts_dir):
@@ -7922,6 +7942,56 @@ def _detect_concurrent_hermes_instances(
             shim_paths.add(str(shim).lower())
     if not shim_paths:
         return []
+
+    # Build a set of PIDs to exclude: the Python process itself plus every
+    # ancestor whose executable is one of our shims. On Windows the
+    # setuptools-generated hermes.exe launcher is a separate native process
+    # that spawns python.exe (the interpreter that runs our code).
+    # os.getpid() returns the Python PID, but the launcher (which holds the
+    # file lock) is the parent. Without excluding it, every ``hermes update``
+    # reports its own launcher as a concurrent instance — a false positive
+    # (issues #29341, #34795).
+    #
+    # Two robustness points learned from the field:
+    #   1. Use ``proc.parents()`` — it returns the WHOLE ancestor list in one
+    #      call. The earlier per-hop ``current.parent()`` loop bailed on the
+    #      first psutil error (AccessDenied/NoSuchProcess is common on Windows
+    #      across session/elevation boundaries), leaving the launcher shim in
+    #      the candidate set and re-triggering the false positive.
+    #   2. Only exclude ancestors whose exe is itself a shim. A genuine second
+    #      hermes.exe sitting *under* a non-Hermes parent (e.g. a Hermes
+    #      Desktop backend child) must still be flagged, so we don't blanket-
+    #      exclude unrelated ancestors like the shell or terminal.
+    # Broad ``except Exception`` guards against partially-stubbed psutil in
+    # unit tests; this helper is documented as "never raises".
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {int(exclude_pid)}
+    else:
+        exclude_pids = {os.getpid()}
+    try:
+        seed = next(iter(exclude_pids))
+        try:
+            ancestors = psutil.Process(seed).parents()
+        except Exception:
+            ancestors = []
+        for ancestor in ancestors:
+            try:
+                anc_exe = ancestor.exe()
+            except Exception:
+                continue
+            if not anc_exe:
+                continue
+            try:
+                anc_norm = str(Path(anc_exe).resolve()).lower()
+            except (OSError, ValueError):
+                anc_norm = str(anc_exe).lower()
+            if anc_norm in shim_paths:
+                try:
+                    exclude_pids.add(int(ancestor.pid))
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
     matches: list[tuple[int, str]] = []
     try:
@@ -7963,6 +8033,13 @@ def _format_concurrent_instances_message(
     lines.append("")
     lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
     lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
+    lines.append("")
+    if matches:
+        pid_args = " ".join(f"/PID {pid}" for pid, _ in matches)
+        lines.append("  If you've already closed everything and these PIDs are")
+        lines.append("  stale, terminate them directly, then retry the update:")
+        lines.append(f"      taskkill {pid_args} /F")
+        lines.append("")
     lines.append("  Override with `hermes update --force` if you've already")
     lines.append("  confirmed those processes will not write to the venv.")
     return "\n".join(lines)
@@ -8918,18 +8995,51 @@ def cmd_update(args):
 def _cmd_update_pip(args):
     """Update Hermes via pip (for PyPI installs)."""
     from hermes_cli import __version__
+    from hermes_cli.config import is_uv_tool_install
 
     print(f"→ Current version: {__version__}")
     print("→ Checking PyPI for updates...")
 
     uv = shutil.which("uv")
-    if uv:
+    in_venv = sys.prefix != sys.base_prefix
+    # pipx-managed installs live under .../pipx/venvs/<name>/...
+    pipx_managed = "pipx" in sys.prefix.split(os.sep)
+    pipx = shutil.which("pipx") if pipx_managed else None
+
+    # Only the ``uv pip install`` path inside a venv needs VIRTUAL_ENV
+    # exported (uv refuses to install without it when the launcher shim
+    # didn't activate the venv). ``uv tool upgrade`` / ``pipx upgrade``
+    # operate on a named environment and ignore VIRTUAL_ENV, so we don't
+    # set it for them.
+    export_virtualenv = False
+
+    if is_uv_tool_install():
+        if not uv:
+            print("✗ Detected a uv-tool install but `uv` is not on PATH; install uv and retry.")
+            sys.exit(1)
+        cmd = [uv, "tool", "upgrade", "hermes-agent"]
+    elif pipx_managed and pipx:
+        # pipx owns its own venv; ``pipx upgrade`` is the only correct path.
+        # Matches scripts/auto-update.sh, which already uses pipx upgrade.
+        cmd = [pipx, "upgrade", "hermes-agent"]
+    elif uv:
         cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
+        if in_venv:
+            # Launcher shim runs the venv interpreter but doesn't export
+            # VIRTUAL_ENV; without it uv errors "No virtual environment found".
+            export_virtualenv = True
+        else:
+            # Outside any venv, ``--system`` lets uv target the active
+            # interpreter, matching pip's default behaviour.
+            cmd.insert(3, "--system")
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
     print(f"→ Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    run_kwargs = {}
+    if export_virtualenv:
+        run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
+    result = subprocess.run(cmd, **run_kwargs)
     if result.returncode != 0:
         print("✗ Update failed")
         sys.exit(1)
@@ -11008,6 +11118,13 @@ def cmd_completion(args, parser=None):
         print(generate_bash(parser))
 
 
+def cmd_prompt_size(args):
+    """Show a byte/char breakdown of the system prompt + tool schemas."""
+    from hermes_cli.prompt_size import cmd_prompt_size as _impl
+
+    _impl(args)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -11044,6 +11161,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
@@ -14276,6 +14394,30 @@ Examples:
         help="Filter by component: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
+
+    # =========================================================================
+    # prompt-size command
+    # =========================================================================
+    prompt_size_parser = subparsers.add_parser(
+        "prompt-size",
+        help="Show a byte breakdown of the system prompt + tool schemas",
+        description=(
+            "Report the fixed prompt budget for a fresh session: system "
+            "prompt total, skills index, memory, user profile, and tool-schema "
+            "JSON. Runs offline (no API call)."
+        ),
+    )
+    prompt_size_parser.add_argument(
+        "--platform",
+        default="cli",
+        help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
+    )
+    prompt_size_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the breakdown as JSON",
+    )
+    prompt_size_parser.set_defaults(func=cmd_prompt_size)
 
     # =========================================================================
     # Parse and execute

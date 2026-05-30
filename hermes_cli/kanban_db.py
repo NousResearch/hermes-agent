@@ -1637,6 +1637,140 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    _rebuild_drifted_tables(conn)
+
+
+# Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
+# ``kanban_notify_subs``, a nullable ``TEXT last_event_id``). The current
+# schema uses ``INTEGER PRIMARY KEY AUTOINCREMENT`` / ``INTEGER NOT NULL
+# DEFAULT 0``. ``CREATE TABLE IF NOT EXISTS`` skips existing tables
+# regardless of schema and ``_add_column_if_missing`` only adds columns, so
+# neither can fix a drifted column type — the table must be rebuilt. See
+# #35096.
+#
+# Each entry pairs the canonical CREATE TABLE with the CREATE INDEX
+# statements that DROP TABLE would otherwise take down with it (including
+# ``idx_events_run``, added by the additive pass above). To guard against
+# this list drifting from SCHEMA_SQL, ``test_rebuilt_schema_matches_fresh``
+# asserts a rebuilt legacy DB is byte-identical to a fresh one.
+_REBUILD_SPECS = {
+    "task_events": (
+        "CREATE TABLE task_events ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " task_id TEXT NOT NULL, run_id INTEGER, kind TEXT NOT NULL,"
+        " payload TEXT, created_at INTEGER NOT NULL)",
+        (
+            "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
+            "CREATE INDEX idx_events_run ON task_events(run_id, id)",
+        ),
+    ),
+    "task_comments": (
+        "CREATE TABLE task_comments ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " task_id TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL,"
+        " created_at INTEGER NOT NULL)",
+        ("CREATE INDEX idx_comments_task ON task_comments(task_id, created_at)",),
+    ),
+    "task_runs": (
+        "CREATE TABLE task_runs ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
+        " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
+        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
+        " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
+        " error TEXT)",
+        (
+            "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
+            "CREATE INDEX idx_runs_status ON task_runs(status)",
+        ),
+    ),
+    "kanban_notify_subs": (
+        "CREATE TABLE kanban_notify_subs ("
+        " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
+        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
+        " notifier_profile TEXT, created_at INTEGER NOT NULL,"
+        " last_event_id INTEGER NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
+        ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
+    ),
+}
+
+
+def _table_has_drifted(conn: sqlite3.Connection, table: str) -> bool:
+    """True when ``table`` still carries the legacy (pre-AUTOINCREMENT) shape."""
+    info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if not info:
+        return False  # table absent — nothing to rebuild
+    if table == "kanban_notify_subs":
+        lei = next((c for c in info if c["name"] == "last_event_id"), None)
+        return lei is not None and (lei["type"] or "").upper() != "INTEGER"
+    # task_events / task_comments / task_runs: id must be INTEGER and a PK.
+    id_col = next((c for c in info if c["name"] == "id"), None)
+    if id_col is None:
+        return False
+    return not ((id_col["type"] or "").upper() == "INTEGER" and id_col["pk"])
+
+
+def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
+    """Rebuild any kanban table whose column types drifted from SCHEMA_SQL.
+
+    Old boards crash the gateway notifier (``int(None)`` on a NULL id in
+    ``unseen_events_for_sub``) and never match the ``id > cursor`` filter, so
+    every kanban notification is silently lost (#35096). Each affected table is
+    rebuilt with the standard SQLite pattern — CREATE new → INSERT shared
+    columns → DROP old → RENAME — recreating its indexes too (DROP TABLE takes
+    them down). The legacy TEXT ids are dropped (they aren't valid integers);
+    AUTOINCREMENT assigns fresh ones and ``last_event_id`` cursors reset to 0,
+    so the first post-migration tick replays a task's event history once —
+    the safe failure mode for a feature that was already fully broken.
+
+    The whole pass runs in one transaction so an interruption can't leave a
+    table half-renamed, and under ``connect()``'s init locks so nothing races
+    it. Idempotent: a correctly-typed DB skips every table and returns without
+    opening a transaction.
+    """
+    drifted = [t for t in _REBUILD_SPECS if _table_has_drifted(conn, t)]
+    if not drifted:
+        return
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for table in drifted:
+            create_sql, index_sqls = _REBUILD_SPECS[table]
+            old_cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({table})")]
+            _log.info("kanban migration: rebuilding %s to match current schema", table)
+            conn.execute(f"ALTER TABLE {table} RENAME TO {table}_legacy")
+            conn.execute(create_sql)
+            new_cols = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
+            if table == "kanban_notify_subs":
+                # Cast the legacy TEXT cursor to INTEGER; NULL / non-numeric → 0.
+                shared = [c for c in old_cols if c in new_cols and c != "last_event_id"]
+                cols_csv = ", ".join(shared)
+                conn.execute(
+                    f"INSERT INTO {table} ({cols_csv}, last_event_id) "
+                    f"SELECT {cols_csv}, COALESCE(CAST(last_event_id AS INTEGER), 0) "
+                    f"FROM {table}_legacy"
+                )
+            else:
+                # Drop the legacy TEXT id; AUTOINCREMENT reassigns it.
+                shared = [c for c in old_cols if c in new_cols and c != "id"]
+                cols_csv = ", ".join(shared)
+                conn.execute(
+                    f"INSERT INTO {table} ({cols_csv}) "
+                    f"SELECT {cols_csv} FROM {table}_legacy"
+                )
+            conn.execute(f"DROP TABLE {table}_legacy")
+            for index_sql in index_sqls:
+                conn.execute(index_sql)
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+
 
 def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
     """Read the SQLite header page_count and compare against actual file size.
@@ -2457,7 +2591,9 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
-def recompute_ready(conn: sqlite3.Connection) -> int:
+def recompute_ready(
+    conn: sqlite3.Connection, failure_limit: int = None,
+) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
@@ -2465,17 +2601,34 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
 
     ``blocked`` tasks are also considered for promotion (so a task
     blocked purely by a parent dependency unblocks itself when the
-    parent completes), *except* when the most recent block event was a
-    worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).  Without that guard, a
-    ``review-required`` handoff would auto-respawn, the fresh worker
-    would find nothing to do, exit cleanly, get recorded as a protocol
-    violation, and the cycle would repeat indefinitely.
+    parent completes), *except* in two cases:
+
+    1. The most recent block event was a worker-initiated
+       ``kanban_block`` — those stay blocked until an explicit
+       ``kanban_unblock`` (#28712).
+
+    2. The task's ``consecutive_failures`` has reached the effective
+       failure limit.  This prevents infinite retry loops when a task
+       repeatedly exhausts its iteration budget: without this guard the
+       counter would reset on every recovery cycle and the circuit
+       breaker could never trip (#35072).
+
+    The effective failure limit resolves in the same order as the
+    circuit breaker in ``_record_task_failure`` so the two never
+    disagree about when a task is permanently blocked:
+
+      1. per-task ``max_retries`` if set
+      2. caller-supplied ``failure_limit`` (the dispatcher passes the
+         ``kanban.failure_limit`` config value through ``dispatch_once``)
+      3. ``DEFAULT_FAILURE_LIMIT``
     """
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status FROM tasks WHERE status IN ('todo', 'blocked')"
+            "SELECT id, status, consecutive_failures, max_retries "
+            "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -2493,13 +2646,25 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
-                # Blocked tasks also get their failure counters reset —
-                # this is effectively an auto-unblock (circuit-breaker
-                # recovery; worker-initiated blocks are skipped above).
                 if cur_status == "blocked":
+                    # Don't auto-recover tasks that have hit the
+                    # circuit-breaker failure limit.  Without this
+                    # guard, a task that repeatedly exhausts its
+                    # iteration budget would cycle forever:
+                    # block → auto-recover → respawn → budget
+                    # exhausted → block → …  The counter must also
+                    # be preserved so the breaker can accumulate
+                    # across recovery cycles.
+                    failures = int(row["consecutive_failures"] or 0)
+                    task_limit = row["max_retries"]
+                    effective_limit = (
+                        int(task_limit) if task_limit is not None
+                        else int(failure_limit)
+                    )
+                    if failures >= effective_limit:
+                        continue
                     conn.execute(
-                        "UPDATE tasks SET status = 'ready', "
-                        "consecutive_failures = 0, last_failure_error = NULL "
+                        "UPDATE tasks SET status = 'ready' "
                         "WHERE id = ? AND status = 'blocked'",
                         (task_id,),
                     )
@@ -5424,7 +5589,7 @@ def dispatch_once(
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
-    result.promoted = recompute_ready(conn)
+    result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

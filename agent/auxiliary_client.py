@@ -4725,24 +4725,23 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
-        # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
-        # ZAI vision models (glm-4v-flash, glm-4v-plus, etc.) reject max_tokens with
-        # error code 1210 ("API 调用参数有误") on multimodal requests — skip it.
-        _model_lower = (model or "").lower()
-        _skip_max_tokens = (
-            provider == "zai"
-            and ("4v" in _model_lower or "5v" in _model_lower or "-v" in _model_lower)
+        # We do NOT cap output by default. Most chat-completions providers treat
+        # an omitted max_tokens as "use the model's max output", which is what we
+        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
+        # an explicit cap only risks truncating a summary or 400-ing on providers
+        # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
+        # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
+        # models reject it entirely with error 1210). Omitting it sidesteps all of
+        # those wire-format quirks at once.
+        #
+        # The one exception is the Anthropic Messages wire (MiniMax and any
+        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
+        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
+        # there.
+        _effective_base = base_url or (
+            _current_custom_base_url() if provider == "custom" else ""
         )
-        if _skip_max_tokens:
-            pass  # ZAI vision models do not accept max_tokens
-        elif provider == "custom":
-            custom_base = base_url or _current_custom_base_url()
-            if base_url_hostname(custom_base) == "api.openai.com":
-                kwargs["max_completion_tokens"] = max_tokens
-            else:
-                kwargs["max_tokens"] = max_tokens
-        else:
+        if _is_anthropic_compat_endpoint(provider, _effective_base):
             kwargs["max_tokens"] = max_tokens
 
     if tools:

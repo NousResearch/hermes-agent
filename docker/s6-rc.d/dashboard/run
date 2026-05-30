@@ -23,7 +23,15 @@ esac
 # dropping privileges so HOME-anchored state lands under /opt/data.
 export HOME=/opt/data
 
-cd /opt/data
+# Prefer an explicit HERMES_WORKDIR override; otherwise keep Docker's
+# existing cwd (from -w / WORKDIR) and only fall back to /opt/data if
+# we are at / or cwd is unset. The old unconditional cd /opt/data would
+# clobber Docker -w.
+if [ -n "${HERMES_WORKDIR:-}" ] && [ -d "${HERMES_WORKDIR}" ]; then
+    cd "${HERMES_WORKDIR}"
+elif [ "${PWD:-/}" = "/" ]; then
+    cd /opt/data
+fi
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
 

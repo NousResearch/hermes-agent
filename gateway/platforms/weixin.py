@@ -2164,76 +2164,54 @@ async def send_weixin_direct(
     token_store.restore(account_id)
     context_token = token_store.get(account_id, chat_id)
 
-    live_adapter = _LIVE_ADAPTERS.get(resolved_token)
-    send_session = getattr(live_adapter, '_send_session', None)
-    if (live_adapter is not None and send_session is not None
-            and not send_session.closed
-            and send_session._loop is asyncio.get_running_loop()):
-        last_result: Optional[SendResult] = None
-        cleaned = live_adapter.format_message(message)
-        if cleaned:
-            last_result = await live_adapter.send(chat_id, cleaned)
-            if not last_result.success:
-                return {"error": f"Weixin send failed: {last_result.error}"}
-
-        for media_path, _is_voice in media_files or []:
-            ext = Path(media_path).suffix.lower()
-            if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
-                last_result = await live_adapter.send_image_file(chat_id, media_path)
-            else:
-                last_result = await live_adapter.send_document(chat_id, media_path)
-            if not last_result.success:
-                return {"error": f"Weixin media send failed: {last_result.error}"}
-
-        return {
-            "success": True,
-            "platform": "weixin",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id if last_result else None,
-            "context_token_used": bool(context_token),
-        }
-
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
-        adapter = WeixinAdapter(
-            PlatformConfig(
-                enabled=True,
-                token=resolved_token,
-                extra={
-                    **dict(extra or {}),
-                    "account_id": account_id,
-                    "base_url": base_url,
-                    "cdn_base_url": cdn_base_url,
-                },
-            )
+    # Use a thread-local persistent session instead of reusing the gateway's
+    # _send_session.  aiohttp.ClientSession is not thread-safe and its
+    # TimerContext.__enter__() calls current_task(loop=session._loop),
+    # which returns None when the session was created on a different event
+    # loop (the gateway's loop) — triggering a RuntimeError on every
+    # send_message tool call from a ThreadPoolExecutor worker thread.
+    from model_tools import _get_worker_session
+    session = _get_worker_session()
+    adapter = WeixinAdapter(
+        PlatformConfig(
+            enabled=True,
+            token=resolved_token,
+            extra={
+                **dict(extra or {}),
+                "account_id": account_id,
+                "base_url": base_url,
+                "cdn_base_url": cdn_base_url,
+            },
         )
-        adapter._send_session = session
-        adapter._session = session
-        adapter._token = resolved_token
-        adapter._account_id = account_id
-        adapter._base_url = base_url
-        adapter._cdn_base_url = cdn_base_url
-        adapter._token_store = token_store
+    )
+    adapter._send_session = session
+    adapter._session = session
+    adapter._token = resolved_token
+    adapter._account_id = account_id
+    adapter._base_url = base_url
+    adapter._cdn_base_url = cdn_base_url
+    adapter._token_store = token_store
 
-        last_result: Optional[SendResult] = None
-        cleaned = adapter.format_message(message)
-        if cleaned:
-            last_result = await adapter.send(chat_id, cleaned)
-            if not last_result.success:
-                return {"error": f"Weixin send failed: {last_result.error}"}
+    last_result: Optional[SendResult] = None
+    cleaned = adapter.format_message(message)
+    if cleaned:
+        last_result = await adapter.send(chat_id, cleaned)
+        if not last_result.success:
+            return {"error": f"Weixin send failed: {last_result.error}"}
 
-        for media_path, _is_voice in media_files or []:
-            ext = Path(media_path).suffix.lower()
-            if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
-                last_result = await adapter.send_image_file(chat_id, media_path)
-            else:
-                last_result = await adapter.send_document(chat_id, media_path)
-            if not last_result.success:
-                return {"error": f"Weixin media send failed: {last_result.error}"}
+    for media_path, _is_voice in media_files or []:
+        ext = Path(media_path).suffix.lower()
+        if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+            last_result = await adapter.send_image_file(chat_id, media_path)
+        else:
+            last_result = await adapter.send_document(chat_id, media_path)
+        if not last_result.success:
+            return {"error": f"Weixin media send failed: {last_result.error}"}
 
-        return {
-            "success": True,
-            "platform": "weixin",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id if last_result else None,
-            "context_token_used": bool(context_token),
-        }
+    return {
+        "success": True,
+        "platform": "weixin",
+        "chat_id": chat_id,
+        "message_id": last_result.message_id if last_result else None,
+        "context_token_used": bool(context_token),
+    }

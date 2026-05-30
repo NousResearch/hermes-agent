@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+import aiohttp
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 _tool_loop = None          # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
+_worker_session_local = threading.local()  # per-worker-thread persistent sessions
 
 
 def _get_tool_loop():
@@ -79,6 +81,29 @@ def _get_worker_loop():
         asyncio.set_event_loop(loop)
         _worker_thread_local.loop = loop
     return loop
+
+
+def _get_worker_session():
+    """Return a persistent aiohttp.ClientSession for the current worker thread.
+
+    Each worker thread gets its own long-lived session bound to the thread's
+    persistent event loop (from ``_get_worker_loop``).  This avoids recreating
+    TCP/SSL connections on every ``send_message`` tool call while ensuring
+    ``TimerContext.current_task()`` always has a valid task reference — the
+    session's ``_loop`` always matches the loop the code is running on.
+    """
+    s = getattr(_worker_session_local, 'session', None)
+    if s is None or s.closed:
+        loop = _get_worker_loop()
+        try:
+            import ssl, certifi
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            connector = aiohttp.TCPConnector(loop=loop, ssl=ssl_ctx)
+        except ImportError:
+            connector = None
+        s = aiohttp.ClientSession(loop=loop, trust_env=True, connector=connector)
+        _worker_session_local.session = s
+    return s
 
 
 def _run_async(coro):
@@ -366,17 +391,12 @@ def _compute_tool_definitions(
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
-    else:
-        # Default: start with everything
+
+    elif disabled_toolsets:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
-    # Always apply disabled toolsets as a subtraction step at the end.
-    # This ensures that even if a composite toolset (like hermes-cli)
-    # is enabled, any tools belonging to a disabled toolset are strictly
-    # stripped out. See issue #17309.
-    if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -388,8 +408,14 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                if not quiet_mode:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
+    else:
+        # Default: start with everything
+        from toolsets import get_all_toolsets
+        for ts_name in get_all_toolsets():
+            tools_to_include.update(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

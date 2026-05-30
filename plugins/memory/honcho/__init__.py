@@ -1118,20 +1118,40 @@ class HonchoMemoryProvider(MemoryProvider):
             ),
         }
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str | list, assistant_content: str | list, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
+
+        Handles multimodal content (e.g., WeChat images, custom emoji) by
+        extracting text parts only — image URLs are excluded from memory.
         """
         if self._cron_skipped:
             return
         if not self._manager or not self._session_key:
             return
 
+        def _extract_text(content: str | list) -> str:
+            """Extract text from multimodal content (list of content parts).
+
+            When content is a list (multimodal message), extracts only the
+            text parts and discards image_url / other non-text parts.
+            Memory providers should not store image URIs.
+            """
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                return " ".join(text_parts)
+            return content if isinstance(content, str) else ""
+
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        clean_user_content = sanitize_context(_extract_text(user_content) or "").strip()
+        clean_assistant_content = sanitize_context(_extract_text(assistant_content) or "").strip()
 
         def _sync():
             try:

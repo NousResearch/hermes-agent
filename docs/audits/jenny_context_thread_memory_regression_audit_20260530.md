@@ -382,6 +382,29 @@ Proposed safe sequence:
 3. Design built-in memory walling separately, including operator-visible defaults
    and migration/non-migration behavior for existing `MEMORY.md` / `USER.md`.
 
+## Operational Diagnostics Follow-up
+
+`tools/inspect_discord_thread_context.py` provides a metadata-only operator
+diagnostic for Discord thread routing. It accepts explicit local paths and does
+not call Discord, restart the gateway, read memory files, or query transcript
+content.
+
+Example:
+
+```bash
+python3 tools/inspect_discord_thread_context.py \
+  --thread-id <discord_thread_id> \
+  --state-root <path-containing-state.db-and-sessions-dir> \
+  --no-content
+```
+
+The report includes the expected Discord thread session key, whether
+`sessions.json` maps it to a session, active transcript counts and last
+timestamp metadata, orphan candidate counts, and whether the missing-mapping
+diagnostic would fire. Tests in
+`tests/tools/test_inspect_discord_thread_context.py` cover mapped, missing
+mapping, missing path, read-only, and no-content behavior using temp paths only.
+
 ## Operational Checks To Run From The VPS
 
 Run these only on the VPS/operator side, not from this audit session:

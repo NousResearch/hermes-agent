@@ -184,6 +184,7 @@ def _fetch_session_metadata(
     if row is None:
         return None
     metadata = _row_to_session_metadata(row, candidate=False)
+    metadata.update(_fetch_transcript_stats(conn, session_id))
     routing = _fetch_routing_metadata(conn, session_id)
     if routing:
         metadata["routing_metadata"] = routing
@@ -230,6 +231,7 @@ def _fetch_exact_orphan_sessions(
     results = []
     for row in rows:
         item = _row_to_session_metadata(row, candidate=False)
+        item.update(_fetch_transcript_stats(conn, row["id"]))
         item["match_type"] = "exact_metadata_match"
         item["routing_metadata"] = _row_to_routing_metadata(row)
         results.append(item)
@@ -262,7 +264,12 @@ def _fetch_candidate_orphan_sessions(
         """,
         tuple(params),
     ).fetchall()
-    return [_row_to_session_metadata(row, candidate=True) for row in rows]
+    results = []
+    for row in rows:
+        item = _row_to_session_metadata(row, candidate=True)
+        item.update(_fetch_transcript_stats(conn, row["id"]))
+        results.append(item)
+    return results
 
 
 def _row_to_session_metadata(row: sqlite3.Row, *, candidate: bool) -> dict[str, Any]:
@@ -306,6 +313,33 @@ def _fetch_routing_metadata(
     if row is None:
         return None
     return _row_to_routing_metadata(row)
+
+
+def _fetch_transcript_stats(conn: sqlite3.Connection, session_id: str) -> dict[str, Any]:
+    """Return aggregate transcript metadata without reading message content."""
+    if not _table_exists(conn, "messages"):
+        return {
+            "transcript_message_count": None,
+            "last_transcript_timestamp": None,
+        }
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS transcript_message_count,
+               MAX(timestamp) AS last_transcript_timestamp
+        FROM messages
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return {
+            "transcript_message_count": 0,
+            "last_transcript_timestamp": None,
+        }
+    return {
+        "transcript_message_count": int(row["transcript_message_count"] or 0),
+        "last_transcript_timestamp": row["last_transcript_timestamp"],
+    }
 
 
 def _row_to_routing_metadata(row: sqlite3.Row) -> dict[str, Any]:

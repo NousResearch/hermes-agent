@@ -92,6 +92,7 @@ class TestDiscordBotFilter(unittest.TestCase):
             "DISCORD_BOT_LOOP_FUSE_WINDOW_SECONDS": "",
             "DISCORD_BOT_LOOP_FUSE_MAX_MESSAGES": "",
             "DISCORD_BOT_LOOP_FUSE_SUPPRESS_SECONDS": "",
+            "HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT": "1",
         }
         baseline_env.update(env)
         patcher = patch.dict(os.environ, baseline_env, clear=False)

@@ -394,3 +394,4 @@ class WorkerPacket(StrictModel):
     mcpGrants: list[McpGrant] = Field(default_factory=list)
     stopConditions: list[dict[str, Any]] = Field(default_factory=list)
     outputRequirements: list[NonEmptyStr]
+    reviewPolicy: ReviewPolicy | None = None

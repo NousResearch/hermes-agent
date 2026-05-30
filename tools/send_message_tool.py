@@ -247,13 +247,26 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _legacy_discord_bot_to_bot_enabled() -> bool:
+    return os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() in {"1", "true", "yes"}
+
+
 def send_bot_message_tool(args, **kw):
-    """Handle structured Discord bot-to-bot send calls."""
+    """Handle legacy structured Discord bot-to-bot send calls."""
+    if not _legacy_discord_bot_to_bot_enabled():
+        return tool_error(
+            "send_bot_message is disabled: Discord is no longer an authoritative bot-to-bot control plane. "
+            "Use the Hermes control-plane DB APIs for dispatch/approvals/messages; Discord may only mirror state."
+        )
     return _handle_send_bot_message(args)
 
 
 def send_bot_approval_decision_tool(args, **kw):
-    """Handle structured Discord bot-to-bot approval decisions."""
+    """Handle legacy structured Discord bot-to-bot approval decisions."""
+    if not _legacy_discord_bot_to_bot_enabled():
+        return tool_error(
+            "send_bot_approval_decision is disabled: approvals are authoritative only in the Hermes control-plane DB."
+        )
     return _handle_send_bot_approval_decision(args)
 
 
@@ -325,7 +338,17 @@ def _write_bot_idempotency_store(store: dict) -> None:
     atomic_json_write(_bot_idempotency_store_path(), store)
 
 
+def _legacy_discord_bot_to_bot_disabled_error() -> str:
+    return json.dumps({
+        "status": "error",
+        "error": "legacy_discord_bot_to_bot_disabled",
+        "message": "Discord bot-to-bot control messages are disabled by default; use the durable local control-plane DB instead. Set HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT=1 only for explicit rollback/testing.",
+    })
+
+
 def _handle_send_bot_approval_decision(args):
+    if not _legacy_discord_bot_to_bot_enabled():
+        return _legacy_discord_bot_to_bot_disabled_error()
     target = (args.get("target") or "").strip()
     recipient_bot_id = str(args.get("recipient_bot_id") or "").strip()
     approval_id = (args.get("approval_id") or "").strip()
@@ -359,6 +382,8 @@ def _handle_send_bot_approval_decision(args):
 
 
 def _handle_send_bot_message(args):
+    if not _legacy_discord_bot_to_bot_enabled():
+        return _legacy_discord_bot_to_bot_disabled_error()
     target = (args.get("target") or "").strip()
     recipient_bot_id = str(args.get("recipient_bot_id") or "").strip()
     body = args.get("body", "")
@@ -498,6 +523,8 @@ def _handle_send_bot_message(args):
 
 
 async def _send_bot_message_to_discord(platform, pconfig, chat_id, *, recipient_bot_id, body, reply_expected, kind, correlation_id, thread_id=None, reply_to=None):
+    if not _legacy_discord_bot_to_bot_enabled():
+        return {"status": "error", "error": "legacy_discord_bot_to_bot_disabled"}
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -626,10 +653,15 @@ def _handle_send(args):
         mentioned_bot_ids = _discord_raw_allowed_bot_mentions(message)
         if mentioned_bot_ids:
             if len(mentioned_bot_ids) > 1:
-                return tool_error("Multiple allowed Discord bot mentions are not permitted via send_message; use one send_bot_message call per bot")
+                return tool_error("Multiple allowed Discord bot mentions are not permitted via send_message; use one control-plane dispatch per bot")
+            if _legacy_discord_bot_to_bot_enabled():
+                return tool_error(
+                    f"Raw mention of allowed Discord bot {mentioned_bot_ids[0]} is not permitted via send_message; "
+                    "use send_bot_message so Hermes builds a BOT_MSG v1 envelope"
+                )
             return tool_error(
                 f"Raw mention of allowed Discord bot {mentioned_bot_ids[0]} is not permitted via send_message; "
-                "use send_bot_message so Hermes builds a BOT_MSG v1 envelope"
+                "legacy Discord bot-to-bot control is disabled and control-plane DB dispatch must be used"
             )
 
     # Capture [[as_document]] directive before extract_media strips it.
@@ -2173,20 +2205,24 @@ registry.register(
     emoji="📨",
 )
 
-registry.register(
-    name="send_bot_message",
-    toolset="messaging",
-    schema=SEND_BOT_MESSAGE_SCHEMA,
-    handler=send_bot_message_tool,
-    check_fn=_check_send_message,
-    emoji="🤖",
-)
+if _legacy_discord_bot_to_bot_enabled():
+    registry.register(
+        name="send_bot_message",
+        toolset="messaging",
+        schema=SEND_BOT_MESSAGE_SCHEMA,
+        handler=send_bot_message_tool,
+        check_fn=_check_send_message,
+        emoji="🤖",
+    )
 
-registry.register(
-    name="send_bot_approval_decision",
-    toolset="messaging",
-    schema=SEND_BOT_APPROVAL_DECISION_SCHEMA,
-    handler=send_bot_approval_decision_tool,
-    check_fn=_check_send_message,
-    emoji="✅",
-)
+    registry.register(
+        name="send_bot_approval_decision",
+        toolset="messaging",
+        schema=SEND_BOT_APPROVAL_DECISION_SCHEMA,
+        handler=send_bot_approval_decision_tool,
+        check_fn=_check_send_message,
+        emoji="✅",
+    )
+else:
+    registry.deregister("send_bot_message")
+    registry.deregister("send_bot_approval_decision")

@@ -91,6 +91,132 @@ def get_current_session_key(default: str = "default") -> str:
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
+def _current_profile_id(default: str = "default") -> str:
+    return (
+        os.getenv("HERMES_PROFILE_NAME")
+        or os.getenv("HERMES_PROFILE")
+        or default
+    )
+
+
+def _control_approval_create(approval_id: str, command: str, description: str, *, ttl_seconds: int | None = None) -> bool:
+    """Persist an approval request to the durable control plane.
+
+    Returns False on persistence failure. Callers in control_db authority mode
+    must treat False as a hard block; shadow-mode callers may continue through
+    the legacy synchronous prompt while DB rollout remains non-operative.
+    """
+    try:
+        from hermes_cli import control_db as cp
+        conn = cp.connect()
+        try:
+            profile = _current_profile_id()
+            session_key = get_current_session_key("default")
+            approver_profile = os.getenv("HERMES_APPROVER_PROFILE", "default")
+            approver_instance = os.getenv("HERMES_APPROVER_INSTANCE_ID") or f"{approver_profile}:approver:{os.getpid()}"
+            cp.register_profile(conn, profile, role="worker")
+            cp.register_instance(conn, profile, instance_id=session_key)
+            cp.register_profile(conn, approver_profile, role="admin", actor_type="bootstrap")
+            cp.register_instance(conn, approver_profile, instance_id=approver_instance)
+            cp.create_approval(
+                conn,
+                approval_id=approval_id,
+                requester_profile=profile,
+                requester_instance_id=session_key,
+                approver_profile=approver_profile,
+                command_preview=command,
+                tool_args_preview=description,
+                ttl_ms=max(int(ttl_seconds or 300), 1) * 1000,
+            )
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:
+        logger.debug("Failed to persist control-plane approval %s: %s", approval_id, exc)
+        return False
+
+
+def _control_approval_decide(approval_id: str, choice: str, *, reason: str | None = None) -> bool:
+    try:
+        from hermes_cli import control_db as cp
+        conn = cp.connect()
+        try:
+            decision = "approved" if choice in {"once", "session", "always", "approved", "approve"} else "denied"
+            approver_profile = os.getenv("HERMES_APPROVER_PROFILE", "default")
+            approver_instance = os.getenv("HERMES_APPROVER_INSTANCE_ID") or f"{approver_profile}:approver:{os.getpid()}"
+            cp.register_instance(conn, approver_profile, instance_id=approver_instance)
+            return cp.decide_approval(
+                conn,
+                approval_id,
+                approver_profile=approver_profile,
+                approver_instance_id=approver_instance,
+                decision=decision,
+                reason=reason,
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("Failed to persist control-plane approval decision %s: %s", approval_id, exc)
+        return False
+
+
+def _control_approval_consume(approval_id: str) -> bool:
+    try:
+        from hermes_cli import control_db as cp
+        conn = cp.connect()
+        try:
+            return cp.consume_approval(conn, approval_id, requester_instance_id=get_current_session_key("default"), requester_profile=_current_profile_id())
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("Failed to consume control-plane approval %s: %s", approval_id, exc)
+        return False
+
+
+def _control_approval_get_choice(approval_id: str) -> str | None:
+    try:
+        from hermes_cli import control_db as cp
+        conn = cp.connect()
+        try:
+            row = conn.execute(
+                "SELECT status, decision FROM cp_approvals WHERE approval_id=? AND expires_at_ms > ?",
+                (approval_id, cp.now_ms()),
+            ).fetchone()
+            if not row:
+                return None
+            decision = row["decision"] or row["status"]
+            if decision == "approved":
+                return "once"
+            if decision == "denied":
+                return "deny"
+            return None
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("Failed to read control-plane approval decision %s: %s", approval_id, exc)
+        return None
+
+
+def _control_db_authoritative() -> bool:
+    try:
+        from hermes_cli import control_db as cp
+        conn = cp.connect()
+        try:
+            return cp.get_authority_mode(conn) == "control_db"
+        finally:
+            conn.close()
+    except Exception:
+        return os.getenv("HERMES_CONTROL_DB_REQUIRED", "").lower() in {"1", "true", "yes"}
+
+def _remove_gateway_approval_entry(session_key: str, entry: "_ApprovalEntry") -> None:
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        if entry in queue:
+            queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+
 def _get_session_platform() -> str:
     """Return the current gateway platform from contextvars/env fallback."""
     try:
@@ -571,6 +697,9 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     for entry in targets:
         entry.result = choice
+        aid = str((entry.data or {}).get("approval_id") or "")
+        if aid:
+            _control_approval_decide(aid, choice, reason=f"gateway session {session_key}")
         entry.event.set()
     return len(targets)
 
@@ -603,6 +732,7 @@ def resolve_gateway_approval_by_id(approval_id: str, choice: str) -> int:
             return 0
 
     target.result = choice
+    _control_approval_decide(approval_id, choice, reason="gateway approval id")
     target.event.set()
     return 1
 
@@ -1423,6 +1553,26 @@ def check_all_command_guards(command: str, env_type: str,
                 "description": combined_desc,
             }
             entry = _ApprovalEntry(approval_data)
+
+            # Persist before exposing the approval ID through the queue or
+            # notification callback. Otherwise a fast resolver can approve the
+            # in-memory entry before the durable DB row exists, leaving stale or
+            # blocking state in control_db authority mode.
+            timeout = _get_approval_config().get("gateway_timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+            if not _control_approval_create(approval_id, command, combined_desc, ttl_seconds=timeout) and _control_db_authoritative():
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Control-plane DB approval request could not be persisted; DB authority mode is active.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                    "outcome": "control_db_unavailable",
+                    "user_consent": False,
+                }
+
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
 
@@ -1444,12 +1594,7 @@ def check_all_command_guards(command: str, env_type: str,
                 notify_cb(approval_data)
             except Exception as exc:
                 logger.warning("Gateway approval notify failed: %s", exc)
-                with _lock:
-                    queue = _gateway_queues.get(session_key, [])
-                    if entry in queue:
-                        queue.remove(entry)
-                    if not queue:
-                        _gateway_queues.pop(session_key, None)
+                _remove_gateway_approval_entry(session_key, entry)
                 return {
                     "approved": False,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
@@ -1465,11 +1610,6 @@ def check_all_command_guards(command: str, env_type: str,
             # 1800s) kills the agent while the user is still responding to
             # the approval prompt.  Mirrors the _wait_for_process() cadence
             # in tools/environments/base.py.
-            timeout = _get_approval_config().get("gateway_timeout", 300)
-            try:
-                timeout = int(timeout)
-            except (ValueError, TypeError):
-                timeout = 300
 
             try:
                 from tools.environments.base import touch_activity_if_due
@@ -1490,18 +1630,18 @@ def check_all_command_guards(command: str, env_type: str,
                 if entry.event.wait(timeout=min(1.0, _remaining)):
                     resolved = True
                     break
+                db_choice = _control_approval_get_choice(approval_id) if _control_db_authoritative() else None
+                if db_choice is not None:
+                    entry.result = db_choice
+                    resolved = True
+                    break
                 if touch_activity_if_due is not None:
                     touch_activity_if_due(
                         _activity_state, "waiting for user approval"
                     )
 
             # Clean up this entry from the queue
-            with _lock:
-                queue = _gateway_queues.get(session_key, [])
-                if entry in queue:
-                    queue.remove(entry)
-                if not queue:
-                    _gateway_queues.pop(session_key, None)
+            _remove_gateway_approval_entry(session_key, entry)
 
             choice = entry.result
             # Normalize outcome for the post hook. Unresolved (timeout) and
@@ -1554,6 +1694,15 @@ def check_all_command_guards(command: str, env_type: str,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
+            if not _control_approval_consume(approval_id) and _control_db_authoritative():
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Control-plane DB approval could not be consumed; DB authority mode is active.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                    "outcome": "control_db_consume_failed",
+                    "user_consent": False,
+                }
             for key, _, is_tirith in warnings:
                 if choice == "session" or (choice == "always" and is_tirith):
                     approve_session(session_key, key)
@@ -1569,7 +1718,18 @@ def check_all_command_guards(command: str, env_type: str,
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
+        fallback_approval_id = "gw-" + uuid.uuid4().hex
+        if not _control_approval_create(fallback_approval_id, command, combined_desc, ttl_seconds=_get_approval_config().get("gateway_timeout", 300)) and _control_db_authoritative():
+            return {
+                "approved": False,
+                "message": "BLOCKED: Control-plane DB approval request could not be persisted; DB authority mode is active.",
+                "pattern_key": primary_key,
+                "description": combined_desc,
+                "outcome": "control_db_unavailable",
+                "user_consent": False,
+            }
         submit_pending(session_key, {
+            "approval_id": fallback_approval_id,
             "command": command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
@@ -1579,6 +1739,7 @@ def check_all_command_guards(command: str, env_type: str,
             "approved": False,
             "pattern_key": primary_key,
             "status": "pending_approval",
+            "approval_id": fallback_approval_id,
             "approval_pending": True,
             "command": command,
             "description": combined_desc,

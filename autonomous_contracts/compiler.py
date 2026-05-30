@@ -184,6 +184,7 @@ def generate_worker_packet(
         mcpGrants=list(sprint.mcpGrants),
         stopConditions=list(sprint.stopConditions),
         outputRequirements=output_requirements,
+        reviewPolicy=sprint.review,
     )
 
 

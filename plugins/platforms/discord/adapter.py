@@ -849,6 +849,8 @@ class DiscordAdapter(BasePlatformAdapter):
         those are not syntax failures and must not get a ❌ reaction that could be
         interpreted by a peer bot as a retryable protocol failure.
         """
+        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
+            return False
         return bool(
             self._client
             and self._client.user
@@ -864,6 +866,8 @@ class DiscordAdapter(BasePlatformAdapter):
         was handled without dispatching a model turn.  The sender has already
         passed the allowlisted-bot gate before this method is called.
         """
+        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
+            return False
         if bot_msg.get("kind") != "approval_decision":
             return False
         parsed = parse_discord_bot_approval_decision_body(bot_msg.get("body") or "")
@@ -914,6 +918,8 @@ class DiscordAdapter(BasePlatformAdapter):
         return True
 
     def _should_accept_bot_message(self, message: Any, allow_bots: str) -> bool:
+        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
+            return False
         if allow_bots == "none":
             return False
         if allow_bots == "all":
@@ -1838,6 +1844,8 @@ class DiscordAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a structured BOT_MSG v1 envelope to another Discord bot."""
+        if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
+            return SendResult(success=False, error="legacy_discord_bot_to_bot_disabled")
         try:
             envelope = _build_discord_bot_msg_v1(
                 recipient_bot_id=recipient_bot_id,
@@ -4675,6 +4683,7 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 self_mention = ""
             notify_mentions = self._discord_approval_notify_mentions()
+            legacy_bot_to_bot_enabled = os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() in {"1", "true", "yes"}
             content_lines = []
             used_bot_msg_envelope = False
             if notify_mentions:
@@ -4688,7 +4697,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     ),
                     None,
                 )
-                if recipient_bot_id:
+                if recipient_bot_id and legacy_bot_to_bot_enabled:
                     body_lines = [
                         "approval required",
                         f"approval_id: {approval_id}",
@@ -4706,8 +4715,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     used_bot_msg_envelope = True
                 else:
-                    content_lines.append(" ".join(notify_mentions) + " approval required")
-            if self_mention and not used_bot_msg_envelope:
+                    human_mentions = [m for m in notify_mentions if not (_discord_mention_id(m) and _discord_mention_id(m) in allowed_bot_ids)]
+                    if human_mentions:
+                        content_lines.append(" ".join(human_mentions) + " approval required")
+            if self_mention and not used_bot_msg_envelope and legacy_bot_to_bot_enabled:
                 content_lines.append(
                     "Galt/another supervisor bot can approve only by sending a structured "
                     "approval_decision BOT_MSG for this live request. Human operators can use "
@@ -4717,6 +4728,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             view = ExecApprovalView(
                 session_key=session_key,
+                approval_id=approval_id,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
@@ -5668,19 +5680,21 @@ def _define_discord_view_classes() -> None:
         Interactive button view for exec approval of dangerous commands.
 
         Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
-        Clicking a button calls ``resolve_gateway_approval()`` to unblock the
-        waiting agent thread — the same mechanism as the text ``/approve`` flow.
+        Clicking a button calls ``resolve_gateway_approval_by_id()`` to unblock the
+        exact waiting agent thread — the same mechanism as structured approval decisions.
         Only users in the allowed list can click.  Times out after 5 minutes.
         """
 
         def __init__(
             self,
             session_key: str,
+            approval_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
+            self.approval_id = approval_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
@@ -5722,13 +5736,19 @@ def _define_discord_view_classes() -> None:
 
             await interaction.response.edit_message(embed=embed, view=self)
 
-            # Unblock the waiting agent thread via the gateway approval queue
+            # Unblock the waiting agent thread via the gateway approval id.
             try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
+                from tools.approval import resolve_gateway_approval_by_id
+                count = resolve_gateway_approval_by_id(self.approval_id, choice)
+                if count != 1:
+                    logger.info(
+                        "Discord button found no live approval for id %s in session %s (choice=%s, user=%s)",
+                        self.approval_id, self.session_key, choice, interaction.user.display_name,
+                    )
+                    return
                 logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
+                    "Discord button resolved approval %s for session %s (choice=%s, user=%s)",
+                    self.approval_id, self.session_key, choice, interaction.user.display_name,
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
@@ -6667,6 +6687,8 @@ async def _standalone_send_bot_message(
     reply_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a structured BOT_MSG v1 envelope via Discord REST without a live adapter."""
+    if os.getenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "").lower() not in {"1", "true", "yes"}:
+        return {"status": "error", "error": "legacy_discord_bot_to_bot_disabled"}
     try:
         envelope = _build_discord_bot_msg_v1(
             recipient_bot_id=recipient_bot_id,

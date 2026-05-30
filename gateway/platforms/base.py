@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import inspect
 import json
@@ -2898,7 +2899,9 @@ class BasePlatformAdapter(ABC):
         now = datetime.utcnow()
         digest = hashlib.sha256((text_content or "").encode("utf-8")).hexdigest()
         audit_dir = get_hermes_home() / "logs" / "routing_guard"
-        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with contextlib.suppress(OSError):
+            os.chmod(audit_dir, 0o700)
         path = audit_dir / f"{now.strftime('%Y%m%dT%H%M%S%fZ')}-{digest[:12]}.json"
         payload = {
             "event": "bot_routing_final_response_guard",
@@ -2908,7 +2911,7 @@ class BasePlatformAdapter(ABC):
             "reasons": reasons,
             "body_sha256": digest,
             "body_len": len(text_content or ""),
-            "body": text_content or "",
+            "body_redacted": True,
             "source": {
                 "chat_id": str(getattr(source, "chat_id", "") or ""),
                 "thread_id": str(getattr(source, "thread_id", "") or ""),
@@ -2920,7 +2923,15 @@ class BasePlatformAdapter(ABC):
                 "message_id": str(getattr(event, "message_id", "") or ""),
             },
         }
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except Exception:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            raise
         return path
 
     async def _send_text_response_with_routing_guard(

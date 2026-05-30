@@ -112,9 +112,10 @@ async def test_send_with_retry_treats_routing_guard_error_as_terminal():
 
 
 @pytest.mark.asyncio
-async def test_discord_final_response_routing_guard_sends_notice_not_original(monkeypatch, tmp_path):
+async def test_discord_final_response_routing_guard_blocks_operational_bot_to_bot_at_baseline(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777,888")
+    monkeypatch.delenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", raising=False)
     adapter = _GuardAdapter()
     source = SessionSource(
         platform=Platform.DISCORD,
@@ -139,14 +140,9 @@ async def test_discord_final_response_routing_guard_sends_notice_not_original(mo
     assert result.success is True
     assert len(adapter.calls) == 1
     sent = adapter.calls[0]["content"]
+    assert sent != original
     assert sent.startswith("[ROUTING_GUARD]")
-    assert "ACTION_REQUIRED for Galt/default" not in sent
-    assert "bot-to-bot operational message was blocked" in sent
-    audits = list((tmp_path / "logs" / "routing_guard").glob("*.json"))
-    assert len(audits) == 1
-    audit_text = audits[0].read_text()
-    assert "bot_routing_final_response_guard" in audit_text
-    assert "ACTION_REQUIRED for Galt/default" in audit_text
+    assert (tmp_path / "logs" / "routing_guard").exists()
 
 
 @pytest.mark.asyncio
@@ -183,6 +179,7 @@ def test_send_message_rejects_raw_allowed_discord_bot_mention(monkeypatch):
     from gateway.config import Platform
 
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
 
     class FakeConfig:
         platforms = {Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
@@ -204,6 +201,7 @@ def test_send_bot_approval_decision_builds_non_replying_structured_decision(monk
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     calls = []
 
     class FakeConfig:
@@ -247,6 +245,7 @@ def test_send_bot_message_requires_recipient_allowlist(monkeypatch):
     from gateway.config import Platform
 
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "888")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
 
     class FakeConfig:
         platforms = {Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
@@ -283,6 +282,7 @@ def test_send_bot_message_idempotency_returns_existing_delivery(monkeypatch, tmp
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     calls = []
 
     class FakeConfig:
@@ -323,6 +323,7 @@ def test_send_bot_message_idempotency_survives_omitted_correlation_id(monkeypatc
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     calls = []
 
     class FakeConfig:
@@ -364,6 +365,7 @@ def test_send_bot_message_rejects_non_numeric_reply_to(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
 
     class FakeConfig:
         platforms = {Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
@@ -395,6 +397,7 @@ def test_send_bot_message_idempotency_key_includes_protocol_context(monkeypatch,
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     calls = []
 
     class FakeConfig:
@@ -467,6 +470,7 @@ async def test_inbound_approval_decision_resolves_live_request_without_model_tur
     import tools.approval as approval
 
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "12345")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
     adapter._add_reaction = AsyncMock(return_value=True)
@@ -496,6 +500,7 @@ async def test_inbound_approval_decision_rejects_replay(monkeypatch):
     from gateway.platforms.discord import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "12345")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
     adapter._add_reaction = AsyncMock(return_value=True)
@@ -514,6 +519,7 @@ def test_malformed_bot_msg_reaction_only_for_invalid_envelope(monkeypatch):
     from gateway.platforms.discord import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "12345")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
     bot = SimpleNamespace(bot=True, id=12345)
@@ -589,6 +595,7 @@ def test_send_bot_message_rejects_invalid_kind_before_send(monkeypatch, tmp_path
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    monkeypatch.setenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", "1")
 
     class FakeConfig:
         platforms = {Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
@@ -618,17 +625,21 @@ def test_send_bot_message_rejects_invalid_kind_before_send(monkeypatch, tmp_path
     assert "Invalid BOT_MSG v1 kind" in result["error"]
 
 
-def test_messaging_toolset_exposes_structured_bot_message_tools(monkeypatch, tmp_path):
+def test_messaging_toolset_hides_structured_bot_message_tools_at_baseline(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Messaging-platform sessions expose send_message without needing a live
-    # gateway.pid under the temporary test HERMES_HOME.
+    # gateway.pid under the temporary test HERMES_HOME. Legacy Discord bot
+    # control-plane tools remain hidden unless explicitly enabled.
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
-    import tools.send_message_tool  # noqa: F401 - ensure registry side effects ran
+    monkeypatch.delenv("HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT", raising=False)
+    import importlib
+    import tools.send_message_tool as smt
     import model_tools
 
+    importlib.reload(smt)
     model_tools._clear_tool_defs_cache()
     names = {t["function"]["name"] for t in model_tools.get_tool_definitions(enabled_toolsets=["messaging"], quiet_mode=True)}
 
     assert "send_message" in names
-    assert "send_bot_message" in names
-    assert "send_bot_approval_decision" in names
+    assert "send_bot_message" not in names
+    assert "send_bot_approval_decision" not in names

@@ -218,6 +218,7 @@ def test_compile_ledger_seed_is_deterministic_and_scoped() -> None:
     assert seed.sprints[0].objective == "Verify host tools and write tooling report."
     assert seed.sprints[0].acceptance[1].verification == "file_exists"
     assert seed.sprints[0].allowedPaths == ["docs/**", ".contract-ledger/**"]
+    assert seed.sprints[0].review.required is False
     assert seed.sprints[0].mcpGrants[0].server == "context7"
     assert seed.mcpRuntime is not None
     assert seed.gates[0].gateId == "G.APPROVED"
@@ -254,6 +255,8 @@ def test_generate_worker_packet_excludes_master_contract() -> None:
     assert packet.projectId == "sample-project"
     assert packet.verificationCommands == ["python3 --version"]
     assert packet.mcpGrants[0].server == "context7"
+    assert packet.reviewPolicy is not None
+    assert packet.reviewPolicy.required is False
     assert [criterion.id for criterion in packet.acceptanceCriteria] == ["PRE.1.AC1", "PRE.1.AC2"]
     assert packet.acceptanceCriteria[1].path == "docs/TOOLING_VERSIONS.md"
     assert "sprints" not in dumped
@@ -284,6 +287,8 @@ def test_schema_export_writes_phase_one_schema_files(tmp_path) -> None:
     schemas = schema_map()
     assert "contract.schema.json" in schemas
     assert "worker-packet.schema.json" in schemas
+    worker_schema = schemas["worker-packet.schema.json"]
+    assert "reviewPolicy" in worker_schema["properties"]
     written = write_schema_files(tmp_path)
     names = {path.name for path in written}
     assert {"contract.schema.json", "ledger-seed.schema.json", "worker-packet.schema.json"} <= names

@@ -851,8 +851,8 @@ Isolation model:
   fleet can serve multiple businesses with workspace-path + memory-key
   isolation.
 - After `kanban.failure_limit` consecutive non-success attempts on the
-  same task (default: 2), the dispatcher auto-blocks it to prevent spin
-  loops.
+  same task (default: 2), the dispatcher parks it in non-human `waiting`
+  to prevent spin loops; `blocked` is reserved for human-input requests.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 

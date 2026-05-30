@@ -96,7 +96,7 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "waiting", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -959,8 +959,9 @@ CREATE TABLE IF NOT EXISTS task_runs (
 
 -- Subscription from a gateway source (platform + chat + thread) to a
 -- task. The gateway's kanban-notifier watcher tails task_events and
--- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
--- the original requester so human-in-the-loop workflows close the loop.
+-- pushes ``completed`` / ``blocked`` / ``gave_up`` events to the original
+-- requester so human-in-the-loop and non-human waiting workflows close
+-- the loop. ``blocked`` is reserved for human-input requests.
 CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     task_id       TEXT NOT NULL,
     platform      TEXT NOT NULL,
@@ -2423,7 +2424,8 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
 
-    A ``blocked`` status can come from two very different sources:
+    Historically a ``blocked`` status could come from two different sources;
+    new writes reserve it for the first one only:
 
     * **Worker- or operator-initiated** — a worker called
       ``kanban_block(reason="review-required: ...")`` (or somebody ran
@@ -2431,11 +2433,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       should stay blocked until an operator unblocks it.  The block tool
       emits a ``"blocked"`` event row in ``task_events``.
 
-    * **Circuit-breaker** — ``_record_task_failure`` tripped after
-      repeated crashes / spawn failures / timeouts.  This emits
-      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
-      automatically once the underlying conditions change (e.g. parents
-      finish, transient infra error clears).
+    * **Legacy circuit-breaker/direct DB state** — older versions could park
+      repeated crashes / spawn failures / timeouts in ``blocked`` without a
+      ``"blocked"`` event. Current versions use ``waiting`` for that
+      non-human state, but recompute still clears legacy non-sticky rows.
 
     The cheapest signal that distinguishes the two is the most recent
     ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
@@ -2443,10 +2444,9 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     no ``"unblocked"`` event has fired since), the task is sticky and
     ``recompute_ready`` must *not* auto-promote it.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Returns ``False`` when there is no such event at all (e.g. a legacy row
+    was set to ``status='blocked'`` by the circuit breaker or by direct DB
+    manipulation) so old non-human waits can still auto-recover.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -2458,24 +2458,20 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote ``todo``/``waiting`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
 
-    ``blocked`` tasks are also considered for promotion (so a task
-    blocked purely by a parent dependency unblocks itself when the
-    parent completes), *except* when the most recent block event was a
-    worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).  Without that guard, a
-    ``review-required`` handoff would auto-respawn, the fresh worker
-    would find nothing to do, exit cleanly, get recorded as a protocol
-    violation, and the cycle would repeat indefinitely.
+    ``waiting`` tasks are non-human waits (for example circuit-breaker
+    give-up recovery) and may auto-promote. ``blocked`` is reserved for
+    worker/operator human-input requests and never auto-promotes while
+    the most recent block/unblock event is ``blocked`` (#28712).
     """
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status FROM tasks WHERE status IN ('todo', 'blocked')"
+            "SELECT id, status FROM tasks WHERE status IN ('todo', 'waiting', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -2493,15 +2489,15 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
-                # Blocked tasks also get their failure counters reset —
-                # this is effectively an auto-unblock (circuit-breaker
-                # recovery; worker-initiated blocks are skipped above).
-                if cur_status == "blocked":
+                # Waiting/circuit-breaker tasks also get their failure
+                # counters reset — this is automatic non-human recovery.
+                # Worker-initiated blocks are skipped above.
+                if cur_status in ("waiting", "blocked"):
                     conn.execute(
                         "UPDATE tasks SET status = 'ready', "
                         "consecutive_failures = 0, last_failure_error = NULL "
-                        "WHERE id = ? AND status = 'blocked'",
-                        (task_id,),
+                        "WHERE id = ? AND status = ?",
+                        (task_id, cur_status),
                     )
                 else:
                     conn.execute(
@@ -3657,7 +3653,7 @@ def promote_task(
     force: bool = False,
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """Manually promote a `todo` or `blocked` task to `ready`.
+    """Manually promote a `todo`, `waiting`, or `blocked` task to `ready`.
 
     Mirrors the automatic promotion done by ``recompute_ready`` but
     drives it from a deliberate operator action with an audit-trail
@@ -3674,10 +3670,10 @@ def promote_task(
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
+    if cur_status not in ("todo", "waiting", "blocked"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            f"'todo', 'waiting', or 'blocked'"
         )
 
     if not force:
@@ -3703,7 +3699,7 @@ def promote_task(
     with write_txn(conn):
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')",
+            "WHERE id = ? AND status IN ('todo', 'waiting', 'blocked')",
             (task_id,),
         )
         if upd.rowcount != 1:
@@ -3719,7 +3715,7 @@ def promote_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked``/``scheduled`` -> ready or todo.
+    """Transition ``blocked``/``scheduled``/``waiting`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -3731,7 +3727,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled', 'waiting')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -3762,7 +3758,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'waiting')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -4269,9 +4265,9 @@ def schedule_task(
 # ---------------------------------------------------------------------------
 
 # After this many consecutive non-success attempts on a task/profile, the
-# dispatcher stops retrying and parks the task in ``blocked`` with a reason so
-# a human can investigate. Prevents retry storms when a worker repeatedly times
-# out, crashes, or cannot spawn.
+# dispatcher stops retrying and parks the task in non-human ``waiting`` with a
+# reason. Prevents retry storms when a worker repeatedly times out, crashes, or
+# cannot spawn without polluting the human-input ``blocked`` lane.
 DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
@@ -4290,7 +4286,8 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # ---------------------------------------------------------------------------
 
 # Patterns in last_failure_error that indicate a quota / auth blocker.
-# These errors won't resolve by retrying immediately — auto-block instead.
+# These errors won't resolve by retrying immediately — defer this tick and let
+# the non-human waiting circuit breaker trip if the condition persists.
 _RESPAWN_BLOCKER_RE = re.compile(
     r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
     r"unauthorized|forbidden|billing|subscription|"
@@ -4347,7 +4344,8 @@ class DispatchResult:
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
-    """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    """Legacy name: task ids parked in non-human ``waiting`` by the
+    consecutive-failure circuit breaker. These are not human blockers."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -4356,9 +4354,11 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
 
-    Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
+    Reasons: ``"blocker_auth"`` (quota/auth error — deferred until the
+    non-human waiting circuit breaker trips),
     ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    ``"active_pr"`` (GitHub PR URL in a recent comment; task is moved to
+    ``review`` on real dispatcher ticks)."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4405,7 +4405,7 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     * ``"clean_exit"`` — ``WIFEXITED`` with ``WEXITSTATUS == 0``. When the
       task is still ``running`` in the DB, this is a protocol violation
       (worker exited without calling ``kanban_complete`` / ``kanban_block``)
-      and should be auto-blocked immediately — retrying will just loop.
+      and should be deferred immediately — retrying will just loop.
     * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
     * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
@@ -4636,7 +4636,7 @@ def enforce_max_runtime(
     Sends SIGTERM, waits a short grace window, then SIGKILL. Emits a
     ``timed_out`` event and drops the task back to ``ready`` so the next
     dispatcher tick re-spawns it — unless the spawn-failure circuit
-    breaker has already given up, in which case the task stays blocked
+    breaker has already given up, in which case the task stays waiting
     where ``_record_spawn_failure`` parked it.
 
     Runs host-local: only tasks claimed by this host are candidates
@@ -4724,7 +4724,7 @@ def enforce_max_runtime(
                 timed_out.append(tid)
         # Increment the unified failure counter. Outside the write_txn
         # above because ``_record_task_failure`` opens its own. If the
-        # breaker trips, this flips the task ``ready → blocked`` and
+        # breaker trips, this flips the task ``ready → waiting`` and
         # emits a ``gave_up`` event on top of the ``timed_out`` we
         # already emitted.
         if cur.rowcount == 1:
@@ -4857,7 +4857,7 @@ def detect_stale_running(
         # going straight back to ``ready`` for re-dispatch. Counting it as
         # a worker failure would let two legitimately-long-running tasks
         # (>4h without explicit heartbeat) trip the circuit breaker and
-        # auto-block, even though no worker actually failed. The 'stale'
+        # park in waiting, even though no worker actually failed. The 'stale'
         # event already lives in task_events for auditability; that's the
         # right surface for "this happened" without conflating with the
         # spawn_failed / timed_out / crashed counters.
@@ -4982,7 +4982,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 )
     # Outside the main txn: increment the unified failure counter for
     # each crashed task. If the breaker trips, the task transitions
-    # ready → blocked with a ``gave_up`` event on top of the ``crashed``
+    # ready → waiting with a ``gave_up`` event on top of the ``crashed``
     # event we already emitted.
     #
     # Protocol-violation crashes force an immediate trip (failure_limit=1)
@@ -5014,10 +5014,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             )
             if tripped:
                 auto_blocked.append(tid)
-    # Stash auto-blocked ids on the function for the dispatch loop to pick up.
+    # Stash auto-waiting ids on the function for the dispatch loop to pick up.
     # Keeps the public return type (``list[str]``) stable for direct callers
     # and tests that destructure the result; ``dispatch_once`` reads this
-    # side-channel attribute to populate ``DispatchResult.auto_blocked``.
+    # side-channel attribute to populate legacy ``DispatchResult.auto_blocked``.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     return crashed
 
@@ -5039,23 +5039,23 @@ def _record_task_failure(
     Unified replacement for the old spawn-only ``_record_spawn_failure``.
     Every path that ends a task with a non-success outcome funnels
     through here so the ``consecutive_failures`` counter and the
-    auto-block threshold stay consistent.
+    non-human waiting threshold stay consistent.
 
-    Returns True when the task was auto-blocked (counter reached
-    ``failure_limit``), False when it was just updated in place.
+    Returns True when the task was parked in non-human ``waiting`` (counter
+    reached ``failure_limit``), False otherwise.
 
     Modes:
 
     * ``release_claim=True, end_run=True`` — spawn-failure path.
       Caller has a running task with an open run; this transitions
-      it back to ``ready`` (or ``blocked`` when the breaker trips),
+      it back to ``ready`` (or non-human ``waiting`` when the breaker trips),
       releases the claim, and closes the run with ``outcome=<outcome>``.
 
     * ``release_claim=False, end_run=False`` — timeout/crash path.
       Caller has ALREADY flipped the task to ``ready`` and closed the
       run with the appropriate outcome. This just increments the
       counter; if the breaker trips, the task is re-transitioned
-      ``ready → blocked`` and a ``gave_up`` event is emitted.
+      ``ready → waiting`` and a ``gave_up`` event is emitted.
 
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
@@ -5097,7 +5097,7 @@ def _record_task_failure(
             if release_claim:
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
-                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "UPDATE tasks SET status = 'waiting', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready')",
@@ -5105,10 +5105,10 @@ def _record_task_failure(
                 )
             else:
                 # Timeout/crash path: task is already at ``ready``
-                # with claim cleared; just flip to blocked + update
+                # with claim cleared; just flip to waiting + update
                 # counter fields.
                 conn.execute(
-                    "UPDATE tasks SET status = 'blocked', "
+                    "UPDATE tasks SET status = 'waiting', "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
@@ -5251,7 +5251,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         pattern. Retrying immediately is unlikely to help (rate limits
         reset on a timer; auth needs human action), so we defer to the
         next tick. The existing ``consecutive_failures`` counter still
-        trips the auto-block circuit breaker after ``failure_limit``
+        trips the non-human waiting circuit breaker after ``failure_limit``
         consecutive failures, so a persistent auth error eventually
         blocks via the normal path — but a transient 429 gets a few
         ticks of recovery first.
@@ -5390,7 +5390,7 @@ def dispatch_once(
          ticks can detect crashes before the TTL expires.
 
     Spawn failures are counted per-task. After ``failure_limit`` consecutive
-    failures the task is auto-blocked with the last error as its reason —
+    failures the task is parked in non-human ``waiting`` with the last error as its reason —
     prevents the dispatcher from thrashing forever on an unfixable task.
 
     ``max_spawn`` is a **live concurrency cap**, not a per-tick spawn budget:
@@ -5415,7 +5415,7 @@ def dispatch_once(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
     result.crashed = detect_crashed_workers(conn)
-    # detect_crashed_workers stashes protocol-violation auto-blocks on
+    # detect_crashed_workers stashes protocol-violation auto-waits on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
     _crash_auto_blocked = getattr(
@@ -5585,9 +5585,9 @@ def dispatch_once(
         # blocker (quota / auth). The guard defers the spawn this tick so
         # the task gets a chance to clear (rate limits often reset in
         # seconds-to-minutes); the existing consecutive_failures counter
-        # still trips the auto-block circuit breaker after failure_limit
-        # consecutive failures, so a persistent auth error eventually
-        # blocks via the normal path rather than on first occurrence.
+        # still trips the non-human waiting circuit breaker after failure_limit
+        # consecutive failures, so a persistent auth error eventually parks in
+        # ``waiting`` rather than retrying forever or entering human ``blocked``.
         guard_reason = check_respawn_guard(conn, row["id"])
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
@@ -5596,6 +5596,16 @@ def dispatch_once(
             # this the task appears stuck in ready with no diagnosis.
             if not dry_run:
                 with write_txn(conn):
+                    if guard_reason == "active_pr":
+                        conn.execute(
+                            "UPDATE tasks SET status = 'review' "
+                            "WHERE id = ? AND status = 'ready'",
+                            (row["id"],),
+                        )
+                        _append_event(
+                            conn, row["id"], "review_requested",
+                            {"source": "active_pr_guard", "reason": guard_reason},
+                        )
                     _append_event(
                         conn, row["id"], "respawn_guarded",
                         {"reason": guard_reason},
@@ -5682,7 +5692,17 @@ def dispatch_once(
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    just_moved_to_review = {
+        tid for tid, reason in result.respawn_guarded if reason == "active_pr"
+    }
     for row in review_rows:
+        # A ready task with an active PR is moved to ``review`` above so it
+        # stops flickering ready<->guarded, but that transition is only a
+        # non-human parking move. Do not spawn the review lane in the same
+        # dispatcher tick; the next tick can pick it up after observers see
+        # the stable review state.
+        if row["id"] in just_moved_to_review:
+            continue
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
@@ -6750,7 +6770,7 @@ def gc_events(
 ) -> int:
     """Delete task_events rows older than ``older_than_seconds`` for tasks
     in a terminal state (``done`` or ``archived``). Returns the number of
-    rows deleted. Running / ready / blocked tasks keep their full event
+    rows deleted. Running / ready / waiting / blocked tasks keep their full event
     history."""
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):

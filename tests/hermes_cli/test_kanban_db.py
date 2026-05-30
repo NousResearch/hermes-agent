@@ -542,10 +542,10 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
-def test_detect_crashed_workers_systemic_failure_fast_block(
+def test_detect_crashed_workers_systemic_failure_fast_waiting(
     kanban_home, monkeypatch,
 ):
-    """When many tasks crash with the same error, trip the breaker faster."""
+    """When many tasks crash with the same error, park in non-human waiting faster."""
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
@@ -568,8 +568,9 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
 
         for tid in task_ids:
             task = kb.get_task(conn, tid)
-            assert task.status == "blocked", (
-                f"task {tid} should be blocked (systemic), got {task.status}"
+            assert task is not None
+            assert task.status == "waiting", (
+                f"task {tid} should be waiting (systemic non-human failure), got {task.status}"
             )
 
 
@@ -1392,19 +1393,19 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
-def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
+def test_dispatch_respawn_guard_defers_auth_error_without_auto_wait(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once defers (does NOT auto-block) a ready task whose last
+    """dispatch_once defers (does NOT park waiting) a ready task whose last
     error is a blocker_auth.
 
-    The old behaviour auto-blocked on first occurrence, which was too
+    The old behaviour parked work on first occurrence, which was too
     aggressive: a transient 429 rate-limit (which typically clears in
     seconds to minutes) would end up requiring manual unblock. The new
     behaviour defers the spawn this tick; the task stays in ``ready``
     and gets another chance next tick. If the auth error genuinely
     persists, the existing ``consecutive_failures`` circuit breaker
-    will auto-block via the normal failure-limit path.
+    will park it in non-human waiting via the normal failure-limit path.
     """
     spawned_ids = []
 
@@ -1419,9 +1420,9 @@ def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
-    # Critical: task is NOT auto-blocked on first occurrence.
+    # Critical: task is NOT parked in waiting on first occurrence.
     assert t not in res.auto_blocked, (
-        f"blocker_auth should defer, not auto-block on first occurrence; "
+        f"blocker_auth should defer, not park waiting on first occurrence; "
         f"got auto_blocked={res.auto_blocked!r}"
     )
     # It IS recorded as respawn_guarded with the reason.
@@ -1466,7 +1467,7 @@ def test_dispatch_respawn_guard_skips_recent_success(
 def test_dispatch_respawn_guard_skips_active_pr(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once skips (but does not block) a task with an active PR comment."""
+    """dispatch_once moves active-PR work to review, not blocked/ready flicker."""
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -1484,13 +1485,18 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in spawned_ids
     assert t not in res.auto_blocked
     with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "ready"
+        assert kb.get_task(conn, t).status == "review"
+        events = kb.list_events(conn, t)
+    assert any(
+        e.kind == "review_requested" and e.payload.get("source") == "active_pr_guard"
+        for e in events
+    )
 
 
-def test_dispatch_respawn_guard_dry_run_no_auto_block(
+def test_dispatch_respawn_guard_dry_run_no_auto_wait(
     kanban_home, all_assignees_spawnable
 ):
-    """In dry_run mode, blocker_auth tasks are recorded in respawn_guarded (not auto-blocked)."""
+    """In dry_run mode, blocker_auth tasks are recorded in respawn_guarded (not parked waiting)."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="dry-quota", assignee="alice")
         conn.execute(
@@ -3204,7 +3210,8 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
     Stale detection is dispatcher-side absence-of-heartbeat detection,
     not a worker failure. Counting it as a failure would let two
     legitimately-long-running tasks (>4h without explicit heartbeat) trip
-    the circuit breaker and auto-block at the default failure_limit=2,
+    the circuit breaker and park in non-human waiting at the default
+    failure_limit=2,
     even though no worker actually failed. The 'stale' event in
     task_events is the right audit surface; the consecutive_failures
     counter is reserved for spawn_failed / timed_out / crashed.

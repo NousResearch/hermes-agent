@@ -547,7 +547,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_schedule.add_argument("--ids", nargs="+", default=None,
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
-    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
+    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled/waiting tasks to ready")
     p_unblock.add_argument(
         "--reason",
         default=None,
@@ -557,7 +557,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_promote = sub.add_parser(
         "promote",
-        help="Manually move one or more todo/blocked tasks to ready (recovery path)",
+        help="Manually move one or more todo/waiting/blocked tasks to ready (recovery path)",
     )
     p_promote.add_argument("task_id")
     p_promote.add_argument(
@@ -615,7 +615,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Cap number of spawns this pass")
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
-                        help=f"Auto-block a task after this many consecutive non-success attempts "
+                        help=f"Park a task in non-human waiting after this many consecutive non-success attempts "
                              f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
 
@@ -651,7 +651,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                          help="Only show events from tasks in this tenant")
     p_watch.add_argument("--kinds", default=None,
                          help="Comma-separated event kinds to include "
-                              "(e.g. 'completed,blocked,gave_up,crashed,timed_out')")
+                              "(e.g. 'completed,blocked,gave_up,crashed,timed_out'; blocked means human input)")
     p_watch.add_argument("--interval", type=float, default=0.5,
                          help="Poll interval in seconds (default: 0.5)")
 
@@ -1520,7 +1520,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
-    # why a task auto-blocked earlier/later than they expected.
+    # why a task moved to non-human waiting earlier/later than expected.
     if task.max_retries is not None:
         print(f"  max-retries: {task.max_retries} (task)")
     else:
@@ -1994,7 +1994,7 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
-                print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
+                print(f"cannot unblock {tid} (not blocked/scheduled/waiting?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
@@ -2176,7 +2176,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Stale:        {len(res.stale)}")
     if res.stale:
         print(f"  {', '.join(res.stale)}")
-    print(f"Auto-blocked: {len(res.auto_blocked)}")
+    print(f"Auto-waiting (non-human): {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
     print(f"Promoted:     {res.promoted}")
@@ -2232,7 +2232,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "    kanban:\n"
             "      dispatch_in_gateway: true      # default\n"
             "      dispatch_interval_seconds: 60\n"
-            "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
+            "      failure_limit: 2              # consecutive non-success attempts before non-human waiting\n"
             "\n"
             "Running both the gateway AND this standalone daemon will\n"
             "race for claims. If you truly need the old standalone\n"
@@ -2266,7 +2266,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
     # Health telemetry: warn when every tick finds ready work but fails to
     # spawn any worker. Catches broken profiles, PATH drift, missing venv,
-    # credential loss — cases where the per-task circuit breaker auto-blocks
+    # credential loss — cases where the per-task circuit breaker parks waiting
     # each task quietly but the operator has no signal that the dispatcher
     # itself is dysfunctional.
     HEALTH_WINDOW = 6  # ticks (default 30s at interval=5)
@@ -2291,8 +2291,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                     f"consecutive ticks but 0 workers spawned successfully. "
                     f"Check profile health (venv, PATH, credentials) and "
                     f"`hermes kanban list --status ready` / "
-                    f"`hermes kanban list --status blocked` for recent "
-                    f"spawn_failed tasks.",
+                    f"`hermes kanban list --status waiting` for recent "
+                    f"non-human spawn_failed waits.",
                     file=sys.stderr, flush=True,
                 )
                 health_state["last_warn_at"] = now
@@ -2308,7 +2308,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
                 f"timed_out={len(res.timed_out)} stale={len(res.stale)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
-                f"auto_blocked={len(res.auto_blocked)}",
+                f"auto_waiting={len(res.auto_blocked)}",
                 flush=True,
             )
 
@@ -2401,7 +2401,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in ("triage", "todo", "scheduled", "ready", "running", "waiting", "blocked", "review", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")

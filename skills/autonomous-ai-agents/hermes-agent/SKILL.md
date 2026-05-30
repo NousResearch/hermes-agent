@@ -698,9 +698,10 @@ sessions still have zero `kanban_*` schema footprint unless configured.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after `failure_limit` consecutive spawn failures
-  (default 2; configurable via `kanban.failure_limit` or per-task
-  `max_retries`).
+  Parks a task in non-human `waiting` after `failure_limit` consecutive
+  non-success attempts (default 2; configurable via `kanban.failure_limit`
+  or per-task `max_retries`). `blocked` is reserved for human-input
+  requests such as review-required handoffs.
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.

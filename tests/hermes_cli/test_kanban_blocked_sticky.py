@@ -1,6 +1,9 @@
-"""Regression tests for #28712 — kanban dispatcher must not auto-promote
-worker-initiated ``kanban_block`` (sticky blocks), but must keep
-auto-recovering circuit-breaker blocks.
+"""Regression tests for Kanban blocked semantics.
+
+``blocked`` is reserved for worker/operator requests that need human
+input. Non-human waits (dependency recovery, circuit breakers, guards)
+must use non-blocking states so the dashboard's blocked column remains a
+true human-input queue.
 
 The bug: when a worker called ``kanban_block(reason="review-required:
 ...")`` to hand off to a human, the dispatcher's ``recompute_ready``
@@ -13,9 +16,8 @@ These tests pin down:
 
 * Worker / operator-initiated blocks are sticky and survive
   ``recompute_ready``.
-* Circuit-breaker blocks (``gave_up`` event, status flipped via
-  ``_record_task_failure``) still auto-recover — the original intent
-  of #40c1decb3 is preserved.
+* Circuit-breaker ``gave_up`` events park in ``waiting`` instead of
+  ``blocked`` so they do not count as human blockers.
 * An explicit ``kanban_unblock`` clears the sticky state.
 * The full block → promote → crash → ``gave_up`` loop is broken after
   this fix: subsequent ticks leave the task blocked.
@@ -100,25 +102,22 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
 
 
 # ---------------------------------------------------------------------------
-# Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
+# Non-human waits do not use blocked
 # ---------------------------------------------------------------------------
 
 
-def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
-    """A child that was put into ``blocked`` *without* a worker-issued
-    ``kanban_block`` (e.g. circuit-breaker after repeated spawn
-    failures, manual DB triage) must still get auto-promoted when its
-    parents complete — preserves the pre-#28712 recovery semantics."""
+def test_circuit_breaker_waiting_promotes_when_parents_done(kanban_home: Path) -> None:
+    """A non-human circuit-breaker wait uses ``waiting`` and can still
+    recover automatically when its parents complete."""
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")
         child = kb.create_task(conn, title="child", parents=[parent])
         kb.complete_task(conn, parent, result="ok")
 
-        # Simulate a circuit-breaker / direct triage that flips status
-        # without emitting a ``blocked`` event — exactly what
-        # ``_record_task_failure`` does after a ``gave_up``.
+        # Simulate a circuit-breaker / direct triage that parks the task
+        # without emitting a human-input ``blocked`` event.
         conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
+            "UPDATE tasks SET status='waiting', consecutive_failures=5, "
             "last_failure_error='persistent error' WHERE id=?",
             (child,),
         )
@@ -132,31 +131,26 @@ def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
         assert task.last_failure_error is None
 
 
-def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> None:
-    """The circuit-breaker emits ``gave_up`` (not ``blocked``).  Make
-    sure ``_has_sticky_block`` doesn't accidentally treat ``gave_up``
-    as sticky — otherwise we'd regress the safety net for genuinely
-    transient crashes."""
+def test_record_task_failure_breaker_uses_waiting_not_blocked(kanban_home: Path) -> None:
+    """The circuit-breaker emits ``gave_up`` and parks in ``waiting`` —
+    not ``blocked`` — because no human-input request was made."""
     with kb.connect() as conn:
-        parent = kb.create_task(conn, title="parent")
-        child = kb.create_task(conn, title="child", parents=[parent])
-        kb.complete_task(conn, parent, result="ok")
-
-        # Status + event match what _record_task_failure writes when
-        # the breaker trips.
-        conn.execute(
-            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
+        tid = kb.create_task(conn, title="breaker", assignee="alice")
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn,
+            tid,
+            "worker capacity exhausted",
+            outcome="spawn_failed",
+            failure_limit=1,
+            release_claim=True,
+            end_run=True,
         )
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-            "VALUES (?, 'gave_up', NULL, ?)",
-            (child, int(time.time())),
-        )
-        conn.commit()
-
-        promoted = kb.recompute_ready(conn)
-        assert promoted == 1
-        assert kb.get_task(conn, child).status == "ready"
+        assert tripped is True
+        assert kb.get_task(conn, tid).status == "waiting"
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "gave_up" in kinds
+        assert "blocked" not in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +161,8 @@ def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> No
 def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -> None:
     """``hermes kanban unblock`` (or the ``kanban_unblock`` tool) is
     the only legitimate way out of a worker-initiated block.  After
-    unblock, a *subsequent* circuit-breaker block on the same task
-    must again be eligible for auto-recovery."""
+    unblock, a *subsequent* non-human circuit-breaker wait on the same
+    task must again be eligible for auto-recovery."""
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="t")
         kb.claim_task(conn, tid)
@@ -181,12 +175,11 @@ def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -
         # After unblock the task is no longer blocked at all.
         assert kb.get_task(conn, tid).status == "ready"
 
-        # Now simulate a *later* circuit-breaker block (no new
-        # ``blocked`` event, just status flip).  The most recent
+        # Now simulate a *later* circuit-breaker wait.  The most recent
         # block/unblock event is ``unblocked`` → guard does not fire
         # → recompute can recover.
         conn.execute(
-            "UPDATE tasks SET status='blocked' WHERE id=?", (tid,),
+            "UPDATE tasks SET status='waiting' WHERE id=?", (tid,),
         )
         conn.commit()
 
@@ -212,7 +205,7 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
     3. Fresh worker exits cleanly without terminal tool call →
        ``protocol_violation`` event.
     4. ``_record_task_failure(failure_limit=1)`` → ``gave_up`` event,
-       status='blocked' again.
+       non-human waiting in current builds (legacy builds used blocked).
     5. (Bug) Dispatcher promotes again → infinite loop.
 
     With the fix in place, step 2 never happens — the test simulates

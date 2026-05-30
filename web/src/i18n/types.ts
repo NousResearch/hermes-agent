@@ -673,7 +673,9 @@ export interface Translations {
       scheduled: string;
       ready: string;
       running: string;
+      waiting: string;
       blocked: string;
+      review: string;
       done: string;
       archived: string;
     };
@@ -683,7 +685,9 @@ export interface Translations {
       scheduled: string;
       ready: string;
       running: string;
+      waiting: string;
       blocked: string;
+      review: string;
       done: string;
       archived: string;
     };

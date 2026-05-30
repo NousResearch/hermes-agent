@@ -71,7 +71,10 @@ def test_board_empty(client):
     # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
     assert set(names) == kb.VALID_STATUSES - {"archived"}
-    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for expected in (
+        "triage", "todo", "scheduled", "ready", "running",
+        "waiting", "blocked", "review", "done",
+    ):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
@@ -334,6 +337,29 @@ def test_patch_schedule_then_unblock(client):
     assert "scheduled" in [c["name"] for c in columns]
     scheduled = next(c for c in columns if c["name"] == "scheduled")
     assert any(x["id"] == t["id"] for x in scheduled["tasks"])
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+
+def test_patch_waiting_then_ready_is_non_human_wait(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "waiting"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "waiting"
+
+    columns = client.get("/api/plugins/kanban/board").json()["columns"]
+    waiting = next(c for c in columns if c["name"] == "waiting")
+    blocked = next(c for c in columns if c["name"] == "blocked")
+    assert any(x["id"] == t["id"] for x in waiting["tasks"])
+    assert not any(x["id"] == t["id"] for x in blocked["tasks"])
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{t['id']}",

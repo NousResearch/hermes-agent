@@ -149,9 +149,10 @@ def test_promote_rejects_unknown_task(conn):
     assert err is not None and "not found" in err
 
 
-def test_promote_blocked_task_works(conn):
+@pytest.mark.parametrize("status", ["waiting", "blocked"])
+def test_promote_waiting_or_blocked_task_works(conn, status):
     tid = kb.create_task(conn, title="t")
-    conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
+    conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, tid))
     ok, err = kb.promote_task(
         conn, tid, actor="tester", reason="ready now"
     )

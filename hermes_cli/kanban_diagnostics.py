@@ -1004,7 +1004,7 @@ DIAGNOSTIC_KINDS = (
 
 DEFAULT_CONFIG = {
     # Match the dispatcher default (kanban.failure_limit) so repeated-failure
-    # diagnostics do not lag behind the default auto-block threshold.
+    # diagnostics do not lag behind the default non-human waiting threshold.
     "failure_threshold": 2,
     # Legacy alias accepted at read time by _rule_repeated_failures.
     "spawn_failure_threshold": 2,

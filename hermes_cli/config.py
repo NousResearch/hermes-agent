@@ -1755,9 +1755,9 @@ DEFAULT_CONFIG = {
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
-        # Auto-block after this many consecutive non-success attempts for the
-        # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
-        # resets the streak for the new profile.
+        # Park in non-human waiting after this many consecutive non-success
+        # attempts for the same task/profile (spawn_failed, timed_out, or
+        # crashed). Reassignment resets the streak for the new profile.
         "failure_limit": 2,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can

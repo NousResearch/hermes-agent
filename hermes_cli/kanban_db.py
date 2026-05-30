@@ -2599,17 +2599,24 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
 
     ``blocked`` tasks are also considered for promotion (so a task
     blocked purely by a parent dependency unblocks itself when the
-    parent completes), *except* when the most recent block event was a
-    worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).  Without that guard, a
-    ``review-required`` handoff would auto-respawn, the fresh worker
-    would find nothing to do, exit cleanly, get recorded as a protocol
-    violation, and the cycle would repeat indefinitely.
+    parent completes), *except* in two cases:
+
+    1. The most recent block event was a worker-initiated
+       ``kanban_block`` — those stay blocked until an explicit
+       ``kanban_unblock`` (#28712).
+
+    2. The task's ``consecutive_failures`` has reached the effective
+       failure limit (per-task ``max_retries`` or
+       ``DEFAULT_FAILURE_LIMIT``).  This prevents infinite retry
+       loops when a task repeatedly exhausts its iteration budget:
+       without this guard the counter would reset on every recovery
+       cycle and the circuit breaker could never trip.
     """
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status FROM tasks WHERE status IN ('todo', 'blocked')"
+            "SELECT id, status, consecutive_failures, max_retries "
+            "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -2627,13 +2634,25 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
-                # Blocked tasks also get their failure counters reset —
-                # this is effectively an auto-unblock (circuit-breaker
-                # recovery; worker-initiated blocks are skipped above).
                 if cur_status == "blocked":
+                    # Don't auto-recover tasks that have hit the
+                    # circuit-breaker failure limit.  Without this
+                    # guard, a task that repeatedly exhausts its
+                    # iteration budget would cycle forever:
+                    # block → auto-recover → respawn → budget
+                    # exhausted → block → …  The counter must also
+                    # be preserved so the breaker can accumulate
+                    # across recovery cycles.
+                    failures = int(row["consecutive_failures"] or 0)
+                    task_limit = row["max_retries"]
+                    effective_limit = (
+                        int(task_limit) if task_limit is not None
+                        else DEFAULT_FAILURE_LIMIT
+                    )
+                    if failures >= effective_limit:
+                        continue
                     conn.execute(
-                        "UPDATE tasks SET status = 'ready', "
-                        "consecutive_failures = 0, last_failure_error = NULL "
+                        "UPDATE tasks SET status = 'ready' "
                         "WHERE id = ? AND status = 'blocked'",
                         (task_id,),
                     )

@@ -168,6 +168,10 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
 
     platform = Platform.NOSTR
 
+    # Conservative cap. Relays accept much larger events, but the NIP-17 gift-wrap
+    # adds overhead and most Nostr clients render long DMs poorly.
+    MAX_MESSAGE_LENGTH = 4096
+
     # Tool-initiated sends (send_message_tool.py) reuse the gateway's connected
     # adapter instead of spinning up a short-lived one that republishes profile
     # and relay-list metadata on every call. Mirrors YuanbaoAdapter's pattern.

@@ -14,6 +14,7 @@ from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _save_codex_tokens,
+    format_auth_error,
     _import_codex_cli_tokens,
     _login_openai_codex,
     refresh_codex_oauth_pure,
@@ -41,6 +42,16 @@ def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refre
     }
     auth_file = hermes_home / "auth.json"
     auth_file.write_text(json.dumps(auth_store, indent=2))
+    return auth_file
+
+
+def _setup_codex_cli_auth(codex_home: Path, *, access_token: str = "cli-at", refresh_token: str = "cli-rt"):
+    """Write a Codex CLI auth file that Hermes can adopt as a rescue path."""
+    codex_home.mkdir(parents=True, exist_ok=True)
+    auth_file = codex_home / "auth.json"
+    auth_file.write_text(json.dumps({
+        "tokens": {"access_token": access_token, "refresh_token": refresh_token},
+    }))
     return auth_file
 
 
@@ -72,15 +83,35 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
-def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
+def test_resolve_codex_runtime_credentials_missing_access_token_without_cli_import(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
     assert exc.value.code == "codex_auth_missing_access_token"
     assert exc.value.relogin_required is True
+
+
+def test_resolve_codex_runtime_credentials_imports_cli_tokens_when_singleton_broken(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    _setup_hermes_auth(hermes_home, access_token="", refresh_token="dead-refresh")
+    _setup_codex_cli_auth(codex_home, access_token="fresh-cli-at", refresh_token="fresh-cli-rt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "fresh-cli-at"
+    assert resolved["source"] == "hermes-auth-store"
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    tokens = auth["providers"]["openai-codex"]["tokens"]
+    assert tokens["access_token"] == "fresh-cli-at"
+    assert tokens["refresh_token"] == "fresh-cli-rt"
 
 
 def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, monkeypatch):
@@ -153,6 +184,7 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     resolved = resolve_codex_runtime_credentials()
     assert resolved["api_key"] == "pool-fallback-token"
@@ -187,6 +219,7 @@ def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_pat
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     resolved = resolve_codex_runtime_credentials()
     assert resolved["api_key"] == "usable-token"
@@ -208,6 +241,7 @@ def test_resolve_codex_runtime_credentials_pool_fallback_no_usable_entry(tmp_pat
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-cli"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
@@ -433,6 +467,33 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
 
 
+def test_resolve_codex_runtime_credentials_imports_cli_tokens_after_terminal_refresh(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    _setup_hermes_auth(hermes_home, access_token="stale-hermes-at", refresh_token="reused-rt")
+    _setup_codex_cli_auth(codex_home, access_token="restored-cli-at", refresh_token="restored-cli-rt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    def _raise_reused(tokens, timeout_seconds):
+        raise AuthError(
+            "Codex refresh token was already consumed by another client.",
+            provider="openai-codex",
+            code="refresh_token_reused",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _raise_reused)
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=True, refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "restored-cli-at"
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    tokens = auth["providers"]["openai-codex"]["tokens"]
+    assert tokens["access_token"] == "restored-cli-at"
+    assert tokens["refresh_token"] == "restored-cli-rt"
+
+
 class _StubHTTPResponse:
     def __init__(self, status_code: int, payload, headers=None):
         self.status_code = status_code
@@ -620,6 +681,21 @@ def test_is_rate_limited_auth_error_distinguishes_credential_errors():
     assert is_rate_limited_auth_error(rate_limited) is True
     assert is_rate_limited_auth_error(missing_creds) is False
     assert is_rate_limited_auth_error(ValueError("nope")) is False
+
+
+def test_format_auth_error_for_codex_mentions_cli_auto_import():
+    err = AuthError(
+        "Codex refresh token was already consumed by another client.",
+        provider="openai-codex",
+        code="refresh_token_reused",
+        relogin_required=True,
+    )
+
+    rendered = format_auth_error(err)
+
+    assert "~/.codex/auth.json" in rendered
+    assert "automatically" in rendered
+    assert "run `codex` once" in rendered
 
 
 def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypatch):

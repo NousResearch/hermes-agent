@@ -782,6 +782,12 @@ def format_auth_error(error: Exception) -> str:
         return str(error)
 
     if error.relogin_required:
+        if error.provider == "openai-codex":
+            return (
+                f"{error} Hermes will try to import fresh Codex CLI tokens from "
+                "`~/.codex/auth.json` automatically. If this still fails, run "
+                "`codex` once, then retry."
+            )
         return f"{error} Run `hermes model` to re-authenticate."
 
     if error.code == "subscription_required":
@@ -3568,6 +3574,24 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _import_codex_cli_tokens_to_auth_store() -> Optional[Dict[str, Any]]:
+    """Adopt a fresh Codex CLI login into Hermes' isolated auth store.
+
+    This is intentionally a rescue path, not pool seeding. Hermes normally
+    keeps its own Codex OAuth session to avoid sharing a rotating refresh token
+    with Codex CLI / VS Code. If Hermes' copy is missing or terminally stale,
+    though, a freshly restored ``~/.codex/auth.json`` is the best available
+    source of truth and should repair both the singleton and device-code pool
+    entries.
+    """
+    tokens = _import_codex_cli_tokens()
+    if not tokens:
+        return None
+    last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    _save_codex_tokens(tokens, last_refresh=last_refresh)
+    return {"tokens": tokens, "last_refresh": last_refresh}
+
+
 def resolve_codex_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -3587,26 +3611,32 @@ def resolve_codex_runtime_credentials(
     """
     try:
         data = _read_codex_tokens()
-    except AuthError:
-        pool_token = _pool_codex_access_token()
-        if pool_token:
-            base_url = (
-                os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
-                or DEFAULT_CODEX_BASE_URL
-            )
-            return {
-                "provider": "openai-codex",
-                "base_url": base_url,
-                "api_key": pool_token,
-                "source": "credential_pool",
-                "last_refresh": None,
-                "auth_mode": "chatgpt",
-            }
-        raise
+    except AuthError as original_error:
+        imported = _import_codex_cli_tokens_to_auth_store()
+        if imported:
+            data = imported
+        else:
+            pool_token = _pool_codex_access_token()
+            if pool_token:
+                base_url = (
+                    os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                    or DEFAULT_CODEX_BASE_URL
+                )
+                return {
+                    "provider": "openai-codex",
+                    "base_url": base_url,
+                    "api_key": pool_token,
+                    "source": "credential_pool",
+                    "last_refresh": None,
+                    "auth_mode": "chatgpt",
+                }
+            raise original_error
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
+
+    terminal_refresh_error: Optional[AuthError] = None
 
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
@@ -3623,8 +3653,23 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
-                access_token = str(tokens.get("access_token", "") or "").strip()
+                try:
+                    tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                except AuthError as exc:
+                    if _is_terminal_codex_oauth_refresh_error(exc):
+                        terminal_refresh_error = exc
+                    else:
+                        raise
+                else:
+                    access_token = str(tokens.get("access_token", "") or "").strip()
+
+    if terminal_refresh_error is not None:
+        imported = _import_codex_cli_tokens_to_auth_store()
+        if not imported:
+            raise terminal_refresh_error
+        data = imported
+        tokens = dict(data["tokens"])
+        access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")

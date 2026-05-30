@@ -11262,6 +11262,26 @@ _AGENT_SUBCOMMANDS = {
 }
 
 
+def _is_tui_chat_launch(args) -> bool:
+    return bool(getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
+
+
+def _command_has_dedicated_mcp_startup(args) -> bool:
+    if args.command == "acp":
+        return True
+    if args.command == "gateway" and getattr(args, "gateway_command", None) == "run":
+        return True
+    if args.command == "cron" and getattr(args, "cron_command", None) in {"run", "tick"}:
+        return True
+    return False
+
+
+def _should_background_mcp_startup(args) -> bool:
+    if _is_tui_chat_launch(args):
+        return False
+    return args.command in {None, "chat", "rl"}
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
@@ -11281,19 +11301,42 @@ def _prepare_agent_startup(args) -> None:
             "plugin discovery failed at CLI startup",
             exc_info=True,
         )
-    try:
-        # MCP tool discovery — no event loop running in CLI/TUI startup,
-        # so inline is safe.  Moved here from model_tools.py module scope
-        # to avoid freezing the gateway's event loop on its first message
-        # via the same lazy import path (#16856).
-        from tools.mcp_tool import discover_mcp_tools
+    _run_inline_mcp_discovery = True
+    if _is_tui_chat_launch(args):
+        # The TUI launcher hands off to a dedicated startup path that already
+        # backgrounds MCP discovery with a bounded join before the first tool
+        # snapshot.
+        _run_inline_mcp_discovery = False
+    elif _command_has_dedicated_mcp_startup(args):
+        # These entrypoints already do their own MCP startup later on the real
+        # runtime path (gateway executor, ACP launcher, cron job runner).
+        _run_inline_mcp_discovery = False
+    elif _should_background_mcp_startup(args):
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        discover_mcp_tools()
-    except Exception:
-        logger.debug(
-            "MCP tool discovery failed at CLI startup",
-            exc_info=True,
-        )
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="cli-mcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background MCP tool discovery failed at CLI startup",
+                exc_info=True,
+            )
+        _run_inline_mcp_discovery = False
+    if _run_inline_mcp_discovery:
+        try:
+            # MCP tool discovery remains synchronous for entrypoints that do
+            # not own a later bounded/executor startup path.
+            from tools.mcp_tool import discover_mcp_tools
+
+            discover_mcp_tools()
+        except Exception:
+            logger.debug(
+                "MCP tool discovery failed at CLI startup",
+                exc_info=True,
+            )
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config

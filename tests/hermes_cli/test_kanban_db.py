@@ -156,6 +156,20 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             created_at INTEGER NOT NULL
         )
     """)
+    # Legacy watcher schema: missing notifier_profile, delivery_mode,
+    # and session_key.
+    conn.execute("""
+        CREATE TABLE kanban_notify_subs (
+            task_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL DEFAULT '',
+            user_id TEXT,
+            created_at INTEGER NOT NULL,
+            last_event_id INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (task_id, platform, chat_id, thread_id)
+        )
+    """)
     conn.execute(
         "INSERT INTO tasks (id, title, status, created_at) "
         "VALUES ('legacy', 'old board task', 'ready', 1)"
@@ -171,6 +185,10 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             row["name"]
             for row in migrated.execute("PRAGMA table_info(task_events)")
         }
+        notify_columns = {
+            row["name"]
+            for row in migrated.execute("PRAGMA table_info(kanban_notify_subs)")
+        }
         indexes = {
             row["name"]
             for row in migrated.execute(
@@ -183,6 +201,9 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
     assert "run_id" in event_columns
+    assert "delivery_mode" in notify_columns
+    assert "session_key" in notify_columns
+    assert "notifier_profile" in notify_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
@@ -1993,6 +2014,204 @@ def test_session_id_compose_with_tenant_filter(kanban_home):
             conn, tenant="scarf:foo", session_id="acp-x"
         )
     assert [t.title for t in rows] == ["match"]
+
+
+def test_create_task_binds_watch_subscription(kanban_home):
+    watch_subscription = {
+        "delivery_mode": "session_event",
+        "session_key": "agent:main:discord:thread:abc:def",
+        "platform": "discord",
+        "chat_id": "chat-abc",
+        "thread_id": "thread-def",
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="watched",
+            watch_subscription=watch_subscription,
+        )
+        task = kb.get_task(conn, tid)
+        subs = kb.list_notify_subs(conn, tid)
+    assert task is not None
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "session_event"
+    assert subs[0]["session_key"] == "agent:main:discord:thread:abc:def"
+
+
+def test_add_notify_sub_defaults_to_notification(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="default notify")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-default",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notification"
+    assert subs[0]["session_key"] is None
+
+
+def test_add_notify_sub_upgrades_existing_subscription_in_place(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="upgrade notify")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-default",
+            thread_id="thread-1",
+        )
+        first = kb.list_notify_subs(conn, tid)
+        assert len(first) == 1
+        created_at = first[0]["created_at"]
+        last_event_id = first[0]["last_event_id"]
+
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-default",
+            thread_id="thread-1",
+            delivery_mode="session_event",
+            session_key="agent:main:discord:thread:chat-default:thread-1",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "session_event"
+    assert subs[0]["session_key"] == "agent:main:discord:thread:chat-default:thread-1"
+    assert subs[0]["created_at"] == created_at
+    assert subs[0]["last_event_id"] == last_event_id
+
+
+def test_set_and_clear_task_watcher_round_trip(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="watched")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1
+        assert subs[0]["session_key"] == "agent:main:test"
+        assert kb.remove_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+        ) is True
+        assert kb.list_notify_subs(conn, tid) == []
+
+
+def test_task_watcher_cursor_advances_from_blocked_to_done(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="watched progress", assignee="alice")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+        )
+        kb.block_task(conn, tid, reason="need input")
+        old_cursor, cursor, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+            kinds=("blocked", "completed"),
+        )
+        assert old_cursor == 0
+        assert [e.kind for e in events] == ["blocked"]
+        kb.advance_notify_cursor(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+            new_cursor=cursor,
+        )
+        _, _, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+            kinds=("blocked", "completed"),
+        )
+        assert events == []
+        kb.complete_task(conn, tid, result="done after unblock")
+        _, _, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+            kinds=("blocked", "completed"),
+        )
+    assert [e.kind for e in events] == ["completed"]
+
+
+def test_list_pending_task_watcher_events_returns_first_terminal_event(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="watched child", assignee="alice")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+        )
+        kb.block_task(conn, tid, reason="need input")
+        _, _, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+            kinds=("blocked", "completed"),
+        )
+    assert [e.kind for e in events] == ["blocked"]
+
+
+def test_delete_task_removes_task_watcher_row(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="watched delete")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-test",
+            thread_id="thread-test",
+            delivery_mode="session_event",
+            session_key="agent:main:test",
+        )
+        assert kb.delete_task(conn, tid) is True
+        assert kb.list_notify_subs(conn, tid) == []
 
 
 # ---------------------------------------------------------------------------

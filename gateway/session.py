@@ -853,6 +853,14 @@ class SessionStore:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
 
+    def get_entry(self, session_key: str) -> Optional[SessionEntry]:
+        """Return the currently bound session entry for one stable session key."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
+
     def get_or_create_session(
         self,
         source: SessionSource,

@@ -34,6 +34,7 @@ import os
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
+from hermes_cli.kanban_watch_subscriptions import require_watcher_session_key_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -751,6 +752,7 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    watcher_session_key = args.get("watcher_session_key")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -769,6 +771,11 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            watch_subscription = None
+            if watcher_session_key:
+                watch_subscription = require_watcher_session_key_subscription(
+                    str(watcher_session_key)
+                )
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -789,6 +796,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                watch_subscription=watch_subscription,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -1235,6 +1243,14 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "watcher_session_key": {
+                "type": "string",
+                "description": (
+                    "Explicit Hermes gateway session key to bind as the child "
+                    "task's session-event watcher. Required when you want watcher "
+                    "handbacks on spawned subtasks; no implicit fallback exists."
                 ),
             },
             "skills": {

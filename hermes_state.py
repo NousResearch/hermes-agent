@@ -736,7 +736,13 @@ class SessionDB:
                 if "fts5" not in err and "no such module" not in err:
                     raise
                 logger.warning(
-                    "SQLite FTS5 unavailable for %s; full-text search disabled: %s",
+                    "SQLite FTS5 unavailable for %s; full-text session search "
+                    "disabled. This usually means Hermes is running on an "
+                    "unsupported install (e.g. a pip-installed or pip-managed "
+                    "Python whose bundled SQLite lacks FTS5) rather than a "
+                    "mainline install. Some features may be missing or behave "
+                    "differently. Install the supported way: "
+                    "https://hermes-agent.nousresearch.com (underlying error: %s)",
                     self.db_path,
                     fts_exc,
                 )

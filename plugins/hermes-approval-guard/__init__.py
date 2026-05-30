@@ -1,22 +1,17 @@
-"""Hermes Approval Guard — two-stage tool-call approval plugin.
+"""Hermes Approval Guard — 两阶段工具调用审批插件。
 
-Stage 1: rule engine (<1ms) + LLM fast classification (~500ms)
-Stage 2: ACP Agent deep review (3-8s)
+阶段一：规则引擎（<1ms）+ LLM 快速分类（~500ms）
+阶段二：ACP Agent 深度审查（3-8s）
 
-Covers all tools, provides structured denial feedback, Hindsight memory learning.
-Disabled by default; requires plugin_guard.enabled: true to activate.
+覆盖所有工具，提供结构化拒绝反馈，Hindsight 记忆学习。
+默认关闭，需 plugin_guard.enabled: true 启用。
 """
 
 from __future__ import annotations
 
-import logging
-
-logger = logging.getLogger(__name__)
+from .guard import pre_tool_call_handler
 
 
-def register(plugin_context):
-    """Register the pre_tool_call hook."""
-    from .guard import pre_tool_call_handler
-
-    plugin_context.register_hook("pre_tool_call", pre_tool_call_handler)
-    logger.info("Hermes Approval Guard registered (pre_tool_call hook)")
+def register(ctx) -> None:
+    """注册 pre_tool_call 钩子。"""
+    ctx.register_hook("pre_tool_call", pre_tool_call_handler)

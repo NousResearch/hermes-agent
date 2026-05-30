@@ -1,41 +1,56 @@
 # ============================================================
-# Hermes Approval Guard — Recommended Configuration
+# Hermes Approval Guard — 推荐配置
 #
-# Quick start:
-#   1. Copy this section to config.yaml
-#   2. Set plugin_guard.enabled to true
-#   3. Add plugin name to plugins.enabled
-#   4. Restart Hermes
+# 快速启用：
+#   1. 将此段复制到 config.yaml 的 plugins 和 plugin_guard 段
+#   2. 将 plugin_guard.enabled 改为 true
+#   3. 将插件名添加到 plugins.enabled
+#   4. 重启 Hermes
 #
-# Important: Do NOT change approvals.mode!
-#   terminal commands still handled by existing approvals.mode
-#   Plugin only covers write_file/patch/delegate_task etc.
-#   that were previously unapproved.
+# 架构说明：
+#   插件接管**全部**工具的审批（write_file/patch/delegate_task/
+#   execute_code/terminal/cronjob/send_message 等）。
+#   系统 approvals.mode 设为 off，由插件全权负责审批决策。
+#   系统 HARDLINE（rm -rf /, mkfs, dd, shutdown）始终生效
+#   —— plugin 无法关闭系统硬保护。
 #
-# To disable:
+# 故障兜底：
+#   插件 LLM 不可用 → return None → 按 fail_open 策略
+#   如需手动控制，可临时改 approvals.mode 为 smart/manual
+#   （系统 DANGEROUS 检查恢复，但仅覆盖 terminal）
+#
+# 禁用回退：
 #   plugin_guard.enabled: false
 # ============================================================
 
-# ── Plugin enable ────────────────────────────────────────────
+# ── 插件启用 ───────────────────────────────────────────
 plugins:
   enabled:
     - hermes-approval-guard
 
-# ── Approval guard config ─────────────────────────────────────
+# ── 审批守卫配置 ────────────────────────────────────────
 plugin_guard:
-  enabled: false                    # ← change to true to enable
-  provider: zjic                   # Approval LLM provider
-  model: qwen-3.6-27b-fast         # Fast model, ~500ms response
-  fail_open: true                  # LLM unavailable → allow (safe default)
+  enabled: false                    # ← 改为 true 启用
+  provider: zjic                    # 审批 LLM 提供者
+  model: qwen-3.6-27b-fast          # 快模型，500ms 内响应
+  fail_open: true                   # LLM 不可用 → 放行（新增保护，不回退更差）
 
   stage1:
-    timeout: 5                     # LLM fast classification timeout (seconds)
+    timeout: 5                      # LLM 快速分类超时（秒）
+    # 阶段一只输出 ALLOW/ESCALATE，不做 DENY
+    # deny 决定权在阶段二 ACP
 
   stage2:
-    enabled: false                 # ACP Agent deep review (optional, test with off first)
-    profile: approval              # hermes acp --profile name
-    timeout: 15                    # Agent deep review timeout (seconds)
+    enabled: false                  # ACP Agent 深审（可选，建议先关闭测试）
+    profile: approval               # hermes --profile 名称
+    timeout: 15                     # Agent 深审超时（秒）
 
   memory:
-    backend: hindsight             # hindsight | honcho | none
-    bank: approval                 # Hindsight bank name or Honcho user_id
+    backend: hindsight              # hindsight | honcho | none
+    bank: approval                  # Hindsight bank 名 或 Honcho user_id
+
+# ── 系统审批 ────────────────────────────────────────────
+# 插件接管后建议关闭系统 DANGEROUS 检查（避免双重审批）
+# 注意：系统 HARDLINE 不受此设置影响，始终生效
+approvals:
+  mode: off

@@ -1,14 +1,16 @@
-"""Structured denial feedback templates — cause, alternatives, trust escalation path.
+"""结构化拒绝反馈模板 — 包含原因、替代方案、信任升级路径。
 
-Three levels:
-  HARDLINE  — unconditional block (system protection)
-  DENY       — overridable block (user must acknowledge risk)
-  ESCALATE   — requires manual user decision
+三个级别：
+  HARDLINE   — 无条件拒绝（系统保护）
+  DENY       — 可覆盖拒绝（需要用户确认理解风险）
+  ESCALATE   — 需要用户手动决策
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import uuid
+from datetime import datetime
+from typing import Any, Dict
 
 
 def build_deny_message(
@@ -17,82 +19,95 @@ def build_deny_message(
     reason: str,
     verdict: str = "DENY",
 ) -> Dict[str, str]:
-    """Build structured block message.
+    """构造结构化拒绝消息。
 
-    The main agent can:
-    1. Understand why it was blocked
-    2. Know alternatives
-    3. Choose to override (reply "OK" or specific phrase)
+    主 Agent 收到此消息后可以：
+    1. 理解为什么被拒
+    2. 知道替代方案
+    3. 选择覆盖（回复"确认"或特定短语）
     """
-    lines = ["=" * 60]
-    lines.append("SAFETY REVIEW: HARD PROTECTION" if verdict == "HARDLINE"
-                 else "SAFETY REVIEW: BLOCKED")
+    approval_id = f"apr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+    lines = []
     lines.append("=" * 60)
-    lines.append(f"Tool: {tool_name}")
-    lines.append(f"Reason: {reason}")
+    lines.append("SAFETY REVIEW: DENIED")
+    lines.append("=" * 60)
+    lines.append("")
+    lines.append(f"Tool:    {tool_name}")
+    lines.append(f"Reason:  {reason}")
+    lines.append(f"Ref:     {approval_id}")
+    lines.append("")
 
     if verdict == "HARDLINE":
-        lines.append("⚠️  HARD PROTECTION — action blocked unconditionally")
-        lines.append("    System-critical path, cannot override.")
+        lines.append("⚠️  HARD PROTECTION — 此操作被无条件拦截")
+        lines.append("    系统关键路径保护，不可覆盖。")
     else:
-        approval_id = f"{tool_name}:{reason}"[:40]
-        lines.append("💡 How to override:")
-        lines.append(f'    Reply "OK allow {approval_id}" → approve this time')
-        lines.append('    Reply "always allow this"     → permanently trust this pattern')
+        lines.append("💡 如何覆盖此拦截：")
+        lines.append(f'    回复 "确认 允许 {approval_id}"  → 本次放行')
+        lines.append('    回复 "总是允许 此操作"           → 永久信任此模式')
 
-    # Add alternatives
-    suggestions = _get_alternatives(tool_name, args)
+    # 添加替代方案提示
+    suggestions = _get_suggestions(tool_name, args, reason)
     if suggestions:
-        lines.append("🔀 Alternatives:")
+        lines.append("")
+        lines.append("🔀 替代方案：")
         for s in suggestions:
             lines.append(f"    • {s}")
 
-    lines.append("=" * 60)
+    lines.append("")
     return {"action": "block", "message": "\n".join(lines)}
 
 
 def build_hardline_message(
-    call_signature: str,
-    reason_key: str,
-    explanation: str,
+    context: str,
+    rule_id: str,
+    description: str,
 ) -> Dict[str, str]:
-    """Build hard-protection block message."""
-    approval_id = f"{reason_key}:{hash(call_signature) % 10000}"
-    return {
-        "action": "block",
-        "message": "\n".join([
-            "=" * 60,
-            "⚠️  SYSTEM HARD PROTECTION — cannot override",
-            "=" * 60,
-            f"Action: {call_signature}",
-            f"Reason: {explanation}",
-            "    These paths/operations are critical system infrastructure,",
-            "    modification may cause data loss or system unavailability.",
-            f"    ID: {approval_id}",
-            "=" * 60,
-        ]),
-    }
+    """构造硬保护拒绝消息。"""
+    approval_id = f"hardline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    lines = [
+        "=" * 60,
+        "SAFETY REVIEW: HARD PROTECTION — BLOCKED",
+        "=" * 60,
+        "",
+        f"Operation: {context}",
+        f"Rule:      {rule_id}",
+        f"Reason:    {description}",
+        "",
+        "⚠️  此操作被系统硬保护拦截，不可覆盖。",
+        "    这些路径/操作是系统关键基础设施，",
+        "    对它们的修改可能导致数据丢失或系统不可用。",
+        f"    拦截ID: {approval_id}",
+        "",
+    ]
+    return {"action": "block", "message": "\n".join(lines)}
 
 
-def _get_alternatives(
-    tool_name: str,
-    args: Dict[str, Any],
-) -> List[str]:
-    """Generate alternatives based on tool type and reason."""
-    suggestions: List[str] = []
-    path = args.get("path", "")
+def _get_suggestions(
+    tool_name: str, args: Dict[str, Any], reason: str
+) -> list[str]:
+    """根据工具类型和原因生成替代方案。"""
+    suggestions = []
 
-    if tool_name in ("write_file", "patch") and "/etc/" in path:
-        suggestions.append("Write to project dir → deploy to system path via terminal after review")
-    if path and any(kw in path for kw in (".env", "config.yaml", "id_rsa")):
-        suggestions.append("Only modify .env.example template files")
-        suggestions.append("Configure sensitive keys via hermes config set, not direct .env edits")
-    if tool_name == "delegate_task":
-        suggestions.append("Run ls first to verify target path")
-        suggestions.append("Use rm (without -f) for per-file deletion, easier rollback")
-        suggestions.append("Use mv to /tmp instead of direct delete, verify before cleanup")
-    if tool_name == "execute_code":
-        suggestions.append("Split destructive operations into separate small tasks, approve individually")
-        suggestions.append("Declare safety boundaries explicitly in sub-agent goal")
+    if tool_name in {"write_file", "patch"}:
+        path = args.get("path", "")
+        if "/etc/" in path:
+            suggestions.append("写入项目目录 → 审核后通过 terminal 部署到系统路径")
+            suggestions.append(f"terminal: sudo cp <project_path> {path}")
+        elif ".env" in path.split("/")[-1].lower():
+            suggestions.append("仅修改 .env.example 模板文件")
+            suggestions.append("敏感密钥通过 hermes config set 配置，不直接编辑 .env")
+
+    elif tool_name == "terminal":
+        command = args.get("command", "")
+        if "rm" in command and "-rf" in command:
+            suggestions.append("先运行 ls 确认目标路径")
+            suggestions.append("用 rm (不带 f) 逐文件删除，出问题时好回滚")
+            suggestions.append("用 mv 移到 /tmp 而非直接删除，确认后再清理")
+
+    elif tool_name == "delegate_task":
+        suggestions.append("将破坏性操作拆分成独立的小任务，逐个审批")
+        suggestions.append("在子 agent 的 goal 中明确声明安全边界")
 
     return suggestions

@@ -1,12 +1,12 @@
 name: hermes-approval-guard
 version: 0.1.0
+description: >-
+  两阶段工具调用审批守卫。阶段一规则引擎+LLM快速分类，阶段二ACP Agent深度审查。
+  覆盖所有工具（terminal/write_file/patch/delegate_task/execute_code等），
+  提供结构化拒绝反馈+替代方案，支持Hindsight审批记忆学习。
+  默认关闭，需显式配置 plugin_guard.enabled: true 启用。
+author: AtlasEngine
 kind: standalone
 hooks:
   - pre_tool_call
-description: |
-  Two-stage tool-call approval guard. Stage 1 rule engine + LLM fast
-  classification, Stage 2 ACP Agent deep review. Covers all tools
-  (terminal/write_file/patch/delegate_task/execute_code etc.), provides
-  structured denial feedback with alternatives, supports Hindsight
-  approval memory learning. Disabled by default; requires explicit
-  plugin_guard.enabled: true to activate.
+provides_tools: []

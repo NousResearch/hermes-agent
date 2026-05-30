@@ -163,6 +163,30 @@ def _get_hermes_home() -> Path:
     return _hermes_home or get_hermes_home()
 
 
+def _reload_runtime_env() -> None:
+    """Reload .env + external secret sources fresh for a job run.
+
+    Routes through ``load_hermes_dotenv`` (not bare ``dotenv.load_dotenv``) so
+    BSM/Bitwarden-backed credentials are re-resolved each run instead of leaving
+    the .env placeholder in place — otherwise cron jobs 401 (#33465). It also
+    handles encoding fallbacks and .env sanitization internally.
+
+    ``reset_secret_source_cache()`` first: the gateway applied secrets once at
+    startup, which caches this HERMES_HOME and makes the secret pull a no-op on
+    every subsequent in-process call. Without the reset, this reload re-loads
+    the .env placeholder (override=True) but never re-resolves the real secret —
+    the exact #33465 failure. The Bitwarden value cache (300s TTL) keeps the
+    forced re-pull cheap.
+
+    As at startup, a .env placeholder is only overridden by the resolved secret
+    when the Bitwarden config sets ``override_existing: true`` (the pull runs
+    after the .env load and otherwise skips keys already present in the env).
+    """
+    from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+    reset_secret_source_cache()
+    load_hermes_dotenv(hermes_home=_get_hermes_home())
+
+
 def _get_lock_paths() -> tuple[Path, Path]:
     """Resolve cron lock paths at call time so profile/env changes are honored."""
     hermes_home = _get_hermes_home()
@@ -1465,13 +1489,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
     try:
-        # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+        # Re-read .env and config.yaml fresh every run so provider/key changes
+        # take effect without a gateway restart.
+        _reload_runtime_env()
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

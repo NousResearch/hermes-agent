@@ -2597,3 +2597,49 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+class TestReloadRuntimeEnv:
+    def test_re_resolves_bsm_secret_over_env_placeholder_each_run(self, monkeypatch, tmp_path):
+        """End-to-end: .env carries a placeholder for a BSM-backed key. Even
+        after the home was already applied once (as the gateway does at startup),
+        a cron reload must RE-pull and override the placeholder with the real
+        secret — otherwise the job 401s (#33465)."""
+        from types import SimpleNamespace
+
+        import agent.secret_sources.bitwarden as bw
+        import cron.scheduler as sched
+        import hermes_cli.env_loader as env_loader
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("API_KEY=placeholder\n", encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            "secrets:\n  bitwarden:\n    enabled: true\n    override_existing: true\n",
+            encoding="utf-8",
+        )
+
+        def fake_apply(**kw):
+            os.environ["API_KEY"] = "real-secret"
+            return SimpleNamespace(applied=["API_KEY"], error=None, warnings=[])
+
+        monkeypatch.setattr(bw, "apply_bitwarden_secrets", fake_apply)
+        # Simulate the gateway having already applied secrets for this home at
+        # startup (which caches the home and would no-op a naive reload).
+        env_loader._apply_external_secret_sources(sched._get_hermes_home())
+        os.environ.pop("API_KEY", None)
+
+        sched._reload_runtime_env()
+        resolved = os.environ.pop("API_KEY", None)
+        assert resolved == "real-secret"  # not the .env placeholder
+
+    def test_does_not_use_bare_dotenv(self, monkeypatch, tmp_path):
+        """Guard against regressing to the bare loader that skips secret sources."""
+        import dotenv
+
+        import cron.scheduler as sched
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        bare_called = {"n": 0}
+        monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: bare_called.__setitem__("n", bare_called["n"] + 1))
+        sched._reload_runtime_env()
+        assert bare_called["n"] == 0

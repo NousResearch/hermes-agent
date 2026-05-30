@@ -5536,6 +5536,11 @@ def _gateway_command_inner(args):
                         service_stopped = True
                     except (subprocess.CalledProcessError, RuntimeError):
                         pass
+            # Capture old PID before killing all gateways so the detached
+            # watcher can poll for exit.  See the single-profile restart
+            # block below for the full rationale.
+            from gateway.status import get_running_pid
+            _old_pid = get_running_pid()
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_stopped else 0)
             if total:
@@ -5558,7 +5563,12 @@ def _gateway_command_inner(args):
                 # stopped and can die before the replacement is stable.
                 gateway_windows.start()
             else:
-                run_gateway(verbose=0)
+                _profile = _profile_suffix() or "default"
+                if _old_pid and launch_detached_profile_gateway_restart(_profile, _old_pid):
+                    print("Starting gateway (detached)...")
+                else:
+                    print("Starting gateway...")
+                    run_gateway(verbose=0)
             return
         
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
@@ -5615,15 +5625,29 @@ def _gateway_command_inner(args):
                 print("  Fix the service, then retry: hermes gateway start")
                 sys.exit(1)
 
-            # Manual restart: stop only this profile's gateway
+            # Manual restart: stop only this profile's gateway.
+            # Capture the old PID *before* stopping so the detached
+            # watcher can poll for its exit.  Using
+            # ``launch_detached_profile_gateway_restart()`` instead of
+            # foreground ``run_gateway()`` prevents the new gateway from
+            # being killed when the old gateway's SIGTERM propagates to
+            # child processes (the common case when ``hermes gateway
+            # restart`` is invoked from an agent tool call inside the
+            # running gateway).
+            from gateway.status import get_running_pid
+            _old_pid = get_running_pid()
             if stop_profile_gateway():
                 print("✓ Stopped gateway for this profile")
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
-            # Start fresh
-            print("Starting gateway...")
-            run_gateway(verbose=0)
+            _profile = _profile_suffix() or "default"
+            if _old_pid and launch_detached_profile_gateway_restart(_profile, _old_pid):
+                print("Starting gateway (detached)...")
+            else:
+                # Fallback: watcher launch failed (e.g. stale PID file)
+                print("Starting gateway...")
+                run_gateway(verbose=0)
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)

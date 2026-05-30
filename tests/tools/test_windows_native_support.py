@@ -880,3 +880,34 @@ class TestGatewayDetachedWatcherWindowsFlags:
         assert 'if sys.platform == "win32":' in source
         # Windows branch uses windows_detach_popen_kwargs
         assert "windows_detach_popen_kwargs" in source
+
+    def test_manual_restart_uses_detached_watcher(self):
+        """The non-service manual restart path must use
+        ``launch_detached_profile_gateway_restart()`` instead of bare
+        ``run_gateway()`` to prevent the new gateway from being killed
+        when the old gateway's SIGTERM propagates to child processes.
+
+        Regression test for #35043.
+        """
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "hermes_cli" / "gateway.py").read_text(encoding="utf-8")
+
+        # The manual restart block must capture old PID and use detached restart
+        assert "get_running_pid" in source, (
+            "gateway.py must import get_running_pid for detached restart"
+        )
+        assert "launch_detached_profile_gateway_restart" in source, (
+            "gateway.py must use launch_detached_profile_gateway_restart()"
+        )
+
+        # Verify the manual restart comment + detached pattern exists:
+        # get_running_pid -> stop_profile_gateway -> launch_detached
+        import re
+        manual_pattern = re.search(
+            r"Manual restart.*?get_running_pid.*?stop_profile_gateway.*?launch_detached_profile_gateway_restart",
+            source,
+            re.DOTALL,
+        )
+        assert manual_pattern is not None, (
+            "Manual restart path must: capture PID, stop gateway, then use detached restart"
+        )

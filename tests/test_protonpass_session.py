@@ -133,20 +133,22 @@ def test_session_login_failure_detail_uses_stderr_only(hermes_home, monkeypatch,
     assert "DETAIL-ON-STDOUT" not in detail
 
 
-def test_run_pass_cli_uses_errors_replace(monkeypatch):
-    """C7: ``_run_pass_cli`` passes ``errors='replace'`` so invalid UTF-8 in a
-    pass-cli stream can't raise a decode error."""
+def test_run_pass_cli_uses_utf8_and_errors_replace(monkeypatch):
+    """C7: ``_run_pass_cli`` decodes pass-cli output as UTF-8 (not the locale
+    codepage) and passes ``errors='replace'`` so invalid UTF-8 can't raise."""
     captured = {}
 
-    def fake_run(cmd, *, env, capture_output, text, errors, timeout):
+    def fake_run(cmd, *, env, capture_output, text, encoding, errors, timeout):
         captured["errors"] = errors
         captured["text"] = text
+        captured["encoding"] = encoding
         return __import__("unittest").mock.Mock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(pp_session.subprocess, "run", fake_run)
     pp_session._run_pass_cli(["pass-cli", "info"], {"E": "1"})
     assert captured["errors"] == "replace"
     assert captured["text"] is True
+    assert captured["encoding"] == "utf-8"
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +169,52 @@ def test_minimal_env_has_no_token_or_secrets(monkeypatch):
 
 
 def test_child_env_adds_only_protonpass_vars(hermes_home, monkeypatch):
+    monkeypatch.delenv("PROTON_PASS_KEY_PROVIDER", raising=False)
+    monkeypatch.delenv("PROTON_PASS_DISABLE_TELEMETRY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-leak")
     env = pp_session._child_env("svc-token")
     assert env["PROTON_PASS_PERSONAL_ACCESS_TOKEN"] == "svc-token"
     assert env["PROTON_PASS_SESSION_DIR"]
     assert env["PROTON_PASS_AGENT_REASON"]
+    # Headless safety: default to the filesystem key provider (no OS keyring on
+    # servers/containers) and suppress telemetry.
+    assert env["PROTON_PASS_KEY_PROVIDER"] == "fs"
+    assert env["PROTON_PASS_DISABLE_TELEMETRY"] == "1"
     # No other secret made it into the child env.
     assert "OPENAI_API_KEY" not in env
+
+
+def test_child_env_key_provider_override_is_honored(hermes_home, monkeypatch):
+    """A user who explicitly wants the OS keyring can override the fs default."""
+    monkeypatch.setenv("PROTON_PASS_KEY_PROVIDER", "keyring")
+    env = pp_session._child_env("svc-token")
+    assert env["PROTON_PASS_KEY_PROVIDER"] == "keyring"
+
+
+def test_child_env_empty_override_falls_back_to_secure_default(hermes_home, monkeypatch):
+    """An empty/whitespace override must NOT silently disable the secure default."""
+    monkeypatch.setenv("PROTON_PASS_KEY_PROVIDER", "   ")
+    monkeypatch.setenv("PROTON_PASS_DISABLE_TELEMETRY", "")
+    env = pp_session._child_env("svc-token")
+    assert env["PROTON_PASS_KEY_PROVIDER"] == "fs"
+    assert env["PROTON_PASS_DISABLE_TELEMETRY"] == "1"
+
+
+def test_child_env_rejects_symlinked_session_dir(hermes_home, tmp_path):
+    """A7/hardening (real filesystem): a session dir that is actually a symlink
+    is rejected BEFORE it is chmodded or PROTON_PASS_SESSION_DIR is set — we do
+    not follow it to the (attacker-chosen) target."""
+    session_dir = pp_session._session_dir("svc-token")
+    session_dir.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "evil-target"
+    target.mkdir()
+    target_mode_before = target.stat().st_mode
+    session_dir.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        pp_session._child_env("svc-token")
+    # The check fires before chmod, so the symlink target is left untouched.
+    assert target.stat().st_mode == target_mode_before
 
 
 # ---------------------------------------------------------------------------

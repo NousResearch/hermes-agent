@@ -132,6 +132,7 @@ def _run_pass_cli(cmd: List[str], env: Dict[str, str]):
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",  # pass-cli emits UTF-8; don't decode via the locale codepage
             errors="replace",  # invalid UTF-8 in output can't raise a decode error
             timeout=_PASS_CLI_RUN_TIMEOUT,
         )
@@ -168,43 +169,70 @@ def _minimal_env() -> Dict[str, str]:
     return env
 
 
+def _ensure_private_session_dir(session_dir: Path) -> None:
+    """Create the isolated session dir and lock it to 0o700, or RAISE.
+
+    Rejects a symlinked final component BEFORE chmod/write so we never follow it
+    to an attacker-chosen target.  The path embeds the token fingerprint
+    (unguessable without the token), so this is best-effort hardening against a
+    pre-created symlink — it checks only the final component (HERMES_HOME is
+    trusted) and is not TOCTOU-proof.  The RuntimeError is caught upstream so an
+    unverifiable session store skips Proton Pass without blocking startup; the
+    message carries only the path, never the token.
+    """
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not create the Proton Pass session directory; skipping: {exc}"
+        ) from exc
+    if session_dir.is_symlink():
+        raise RuntimeError(
+            "Proton Pass session directory is a symlink; refusing to use it for "
+            "session storage and skipping Proton Pass."
+        )
+    try:
+        os.chmod(session_dir, 0o700)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not secure the Proton Pass session directory; skipping: {exc}"
+        ) from exc
+
+
+def _parent_env_or_default(name: str, default: str) -> str:
+    """Parent-env value for ``name``, or ``default`` if unset/blank.
+
+    Our child env starts minimal, so an explicit passthrough is the only way to
+    honor a user override; an empty/whitespace value falls back to the secure
+    default rather than silently disabling it.
+    """
+    return (os.environ.get(name) or "").strip() or default
+
+
 def _child_env(token: str) -> Dict[str, str]:
-    """Build a MINIMAL subprocess environment for a pass-cli invocation.
+    """Build a MINIMAL subprocess env for a pass-cli invocation.
 
     Starts from :func:`_minimal_env` (no inherited secrets) and adds only the
-    ``PROTON_PASS_*`` vars pass-cli needs.  The token lives ONLY in this minimal
-    dict.
-
-    Confirmed: pass-cli auto-reads the token from
-    ``PROTON_PASS_PERSONAL_ACCESS_TOKEN`` and uses ``PROTON_PASS_SESSION_DIR``
-    for session storage.  We point the latter at an isolated dir we own (and
-    create + chmod 0o700) so hermes never touches the user's interactive
-    session and other local users can't read it.  A default
-    ``PROTON_PASS_AGENT_REASON`` is set defensively — harmless under a full
-    session, required under scoped agent-token sessions.
-
-    If the isolated session dir cannot be created or locked down to 0o700 we
-    RAISE rather than continue: handing pass-cli an unverifiable session store
-    (e.g. one readable by other local users) is unsafe, and the RuntimeError is
-    caught upstream so Proton Pass is skipped without blocking startup.
+    ``PROTON_PASS_*`` vars pass-cli needs; the token lives ONLY in this dict.
+    The session dir is isolated + 0o700 (see :func:`_ensure_private_session_dir`)
+    so hermes never touches the user's interactive session.  ``KEY_PROVIDER``
+    defaults to ``fs`` because pass-cli's default OS keyring is absent on
+    headless servers/containers (where `login` would otherwise fail); the key
+    then lives on disk in the 0o700 dir — acceptable since the bootstrap token
+    already sits at 0600 in the same home — and a keyring host can override it.
     """
     env = _minimal_env()
     env["PROTON_PASS_PERSONAL_ACCESS_TOKEN"] = token
     session_dir = _session_dir(token)
-    try:
-        session_dir.mkdir(parents=True, exist_ok=True)
-        # Lock it down: session material must not be readable by other users.
-        os.chmod(session_dir, 0o700)
-    except OSError as exc:
-        # Do NOT continue with unverifiable session storage; skip Proton Pass.
-        # The path may embed the token fingerprint but never the token; the
-        # OSError string carries only the path, so it is safe to surface.
-        raise RuntimeError(
-            "Could not create or secure the Proton Pass session directory; "
-            f"skipping Proton Pass: {exc}"
-        ) from exc
+    _ensure_private_session_dir(session_dir)
     env["PROTON_PASS_SESSION_DIR"] = str(session_dir)
     env["PROTON_PASS_AGENT_REASON"] = _DEFAULT_AGENT_REASON
+    env["PROTON_PASS_KEY_PROVIDER"] = _parent_env_or_default(
+        "PROTON_PASS_KEY_PROVIDER", "fs"
+    )
+    env["PROTON_PASS_DISABLE_TELEMETRY"] = _parent_env_or_default(
+        "PROTON_PASS_DISABLE_TELEMETRY", "1"
+    )
     return env
 
 

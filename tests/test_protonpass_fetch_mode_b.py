@@ -30,6 +30,7 @@ from tests._protonpass_helpers import (  # noqa: F401
     _reset_caches,
     hermes_home,
     pp,
+    pp_cache,
     pp_fetch,
 )
 
@@ -106,6 +107,198 @@ def test_mode_b_nonzero_exit_with_secret_stdout_does_not_leak(
     assert "exited 1" in warnings[0]
     assert "OPENAI_API_KEY" in warnings[0]
     assert "(no stderr output)" in warnings[0]
+
+
+def test_mode_b_partial_transient_failure_is_not_cached(
+    hermes_home, monkeypatch, tmp_path
+):
+    """Partial-fetch caching regression: when one ref resolves but another hits a
+    RECOVERABLE failure (non-zero exit / timeout), the partial result must NOT be
+    cached — otherwise the failed ref is dropped for the whole TTL and never
+    retried.  Expect no disk cache file and no in-process ``_CACHE`` entry."""
+    binary = tmp_path / "pass-cli"
+    binary.write_text("", encoding="utf-8")
+
+    item_calls = {"n": 0}
+
+    def fake_run(cmd, env):
+        verb = cmd[1]
+        if verb in ("login", "info"):
+            return _ok()
+        if verb == "item":  # first ref succeeds, second fails transiently
+            item_calls["n"] += 1
+            if item_calls["n"] == 1:
+                return mock.Mock(returncode=0, stdout="ok-value\n", stderr="")
+            return mock.Mock(returncode=1, stdout="", stderr="network error")
+        return _ok()
+
+    _patch_run(monkeypatch, fake_run)
+
+    secrets, warnings = pp.fetch_protonpass_secrets(
+        service_token="svc",
+        env_refs={
+            "GOOD_KEY": "pass://SHARE/ITEM/good",
+            "BAD_KEY": "pass://SHARE/ITEM/bad",
+        },
+        binary=binary,
+        use_cache=True,            # exercise the cache-WRITE path
+        cache_ttl_seconds=300,
+        home_path=hermes_home,
+    )
+
+    # The good ref resolved; the bad one was skipped with a warning.
+    assert secrets == {"GOOD_KEY": "ok-value"}
+    assert any("BAD_KEY" in w for w in warnings)
+
+    # The partial result must NOT be cached, so BAD_KEY retries before the TTL.
+    assert not pp_cache._disk_cache_path(hermes_home).exists()
+    assert pp_fetch._CACHE == {}
+
+
+def test_mode_b_clean_success_is_cached(hermes_home, monkeypatch, tmp_path):
+    """Over-suppression guard: when every ref resolves cleanly the result IS
+    cached (the partial-fetch gate must not block normal caching)."""
+    binary = tmp_path / "pass-cli"
+    binary.write_text("", encoding="utf-8")
+
+    def fake_run(cmd, env):
+        verb = cmd[1]
+        if verb in ("login", "info"):
+            return _ok()
+        if verb == "item":
+            return mock.Mock(returncode=0, stdout="v\n", stderr="")
+        return _ok()
+
+    _patch_run(monkeypatch, fake_run)
+
+    secrets, warnings = pp.fetch_protonpass_secrets(
+        service_token="svc",
+        env_refs={
+            "A_KEY": "pass://SHARE/ITEM/a",
+            "B_KEY": "pass://SHARE/ITEM/b",
+        },
+        binary=binary,
+        use_cache=True,
+        cache_ttl_seconds=300,
+        home_path=hermes_home,
+    )
+    assert secrets == {"A_KEY": "v", "B_KEY": "v"}
+    assert warnings == []
+    assert pp_cache._disk_cache_path(hermes_home).exists()
+    assert pp_fetch._CACHE  # in-process entry present
+
+
+def test_mode_b_empty_value_partial_is_not_cached(hermes_home, monkeypatch, tmp_path):
+    """An empty value on a success exit is treated conservatively as possibly
+    transient: a partial that omits that ref must not be cached."""
+    binary = tmp_path / "pass-cli"
+    binary.write_text("", encoding="utf-8")
+
+    def fake_run(cmd, env):
+        verb = cmd[1]
+        if verb in ("login", "info"):
+            return _ok()
+        if verb == "item":
+            field = cmd[cmd.index("--field") + 1]
+            # GOOD resolves; EMPTY returns rc=0 with empty stdout.
+            return mock.Mock(
+                returncode=0,
+                stdout="val\n" if field == "good" else "",
+                stderr="",
+            )
+        return _ok()
+
+    _patch_run(monkeypatch, fake_run)
+
+    secrets, warnings = pp.fetch_protonpass_secrets(
+        service_token="svc",
+        env_refs={
+            "GOOD_KEY": "pass://SHARE/ITEM/good",
+            "EMPTY_KEY": "pass://SHARE/ITEM/empty",
+        },
+        binary=binary,
+        use_cache=True,
+        cache_ttl_seconds=300,
+        home_path=hermes_home,
+    )
+    assert secrets == {"GOOD_KEY": "val"}
+    assert any("EMPTY_KEY" in w for w in warnings)
+    assert not pp_cache._disk_cache_path(hermes_home).exists()
+    assert pp_fetch._CACHE == {}
+
+
+def test_mode_b_failed_ref_is_retried_on_next_fetch(hermes_home, monkeypatch, tmp_path):
+    """The point of not caching a partial: a ref that failed transiently is
+    re-fetched on the very next call (within the TTL) and then resolves — no
+    stale partial is served from cache."""
+    binary = tmp_path / "pass-cli"
+    binary.write_text("", encoding="utf-8")
+
+    bad_calls = {"n": 0}
+
+    def fake_run(cmd, env):
+        verb = cmd[1]
+        if verb in ("login", "info"):
+            return _ok()
+        if verb == "item":
+            field = cmd[cmd.index("--field") + 1]
+            if field == "good":
+                return mock.Mock(returncode=0, stdout="g\n", stderr="")
+            # BAD: fail transiently the first time, succeed thereafter.
+            bad_calls["n"] += 1
+            if bad_calls["n"] == 1:
+                return mock.Mock(returncode=1, stdout="", stderr="network error")
+            return mock.Mock(returncode=0, stdout="b\n", stderr="")
+        return _ok()
+
+    _patch_run(monkeypatch, fake_run)
+
+    refs = {"GOOD_KEY": "pass://SHARE/ITEM/good", "BAD_KEY": "pass://SHARE/ITEM/bad"}
+    common = dict(
+        service_token="svc", binary=binary, use_cache=True,
+        cache_ttl_seconds=300, home_path=hermes_home,
+    )
+
+    first, _ = pp.fetch_protonpass_secrets(env_refs=refs, **common)
+    assert first == {"GOOD_KEY": "g"}              # partial, not cached
+
+    second, _ = pp.fetch_protonpass_secrets(env_refs=refs, **common)
+    assert second == {"GOOD_KEY": "g", "BAD_KEY": "b"}  # re-fetched, now complete
+
+
+def test_flag_like_vault_does_not_block_caching_of_mode_b(
+    hermes_home, monkeypatch, tmp_path
+):
+    """A PERMANENT MODE A validation skip (a flag-like vault name, which can
+    never become valid) must NOT block caching of a successful MODE B result
+    fetched alongside it."""
+    binary = tmp_path / "pass-cli"
+    binary.write_text("", encoding="utf-8")
+
+    def fake_run(cmd, env):
+        verb = cmd[1]
+        if verb in ("login", "info"):
+            return _ok()
+        if verb == "item":  # MODE B view (flag-like vault is rejected pre-exec)
+            return mock.Mock(returncode=0, stdout="v\n", stderr="")
+        return _ok()
+
+    _patch_run(monkeypatch, fake_run)
+
+    secrets, warnings = pp.fetch_protonpass_secrets(
+        service_token="svc",
+        vault="--bad",   # flag-like → permanent skip with a warning
+        env_refs={"GOOD_KEY": "pass://SHARE/ITEM/good"},
+        binary=binary,
+        use_cache=True,
+        cache_ttl_seconds=300,
+        home_path=hermes_home,
+    )
+    assert secrets == {"GOOD_KEY": "v"}
+    assert any("--bad" in w for w in warnings)
+    # The flag-like vault is permanent, so the good MODE B result IS cached.
+    assert pp_cache._disk_cache_path(hermes_home).exists()
+    assert pp_fetch._CACHE
 
 
 def test_mode_a_nonzero_exit_with_secret_stdout_does_not_leak(

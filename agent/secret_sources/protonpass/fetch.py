@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -50,6 +51,22 @@ _MAX_ID_LEN = 256
 # anchoring wrongly accepted ``id\n``.)  Length is bounded separately by
 # ``_MAX_ID_LEN``.
 _ID_RE = re.compile(r"[A-Za-z0-9_-]+={0,2}")
+
+
+@dataclass
+class _FetchResult:
+    """Outcome of one fetch leg (MODE A vault list or MODE B refs).
+
+    ``cache_blockers`` counts retry-worthy incompletenesses — a transiently
+    failed or empty ref, a glitched vault list.  A non-zero count means the
+    result is partial/transient and must NOT be cached, so the failed piece is
+    retried before the TTL rather than frozen for it.  Permanent validation
+    skips (malformed ref, flag-like name) only add warnings and are NOT counted.
+    """
+
+    secrets: Dict[str, str]
+    warnings: List[str]
+    cache_blockers: int = 0
 
 
 def _cli_error_detail(proc, token: str, *, limit: int = 200) -> str:
@@ -195,25 +212,22 @@ def fetch_protonpass_secrets(
     warnings.extend(_establish_session(service_token, pass_cli))
 
     secrets: Dict[str, str] = {}
+    # Each fetch leg reports its own retry-worthy incompleteness via
+    # _FetchResult.cache_blockers; we sum them and cache only a clean (zero)
+    # result.  MODE A first so MODE B can override on collision.
+    cache_blockers = 0
 
-    # Track MODE A's own outcome separately so a partial combined-mode result
-    # (MODE A glitched but MODE B succeeded) is not cached, letting MODE A retry
-    # before the TTL rather than serving a MODE-A-less result for the whole TTL.
-    a_keys = 0
-    a_had_warning = False
-
-    # MODE A first so MODE B can override on collision.
     if vault:
-        a_secrets, a_warnings = _fetch_vault(pass_cli, service_token, vault)
-        secrets.update(a_secrets)
-        warnings.extend(a_warnings)
-        a_keys = len(a_secrets)
-        a_had_warning = bool(a_warnings)
+        a = _fetch_vault(pass_cli, service_token, vault)
+        secrets.update(a.secrets)
+        warnings.extend(a.warnings)
+        cache_blockers += a.cache_blockers
 
     if env_refs:
-        b_secrets, b_warnings = _fetch_refs(pass_cli, service_token, env_refs)
-        secrets.update(b_secrets)  # MODE B precedence
-        warnings.extend(b_warnings)
+        b = _fetch_refs(pass_cli, service_token, env_refs)
+        secrets.update(b.secrets)  # MODE B precedence
+        warnings.extend(b.warnings)
+        cache_blockers += b.cache_blockers
 
     # MODE A leak fix: a vault item whose DERIVED env name equals ANY protected
     # bootstrap name must never be written to the plaintext disk cache nor
@@ -228,27 +242,15 @@ def fetch_protonpass_secrets(
                 "bootstrap service-token env var and is never cached or applied."
             )
 
-    # Don't cache a transient failure: an empty result that ALSO produced
-    # warnings (timeouts, rejected --show-secrets, skipped refs) almost
-    # certainly means a recoverable hiccup; caching it would suppress retries
-    # for the whole TTL.  An intentionally-empty success (no warnings) is fine
-    # to cache.
-    transient_empty = not secrets and bool(warnings)
+    # An empty combined result that ALSO produced warnings is a recoverable
+    # hiccup, not an intentional empty success — don't freeze it for the TTL.
+    if not secrets and warnings:
+        cache_blockers += 1
 
-    # Combined-mode partial: MODE A is configured but produced a warning and
-    # ZERO keys (a transient/garbage-JSON glitch) while MODE B may have
-    # succeeded.  Caching that would freeze the MODE-A-less result for the whole
-    # TTL; treat it as non-cacheable so MODE A retries on the next fetch.
-    mode_a_glitched = bool(vault) and a_had_warning and a_keys == 0
-
-    # ttl<=0 disables BOTH cache layers entirely (read AND write); treat it as
-    # an explicit "always re-fetch" request.
-    caching_enabled = (
-        use_cache
-        and cache_ttl_seconds > 0
-        and not transient_empty
-        and not mode_a_glitched
-    )
+    # Cache only a clean, complete result.  cache_blockers > 0 means some leg saw
+    # a retry-worthy incompleteness (a transient/empty ref, a glitched vault, an
+    # all-empty+warning result).  ttl<=0 disables BOTH layers ("always refetch").
+    caching_enabled = use_cache and cache_ttl_seconds > 0 and cache_blockers == 0
 
     if caching_enabled:
         entry = _CachedFetch(secrets=secrets, fetched_at=time.time())
@@ -261,7 +263,7 @@ def _fetch_refs(
     binary: Path,
     token: str,
     env_refs: Dict[str, str],
-) -> Tuple[Dict[str, str], List[str]]:
+) -> _FetchResult:
     """MODE B: resolve each ``ENV_VAR -> pass://...`` ref to a single value.
 
     Confirmed (pass-cli 2.1.1): the config ref is
@@ -282,6 +284,9 @@ def _fetch_refs(
     """
     secrets: Dict[str, str] = {}
     warnings: List[str] = []
+    # Recoverable per-ref failures (timeout, non-zero exit, empty value) — NOT
+    # permanent validation skips.  Drives _FetchResult.cache_blockers.
+    transient_failures = 0
     env = _child_env(token)
     for env_name, uri in env_refs.items():
         if not _is_valid_env_name(env_name):
@@ -331,6 +336,7 @@ def _fetch_refs(
                 f"Skipping ref {env_name!r}: pass-cli timed out or failed to "
                 "invoke"
             )
+            transient_failures += 1
             continue
 
         if proc.returncode != 0:
@@ -343,6 +349,7 @@ def _fetch_refs(
                 f"Skipping ref {env_name!r}: pass-cli exited {proc.returncode}: "
                 f"{_cli_error_detail(proc, token)}"
             )
+            transient_failures += 1
             continue
 
         # --field emits the bare value on stdout (NOT JSON).  Strip EXACTLY ONE
@@ -364,9 +371,12 @@ def _fetch_refs(
             warnings.append(
                 f"Skipping ref {env_name!r}: pass-cli returned an empty value"
             )
+            # Treat empty-on-success conservatively as possibly transient so a
+            # partial omitting this ref isn't frozen in the cache for the TTL.
+            transient_failures += 1
             continue
         secrets[env_name] = value
-    return secrets, warnings
+    return _FetchResult(secrets, warnings, transient_failures)
 
 
 def _split_ref(uri: str) -> Optional[Tuple[str, str, str]]:
@@ -398,7 +408,7 @@ def _fetch_vault(
     binary: Path,
     token: str,
     vault: str,
-) -> Tuple[Dict[str, str], List[str]]:
+) -> _FetchResult:
     """MODE A: list a vault's items and map their fields to env vars.
 
     Confirmed (pass-cli 2.1.1): ``pass-cli item list --show-secrets --output
@@ -412,10 +422,12 @@ def _fetch_vault(
     positional vault name so it can never be misread as one.
     """
     if _is_flag_like(vault):
-        return {}, [
+        # Permanent validation skip (a flag-like name can never become valid),
+        # so warn but do NOT block caching of a MODE B result fetched alongside.
+        return _FetchResult({}, [
             f"Skipping vault {vault!r} (MODE A): vault name looks like a flag "
             "(starts with '-')"
-        ]
+        ])
     cmd = [
         str(binary), "item", "list", "--show-secrets", "--output", "json",
         "--", vault,
@@ -423,9 +435,9 @@ def _fetch_vault(
     env = _child_env(token)
     proc = _run_pass_cli(cmd, env)
     if proc is None:
-        return {}, [
+        return _FetchResult({}, [
             f"Skipping vault {vault!r}: pass-cli timed out or failed to invoke"
-        ]
+        ], cache_blockers=1)
 
     if proc.returncode != 0:
         # SECURITY: never surface stdout here — ``item list --show-secrets``
@@ -436,13 +448,20 @@ def _fetch_vault(
         # to a warning + skip so MODE A never crashes startup; tell the user to
         # use MODE B refs (which work under agent sessions) or a full PAT
         # session.
-        return {}, [
+        return _FetchResult({}, [
             f"Skipping vault {vault!r} (MODE A): pass-cli exited "
             f"{proc.returncode}: {_cli_error_detail(proc, token)}. If using an "
             "agent session, use MODE B `env:` refs or a PAT session instead."
-        ]
+        ], cache_blockers=1)
 
-    return _parse_item_list_json(proc.stdout, vault)
+    secrets, warnings = _parse_item_list_json(proc.stdout, vault)
+    # MODE A blocks caching only on a TOTAL glitch (a warning AND zero keys) — a
+    # transient list failure / rejected --show-secrets shouldn't freeze a
+    # MODE-A-less result for the TTL.  A partial (some keys + a warning) is still
+    # cacheable.
+    return _FetchResult(
+        secrets, warnings, cache_blockers=1 if (warnings and not secrets) else 0
+    )
 
 
 def _parse_item_list_json(raw: str, vault: str) -> Tuple[Dict[str, str], List[str]]:

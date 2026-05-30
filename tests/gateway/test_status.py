@@ -20,6 +20,14 @@ class TestGatewayPidState:
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
 
+    def test_pid_record_uses_start_time_us_and_tombstones_legacy(self, monkeypatch):
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1_748_600_000_123_456)
+        rec = status._build_pid_record()
+        assert rec["start_time_us"] == 1_748_600_000_123_456
+        # Tombstone must be present-but-null so pre-fix readers skip the guard
+        # instead of KeyError-ing or misreading microseconds as /proc jiffies.
+        assert rec["start_time"] is None
+
     def test_write_pid_file_is_atomic_against_concurrent_writers(self, tmp_path, monkeypatch):
         """Regression: two concurrent --replace invocations must not both win.
 

@@ -2359,22 +2359,41 @@ def claim_task(
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
         # holds (the common case).
+        #
+        # Also handle the case where current_run_id points to a run that has
+        # ended_at set but the task is still in 'ready' status — this can
+        # happen when a task is manually set to 'ready' (e.g. via CLI or
+        # dashboard) without clearing current_run_id.
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'ready'",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
-            conn.execute(
-                """
-                UPDATE task_runs
-                   SET status = 'reclaimed', outcome = 'reclaimed',
-                       summary = COALESCE(summary, 'invariant recovery on re-claim'),
-                       ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
-                 WHERE id = ? AND ended_at IS NULL
-                """,
-                (now, int(stale["current_run_id"])),
-            )
+            # Check if the referenced run has already ended
+            ended_run = conn.execute(
+                "SELECT ended_at FROM task_runs WHERE id = ? AND ended_at IS NOT NULL",
+                (int(stale["current_run_id"]),),
+            ).fetchone()
+            if ended_run:
+                # Run already ended — clear current_run_id so we don't
+                # try to end it again on completion.
+                conn.execute(
+                    "UPDATE tasks SET current_run_id = NULL WHERE id = ?",
+                    (task_id,),
+                )
+            else:
+                # Run is still in-flight but task is ready — reclaim it.
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status = 'reclaimed', outcome = 'reclaimed',
+                           summary = COALESCE(summary, 'invariant recovery on re-claim'),
+                           ended_at = ?,
+                           claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                     WHERE id = ? AND ended_at IS NULL
+                    """,
+                    (now, int(stale["current_run_id"])),
+                )
         cur = conn.execute(
             """
             UPDATE tasks

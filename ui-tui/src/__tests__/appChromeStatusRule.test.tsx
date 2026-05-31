@@ -110,9 +110,49 @@ describe('StatusRule compact phone layout', () => {
 
     const content = textContent(element)
 
-    expect(content).toContain('model dflash')
+    expect(content).toContain('dflash')
     expect(content).toContain('ctx 20.9k/262k 8%')
     expect(content).toContain('1 session')
     expect(content).toContain('~/Workspaces')
+  })
+
+  it('does not spill compact busy status words across phone lines', () => {
+    const now = new Date('2026-05-31T22:30:00Z').getTime()
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+
+    try {
+      const element = StatusRule({
+        bgCount: 0,
+        busy: true,
+        cols: 58,
+        cwdLabel: '~/Workspaces',
+        liveSessionCount: 1,
+        model: 'dflash',
+        sessionStartedAt: now - 90_000,
+        showCost: false,
+        status: 'deliberating...',
+        statusColor: DEFAULT_THEME.color.ok,
+        t: DEFAULT_THEME,
+        turnStartedAt: now - 45_000,
+        usage: {
+          context_estimated: true,
+          context_max: 262000,
+          context_percent: 8,
+          context_used: 20900,
+          total: 20900
+        },
+        voiceLabel: 'voice off'
+      })
+
+      const content = textContent(element)
+
+      expect(content).toContain('- busy 45s | dflash | ctx ~20.9k/262k 8%')
+      expect(content).toContain('dur 1m 30s | voice off | 1 session | ~/Workspaces')
+      expect(content).not.toContain('deliberating')
+      expect(content).not.toContain('model dfla')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

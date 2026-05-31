@@ -268,9 +268,37 @@ const modelLabel = (model: string, effort?: string, fast?: boolean) =>
 
 const COMPACT_STATUS_COLS = 92
 
+const fitCompactText = (text: string, width: number) => {
+  if (width <= 0) {
+    return ''
+  }
+
+  if (text.length <= width) {
+    return text
+  }
+
+  if (width <= 3) {
+    return text.slice(0, width)
+  }
+
+  return `${text.slice(0, width - 3).trimEnd()}...`
+}
+
+const compactModelLabel = (model: string, effort?: string, fast?: boolean) => {
+  const label = modelLabel(model, effort, fast)
+
+  if (label.length <= 18) {
+    return label
+  }
+
+  return fitCompactText(label, 18)
+}
+
 const contextStatusLabel = (usage: Usage) => {
+  const ctxUsed = usage.context_used && usage.context_used > 0 ? usage.context_used : usage.total
+
   const ctxLabel = usage.context_max
-    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+    ? `${fmtK(ctxUsed ?? 0)}/${fmtK(usage.context_max)}`
     : usage.total > 0
       ? `${fmtK(usage.total)} tok`
       : ''
@@ -281,7 +309,9 @@ const contextStatusLabel = (usage: Usage) => {
 
   const pct = usage.context_percent
 
-  return usage.context_max && pct != null ? `ctx ${ctxLabel} ${pct}%` : `ctx ${ctxLabel}`
+  const prefix = usage.context_estimated ? 'ctx ~' : 'ctx '
+
+  return usage.context_max && pct != null ? `${prefix}${ctxLabel} ${pct}%` : `${prefix}${ctxLabel}`
 }
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
@@ -339,9 +369,9 @@ export function StatusRule({
 
   const bar = usage.context_max ? ctxBar(pct) : ''
   const compact = cols > 0 && cols < COMPACT_STATUS_COLS
-  const compactBarWidth = cols < 70 ? 0 : cols < 82 ? 5 : 7
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const now = Date.now()
 
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
@@ -360,92 +390,37 @@ export function StatusRule({
 
   if (compact) {
     const width = Math.max(1, cols || 1)
-    const compactModelLabel = modelLabel(model, modelReasoningEffort, modelFast)
     const compactCtxLabel = contextStatusLabel(usage)
-    const compactBar = usage.context_max && compactBarWidth > 0 ? ctxBar(pct, compactBarWidth) : ''
+
+    const primaryStatus = busy
+      ? `busy${turnStartedAt ? ` ${fmtDuration(now - turnStartedAt)}` : ''}`
+      : status || 'ready'
+
+    const firstLine = fitCompactText(
+      [`- ${primaryStatus}`, compactModelLabel(model, modelReasoningEffort, modelFast), compactCtxLabel]
+        .filter(Boolean)
+        .join(' | '),
+      width
+    )
+
+    const secondLine = fitCompactText(
+      [
+        sessionStartedAt ? `dur ${fmtDuration(now - sessionStartedAt)}` : '',
+        voiceLabel || '',
+        sessionCountText,
+        bgCount > 0 ? `${bgCount} bg` : '',
+        showCost && typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : '',
+        cwdLabel || ''
+      ]
+        .filter(Boolean)
+        .join(' | '),
+      width
+    )
 
     return (
       <Box flexDirection="column" height={2} width={width}>
-        <Box flexDirection="row" overflow="hidden" width={width}>
-          <Text color={t.color.border} wrap="truncate-end">
-            {'─ '}
-          </Text>
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor} wrap="truncate-end">
-              {status}
-            </Text>
-          )}
-          {compactModelLabel ? (
-            <Text color={t.color.muted} wrap="truncate-end">
-              {' │ model '}
-              {compactModelLabel}
-            </Text>
-          ) : null}
-          {compactCtxLabel ? (
-            <Text color={t.color.muted} wrap="truncate-end">
-              {' │ '}
-              {compactCtxLabel}
-            </Text>
-          ) : null}
-          {compactBar ? (
-            <Text color={barColor} wrap="truncate-end">
-              {' '}
-              [{compactBar}]
-            </Text>
-          ) : null}
-        </Box>
-
-        <Box flexDirection="row" overflow="hidden" width={width}>
-          <Text color={t.color.border}>  </Text>
-          {sessionStartedAt ? (
-            <Text color={t.color.muted} wrap="truncate-end">
-              dur <SessionDuration startedAt={sessionStartedAt} />
-            </Text>
-          ) : (
-            <Text color={t.color.muted} wrap="truncate-end">
-              {cwdLabel ? 'cwd ' : ''}
-            </Text>
-          )}
-          {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
-            <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
-              {' │ cmp '}
-              {usage.compressions}
-            </Text>
-          ) : null}
-          <SpawnHud t={t} />
-          {voiceLabel ? (
-            <Text
-              color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
-              }
-              wrap="truncate-end"
-            >
-              {' │ '}
-              {voiceLabel}
-            </Text>
-          ) : null}
-          {sessionCountNode}
-          {bgCount > 0 ? (
-            <Text color={t.color.muted} wrap="truncate-end">
-              {' │ '}
-              {bgCount} bg
-            </Text>
-          ) : null}
-          {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.muted} wrap="truncate-end">
-              {' │ $'}
-              {usage.cost_usd.toFixed(4)}
-            </Text>
-          ) : null}
-          {cwdLabel ? (
-            <Text color={t.color.label} wrap="truncate-end">
-              {' │ '}
-              {cwdLabel}
-            </Text>
-          ) : null}
-        </Box>
+        <Text color={statusColor}>{firstLine}</Text>
+        <Text color={t.color.muted}>{secondLine}</Text>
       </Box>
     )
   }

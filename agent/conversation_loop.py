@@ -1101,6 +1101,14 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+        # Some local/OpenAI-compatible lanes do not return usage on streamed
+        # responses. Keep a rough request-pressure estimate available for the
+        # TUI status bar so context does not stay pinned at 0 until a provider
+        # supplies real token usage.
+        try:
+            agent._last_request_context_tokens = approx_request_tokens
+        except Exception:
+            pass
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens

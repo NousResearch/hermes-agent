@@ -671,6 +671,81 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_status_callbacks_include_live_usage_when_session_is_active(monkeypatch):
+    usage = {"context_used": 20900, "context_max": 262000, "context_percent": 8}
+    monkeypatch.setitem(server._sessions, "sid", {"agent": object()})
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: usage)
+
+    with patch("tui_gateway.server._emit") as emit:
+        callbacks = server._agent_cbs("sid")
+        callbacks["thinking_callback"]("thinking...")
+        callbacks["status_callback"]("process", "running tool")
+
+    assert emit.call_args_list[0].args == (
+        "thinking.delta",
+        "sid",
+        {"text": "thinking...", "usage": usage},
+    )
+    assert emit.call_args_list[1].args == (
+        "status.update",
+        "sid",
+        {"kind": "process", "text": "running tool", "usage": usage},
+    )
+
+
+def test_get_usage_uses_rough_context_when_provider_usage_is_missing():
+    agent = types.SimpleNamespace(
+        _last_request_context_tokens=20900,
+        context_compressor=types.SimpleNamespace(
+            compression_count=0,
+            context_length=262000,
+            last_prompt_tokens=0,
+        ),
+        model="dflash",
+    )
+
+    usage = server._get_usage(agent)
+
+    assert usage["context_used"] == 20900
+    assert usage["context_max"] == 262000
+    assert usage["context_percent"] == 8
+    assert usage["context_estimated"] is True
+
+
+def test_get_usage_estimates_initial_context_from_system_and_tools(monkeypatch):
+    from agent import model_metadata
+
+    captured = {}
+
+    def fake_estimate(messages, system_prompt="", tools=None):
+        captured["messages"] = messages
+        captured["system_prompt"] = system_prompt
+        captured["tools"] = tools
+        return 12000
+
+    monkeypatch.setattr(model_metadata, "estimate_request_tokens_rough", fake_estimate)
+
+    tools = [{"function": {"name": "read_file", "parameters": {}}}]
+    agent = types.SimpleNamespace(
+        _cached_system_prompt="system",
+        context_compressor=types.SimpleNamespace(
+            compression_count=0,
+            context_length=262000,
+            last_prompt_tokens=0,
+        ),
+        model="dflash",
+        tools=tools,
+    )
+
+    usage = server._get_usage(agent)
+
+    assert captured == {"messages": [], "system_prompt": "system", "tools": tools}
+    assert usage["context_used"] == 12000
+    assert usage["context_percent"] == 5
+    assert usage["context_estimated"] is True
+    assert agent._last_usage_context_estimate == 12000
+
+
 def test_resolve_model_uses_inference_model_env(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", " anthropic/claude-sonnet-4.6\n")

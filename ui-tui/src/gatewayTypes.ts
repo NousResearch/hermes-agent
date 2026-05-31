@@ -504,9 +504,9 @@ export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
-  | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
+  | { payload?: { text?: string; usage?: Usage }; session_id?: string; type: 'thinking.delta' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
-  | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
+  | { payload?: { kind?: string; text?: string; usage?: Usage }; session_id?: string; type: 'status.update' }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }

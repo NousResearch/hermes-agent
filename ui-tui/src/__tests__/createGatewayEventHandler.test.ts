@@ -319,6 +319,51 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  it('updates status-bar usage from live thinking and status events', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: {
+        text: 'thinking...',
+        usage: {
+          calls: 1,
+          context_estimated: true,
+          context_max: 262000,
+          context_percent: 8,
+          context_used: 20900,
+          input: 0,
+          output: 0,
+          total: 0
+        }
+      },
+      type: 'thinking.delta'
+    } as any)
+
+    expect(getUiState().usage.context_used).toBe(20900)
+    expect(getUiState().usage.context_estimated).toBe(true)
+
+    onEvent({
+      payload: {
+        kind: 'process',
+        text: 'running tool',
+        usage: {
+          calls: 1,
+          context_max: 262000,
+          context_percent: 9,
+          context_used: 24000,
+          input: 0,
+          output: 0,
+          total: 0
+        }
+      },
+      type: 'status.update'
+    } as any)
+
+    expect(getUiState().usage.context_used).toBe(24000)
+    expect(getUiState().usage.context_percent).toBe(9)
+  })
+
   it('ignores late thinking.delta after the turn has already completed', () => {
     vi.useFakeTimers()
     const appended: Msg[] = []

@@ -406,6 +406,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        if (ev.payload?.usage) {
+          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+        }
+
         const text = ev.payload?.text
 
         if (text !== undefined) {
@@ -430,6 +434,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (!p?.text) {
           return
+        }
+
+        if (p.usage) {
+          patchUiState(state => ({ ...state, usage: { ...state.usage, ...p.usage } }))
         }
 
         if (p.kind === 'goal') {

@@ -16,6 +16,7 @@ Environment variables:
 """
 
 import asyncio
+import codecs
 import email as email_lib
 import imaplib
 import logging
@@ -110,15 +111,46 @@ def check_email_requirements() -> bool:
     return True
 
 
-def _decode_header_value(raw: str) -> str:
-    """Decode an RFC 2047 encoded email header into a plain string."""
-    parts = decode_header(raw)
+def _resolve_charset(charset: str | None) -> str:
+    """Normalise a charset name, falling back to utf-8 for unrecognised values.
+
+    Some mail servers (notably QQ Mail) report ``unknown-8bit`` as the charset,
+    which Python's codec registry does not recognise.  We fall back to
+    ``utf-8`` with ``errors="replace"`` so the message is still usable.
+    """
+    if not charset:
+        return "utf-8"
+    charset = charset.strip().lower()
+    # Common non-standard / unrecognised charset names seen in the wild
+    if charset in ("unknown-8bit", "unknown", "x-unknown", "default"):
+        return "utf-8"
+    try:
+        codecs.lookup(charset)
+    except LookupError:
+        return "utf-8"
+    return charset
+
+
+def _decode_header_value(raw) -> str:
+    """Decode an RFC 2047 encoded email header into a plain string.
+
+    *raw* may be a :class:`str`, :class:`bytes`, or an
+    :class:`email.header.Header` object.  The latter can appear when a
+    non-ASCII sender name is encoded by the composing MUA and is not yet
+    decoded by :func:`email.message_from_bytes`.
+    """
+    try:
+        parts = decode_header(raw)
+    except Exception:
+        # If decode_header itself fails (e.g. malformed encoding), return raw
+        return str(raw)
     decoded = []
     for part, charset in parts:
         if isinstance(part, bytes):
-            decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            decoded.append(part.decode(_resolve_charset(charset), errors="replace"))
         else:
-            decoded.append(part)
+            # part may be str or email.header.Header
+            decoded.append(str(part))
     return " ".join(decoded)
 
 
@@ -134,7 +166,7 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/plain":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
+                    charset = _resolve_charset(part.get_content_charset())
                     return payload.decode(charset, errors="replace")
         # Fallback: try text/html and strip tags
         for part in msg.walk():
@@ -145,14 +177,14 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/html":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
+                    charset = _resolve_charset(part.get_content_charset())
                     html = payload.decode(charset, errors="replace")
                     return _strip_html(html)
         return ""
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            charset = msg.get_content_charset() or "utf-8"
+            charset = _resolve_charset(msg.get_content_charset())
             text = payload.decode(charset, errors="replace")
             if msg.get_content_type() == "text/html":
                 return _strip_html(text)

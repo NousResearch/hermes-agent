@@ -463,6 +463,60 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         return self._slash_command_contexts.pop(match_key)
 
+    def _maybe_build_draft_blocks(self, content: str) -> Optional[List[Dict[str, Any]]]:
+        """If ``content`` carries a 030-C [DRAFT_ACTIONS:<id>] marker,
+        return a Block Kit block list with Send / Edit / Discard buttons.
+
+        Returns ``None`` when no marker is present (caller falls back to
+        plain-text send).
+        """
+        try:
+            from plugins.slash.draft import (
+                extract_action_draft_id,
+                strip_action_marker,
+            )
+        except Exception:
+            return None
+        draft_id = extract_action_draft_id(content or "")
+        if not draft_id:
+            return None
+        body_text = strip_action_marker(content or "")
+        # Slack section block has a 3000-char cap on text — truncate the
+        # composed body so the post doesn't get rejected.
+        if len(body_text) > 2900:
+            body_text = body_text[:2900] + "..."
+        return [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": body_text},
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Send"},
+                        "style": "primary",
+                        "action_id": "hermes_draft_send",
+                        "value": draft_id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Edit"},
+                        "action_id": "hermes_draft_edit",
+                        "value": draft_id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Discard"},
+                        "style": "danger",
+                        "action_id": "hermes_draft_discard",
+                        "value": draft_id,
+                    },
+                ],
+            },
+        ]
+
     async def _send_slash_ephemeral(
         self,
         ctx: Dict[str, Any],
@@ -479,18 +533,33 @@ class SlackAdapter(BasePlatformAdapter):
         the user already saw the initial ack, so a delivery failure here
         is non-critical.
         """
-        formatted = self.format_message(content)
-        # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
-        # response_url replaces a single ephemeral ack, so multi-chunk isn't
-        # possible.  Long responses are rare for command replies.
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        text = chunks[0] if chunks else formatted
-        payload = {
-            "response_type": "ephemeral",
-            "replace_original": True,
-            "text": text,
-        }
+        # Plan 030-C — if the slash reply carries a [DRAFT_ACTIONS:<id>]
+        # marker, render it as a Block Kit message with Send/Edit/Discard
+        # buttons. Slack response_url accepts a "blocks" payload alongside
+        # "text"; the text becomes the notification fallback.
+        draft_blocks = self._maybe_build_draft_blocks(content)
+        if draft_blocks is not None:
+            from plugins.slash.draft import strip_action_marker
+            body = strip_action_marker(content)
+            payload = {
+                "response_type": "ephemeral",
+                "replace_original": True,
+                "text": body[:200] if body else "Draft ready",
+                "blocks": draft_blocks,
+            }
+        else:
+            formatted = self.format_message(content)
+            # Slack's response_url has the same ~40k char limit as chat_postMessage.
+            # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
+            # response_url replaces a single ephemeral ack, so multi-chunk isn't
+            # possible.  Long responses are rare for command replies.
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            text = chunks[0] if chunks else formatted
+            payload = {
+                "response_type": "ephemeral",
+                "replace_original": True,
+                "text": text,
+            }
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.post(
@@ -707,6 +776,14 @@ class SlackAdapter(BasePlatformAdapter):
                 "hermes_confirm_cancel",
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
+
+            # Plan 030-C — Block Kit action handlers for /draft Send/Edit/Discard.
+            for _action_id in (
+                "hermes_draft_send",
+                "hermes_draft_edit",
+                "hermes_draft_discard",
+            ):
+                self._app.action(_action_id)(self._handle_draft_action)
 
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
@@ -2966,6 +3043,97 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve slash-confirm from Slack button: %s", exc, exc_info=True)
+
+    async def _handle_draft_action(self, ack, body, action) -> None:
+        """Handle a /draft Send/Edit/Discard button click (Plan 030-C).
+
+        ``action.value`` carries the ``draft_id`` produced by
+        ``plugins.slash.draft.handle_draft``. We dispatch to
+        ``record_draft_decision`` (which writes the ``atlas:AgentDraft``
+        triple on Send) and update the original Slack message to reflect
+        the decision so the buttons can't be clicked twice.
+        """
+        await ack()
+
+        action_id = action.get("action_id", "")
+        draft_id = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        # Authorization — reuse the existing slash-command allowlist.
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized draft-action click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        decision_map = {
+            "hermes_draft_send": "send",
+            "hermes_draft_edit": "edit",
+            "hermes_draft_discard": "discard",
+        }
+        decision = decision_map.get(action_id, "discard")
+
+        try:
+            from plugins.slash.draft import record_draft_decision
+            ok, result_msg = record_draft_decision(draft_id, decision)
+        except Exception as exc:
+            logger.error("[Slack] draft-action dispatch failed: %s", exc, exc_info=True)
+            ok, result_msg = False, f"Internal error: {exc}"
+
+        label_map = {
+            "send": f"✅ Sent by {user_name}",
+            "edit": f"✏️ Edit requested by {user_name}",
+            "discard": f"🗑️ Discarded by {user_name}",
+        }
+        decision_label = label_map.get(decision, f"Resolved by {user_name}")
+
+        # Preserve the original section body and append a context row.
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text or "Draft",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"{decision_label} — {result_msg}"},
+                ],
+            },
+        ]
+
+        try:
+            client = self._get_client(channel_id)
+            if client is not None and msg_ts:
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=decision_label,
+                    blocks=updated_blocks,
+                )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update draft message: %s", e)
+
+        logger.info(
+            "Slack draft action draft_id=%s decision=%s ok=%s user=%s",
+            draft_id, decision, ok, user_name,
+        )
 
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""

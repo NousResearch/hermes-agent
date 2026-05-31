@@ -221,13 +221,14 @@ def test_handle_draft_acceptance_smoke():
     reply = handle_draft(
         'sarah@example.com "follow-up on the term sheet"',
         ask_fn=lambda **_: {"answer": "", "citations": []},
+        compose_fn=lambda sys, usr: "Hi Sarah, quick follow-up. Thanks, Blake",
     )
     assert "Drafting message to Sarah (sarah@example.com)" in reply
     assert "Context found:" in reply
     assert "Prior commitments" in reply
     assert "Open contradictions" in reply
     assert "Last interaction" in reply
-    assert "Draft TODO 030-C" in reply
+    assert "*Draft" in reply  # 030-C — actual draft block now renders
 
 
 def test_handle_draft_empty_returns_usage():
@@ -245,6 +246,7 @@ def test_handle_draft_handle_recipient_smoke():
     reply = handle_draft(
         "@bossman2 ping me about the deck",
         ask_fn=lambda **_: {"answer": "", "citations": []},
+        compose_fn=lambda sys, usr: "Hey, quick ping on the deck.",
     )
     assert "@bossman2" in reply
     assert "ping me about the deck" in reply
@@ -254,10 +256,11 @@ def test_handle_draft_unresolved_recipient_still_responds():
     reply = handle_draft(
         "not-an-email some intent",
         ask_fn=lambda **_: {"answer": "", "citations": []},
+        compose_fn=lambda sys, usr: "Hello.",
     )
     # Should not crash; should mention the raw token
     assert "not-an-email" in reply
-    assert "Draft TODO 030-C" in reply
+    assert "*Draft" in reply  # 030-C — actual draft block now renders
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +459,7 @@ def test_handle_draft_renders_atlas_answers_under_section_headers():
     reply = handle_draft(
         'sarah@example.com "term sheet status"',
         ask_fn=_fake_ask,
+        compose_fn=lambda sys, usr: "Hi Sarah, term sheet update incoming.",
     )
     assert "*Prior commitments:*" in reply
     assert "Blake owes Sarah the term sheet" in reply
@@ -463,7 +467,7 @@ def test_handle_draft_renders_atlas_answers_under_section_headers():
     assert "*Open contradictions:*" in reply
     assert "*Last interaction:*" in reply
     assert "2026-04-12" in reply
-    assert "Draft TODO 030-C" in reply
+    assert "*Draft" in reply  # 030-C — actual draft block now renders
 
 
 def test_handle_draft_atlas_unavailable_still_returns_three_sections():
@@ -476,7 +480,313 @@ def test_handle_draft_atlas_unavailable_still_returns_three_sections():
     def _broken(**_: object):
         raise RuntimeError("atlas down")
 
-    reply = handle_draft("sarah@example.com check in", ask_fn=_broken)
+    reply = handle_draft(
+        "sarah@example.com check in",
+        ask_fn=_broken,
+        compose_fn=lambda sys, usr: "Hi Sarah, checking in.",
+    )
     assert "Context found:" in reply
     assert reply.count("*") >= 6  # 3 bold section labels × 2 asterisks
-    assert "Draft TODO 030-C" in reply
+    assert "*Draft" in reply  # 030-C — actual draft block now renders
+
+
+# ---------------------------------------------------------------------------
+# Phase 030-C — Nova-Pro composition + Send/Edit/Discard UX
+# ---------------------------------------------------------------------------
+
+from plugins.slash.draft import (  # noqa: E402
+    StoredDraft,
+    build_nova_prompt,
+    compose_action_marker,
+    extract_action_draft_id,
+    get_stored_draft,
+    pop_stored_draft,
+    record_draft_decision,
+    strip_action_marker,
+    _fallback_draft,
+    _safe_compose,
+    _DRAFT_STORE,
+)
+
+
+@pytest.fixture(autouse=False)
+def _clear_draft_store():
+    """Some 030-C tests rely on a clean draft store snapshot."""
+    _DRAFT_STORE.clear()
+    yield
+    _DRAFT_STORE.clear()
+
+
+def _empty_ask(**_):
+    return {"answer": "", "citations": []}
+
+
+# --- Nova-Pro prompt construction ------------------------------------------
+
+
+def test_build_nova_prompt_includes_recipient_and_intent():
+    args = DraftArgs(
+        recipient=Recipient(
+            kind="email", value="sarah@example.com", display="Sarah"
+        ),
+        intent="follow-up on the term sheet",
+    )
+    sections = [
+        ("Prior commitments", "Blake owes Sarah the term sheet by Friday [cite:c1]"),
+        ("Open contradictions", "No contradictions found."),
+        ("Last interaction", "Last email 2026-04-12"),
+    ]
+    system, user = build_nova_prompt(args, sections)
+    # System prompt establishes Blake's voice + no-em-dash rule
+    assert "Blake" in system
+    assert "house style" in system.lower() or "concise" in system.lower()
+    # User prompt threads recipient + intent + every context section
+    assert "Sarah" in user
+    assert "sarah@example.com" in user
+    assert "follow-up on the term sheet" in user
+    assert "Prior commitments" in user
+    assert "Open contradictions" in user
+    assert "Last interaction" in user
+    assert "[cite:c1]" in user  # citations survive into the prompt
+
+
+def test_build_nova_prompt_handles_empty_intent():
+    args = DraftArgs(
+        recipient=Recipient(kind="handle", value="bossman2", display="@bossman2"),
+        intent="",
+    )
+    _system, user = build_nova_prompt(args, [])
+    assert "no specific intent" in user.lower()
+    assert "@bossman2" in user
+
+
+def test_build_nova_prompt_truncates_long_context_sections():
+    long_blob = "x" * 5000
+    args = DraftArgs(
+        recipient=Recipient(kind="email", value="a@b.io", display="A"),
+        intent="hi",
+    )
+    _sys, user = build_nova_prompt(args, [("Prior commitments", long_blob)])
+    # Bounded by _CONTEXT_SECTION_CHAR_CAP (1200) + overhead — must be
+    # much shorter than the raw 5000-char input.
+    assert len(user) < 3000
+    assert "..." in user  # truncation marker present
+
+
+# --- Nova-Pro happy path + failure fallback --------------------------------
+
+
+def test_safe_compose_returns_nova_output_on_success():
+    args = DraftArgs(
+        recipient=Recipient(kind="email", value="a@b.io", display="A"),
+        intent="hello",
+    )
+    body, err = _safe_compose(
+        args, [], compose_fn=lambda sys, usr: "Hi A, hello.\n\nBlake"
+    )
+    assert err is None
+    assert body == "Hi A, hello.\n\nBlake"
+
+
+def test_safe_compose_falls_back_when_nova_raises():
+    args = DraftArgs(
+        recipient=Recipient(kind="email", value="sarah@example.com", display="Sarah"),
+        intent="ping",
+    )
+
+    def _boom(sys, usr):
+        raise RuntimeError("bedrock throttled")
+
+    body, err = _safe_compose(args, [], compose_fn=_boom)
+    assert err is not None
+    assert "throttled" in err
+    # Fallback template mentions the recipient and Blake's sign-off
+    assert "Sarah" in body
+    assert "Blake" in body
+
+
+def test_safe_compose_falls_back_when_nova_returns_empty():
+    args = DraftArgs(
+        recipient=Recipient(kind="email", value="a@b.io", display="A"),
+        intent="x",
+    )
+    body, err = _safe_compose(args, [], compose_fn=lambda s, u: "   ")
+    assert err is not None  # empty body treated as failure
+    assert body == _fallback_draft(args)
+
+
+def test_handle_draft_renders_nova_body_in_reply():
+    reply = handle_draft(
+        "sarah@example.com term sheet ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda sys, usr: "Hi Sarah, term sheet is on track. Blake",
+    )
+    assert "*Draft:*" in reply
+    assert "Hi Sarah, term sheet is on track. Blake" in reply
+    # No fallback caveat when Nova-Pro succeeded.
+    assert "fallback" not in reply.lower()
+
+
+def test_handle_draft_surfaces_fallback_caveat_when_nova_fails():
+    def _broken(sys, usr):
+        raise RuntimeError("creds missing")
+
+    reply = handle_draft(
+        "sarah@example.com follow-up",
+        ask_fn=_empty_ask,
+        compose_fn=_broken,
+    )
+    assert "*Draft (fallback):*" in reply
+    assert "Nova-Pro unavailable" in reply
+    assert "creds missing" in reply
+
+
+# --- Action marker -----------------------------------------------------------
+
+
+def test_handle_draft_emits_action_marker():
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi.",
+    )
+    draft_id = extract_action_draft_id(reply)
+    assert draft_id is not None
+    assert 4 <= len(draft_id) <= 32
+    # And the stored draft is recoverable by that id.
+    stored = get_stored_draft(draft_id)
+    assert stored is not None
+    assert stored.recipient_value == "sarah@example.com"
+    assert stored.body == "Hi."
+
+
+def test_compose_and_extract_action_marker_roundtrip():
+    marker = compose_action_marker("abc12345")
+    assert marker == "[DRAFT_ACTIONS:abc12345]"
+    assert extract_action_draft_id(f"prefix {marker} suffix") == "abc12345"
+    assert extract_action_draft_id("no marker here") is None
+
+
+def test_strip_action_marker_removes_inline_token():
+    text = "Body text\n\n[DRAFT_ACTIONS:abc12345]"
+    assert strip_action_marker(text) == "Body text"
+
+
+# --- Draft store + decision recording ---------------------------------------
+
+
+def test_record_decision_send_writes_atlas_triple_and_pops_store(_clear_draft_store):
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi Sarah, ping.",
+    )
+    draft_id = extract_action_draft_id(reply)
+    captured: dict = {}
+
+    def _spy_writeback(*, draft: StoredDraft, decision: str):
+        captured["draft"] = draft
+        captured["decision"] = decision
+        return {"ok": True}
+
+    ok, msg = record_draft_decision(draft_id, "send", writeback_fn=_spy_writeback)
+    assert ok is True
+    assert "Atlas" in msg or "logged" in msg
+    # Writeback received the right payload
+    assert captured["decision"] == "send"
+    assert captured["draft"].body == "Hi Sarah, ping."
+    assert captured["draft"].recipient_value == "sarah@example.com"
+    # Send pops the draft from the store
+    assert get_stored_draft(draft_id) is None
+
+
+def test_record_decision_send_tolerates_writeback_failure(_clear_draft_store):
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi.",
+    )
+    draft_id = extract_action_draft_id(reply)
+
+    def _bad_writeback(**_):
+        raise RuntimeError("atlas 503")
+
+    ok, msg = record_draft_decision(draft_id, "send", writeback_fn=_bad_writeback)
+    # Send-intent still considered ok (locally marked); error surfaced to Blake.
+    assert ok is True
+    assert "deferred" in msg.lower() or "atlas 503" in msg.lower()
+
+
+def test_record_decision_discard_pops_without_writeback(_clear_draft_store):
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi.",
+    )
+    draft_id = extract_action_draft_id(reply)
+
+    def _writeback(**_):
+        raise AssertionError("Discard must not call writeback")
+
+    ok, msg = record_draft_decision(draft_id, "discard", writeback_fn=_writeback)
+    assert ok is True
+    assert "discard" in msg.lower()
+    assert get_stored_draft(draft_id) is None
+
+
+def test_record_decision_edit_keeps_draft_alive(_clear_draft_store):
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi Sarah.",
+    )
+    draft_id = extract_action_draft_id(reply)
+    ok, msg = record_draft_decision(draft_id, "edit", writeback_fn=lambda **_: {})
+    assert ok is True
+    assert "Hi Sarah." in msg
+    # Edit must NOT pop the draft — Blake's still working on it.
+    assert get_stored_draft(draft_id) is not None
+
+
+def test_record_decision_unknown_draft_id_returns_not_found(_clear_draft_store):
+    ok, msg = record_draft_decision(
+        "does-not-exist", "send", writeback_fn=lambda **_: {"ok": True}
+    )
+    assert ok is False
+    assert "not found" in msg.lower() or "expired" in msg.lower()
+
+
+def test_record_decision_unknown_action_returns_error(_clear_draft_store):
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi.",
+    )
+    draft_id = extract_action_draft_id(reply)
+    ok, msg = record_draft_decision(draft_id, "yeet")
+    assert ok is False
+    assert "unknown" in msg.lower()
+
+
+def test_draft_store_evicts_oldest_when_soft_cap_exceeded(_clear_draft_store):
+    """Soft cap keeps memory bounded under a runaway /draft loop."""
+    from plugins.slash import draft as draft_mod
+
+    # Shrink the cap for the test so we don't have to compose 256 drafts.
+    original_cap = draft_mod._DRAFT_STORE_SOFT_CAP
+    draft_mod._DRAFT_STORE_SOFT_CAP = 3
+    try:
+        ids = []
+        for i in range(5):
+            reply = handle_draft(
+                f"user{i}@example.com ping",
+                ask_fn=_empty_ask,
+                compose_fn=lambda s, u, i=i: f"draft {i}",
+            )
+            ids.append(extract_action_draft_id(reply))
+        # Only the last ~3 survive; the first two were evicted.
+        survivors = [i for i in ids if get_stored_draft(i) is not None]
+        assert len(survivors) <= 3
+        assert ids[-1] in survivors
+    finally:
+        draft_mod._DRAFT_STORE_SOFT_CAP = original_cap

@@ -1715,6 +1715,65 @@ def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch)
     assert cc_called["n"] == 0
 
 
+def test_load_pool_api_key_path_dotenv_suppresses_parent_oauth_env(tmp_path, monkeypatch):
+    """API-key auth path in .env must suppress parent-process OAuth vars.
+
+    `save_anthropic_api_key()` writes ANTHROPIC_API_KEY and clears
+    ANTHROPIC_TOKEN in ~/.hermes/.env.  A stale parent shell
+    ANTHROPIC_TOKEN or Claude Code's own CLAUDE_CODE_OAUTH_TOKEN must not
+    defeat that persisted choice and reintroduce OAuth entries into the
+    Anthropic pool.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-parent-stale-token")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-parent-cc-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    (hermes_home / ".env").write_text(
+        "ANTHROPIC_API_KEY=sk-ant-api03-explicit-user-key\n"
+        "ANTHROPIC_TOKEN=\n",
+        encoding="utf-8",
+    )
+
+    from hermes_cli.config import invalidate_env_cache
+
+    invalidate_env_cache()
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+
+    pkce_called = {"n": 0}
+    cc_called = {"n": 0}
+
+    def _fake_pkce():
+        pkce_called["n"] += 1
+        return {
+            "accessToken": "sk-ant-oat01-file-pkce-token",
+            "refreshToken": "pkce-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        }
+
+    def _fake_cc():
+        cc_called["n"] += 1
+        return {
+            "accessToken": "sk-ant-oat01-file-cc-token",
+            "refreshToken": "cc-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        }
+
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", _fake_pkce)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", _fake_cc)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    sources = {entry.source for entry in pool.entries()}
+
+    assert sources == {"env:ANTHROPIC_API_KEY"}, f"got {sources}"
+    assert pkce_called["n"] == 0
+    assert cc_called["n"] == 0
+
+
 def test_load_pool_api_key_path_prunes_stale_oauth_entries(tmp_path, monkeypatch):
     """Switching OAuth -> API key must prune stale OAuth entries from auth.json.
 

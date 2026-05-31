@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import random
 import threading
 import time
@@ -1724,6 +1723,34 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     return changed
 
 
+def _env_value_prefer_dotenv(env_file: Dict[str, str], key: str) -> str:
+    """Return a stripped dotenv value when present, else a stripped env value."""
+    if key in env_file:
+        return str(env_file.get(key) or "").strip()
+    return str(_get_secret(key, "") or "").strip()
+
+
+def _anthropic_api_key_path_explicit(env_file: Dict[str, str]) -> bool:
+    """Return True when Anthropic API-key auth is explicit and OAuth is absent."""
+    anthropic_api_key = _env_value_prefer_dotenv(env_file, "ANTHROPIC_API_KEY")
+    if not anthropic_api_key:
+        return False
+    if "ANTHROPIC_API_KEY" in env_file:
+        # When ~/.hermes/.env records the API-key path, it is the user's
+        # persisted auth choice.  Do not let inherited OAuth vars from the
+        # parent shell or Claude Code silently undo it.
+        anthropic_oauth_env = (
+            str(env_file.get("ANTHROPIC_TOKEN") or "").strip()
+            or str(env_file.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
+        )
+        return not anthropic_oauth_env
+    anthropic_oauth_env = (
+        _env_value_prefer_dotenv(env_file, "ANTHROPIC_TOKEN")
+        or _env_value_prefer_dotenv(env_file, "CLAUDE_CODE_OAUTH_TOKEN")
+    )
+    return not anthropic_oauth_env
+
+
 def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
@@ -1767,14 +1794,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # that `hermes setup` writes.
         _env_file = load_env()
 
-        def _env_val(key: str) -> str:
-            return (_env_file.get(key) or _get_secret(key, "") or "").strip()
-
-        anthropic_api_key = _env_val("ANTHROPIC_API_KEY")
-        anthropic_oauth_env = (
-            _env_val("ANTHROPIC_TOKEN") or _env_val("CLAUDE_CODE_OAUTH_TOKEN")
-        )
-        api_key_path_explicit = bool(anthropic_api_key and not anthropic_oauth_env)
+        api_key_path_explicit = _anthropic_api_key_path_explicit(_env_file)
 
         if api_key_path_explicit:
             # Prune any stale autodiscovered OAuth entries that may have been
@@ -2047,15 +2067,14 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
+    env_file = load_env()
 
     # Prefer ~/.hermes/.env over os.environ — the user's config file is the
     # authoritative source for Hermes credentials. Stale env vars from parent
     # processes (Codex CLI, test scripts, etc.) should not override deliberate
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
-        env_file = load_env()
-        val = env_file.get(key) or _get_secret(key, "") or ""
-        return val.strip()
+        return _env_value_prefer_dotenv(env_file, key)
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it
@@ -2132,6 +2151,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
         ]
+        if _anthropic_api_key_path_explicit(env_file):
+            env_vars = ["ANTHROPIC_API_KEY"]
 
     for env_var in env_vars:
         # Prefer ~/.hermes/.env over os.environ

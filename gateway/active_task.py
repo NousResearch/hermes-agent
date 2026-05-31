@@ -103,7 +103,14 @@ class ActiveTaskRecord:
         if not self.repo_path:
             return False
         try:
-            return Path(self.repo_path).expanduser().exists()
+            path = Path(self.repo_path).expanduser()
+            if not path.exists():
+                return False
+            if self.mode != "foreground_session":
+                return True
+            if resolve_git_toplevel(path) is None:
+                return False
+            return bool(self.head or resolve_git_head(path))
         except OSError:
             return False
 
@@ -244,6 +251,28 @@ def resolve_git_branch(repo_path: str | os.PathLike[str] | None) -> Optional[str
         return None
     branch = (result.stdout or "").strip()
     return branch or None
+
+
+def resolve_git_toplevel(repo_path: str | os.PathLike[str] | None) -> Optional[str]:
+    if not repo_path:
+        return None
+    path = Path(repo_path).expanduser()
+    if not path.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    toplevel = (result.stdout or "").strip()
+    return toplevel or None
 
 
 def resolve_git_head(repo_path: str | os.PathLike[str] | None) -> Optional[str]:

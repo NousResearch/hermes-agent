@@ -14,6 +14,23 @@ from gateway.run import GatewayRunner
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
+def _init_git_repo(path):
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=path, check=True)
+    (path / "README.md").write_text("# Project\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def test_active_task_store_roundtrips_workspace_snapshot(tmp_path):
     store_path = tmp_path / "session_active_tasks.json"
     repo_path = tmp_path / "project"
@@ -64,7 +81,7 @@ def test_gateway_workspace_resolver_prefers_active_task_cwd(tmp_path, monkeypatc
     active_repo = tmp_path / "active-project"
     systemd_cwd = tmp_path / "gateway-checkout"
     terminal_cwd = tmp_path / "terminal-cwd"
-    active_repo.mkdir()
+    _init_git_repo(active_repo)
     systemd_cwd.mkdir()
     terminal_cwd.mkdir()
 
@@ -112,20 +129,7 @@ def test_gateway_workspace_resolver_falls_back_to_terminal_cwd(tmp_path, monkeyp
 
 def test_gateway_workspace_resolver_records_foreground_session_snapshot(tmp_path, monkeypatch):
     repo_path = tmp_path / "project"
-    repo_path.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=repo_path, check=True)
-    (repo_path / "README.md").write_text("# Project\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=repo_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo_path, check=True)
-    expected_head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    expected_head = _init_git_repo(repo_path)
 
     runner = object.__new__(GatewayRunner)
     runner.active_task_store = ActiveTaskStore(tmp_path / "active_tasks.json")
@@ -153,7 +157,7 @@ def test_gateway_workspace_resolver_records_foreground_session_snapshot(tmp_path
 
 def test_foreground_session_snapshot_replaces_stale_same_session_metadata(tmp_path):
     repo_path = tmp_path / "project"
-    repo_path.mkdir()
+    _init_git_repo(repo_path)
     store_path = tmp_path / "active_tasks.json"
     session_key = "agent:main:discord:thread:thread-parent:thread-1"
     runner = object.__new__(GatewayRunner)
@@ -208,6 +212,117 @@ def test_foreground_session_snapshot_replaces_stale_same_session_metadata(tmp_pa
     assert raw["mode"] == "foreground_session"
     assert raw["status"] == "active"
     assert "old user task text" not in json.dumps(raw)
+
+
+def test_foreground_session_record_with_non_git_repo_path_is_not_usable(tmp_path):
+    repo_path = tmp_path / "non-git"
+    repo_path.mkdir()
+    record = ActiveTaskStore(tmp_path / "active_tasks.json").upsert(
+        session_key="agent:main:discord:thread:thread-parent:thread-1",
+        repo_path=str(repo_path),
+        mode="foreground_session",
+        status="active",
+    )
+
+    assert not record.has_usable_workspace()
+
+
+def test_gateway_workspace_resolver_ignores_non_git_foreground_record(tmp_path, monkeypatch, caplog):
+    bad_cwd = tmp_path / "non-git"
+    fallback_cwd = tmp_path / "fallback"
+    bad_cwd.mkdir()
+    fallback_cwd.mkdir()
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    runner.active_task_store.replace_foreground_session(
+        session_key=session_key,
+        repo_path=str(bad_cwd),
+    )
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        resolved = runner._resolve_agent_working_directory(
+            session_key,
+            fallback_cwd=str(fallback_cwd),
+        )
+
+    assert resolved == str(fallback_cwd)
+    assert "foreground active-task recovery record ignored" in caplog.text
+    assert "repo_path_git_valid=False" in caplog.text
+
+
+def test_foreground_persistence_skips_non_git_fallback_cwd(tmp_path, monkeypatch, caplog):
+    fallback_cwd = tmp_path / "fallback"
+    fallback_cwd.mkdir()
+    store_path = tmp_path / "active_tasks.json"
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(store_path)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        resolved = runner._resolve_agent_working_directory(
+            "agent:main:discord:thread:thread-parent:thread-1",
+            fallback_cwd=str(fallback_cwd),
+        )
+
+    assert resolved == str(fallback_cwd)
+    assert not store_path.exists()
+    assert "foreground active-task record skipped" in caplog.text
+    assert "cwd_git_valid=False" in caplog.text
+
+
+def test_foreground_persistence_does_not_overwrite_valid_repo_with_non_git_fallback(
+    tmp_path, monkeypatch, caplog
+):
+    repo_path = tmp_path / "project"
+    expected_head = _init_git_repo(repo_path)
+    fallback_cwd = tmp_path / "fallback"
+    fallback_cwd.mkdir()
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    store_path = tmp_path / "active_tasks.json"
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(store_path)
+    runner.active_task_store.replace_foreground_session(
+        session_key=session_key,
+        repo_path=str(repo_path),
+        branch="main",
+        head=expected_head,
+    )
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        runner._record_foreground_session_workspace(session_key, str(fallback_cwd))
+
+    reloaded = runner.active_task_store.get(session_key)
+    assert reloaded is not None
+    assert reloaded.repo_path == str(repo_path)
+    assert reloaded.head == expected_head
+    assert "foreground active-task record skipped" in caplog.text
+    assert "cwd_git_valid=False" in caplog.text
+
+
+def test_foreground_persistence_normalizes_nested_git_cwd(tmp_path, monkeypatch):
+    repo_path = tmp_path / "project"
+    expected_head = _init_git_repo(repo_path)
+    nested = repo_path / "nested" / "dir"
+    nested.mkdir(parents=True)
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    runner._record_foreground_session_workspace(
+        "agent:main:discord:thread:thread-parent:thread-1",
+        str(nested),
+    )
+
+    reloaded = runner.active_task_store.get(
+        "agent:main:discord:thread:thread-parent:thread-1"
+    )
+    assert reloaded is not None
+    assert reloaded.repo_path == str(repo_path)
+    assert reloaded.branch
+    assert reloaded.head == expected_head
 
 
 def test_legacy_foreground_session_record_is_sanitized_on_read(tmp_path):
@@ -382,14 +497,14 @@ def test_resume_recovery_logs_session_key_miss_with_existing_records(tmp_path, c
 
 def test_resume_recovery_logs_session_key_hit_with_foreground_record(tmp_path, caplog):
     repo_path = tmp_path / "project"
-    repo_path.mkdir()
+    expected_head = _init_git_repo(repo_path)
     session_key = "agent:main:discord:thread:thread-parent:thread-1"
     store = ActiveTaskStore(tmp_path / "active_tasks.json")
     store.replace_foreground_session(
         session_key=session_key,
         repo_path=str(repo_path),
         branch="main",
-        head="abc123",
+        head=expected_head,
     )
     runner = object.__new__(GatewayRunner)
     runner.active_task_store = store

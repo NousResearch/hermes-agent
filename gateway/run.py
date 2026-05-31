@@ -1890,9 +1890,28 @@ class GatewayRunner:
             if (
                 record is not None
                 and record.is_fresh()
-                and record.has_usable_workspace()
             ):
-                return str(Path(record.repo_path).expanduser())
+                if record.has_usable_workspace():
+                    from gateway.active_task import resolve_git_toplevel
+
+                    repo_path = resolve_git_toplevel(record.repo_path) or record.repo_path
+                    logger.info(
+                        "foreground active-task recovery record used: session_key=%s "
+                        "has_repo_path=%s repo_path_git_valid=True has_branch=%s has_head=%s",
+                        _redact_active_task_session_key(session_key),
+                        bool(record.repo_path),
+                        bool(record.branch),
+                        bool(record.head),
+                    )
+                    return str(Path(repo_path).expanduser())
+                logger.info(
+                    "foreground active-task recovery record ignored: session_key=%s "
+                    "has_repo_path=%s repo_path_git_valid=False has_branch=%s has_head=%s",
+                    _redact_active_task_session_key(session_key),
+                    bool(record.repo_path),
+                    bool(record.branch),
+                    bool(record.head),
+                )
 
         # Placeholder for future explicit per-session workspace bindings.  No
         # inspected gateway path currently persists such a binding.
@@ -1932,19 +1951,34 @@ class GatewayRunner:
             return
 
         try:
-            from gateway.active_task import resolve_git_branch, resolve_git_head
+            from gateway.active_task import (
+                resolve_git_branch,
+                resolve_git_head,
+                resolve_git_toplevel,
+            )
 
+            repo_path = resolve_git_toplevel(cwd)
             branch = resolve_git_branch(cwd)
             head = resolve_git_head(cwd)
+            if repo_path is None or not head:
+                logger.info(
+                    "foreground active-task record skipped: session_key=%s "
+                    "cwd_exists=%s cwd_git_valid=False has_branch=%s has_head=%s",
+                    _redact_active_task_session_key(session_key),
+                    Path(cwd).expanduser().exists(),
+                    bool(branch),
+                    bool(head),
+                )
+                return
             store.replace_foreground_session(
                 session_key=session_key,
-                repo_path=cwd,
+                repo_path=repo_path,
                 branch=branch,
                 head=head,
             )
             logger.info(
                 "foreground active-task record written: session_key=%s cwd_exists=%s "
-                "has_branch=%s has_head=%s",
+                "cwd_git_valid=True has_branch=%s has_head=%s",
                 _redact_active_task_session_key(session_key),
                 Path(cwd).expanduser().exists(),
                 bool(branch),
@@ -1965,6 +1999,9 @@ class GatewayRunner:
         store = getattr(self, "active_task_store", None)
         session_label = _redact_active_task_session_key(session_key)
         diagnostic_reason = "none"
+        invalid_record_has_repo_path = False
+        invalid_record_has_branch = False
+        invalid_record_has_head = False
         metadata = {
             "exists": False,
             "parsed": False,
@@ -1992,7 +2029,16 @@ class GatewayRunner:
             elif record is None and diagnostic_reason == "none":
                 diagnostic_reason = "session_key_miss"
             elif record is not None:
-                diagnostic_reason = "record_found"
+                diagnostic_reason = (
+                    "record_found"
+                    if record.has_usable_workspace()
+                    else "foreground_repo_path_not_git_valid"
+                )
+                if diagnostic_reason != "record_found":
+                    invalid_record_has_repo_path = bool(record.repo_path)
+                    invalid_record_has_branch = bool(record.branch)
+                    invalid_record_has_head = bool(record.head)
+                    record = None
         elif store is None:
             diagnostic_reason = "store_missing"
         elif not session_key:
@@ -2019,6 +2065,15 @@ class GatewayRunner:
                 logger.info(
                     "active-task recovery lookup failed: store_parse_ok=False session_key=%s",
                     session_label,
+                )
+            elif diagnostic_reason == "foreground_repo_path_not_git_valid":
+                logger.info(
+                    "foreground active-task recovery record ignored: session_key=%s "
+                    "has_repo_path=%s repo_path_git_valid=False has_branch=%s has_head=%s",
+                    session_label,
+                    invalid_record_has_repo_path,
+                    invalid_record_has_branch,
+                    invalid_record_has_head,
                 )
         else:
             logger.info(

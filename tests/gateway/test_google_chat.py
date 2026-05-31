@@ -135,6 +135,7 @@ from plugins.platforms.google_chat.adapter import (  # noqa: E402
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
+    card_spec_to_cards_v2,
     check_google_chat_requirements,
 )
 
@@ -1003,6 +1004,88 @@ class TestSend:
         with pytest.raises(_FakeHttpError):
             await adapter.send("spaces/S", "hola")
         assert adapter._rate_limit_hits.get("spaces/S") == 1
+
+    def test_card_spec_to_cards_v2_builds_button_card(self):
+        card = card_spec_to_cards_v2(
+            {
+                "card_id": "approval",
+                "header": {"title": "Approve request"},
+                "sections": [
+                    {
+                        "widgets": [
+                            {"type": "text", "text": "Pick one"},
+                            {
+                                "type": "buttons",
+                                "buttons": [
+                                    {
+                                        "text": "Yes",
+                                        "action": "approve",
+                                        "parameters": {"choice": "yes"},
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        )
+
+        assert card["cardId"] == "approval"
+        assert card["card"]["header"]["title"] == "Approve request"
+        button = card["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"][0]
+        assert button["text"] == "Yes"
+        assert button["onClick"]["action"]["function"] == "approve"
+        assert {"key": "choice", "value": "yes"} in button["onClick"]["action"]["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_send_card_posts_cards_v2_with_thread(self, adapter):
+        adapter._create_message = AsyncMock(
+            return_value=type(
+                "R",
+                (),
+                {"success": True, "message_id": "m/1", "error": None, "raw_response": None},
+            )()
+        )
+
+        result = await adapter.send_card(
+            "spaces/S",
+            {"cardId": "c1", "card": {"sections": [{"widgets": []}]}},
+            metadata={"thread_id": "spaces/S/threads/T"},
+        )
+
+        assert result.success is True
+        body = adapter._create_message.await_args.args[1]
+        assert body["cardsV2"][0]["cardId"] == "c1"
+        assert body["thread"] == {"name": "spaces/S/threads/T"}
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_posts_choice_card(self, adapter):
+        adapter._create_message = AsyncMock(
+            return_value=type(
+                "R",
+                (),
+                {"success": True, "message_id": "m/1", "error": None, "raw_response": None},
+            )()
+        )
+
+        result = await adapter.send_clarify(
+            "spaces/S",
+            "Pick a demo",
+            ["Simple", "Capability test"],
+            "clarify123",
+            "session-key",
+        )
+
+        assert result.success is True
+        body = adapter._create_message.await_args.args[1]
+        card = body["cardsV2"][0]
+        assert card["cardId"] == "clarify-clarify123"
+        buttons = card["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+        assert buttons[0]["text"] == "Simple"
+        assert buttons[0]["onClick"]["action"]["function"] == "hermes_clarify"
+        assert {"key": "choice", "value": "Simple"} in buttons[0]["onClick"]["action"]["parameters"]
+        assert buttons[-1]["text"] == "Other / type answer"
+        assert adapter._clarify_state["clarify123"] == "session-key"
 
 
 # ===========================================================================

@@ -11433,9 +11433,31 @@ class GatewayRunner:
         thread_env_key = _home_thread_env_var(platform_name)
         thread_id = source.thread_id
 
-        # Save to .env so it persists across restarts
+        # Save to .env so it persists across restarts.
         try:
-            from hermes_cli.config import save_env_value
+            from hermes_cli.config import save_env_value, get_env_path
+
+            # Defensive: verify the env path we're about to write to is inside
+            # the gateway's bound HERMES_HOME. If HERMES_HOME has drifted
+            # (subprocess re-spawn, popped env, import-order race),
+            # save_env_value() would silently clobber the DEFAULT profile's
+            # .env when /sethome is invoked from a non-default profile's
+            # gateway. Refuse rather than corrupt cross-profile state.
+            expected_root = Path(
+                os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+            ).resolve()
+            target_env = get_env_path().resolve()
+            try:
+                target_env.relative_to(expected_root)
+            except ValueError:
+                return t(
+                    "gateway.set_home.save_failed",
+                    error=(
+                        f"refusing cross-profile write: target {target_env} "
+                        f"is outside HERMES_HOME {expected_root}"
+                    ),
+                )
+
             save_env_value(env_key, str(chat_id))
             # Keep thread/topic routing explicit and clear stale values when
             # /sethome is run from the parent chat instead of a thread.

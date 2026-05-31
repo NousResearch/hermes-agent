@@ -753,7 +753,21 @@ def restore_cron_jobs_if_emptied(
 
     try:
         live_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snap_path, live_path)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(live_path.parent), suffix=".tmp", prefix=".cron_restore_"
+        )
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(snap_path.read_bytes())
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, live_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except (OSError, PermissionError) as exc:
         logger.error(
             "Cron jobs were emptied during update but auto-restore failed: %s", exc

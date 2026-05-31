@@ -280,6 +280,38 @@ class TestCmdUpdateBranchFallback:
             assert "applying safe config migrations" in captured.out
             assert "API keys require manual entry" in captured.out
 
+    def test_update_can_skip_gateway_restart_for_cron_wrapper(
+        self, mock_args, capsys, monkeypatch, tmp_path
+    ):
+        """Cron wrappers can defer gateway restart until after delivery persists."""
+        mock_args.gateway = True
+        monkeypatch.setenv("HERMES_UPDATE_SKIP_GATEWAY_RESTART", "1")
+
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch(
+            "hermes_cli.gateway.find_gateway_pids",
+            side_effect=AssertionError("gateway restart path should be skipped"),
+        ), patch(
+            "hermes_cli.main.get_hermes_home", return_value=tmp_path
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as mock_cleanup:
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        assert "Gateway auto-restart skipped" in captured.out
+        assert (tmp_path / ".update_exit_code").read_text() == "0"
+        mock_cleanup.assert_called_once()
+        commands = [
+            " ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list
+        ]
+        assert not any("restart" in c and "gateway" in c for c in commands)
+
 
 class TestCmdUpdateMigrationPrompt:
     """The config-migration prompt names what changed and skips the prompt

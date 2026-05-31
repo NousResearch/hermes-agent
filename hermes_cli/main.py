@@ -9731,7 +9731,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
+        #
+        # Cron hardening: scheduled auto-update reports may run inside the
+        # gateway-hosted cron scheduler. If `hermes update` restarts the gateway
+        # inline, it kills the cron run before job state/output delivery is
+        # persisted. Let trusted wrapper scripts opt out and schedule a delayed
+        # restart after the report has been delivered.
+        skip_gateway_restart = os.environ.get(
+            "HERMES_UPDATE_SKIP_GATEWAY_RESTART", ""
+        ).strip().lower() in {"1", "true", "yes"}
+
+        class _SkipGatewayRestart(Exception):
+            """Sentinel for wrappers that defer restart until after delivery."""
+
         try:
+            if skip_gateway_restart:
+                print()
+                print(
+                    "ℹ Gateway auto-restart skipped by "
+                    "HERMES_UPDATE_SKIP_GATEWAY_RESTART."
+                )
+                print("  Restart the gateway later to pick up the updated code.")
+                raise _SkipGatewayRestart
+
             from hermes_cli.gateway import (
                 is_macos,
                 supports_systemd_services,
@@ -10249,6 +10271,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception as _sweep_exc:
                 logger.debug("Post-restart survivor sweep failed: %s", _sweep_exc)
 
+        except _SkipGatewayRestart:
+            pass
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
 

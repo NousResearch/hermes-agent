@@ -4,10 +4,93 @@ Delegates to the existing adapter functions in agent/anthropic_adapter.py.
 This transport owns format conversion and normalization — NOT client lifecycle.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse
+
+
+# Anthropic *prompt-format* tool-call XML that some gateway-fronted models leak
+# into a plain ``text`` block instead of emitting a structured ``tool_use``
+# block.  Shape:
+#
+#     <invoke name="patch">
+#     <parameter name="mode">replace</parameter>
+#     <parameter name="new_string">...</parameter>
+#     </invoke>
+#
+# We only ever parse these as a *recovery* path (when the response carried no
+# native tool_use block), so the regexes can be permissive about surrounding
+# whitespace / the stray ``call`` prefix the models emit.
+_LEAKED_INVOKE_RE = re.compile(
+    r"<invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</invoke>",
+    re.DOTALL | re.IGNORECASE,
+)
+_LEAKED_PARAM_RE = re.compile(
+    r"<parameter\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</parameter>",
+    re.DOTALL | re.IGNORECASE,
+)
+# A bare ``call`` token on its own line immediately preceding an <invoke> is an
+# artefact of the degeneration; strip it from the surviving prose.
+_LEAKED_CALL_PREFIX_RE = re.compile(r"(?:^|\n)[ \t]*call[ \t]*(?=\n*<invoke\b)", re.IGNORECASE)
+
+
+def _parse_leaked_tool_calls(text: str):
+    """Extract leaked ``<invoke>`` tool calls from assistant text.
+
+    Returns ``(tool_calls, cleaned_text)`` where ``tool_calls`` is a list of
+    ``ToolCall`` and ``cleaned_text`` is *text* with the consumed XML (and any
+    stray ``call`` prefix) removed.  Returns ``([], text)`` when nothing
+    parseable is present, so callers can cheaply no-op.
+
+    Parameter values are kept as raw strings — the Anthropic prompt format
+    always serialises arguments as text content, and Hermes tool handlers
+    coerce from strings.  We do NOT guess types (e.g. "123" -> int) because a
+    wrong coercion is harder to debug than a string the handler already parses.
+    """
+    import json
+    from agent.transports.types import ToolCall
+
+    if not isinstance(text, str) or "<invoke" not in text.lower():
+        return [], text
+
+    tool_calls = []
+    spans: list[tuple[int, int]] = []
+    for idx, m in enumerate(_LEAKED_INVOKE_RE.finditer(text)):
+        name = (m.group(1) or "").strip()
+        if not name:
+            continue
+        body = m.group(2) or ""
+        args = {
+            pm.group(1).strip(): pm.group(2)
+            for pm in _LEAKED_PARAM_RE.finditer(body)
+        }
+        tool_calls.append(
+            ToolCall(
+                id=f"leak_call_{idx + 1}",
+                name=name,
+                arguments=json.dumps(args, ensure_ascii=False),
+            )
+        )
+        spans.append((m.start(), m.end()))
+
+    if not spans:
+        return [], text
+
+    # Rebuild the surviving prose by cutting out the consumed <invoke> spans.
+    parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        if cursor < start:
+            parts.append(text[cursor:start])
+        cursor = end
+    if cursor < len(text):
+        parts.append(text[cursor:])
+    cleaned = "".join(parts)
+    cleaned = _LEAKED_CALL_PREFIX_RE.sub("\n", cleaned)
+    cleaned = cleaned.strip()
+    return tool_calls, cleaned
 
 
 class AnthropicTransport(ProviderTransport):
@@ -127,12 +210,29 @@ class AnthropicTransport(ProviderTransport):
 
         finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
 
+        content = "\n".join(text_parts) if text_parts else None
+
+        # ── Leaked-tool-call recovery ────────────────────────────────
+        # Some models behind api_mode=anthropic_messages intermittently
+        # degenerate and emit a tool call as Anthropic prompt-format XML
+        # (``<invoke name="...">...</invoke>``) inside a *text* block instead
+        # of a structured ``tool_use`` block.  Without recovery the tool never
+        # runs AND the raw XML leaks to the user (Telegram/CLI).  Only attempt
+        # this when the model produced NO native tool_use blocks — a real
+        # tool_use block is always authoritative and must not be double-counted.
+        if not tool_calls and content and "<invoke" in content.lower():
+            recovered, cleaned = _parse_leaked_tool_calls(content)
+            if recovered:
+                tool_calls = recovered
+                content = cleaned or None
+                finish_reason = "tool_calls"
+
         provider_data = {}
         if reasoning_details:
             provider_data["reasoning_details"] = reasoning_details
 
         return NormalizedResponse(
-            content="\n".join(text_parts) if text_parts else None,
+            content=content,
             tool_calls=tool_calls or None,
             finish_reason=finish_reason,
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,

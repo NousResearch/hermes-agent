@@ -860,6 +860,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
                     bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
+                if plat == Platform.TELEGRAM and "observe_only_chats" in platform_cfg:
+                    bridged["observe_only_chats"] = platform_cfg["observe_only_chats"]
                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
                 if "free_response_channels" in platform_cfg:
@@ -1053,7 +1055,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(group_allowed_chats, list):
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-                for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+                observe_only_chats = telegram_cfg.get("observe_only_chats")
+                if observe_only_chats is not None and not os.getenv("TELEGRAM_OBSERVE_ONLY_CHATS"):
+                    if isinstance(observe_only_chats, list):
+                        observe_only_chats = ",".join(str(v) for v in observe_only_chats)
+                    os.environ["TELEGRAM_OBSERVE_ONLY_CHATS"] = str(observe_only_chats)
+                for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "observe_only_chats"):
                     if _telegram_extra_key in telegram_cfg:
                         plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                         if not isinstance(plat_data, dict):

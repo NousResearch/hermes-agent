@@ -4531,6 +4531,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_observe_only_chats(self) -> set[str]:
+        """Return group chats that should be observed but never trigger the bot."""
+        raw = self.config.extra.get("observe_only_chats")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_OBSERVE_ONLY_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
@@ -4854,6 +4863,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
 
+        observe_only = self._telegram_observe_only_chats()
+        if chat_id_str in observe_only:
+            allowed = self._telegram_observe_allowed_chats() | observe_only
+            return chat_id_str in allowed
+
         allowed = self._telegram_observe_allowed_chats()
         # Observed context is shared at chat/topic scope so a later trigger from
         # another user can see it.  Require an explicit chat allowlist; that
@@ -5004,6 +5018,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        if chat_id_str in self._telegram_observe_only_chats():
+            return False
 
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False

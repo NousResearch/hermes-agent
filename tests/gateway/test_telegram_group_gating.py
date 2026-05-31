@@ -19,6 +19,7 @@ def _make_adapter(
     group_allow_from=None,
     allowed_chats=None,
     group_allowed_chats=None,
+    observe_only_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     bot_username="hermes_bot",
@@ -58,6 +59,8 @@ def _make_adapter(
         extra["group_allowed_chats"] = group_allowed_chats
     else:
         extra["group_allowed_chats"] = []
+    if observe_only_chats is not None:
+        extra["observe_only_chats"] = observe_only_chats
     if guest_mode is not None:
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
@@ -198,6 +201,27 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
         assert store.sources[0].user_name is None
 
     asyncio.run(_run())
+
+
+def test_observe_only_chats_are_observed_but_never_dispatched_even_when_mentioned_or_replied():
+    adapter = _make_adapter(
+        require_mention=True,
+        group_allowed_chats=["-200"],
+        observe_only_chats=["-200"],
+        observe_unmentioned_group_messages=True,
+    )
+
+    plain = _group_message("ordinary chatter", chat_id=-200)
+    mention_text = "@hermes_bot please answer"
+    mentioned = _group_message(mention_text, chat_id=-200, entities=[_mention_entity(mention_text)])
+    reply = _group_message("replying to bot", chat_id=-200, reply_to_bot=True)
+
+    assert adapter._should_process_message(plain) is False
+    assert adapter._should_observe_unmentioned_group_message(plain) is True
+    assert adapter._should_process_message(mentioned) is False
+    assert adapter._should_observe_unmentioned_group_message(mentioned) is True
+    assert adapter._should_process_message(reply) is False
+    assert adapter._should_observe_unmentioned_group_message(reply) is True
 
 
 def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions():

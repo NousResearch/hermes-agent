@@ -8,6 +8,8 @@ Log files produced:
     agent.log   — INFO+, all agent/tool/session activity (the main log)
     errors.log  — WARNING+, errors and warnings only (quick triage)
     gateway.log — INFO+, gateway-only events (created when mode="gateway")
+    gui.log     — INFO+, dashboard/websocket/TUI-gateway events
+                  (created when mode="gui")
 
 All files use ``RotatingFileHandler`` with ``RedactingFormatter`` so
 secrets are never written to disk.
@@ -15,6 +17,8 @@ secrets are never written to disk.
 Component separation:
     gateway.log only receives records from ``gateway.*`` loggers —
     platform adapters, session management, slash commands, delivery.
+    gui.log receives dashboard-side records from ``hermes_cli.web_server``,
+    ``hermes_cli.pty_bridge``, ``tui_gateway.*``, and ``uvicorn.*``.
     agent.log remains the catch-all (everything goes there).
 
 Session context:
@@ -146,6 +150,12 @@ COMPONENT_PREFIXES = {
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
     "cron": ("cron",),
+    "gui": (
+        "hermes_cli.web_server",
+        "hermes_cli.pty_bridge",
+        "tui_gateway",
+        "uvicorn",
+    ),
 }
 
 
@@ -183,9 +193,11 @@ def setup_logging(
         Number of rotated backup files to keep.
         Defaults to 3 or the value from config.yaml ``logging.backup_count``.
     mode
-        Caller context: ``"cli"``, ``"gateway"``, ``"cron"``.
+        Caller context: ``"cli"``, ``"gateway"``, ``"gui"``, ``"cron"``.
         When ``"gateway"``, an additional ``gateway.log`` file is created
         that receives only gateway-component records.
+        When ``"gui"``, an additional ``gui.log`` file is created that
+        receives dashboard and TUI-gateway component records.
     force
         Re-run setup even if it has already been called.
 
@@ -242,6 +254,18 @@ def setup_logging(
             backup_count=3,
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
+        )
+
+    # --- gui.log (INFO+, dashboard/tui-gateway components) -----------------
+    if mode == "gui":
+        _add_rotating_handler(
+            root,
+            log_dir / "gui.log",
+            level=logging.INFO,
+            max_bytes=10 * 1024 * 1024,
+            backup_count=5,
+            formatter=RedactingFormatter(_LOG_FORMAT),
+            log_filter=_ComponentFilter(COMPONENT_PREFIXES["gui"]),
         )
 
     if _logging_initialized and not force:

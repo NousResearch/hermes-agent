@@ -368,12 +368,12 @@ class TestIntegrationWithModelsModule:
 
         assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
 
-    def test_picker_nous_row_uses_manifest(self, tmp_path, monkeypatch):
-        """The /model picker must surface the manifest's nous list, not the
-        in-repo _PROVIDER_MODELS["nous"] snapshot. Regression: before this
-        fix, list_authenticated_providers() built the curated dict from
-        _PROVIDER_MODELS only — so newly-added Portal models never reached
-        the slash-command picker until the next Hermes release.
+    def test_picker_nous_row_uses_curated_list(self, tmp_path, monkeypatch):
+        """The /model picker surfaces the curated ``_PROVIDER_MODELS["nous"]``
+        list in curated order — matching the ``hermes model`` CLI — not the live
+        ``/v1/models`` catalog or the manifest. Portal free/paid recommendations
+        are unioned in when reachable; offline (as here, with the Portal calls
+        stubbed out) it's exactly the curated list.
         """
         # We deliberately do NOT use the ``isolated_home`` fixture here:
         # that fixture monkeypatches ``Path.home`` to ``tmp_path``, which
@@ -383,6 +383,7 @@ class TestIntegrationWithModelsModule:
         # ``_hermetic_environment`` HERMES_HOME directly instead.
         import importlib
         from hermes_cli import model_catalog
+        from hermes_cli.models import get_curated_nous_model_ids
         importlib.reload(model_catalog)
         try:
             from hermes_cli.model_switch import list_picker_providers
@@ -397,9 +398,21 @@ class TestIntegrationWithModelsModule:
                 )
             )
 
+            # Stub the Portal recommendation union so the row is deterministic
+            # (the curated list alone) and never touches the network. ``expected``
+            # is computed from the same source the picker uses internally
+            # (``curated["nous"] = get_curated_nous_model_ids()``), so the test
+            # stays an invariant — it can't rot as the curated/manifest list grows.
             with patch.object(
                 model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+            ), patch("hermes_cli.models.check_nous_free_tier", return_value=False), patch(
+                "hermes_cli.models.union_with_portal_free_recommendations",
+                side_effect=lambda ids, *a, **k: (ids, {}),
+            ), patch(
+                "hermes_cli.models.union_with_portal_paid_recommendations",
+                side_effect=lambda ids, *a, **k: (ids, {}),
             ):
+                expected = get_curated_nous_model_ids()
                 picker = list_picker_providers(
                     current_provider="nous", max_models=99
                 )
@@ -408,10 +421,7 @@ class TestIntegrationWithModelsModule:
 
         nous_row = next((r for r in picker if r["slug"] == "nous"), None)
         assert nous_row is not None, "nous row must appear when authed"
-        assert nous_row["models"] == [
-            "anthropic/claude-opus-4.7",
-            "moonshotai/kimi-k2.6",
-        ]
+        assert nous_row["models"] == expected
 
 
 # -----------------------------------------------------------------------------

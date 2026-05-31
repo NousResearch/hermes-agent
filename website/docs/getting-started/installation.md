@@ -10,7 +10,15 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### One-Line Installer (Linux / macOS / WSL2)
+### Desktop App (macOS + Windows)
+
+Prefer a native installer?
+
+- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
+
+Desktop builds ship signed/notarized macOS artifacts and Windows installers with checksum files.
+
+### One-Line CLI Installer (Linux / macOS / WSL2)
 
 For a git-based install that tracks `main` and gives you the latest changes immediately:
 

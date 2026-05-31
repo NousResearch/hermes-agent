@@ -25,6 +25,8 @@ def _reset_logging_state():
     """
     hermes_logging._logging_initialized = False
     root = logging.getLogger()
+    prev_root_level = root.level
+    root.setLevel(logging.NOTSET)
     # Strip ALL RotatingFileHandlers — not just the ones we added — so that
     # handlers leaked from other test modules in the same xdist worker don't
     # pollute our counts.
@@ -43,6 +45,7 @@ def _reset_logging_state():
         if h not in pre_existing:
             root.removeHandler(h)
             h.close()
+    root.setLevel(prev_root_level)
     hermes_logging._logging_initialized = False
     hermes_logging.clear_session_context()
 
@@ -355,6 +358,50 @@ class TestGatewayMode:
         assert "file msg" in content
 
 
+class TestGuiMode:
+    """setup_logging(mode='gui') creates a filtered gui.log."""
+
+    def test_gui_log_created(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+        root = logging.getLogger()
+
+        gui_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui_handlers) == 1
+
+    def test_gui_log_created_after_cli_init(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+
+        root = logging.getLogger()
+        gui_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui_handlers) == 1
+
+    def test_gui_log_receives_only_gui_components(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+
+        logging.getLogger("hermes_cli.web_server").info("dashboard online")
+        logging.getLogger("tui_gateway.ws").info("ws connected")
+        logging.getLogger("gateway.run").info("gateway event")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        gui_log = hermes_home / "logs" / "gui.log"
+        assert gui_log.exists()
+        content = gui_log.read_text()
+        assert "dashboard online" in content
+        assert "ws connected" in content
+        assert "gateway event" not in content
+
+
 class TestSessionContext:
     """set_session_context / clear_session_context + _SessionFilter."""
 
@@ -559,6 +606,11 @@ class TestComponentPrefixes:
 
     def test_cron_prefix(self):
         assert ("cron",) == hermes_logging.COMPONENT_PREFIXES["cron"]
+
+    def test_gui_prefix(self):
+        prefixes = hermes_logging.COMPONENT_PREFIXES["gui"]
+        assert "hermes_cli.web_server" in prefixes
+        assert "tui_gateway" in prefixes
 
 
 class TestSetupVerboseLogging:

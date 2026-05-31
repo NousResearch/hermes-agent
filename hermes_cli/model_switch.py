@@ -1359,6 +1359,43 @@ def list_authenticated_providers(
                 model_ids = _ids if _ids else (curated.get(hermes_slug, []) or curated.get(pid, []))
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+        elif hermes_slug == "nous":
+            # Nous serves a large live /v1/models catalog (vendor-prefixed
+            # models from many providers, returned alphabetically). The
+            # `hermes model` picker deliberately shows ONLY the curated agentic
+            # list — augmented with the Portal's free/paid recommendations so
+            # newly-launched models surface without a CLI release — in curated
+            # order. Mirror that exactly (see _model_flow_nous in main.py) so
+            # the GUI picker matches the CLI. Was: falling through to
+            # cached_provider_model_ids, which dumped the full alphabetical
+            # catalog; then: curated-only, which dropped the 4 Portal
+            # recommendations (e.g. stepfun/step-3.7-flash:free).
+            model_ids = curated.get("nous", [])
+            try:
+                from hermes_cli.models import (
+                    get_pricing_for_provider as _nous_pricing,
+                    check_nous_free_tier as _nous_free,
+                    union_with_portal_free_recommendations as _union_free,
+                    union_with_portal_paid_recommendations as _union_paid,
+                )
+                from hermes_cli.auth import get_provider_auth_state as _nous_state
+
+                _pricing = _nous_pricing("nous") or {}
+                _portal = ""
+                try:
+                    _st = _nous_state("nous") or {}
+                    _portal = _st.get("portal_base_url", "") or ""
+                except Exception:
+                    _portal = ""
+                if _nous_free(force_fresh=True):
+                    model_ids, _ = _union_free(model_ids, _pricing, _portal)
+                else:
+                    model_ids, _ = _union_paid(model_ids, _pricing, _portal)
+            except Exception:
+                # Portal recommendation fetch failed — fall back to the
+                # curated list alone (still correct, just may lag newly
+                # launched models, exactly like an offline CLI run).
+                pass
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)

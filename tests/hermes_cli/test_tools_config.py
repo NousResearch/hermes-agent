@@ -1400,3 +1400,57 @@ def test_configure_non_managed_provider_skips_portal_gate(monkeypatch):
     assert called["gate"] is False
     assert config["web"]["backend"] == "tavily"
     assert config["web"]["use_gateway"] is False
+
+
+def test_apply_provider_selection_web_sets_backend():
+    """Selecting a web provider persists the backend without prompting for keys."""
+    from hermes_cli.tools_config import apply_provider_selection
+
+    config = {}
+    apply_provider_selection("web", "Firecrawl Self-Hosted", config)
+
+    assert config["web"]["backend"] == "firecrawl"
+    assert config["web"]["use_gateway"] is False
+
+
+def test_apply_provider_selection_tts_sets_provider():
+    """Selecting a TTS provider persists tts.provider."""
+    from hermes_cli.tools_config import apply_provider_selection
+
+    config = {}
+    apply_provider_selection("tts", "Microsoft Edge TTS", config)
+
+    assert config["tts"]["provider"] == "edge"
+    assert config["tts"]["use_gateway"] is False
+
+
+def test_apply_provider_selection_unknown_provider_raises_keyerror():
+    from hermes_cli.tools_config import apply_provider_selection
+
+    with pytest.raises(KeyError):
+        apply_provider_selection("web", "No Such Provider", {})
+
+
+def test_apply_provider_selection_unknown_toolset_raises_keyerror():
+    from hermes_cli.tools_config import apply_provider_selection
+
+    with pytest.raises(KeyError):
+        apply_provider_selection("not_a_toolset", "whatever", {})
+
+
+def test_apply_provider_selection_does_not_prompt_or_post_setup(monkeypatch):
+    """The non-interactive selection must not invoke prompts or post-setup hooks."""
+    from hermes_cli import tools_config
+
+    monkeypatch.setattr(
+        tools_config, "_run_post_setup",
+        lambda *a, **k: pytest.fail("post-setup must not run on provider selection"),
+    )
+    monkeypatch.setattr(
+        tools_config, "_prompt",
+        lambda *a, **k: pytest.fail("env prompting must not run on provider selection"),
+    )
+    config = {}
+    tools_config.apply_provider_selection("tts", "Microsoft Edge TTS", config)
+    assert config["tts"]["provider"] == "edge"
+

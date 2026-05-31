@@ -307,7 +307,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def get_messages_as_conversation(self, _sid, include_ancestors=False):
             return [
                 {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "yo"},
+                {"role": "assistant", "content": "yo", "reasoning": "thoughts"},
                 {"role": "tool", "content": "searched"},
                 {"role": "assistant", "content": "   "},
                 {"role": "assistant", "content": None},
@@ -317,7 +317,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
     resp = server.handle_request(
         {
@@ -331,9 +331,97 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     assert resp["result"]["message_count"] == 3
     assert resp["result"]["messages"] == [
         {"role": "user", "text": "hello"},
-        {"role": "assistant", "text": "yo"},
+        {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
         {"role": "tool", "name": "tool", "context": ""},
     ]
+
+
+def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
+    """A user message persisted with list-shaped multimodal content used to
+    crash session resume with ``'list' object has no attribute 'strip'``."""
+
+    multimodal_user = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "describe this"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ],
+    }
+    text_only_assistant = {"role": "assistant", "content": "ok"}
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": "20260502_000000_listcontent"}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [multimodal_user, text_only_assistant]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": "20260502_000000_listcontent", "cols": 100},
+        }
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["message_count"] == 2
+    # The image_url part is preserved as a raw data URL inside the text so
+    # the desktop renderer (which extracts embedded images) sees the same
+    # content the optimistic local cache returns. Otherwise the inline
+    # image flashes during initial cache hydration and then vanishes when
+    # the resume payload overwrites it with cleaned text.
+    assert resp["result"]["messages"] == [
+        {
+            "role": "user",
+            "text": "describe this\ndata:image/png;base64,AAAA",
+        },
+        {"role": "assistant", "text": "ok"},
+    ]
+
+
+def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
+    captured = {}
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.model = kwargs.get("model", "")
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Agent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "test",
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"system_prompt": ["one", "two"]}})
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("test/model", "test"))
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent("sid", "session-key", session_id="session-key")
+
+    assert captured["ephemeral_system_prompt"] == "one\ntwo"
 
 
 # ── Config I/O ───────────────────────────────────────────────────────

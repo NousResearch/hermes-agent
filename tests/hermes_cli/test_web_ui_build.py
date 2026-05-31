@@ -1,7 +1,7 @@
 """Tests for _web_ui_build_needed — staleness check for the web UI dist.
 
-Critical invariant: the Vite build outputs to hermes_cli/web_dist/
-(vite.config.ts: outDir: "../hermes_cli/web_dist"), NOT web/dist/.
+Critical invariant: the dashboard Vite build outputs to hermes_cli/web_dist/
+(vite.config.ts: outDir: "../../hermes_cli/web_dist"), NOT web/dist/.
 The sentinel must be checked in the correct output directory or the
 freshness check is a no-op and the OOM rebuild always runs.
 """
@@ -26,7 +26,7 @@ def _touch(path: Path, offset: float = 0.0) -> None:
 def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
     """Return (web_dir, dist_dir) matching real repo layout."""
     web_dir = tmp_path / "web"
-    web_dir.mkdir()
+    web_dir.mkdir(parents=True)
     (web_dir / "package.json").touch()
     dist_dir = tmp_path / "hermes_cli" / "web_dist"
     return web_dir, dist_dir

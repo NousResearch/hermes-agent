@@ -43,4 +43,3 @@ if [ -d /run/service/.s6-svscan ]; then
 fi
 
 exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
-

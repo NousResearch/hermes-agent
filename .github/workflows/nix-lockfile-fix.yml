@@ -6,8 +6,8 @@ on:
     paths:
       - 'ui-tui/package-lock.json'
       - 'ui-tui/package.json'
-      - 'web/package-lock.json'
-      - 'web/package.json'
+      - 'apps/dashboard/package-lock.json'
+      - 'apps/dashboard/package.json'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -28,7 +28,7 @@ concurrency:
 jobs:
   # ── Auto-fix on main ───────────────────────────────────────────────
   # Fires when a push to main touches package.json or package-lock.json
-  # in ui-tui/ or web/. Runs fix-lockfiles and pushes the hash
+  # in ui-tui/ or apps/dashboard/. Runs fix-lockfiles and pushes the hash
   # update commit directly to main so Nix builds never stay broken.
   #
   # Safety invariants:
@@ -110,7 +110,7 @@ jobs:
             # run recompute from the correct package-lock state.
             pkg_changed="$(git diff --name-only "$BASE_SHA"..origin/main -- \
               'ui-tui/package-lock.json' 'ui-tui/package.json' \
-              'web/package-lock.json' 'web/package.json' || true)"
+              'apps/dashboard/package-lock.json' 'apps/dashboard/package.json' || true)"
             if [ -n "$pkg_changed" ]; then
               echo "::warning::Package files changed since hash computation — aborting; a fresh run will recompute"
               exit 0

@@ -1,9 +1,9 @@
 """
 Google Chat platform adapter.
 
-Uses Google Cloud Pub/Sub (pull subscription) for inbound events and the
-Google Chat REST API for outbound messages. Pattern parallels Slack Socket
-Mode and Telegram long-polling: no public endpoint required.
+Uses authenticated HTTP callbacks or Google Cloud Pub/Sub for inbound
+events and the Google Chat REST API for outbound messages. Pub/Sub remains
+available for no-public-URL deployments.
 
 Concurrency model
 -----------------
@@ -625,33 +625,42 @@ class GoogleChatAdapter(BasePlatformAdapter):
         )
         return credentials
 
-    def _validate_config(self) -> Tuple[str, str]:
+    def _validate_config(self) -> Tuple[str, Optional[str]]:
         """Return (project_id, subscription_path) after validation.
 
-        Raises ValueError with a sanitized message on any config problem.
+        ``subscription_path`` is ``None`` for HTTP-inbound deployments. Raises
+        ValueError with a sanitized message on any config problem.
         """
-        project_id = self.config.extra.get("project_id")
-        subscription = self.config.extra.get("subscription_name")
+        project_id = (self.config.extra.get("project_id") or "").strip()
+        subscription = (self.config.extra.get("subscription_name") or "").strip()
+        http_events_url = (self.config.extra.get("http_events_url") or "").strip()
+
+        if subscription:
+            match = _SUBSCRIPTION_PATH_RE.match(subscription)
+            if not match:
+                raise ValueError(
+                    "GOOGLE_CHAT_SUBSCRIPTION_NAME must match "
+                    "'projects/<project>/subscriptions/<sub>'."
+                )
+            subscription_project = match.group("project")
+            if project_id and subscription_project != project_id:
+                raise ValueError(
+                    "project_id in GOOGLE_CHAT_PROJECT_ID does not match the "
+                    "project embedded in GOOGLE_CHAT_SUBSCRIPTION_NAME."
+                )
+            return project_id or subscription_project, subscription
+
+        if http_events_url:
+            return project_id, None
+
         if not project_id:
             raise ValueError(
                 "GOOGLE_CHAT_PROJECT_ID (or GOOGLE_CLOUD_PROJECT) is not set."
             )
-        if not subscription:
-            raise ValueError(
-                "GOOGLE_CHAT_SUBSCRIPTION_NAME (or GOOGLE_CHAT_SUBSCRIPTION) is not set."
-            )
-        match = _SUBSCRIPTION_PATH_RE.match(subscription)
-        if not match:
-            raise ValueError(
-                "GOOGLE_CHAT_SUBSCRIPTION_NAME must match "
-                "'projects/<project>/subscriptions/<sub>'."
-            )
-        if match.group("project") != project_id:
-            raise ValueError(
-                "project_id in GOOGLE_CHAT_PROJECT_ID does not match the "
-                "project embedded in GOOGLE_CHAT_SUBSCRIPTION_NAME."
-            )
-        return project_id, subscription
+        raise ValueError(
+            "GOOGLE_CHAT_SUBSCRIPTION_NAME (or GOOGLE_CHAT_SUBSCRIPTION) is not set. "
+            "Set GOOGLE_CHAT_HTTP_EVENTS_URL for HTTP callback mode."
+        )
 
     # ------------------------------------------------------------------
     # Loop bridge helpers (thread -> asyncio loop)
@@ -862,36 +871,37 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 "all threads as fresh)", exc_info=True,
             )
 
-        # Sanity check: subscription exists / SA has access.
-        self._subscriber = pubsub_v1.SubscriberClient(credentials=credentials)
-        try:
-            await asyncio.to_thread(
-                lambda: self._subscriber.get_subscription(
-                    request={"subscription": subscription_path}
+        if subscription_path is not None:
+            # Sanity check: subscription exists / SA has access.
+            self._subscriber = pubsub_v1.SubscriberClient(credentials=credentials)
+            try:
+                await asyncio.to_thread(
+                    lambda: self._subscriber.get_subscription(
+                        request={"subscription": subscription_path}
+                    )
                 )
-            )
-        except gax_exceptions.NotFound:
-            self._set_fatal_error(
-                code="subscription_not_found",
-                message="Pub/Sub subscription not found at configured path",
-                retryable=False,
-            )
-            return False
-        except gax_exceptions.PermissionDenied:
-            self._set_fatal_error(
-                code="subscription_permission",
-                message=(
-                    "Service Account lacks roles/pubsub.subscriber on the "
-                    "subscription"
-                ),
-                retryable=False,
-            )
-            return False
-        except Exception as exc:
-            msg = _redact_sensitive(str(exc))
-            logger.error("[GoogleChat] subscription.get failed: %s", msg)
-            self._set_fatal_error(code="subscription_check", message=msg, retryable=True)
-            return False
+            except gax_exceptions.NotFound:
+                self._set_fatal_error(
+                    code="subscription_not_found",
+                    message="Pub/Sub subscription not found at configured path",
+                    retryable=False,
+                )
+                return False
+            except gax_exceptions.PermissionDenied:
+                self._set_fatal_error(
+                    code="subscription_permission",
+                    message=(
+                        "Service Account lacks roles/pubsub.subscriber on the "
+                        "subscription"
+                    ),
+                    retryable=False,
+                )
+                return False
+            except Exception as exc:
+                msg = _redact_sensitive(str(exc))
+                logger.error("[GoogleChat] subscription.get failed: %s", msg)
+                self._set_fatal_error(code="subscription_check", message=msg, retryable=True)
+                return False
 
         # Resolve bot user_id (eager): cache first, then members.list.
         self._bot_user_id = self._load_cached_bot_id()
@@ -905,14 +915,22 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     "will resolve on first addedToSpace or member lookup"
                 )
 
-        # Start the supervisor task that runs the Pub/Sub pull with exponential
-        # backoff + jitter on transient errors, bails out after N retries.
-        self._supervisor_task = asyncio.create_task(self._run_supervisor())
+        if subscription_path is not None:
+            # Start the supervisor task that runs the Pub/Sub pull with exponential
+            # backoff + jitter on transient errors, bails out after N retries.
+            self._supervisor_task = asyncio.create_task(self._run_supervisor())
+            inbound = "pubsub"
+        else:
+            self._supervisor_task = None
+            inbound = "http"
+
         self._mark_connected()
         logger.info(
-            "[GoogleChat] Connected; project=%s, subscription=<redacted>, "
+            "[GoogleChat] Connected; project=%s, inbound=%s, subscription=%s, "
             "bot_user_id=%s, flow_control(msgs=%s, bytes=%s)",
-            project_id,
+            project_id or "<unset>",
+            inbound,
+            "<redacted>" if subscription_path else "<none>",
             self._bot_user_id or "<unresolved>",
             self._max_messages,
             self._max_bytes,
@@ -2944,15 +2962,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
 
 def _validate_config(config: PlatformConfig) -> bool:
-    """Plugin-side config gate: require both Pub/Sub project and subscription.
-
-    Mirrors the legacy dispatch entry in ``gateway/config.py`` so the
-    registry can decide whether the platform is configured without
-    importing the legacy table.
-    """
+    """Plugin-side config gate for HTTP callback or Pub/Sub inbound modes."""
     extra = getattr(config, "extra", {}) or {}
     return bool(
-        extra.get("project_id") and extra.get("subscription_name")
+        extra.get("http_events_url")
+        or (extra.get("project_id") and extra.get("subscription_name"))
     )
 
 
@@ -2977,7 +2991,8 @@ def _check_for_registry() -> bool:
         os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME")
         or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
     )
-    return bool(project and subscription)
+    http_events_url = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    return bool(http_events_url or (project and subscription))
 
 
 def _is_connected(config: PlatformConfig) -> bool:
@@ -3007,12 +3022,16 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME")
         or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
     )
-    if not (project and subscription):
+    http_events_url = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    if not (http_events_url or (project and subscription)):
         return None
-    seed: Dict[str, Any] = {
-        "project_id": project,
-        "subscription_name": subscription,
-    }
+    seed: Dict[str, Any] = {}
+    if project:
+        seed["project_id"] = project
+    if subscription:
+        seed["subscription_name"] = subscription
+    if http_events_url:
+        seed["http_events_url"] = http_events_url
     sa_json = (
         os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
         or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -3295,8 +3314,6 @@ def register(ctx) -> None:
         validate_config=_validate_config,
         is_connected=_is_connected,
         required_env=[
-            "GOOGLE_CHAT_PROJECT_ID",
-            "GOOGLE_CHAT_SUBSCRIPTION_NAME",
             "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         ],
         install_hint="pip install 'hermes-agent[google_chat]'",

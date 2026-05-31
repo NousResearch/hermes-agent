@@ -6446,6 +6446,132 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
 
 
+def _is_patched_fleet_maintainer() -> bool:
+    """Return True when this checkout should update Kamell's fork from upstream.
+
+    Consumers should only pull origin/patched-main. Exactly one maintainer machine
+    should set update.fork_maintainer=true (or HERMES_FORK_MAINTAINER=1).
+    """
+    env_value = os.getenv("HERMES_FORK_MAINTAINER", "").strip().lower()
+    if env_value in {"1", "true", "yes", "on"}:
+        return True
+    if env_value in {"0", "false", "no", "off"}:
+        return False
+    try:
+        from hermes_cli.config import load_config
+
+        update_cfg = (load_config() or {}).get("update", {})
+        if isinstance(update_cfg, dict):
+            return bool(update_cfg.get("fork_maintainer"))
+    except Exception:
+        pass
+    return False
+
+
+def _sync_patched_main_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
+    """Maintainer-only: refresh origin/main and merge upstream into patched-main.
+
+    Returns True when patched-main changed locally or remotely. Raises SystemExit
+    only for states that require manual conflict resolution.
+    """
+    if not _has_upstream_remote(git_cmd, cwd):
+        print("  ℹ patched-main maintainer mode needs an upstream remote; skipping upstream sync.")
+        print(f"    Add it with: git remote add upstream {OFFICIAL_REPO_URL}")
+        return False
+
+    print("→ Maintainer mode: syncing patched-main with upstream...")
+    try:
+        subprocess.run(git_cmd + ["fetch", "upstream", "--quiet"], cwd=cwd, capture_output=True, check=True)
+        subprocess.run(git_cmd + ["fetch", "origin", "--quiet"], cwd=cwd, capture_output=True, check=True)
+    except subprocess.CalledProcessError:
+        print("  ✗ Failed to fetch upstream/origin. Skipping maintainer sync.")
+        return False
+
+    origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
+    upstream_ahead = _count_commits_between(git_cmd, cwd, "origin/main", "upstream/main")
+    if origin_ahead < 0 or upstream_ahead < 0:
+        print("  ✗ Could not compare origin/main with upstream/main. Skipping maintainer sync.")
+        return False
+    if origin_ahead > 0:
+        print(f"  ⚠ origin/main has {origin_ahead} commit(s) not on upstream/main; not overwriting fork main.")
+        print("    Resolve manually before running maintainer sync again.")
+        return False
+
+    changed = False
+    if upstream_ahead > 0:
+        print(f"  → origin/main is {upstream_ahead} commit(s) behind upstream/main")
+        push_main = subprocess.run(
+            git_cmd + ["push", "origin", "upstream/main:main", "--force-with-lease"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if push_main.returncode == 0:
+            print("  ✓ Synced origin/main from upstream/main")
+            changed = True
+            subprocess.run(git_cmd + ["fetch", "origin", "--quiet"], cwd=cwd, capture_output=True, check=False)
+        else:
+            print("  ✗ Could not push upstream/main to origin/main.")
+            if push_main.stderr.strip():
+                print(f"    {push_main.stderr.strip().splitlines()[0]}")
+            return False
+    else:
+        print("  ✓ origin/main is up to date with upstream/main")
+
+    before = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    merge = subprocess.run(
+        git_cmd + ["merge", "--no-edit", "upstream/main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if merge.returncode != 0:
+        print("  ✗ Could not merge upstream/main into patched-main.")
+        if merge.stderr.strip():
+            print(f"    {merge.stderr.strip().splitlines()[0]}")
+        try:
+            from hermes_cli.update_conflict_resolver import run_patched_main_conflict_resolver
+
+            if run_patched_main_conflict_resolver(
+                git_cmd,
+                cwd,
+                merge_stderr=merge.stderr or "",
+            ):
+                return True
+        except Exception as exc:
+            print(f"    Auto-resolver failed before it could run cleanly: {exc}")
+        print("    Resolve conflicts manually, then push origin patched-main.")
+        sys.exit(1)
+
+    after = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    if after != before:
+        changed = True
+        print("  ✓ Merged upstream/main into patched-main")
+    else:
+        print("  ✓ patched-main already contains upstream/main")
+
+    push_patched = subprocess.run(
+        git_cmd + ["push", "origin", "patched-main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if push_patched.returncode == 0:
+        if changed:
+            print("  ✓ Pushed origin/patched-main")
+    else:
+        print("  ✗ Could not push patched-main to origin.")
+        if push_patched.stderr.strip():
+            print(f"    {push_patched.stderr.strip().splitlines()[0]}")
+        return changed
+
+    return changed
+
+
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
     reports a stale "commits behind" count after a successful update.

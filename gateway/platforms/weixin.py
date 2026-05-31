@@ -96,15 +96,33 @@ RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
+STALE_SESSION_RET_CODES = {-2, -3, -14}
+
+
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
-    if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
-        return False
-    return (errmsg or "").lower() == "unknown error"
+    """True when iLink returns a stale-session signal rather than a genuine error.
+
+    iLink returns several different codes for the same underlying condition
+    (stale context_token):
+      - errcode=-14  (SESSION_EXPIRED_ERRCODE)
+      - ret=-2 with  errmsg="unknown error"
+      - ret=-3 with  errmsg="unknown error"
+      - ret=-3 with  errmsg=null / absent
+    All indicate the session needs to be refreshed by retrying *without* a
+    context_token.
+
+    Note: ret=-3 is exclusive to stale-session — it is never used for rate
+    limiting — so we don't gate on errmsg for it.  ret=-2 is shared with
+    rate limiting (RATE_LIMIT_ERRCODE), so errmsg remains the distinguisher."""
+    if ret in STALE_SESSION_RET_CODES or errcode in STALE_SESSION_RET_CODES:
+        # -3 / -14 alone always signal stale session regardless of errmsg.
+        if ret == -3 or errcode == -14:
+            return True
+        # -2 could be either stale session or rate limiting; errmsg disambiguates.
+        return (errmsg or "").lower() == "unknown error"
+    return False
 
 
 MEDIA_IMAGE = 1
@@ -386,7 +404,14 @@ async def _api_post(
             raw = await response.text()
             if not response.ok:
                 raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-            return json.loads(raw)
+            result = json.loads(raw)
+            if endpoint == EP_SEND_MESSAGE:
+                logger.debug(
+                    "[_api_post] %s resp ret=%s errcode=%s errmsg=%s body_len=%d",
+                    endpoint, result.get("ret"), result.get("errcode"),
+                    result.get("errmsg", ""), len(raw),
+                )
+            return result
     return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 
@@ -444,6 +469,7 @@ async def _send_message(
     text: str,
     context_token: Optional[str],
     client_id: str,
+    from_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a text message via iLink sendmessage API.
 
@@ -453,7 +479,7 @@ async def _send_message(
     if not text or not text.strip():
         raise ValueError("_send_message: text must not be empty")
     message: Dict[str, Any] = {
-        "from_user_id": "",
+        "from_user_id": from_user_id or "",
         "to_user_id": to,
         "client_id": client_id,
         "message_type": MSG_TYPE_BOT,
@@ -462,6 +488,12 @@ async def _send_message(
     }
     if context_token:
         message["context_token"] = context_token
+    logger.debug(
+        "[_send_message] to=%s from=%s ctx=%s client=%s msg_type=%s msg_state=%s text_len=%d",
+        _safe_id(to), _safe_id(from_user_id or ""),
+        "yes" if context_token else "no",
+        client_id[:16], MSG_TYPE_BOT, MSG_STATE_FINISH, len(text),
+    )
     return await _api_post(
         session,
         base_url=base_url,
@@ -1672,6 +1704,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     text=chunk,
                     context_token=context_token,
                     client_id=client_id,
+                    from_user_id=self._account_id,
                 )
                 # Check iLink response for session-expired error
                 if resp and isinstance(resp, dict):
@@ -1684,7 +1717,7 @@ class WeixinAdapter(BasePlatformAdapter):
                             or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
                         )
                         # Session expired — strip token and retry once
-                        if is_session_expired and not retried_without_token and context_token:
+                        if is_session_expired and not retried_without_token:
                             retried_without_token = True
                             context_token = None
                             self._token_store._cache.pop(
@@ -2044,6 +2077,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 text=self.format_message(caption),
                 context_token=context_token,
                 client_id=last_message_id,
+                from_user_id=self._account_id,
             )
 
         last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"

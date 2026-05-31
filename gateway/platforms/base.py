@@ -2303,6 +2303,7 @@ class BasePlatformAdapter(ABC):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
+        reply_to: Optional[str] = None,
     ) -> None:
         """Send a batch of images.
 

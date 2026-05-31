@@ -11840,7 +11840,8 @@ class GatewayRunner:
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _reply_anchor = self._reply_anchor_for_event(event)
+            _thread_meta = self._thread_metadata_for_source(event.source, _reply_anchor)
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -11875,6 +11876,7 @@ class GatewayRunner:
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
+                        reply_to=_reply_anchor,
                     )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
@@ -11887,18 +11889,21 @@ class GatewayRunner:
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
+                            reply_to=_reply_anchor,
                         )
                     elif ext in _VIDEO_EXTS:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
+                            reply_to=_reply_anchor,
                         )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
+                            reply_to=_reply_anchor,
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
@@ -11911,12 +11916,14 @@ class GatewayRunner:
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
+                            reply_to=_reply_anchor,
                         )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
+                            reply_to=_reply_anchor,
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)

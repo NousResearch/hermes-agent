@@ -396,6 +396,44 @@ class TestMattermostMultiImage:
         _run(adapter.send_multiple_images("channel123", []))
         adapter._api_post.assert_not_called()
 
+    def test_reply_to_sets_root_id_in_thread_mode(self, adapter, tmp_path):
+        """When reply_to is set and reply_mode is 'thread', root_id is included in payload."""
+        adapter._resolve_root_id = AsyncMock(return_value="root_post_456")
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 10)
+        images = [(f"file://{p}", "")]
+
+        _run(adapter.send_multiple_images("channel123", images, reply_to="msg_789"))
+
+        adapter._resolve_root_id.assert_awaited_once_with("msg_789")
+        payload = adapter._api_post.await_args.args[1]
+        assert payload["root_id"] == "root_post_456"
+
+    def test_reply_to_ignored_in_non_thread_mode(self, adapter, tmp_path):
+        """When reply_mode is not 'thread', reply_to is accepted but root_id is not set."""
+        adapter._reply_mode = "off"
+        adapter._resolve_root_id = AsyncMock(return_value="root_post_456")
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 10)
+        images = [(f"file://{p}", "")]
+
+        _run(adapter.send_multiple_images("channel123", images, reply_to="msg_789"))
+
+        adapter._resolve_root_id.assert_not_awaited()
+        payload = adapter._api_post.await_args.args[1]
+        assert "root_id" not in payload
+
+    def test_no_reply_to_no_root_id(self, adapter, tmp_path):
+        """When reply_to is None, root_id is not set even in thread mode."""
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 10)
+        images = [(f"file://{p}", "")]
+
+        _run(adapter.send_multiple_images("channel123", images))
+
+        payload = adapter._api_post.await_args.args[1]
+        assert "root_id" not in payload
+
 
 # ---------------------------------------------------------------------------
 # Email

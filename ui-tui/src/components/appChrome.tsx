@@ -1,6 +1,6 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
@@ -273,15 +273,36 @@ const fitCompactText = (text: string, width: number) => {
     return ''
   }
 
-  if (text.length <= width) {
+  if (stringWidth(text) <= width) {
     return text
   }
 
   if (width <= 3) {
-    return text.slice(0, width)
+    let clipped = ''
+
+    for (const char of text) {
+      if (stringWidth(clipped + char) > width) {
+        break
+      }
+
+      clipped += char
+    }
+
+    return clipped
   }
 
-  return `${text.slice(0, width - 3).trimEnd()}...`
+  let clipped = ''
+  const targetWidth = width - 3
+
+  for (const char of text) {
+    if (stringWidth(clipped + char) > targetWidth) {
+      break
+    }
+
+    clipped += char
+  }
+
+  return `${clipped.trimEnd()}...`
 }
 
 const compactModelLabel = (model: string, effort?: string, fast?: boolean) => {
@@ -312,6 +333,147 @@ const contextStatusLabel = (usage: Usage) => {
   const prefix = usage.context_estimated ? 'ctx ~' : 'ctx '
 
   return usage.context_max && pct != null ? `${prefix}${ctxLabel} ${pct}%` : `${prefix}${ctxLabel}`
+}
+
+interface CompactStatusSegment {
+  color: string
+  dimColor?: boolean
+  minWidth?: number
+  shrinkPriority?: number
+  text: string
+}
+
+const COMPACT_SEPARATOR = ' | '
+
+const compactContextColor = (usage: Usage, t: Theme) => {
+  const pct = usage.context_percent
+
+  if (pct == null) {
+    return t.color.muted
+  }
+
+  if (pct >= 80) {
+    return t.color.statusCritical
+  }
+
+  if (pct >= 50) {
+    return t.color.statusWarn
+  }
+
+  return t.color.statusGood
+}
+
+const compactStatusColor = (status: string, busy: boolean, statusColor: string, t: Theme) => {
+  if (busy) {
+    return t.color.statusWarn
+  }
+
+  const normalized = status.trim().toLowerCase()
+
+  if (!normalized || normalized === 'ready' || normalized === 'idle') {
+    return t.color.statusGood
+  }
+
+  if (
+    normalized.includes('error') ||
+    normalized.includes('fail') ||
+    normalized.includes('invalid') ||
+    normalized.includes('auth')
+  ) {
+    return t.color.statusCritical
+  }
+
+  if (normalized.includes('retry') || normalized.includes('recover') || normalized.includes('warn')) {
+    return t.color.statusWarn
+  }
+
+  return statusColor
+}
+
+const compactVoiceColor = (voiceLabel: string, t: Theme) => {
+  const normalized = voiceLabel.trim().toLowerCase()
+
+  if (!normalized || normalized.includes('off')) {
+    return t.color.muted
+  }
+
+  if (voiceLabel.startsWith('●') || normalized.includes('record')) {
+    return t.color.error
+  }
+
+  if (voiceLabel.startsWith('◉') || normalized.includes('listen') || normalized.includes('on')) {
+    return t.color.warn
+  }
+
+  return t.color.label
+}
+
+const compactSegmentWidth = (segments: CompactStatusSegment[]) =>
+  segments.reduce(
+    (total, segment, index) => total + stringWidth(segment.text) + (index > 0 ? stringWidth(COMPACT_SEPARATOR) : 0),
+    0
+  )
+
+const fitCompactSegments = (segments: CompactStatusSegment[], width: number) => {
+  const fitted = segments.filter(segment => segment.text).map(segment => ({ ...segment }))
+
+  if (width <= 0 || fitted.length === 0) {
+    return []
+  }
+
+  let guard = 0
+
+  while (compactSegmentWidth(fitted) > width && guard < 20) {
+    guard += 1
+
+    const candidate = fitted
+      .filter(segment => stringWidth(segment.text) > (segment.minWidth ?? 4))
+      .sort((a, b) => (b.shrinkPriority ?? 0) - (a.shrinkPriority ?? 0))[0]
+
+    if (!candidate) {
+      break
+    }
+
+    const overBy = compactSegmentWidth(fitted) - width
+    const currentWidth = stringWidth(candidate.text)
+    const minWidth = candidate.minWidth ?? 4
+    const targetWidth = Math.max(minWidth, currentWidth - overBy)
+
+    candidate.text = fitCompactText(candidate.text, targetWidth)
+  }
+
+  while (compactSegmentWidth(fitted) > width && fitted.length > 1) {
+    fitted.pop()
+  }
+
+  if (compactSegmentWidth(fitted) > width && fitted[0]) {
+    fitted[0].text = fitCompactText(fitted[0].text, width)
+  }
+
+  return fitted
+}
+
+function compactStatusLine(segments: CompactStatusSegment[], t: Theme, width: number) {
+  const fitted = fitCompactSegments(segments, width)
+
+  return (
+    <Box height={1} overflow="hidden" width={width}>
+      <Text wrap="truncate-end">
+        {fitted.map((segment, index) => (
+          <Fragment key={`${index}-${segment.text}`}>
+            {index > 0 ? (
+              <Text color={t.color.border} dimColor>
+                {COMPACT_SEPARATOR}
+              </Text>
+            ) : null}
+            <Text color={segment.color} dimColor={segment.dimColor}>
+              {segment.text}
+            </Text>
+          </Fragment>
+        ))}
+      </Text>
+    </Box>
+  )
 }
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
@@ -396,31 +558,70 @@ export function StatusRule({
       ? `busy${turnStartedAt ? ` ${fmtDuration(now - turnStartedAt)}` : ''}`
       : status || 'ready'
 
-    const firstLine = fitCompactText(
-      [`- ${primaryStatus}`, compactModelLabel(model, modelReasoningEffort, modelFast), compactCtxLabel]
-        .filter(Boolean)
-        .join(' | '),
-      width
-    )
+    const firstLine: CompactStatusSegment[] = [
+      {
+        color: compactStatusColor(primaryStatus, busy, statusColor, t),
+        minWidth: 7,
+        shrinkPriority: 2,
+        text: `- ${primaryStatus}`
+      },
+      {
+        color: t.color.primary,
+        minWidth: 6,
+        shrinkPriority: 3,
+        text: compactModelLabel(model, modelReasoningEffort, modelFast)
+      },
+      {
+        color: compactContextColor(usage, t),
+        minWidth: 14,
+        shrinkPriority: 1,
+        text: compactCtxLabel
+      }
+    ]
 
-    const secondLine = fitCompactText(
-      [
-        sessionStartedAt ? `dur ${fmtDuration(now - sessionStartedAt)}` : '',
-        voiceLabel || '',
-        sessionCountText,
-        bgCount > 0 ? `${bgCount} bg` : '',
-        showCost && typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : '',
-        cwdLabel || ''
-      ]
-        .filter(Boolean)
-        .join(' | '),
-      width
-    )
+    const secondLine: CompactStatusSegment[] = [
+      {
+        color: t.color.label,
+        minWidth: 7,
+        shrinkPriority: 2,
+        text: sessionStartedAt ? `dur ${fmtDuration(now - sessionStartedAt)}` : ''
+      },
+      {
+        color: compactVoiceColor(voiceLabel || '', t),
+        minWidth: 6,
+        shrinkPriority: 2,
+        text: voiceLabel || ''
+      },
+      {
+        color: t.color.accent,
+        minWidth: 8,
+        shrinkPriority: 1,
+        text: sessionCountText
+      },
+      {
+        color: t.color.statusWarn,
+        minWidth: 4,
+        shrinkPriority: 2,
+        text: bgCount > 0 ? `${bgCount} bg` : ''
+      },
+      {
+        color: t.color.statusWarn,
+        minWidth: 7,
+        shrinkPriority: 2,
+        text: showCost && typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+      },
+      {
+        color: t.color.label,
+        minWidth: 8,
+        shrinkPriority: 3,
+        text: cwdLabel || ''
+      }
+    ]
 
     return (
       <Box flexDirection="column" height={2} width={width}>
-        <Text color={statusColor}>{firstLine}</Text>
-        <Text color={t.color.muted}>{secondLine}</Text>
+        {compactStatusLine(firstLine, t, width)}
+        {compactStatusLine(secondLine, t, width)}
       </Box>
     )
   }

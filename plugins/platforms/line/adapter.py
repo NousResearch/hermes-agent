@@ -427,6 +427,19 @@ def _allowed_for_source(
 # LINE Reply / Push HTTP client
 # ---------------------------------------------------------------------------
 
+class _LineAuthError(Exception):
+    """Raised when LINE rejects the channel access token (HTTP 401/403).
+
+    Distinguishes a permanent credential failure (revoked/invalid token or
+    missing Messaging API permission) from transient 5xx / offline errors so
+    ``connect()`` can escalate to a non-retryable fatal instead of looping.
+    """
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"LINE rejected the channel access token (HTTP {status})")
+        self.status = status
+
+
 class _LineClient:
     """Thin async wrapper around the LINE Messaging API.
 
@@ -499,16 +512,26 @@ class _LineClient:
                 return await resp.read()
 
     async def get_bot_user_id(self) -> Optional[str]:
-        """Fetch this channel's own userId so we can filter self-messages."""
+        """Fetch this channel's own userId so we can filter self-messages.
+
+        Raises ``_LineAuthError`` on a 401/403 (the token is invalid, revoked,
+        or lacks Messaging API permission — a permanent failure connect() must
+        escalate). Returns None for any other failure (transient 5xx, timeout,
+        offline tests), where best-effort self-filtering is the right fallback.
+        """
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=10.0)
         try:
             async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 async with session.get(LINE_BOT_INFO_URL, headers=self._headers) as resp:
+                    if resp.status in (401, 403):
+                        raise _LineAuthError(resp.status)
                     if resp.status >= 400:
                         return None
                     data = await resp.json()
                     return data.get("userId")
+        except _LineAuthError:
+            raise
         except Exception:
             return None
 
@@ -623,8 +646,16 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter."""
 
-    # LINE has its own message-edit story (none) — we always send fresh
-    # bubbles, never edit, so REQUIRES_EDIT_FINALIZE stays False.
+    # LINE has no message-edit primitive — the reply/push model only ever
+    # appends fresh bubbles. Declaring SUPPORTS_MESSAGE_EDITING = False makes
+    # the gateway disable the live cursor and route streaming as fresh sends
+    # instead of edit_message calls (which the inherited base returns
+    # "Not supported" for). Without it the gateway's getattr default is True,
+    # so the first streamed frame ships with a cursor (█) that every failed
+    # edit then leaves stuck on a permanent partial bubble. Mirrors
+    # signal/wecom/weixin/qqbot/bluebubbles. (REQUIRES_EDIT_FINALIZE is a
+    # separate attribute and stays False by default.)
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config, **kwargs):
         platform = Platform("line")
@@ -710,7 +741,6 @@ class LineAdapter(BasePlatformAdapter):
         self._cache = RequestCache()
         self._dedup = _MessageDeduplicator()
         self._bot_user_id: Optional[str] = None
-        self._lock_key: Optional[str] = None
 
         # Media state
         self._media_tokens: Dict[str, Tuple[str, float]] = {}  # token → (path, expiry)
@@ -735,29 +765,45 @@ class LineAdapter(BasePlatformAdapter):
             return False
 
         # Prevent two profiles from running on the same channel access token.
-        try:
-            from gateway.status import acquire_scoped_lock
-            # Use a hash of the token so we don't write the secret to disk.
-            tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
-            if not acquire_scoped_lock("line", tok_hash):
-                self._set_fatal_error(
-                    "lock_conflict",
-                    "LINE channel already in use by another profile",
-                    retryable=False,
-                )
-                return False
-            self._lock_key = tok_hash
-        except ImportError:
-            self._lock_key = None
+        # _acquire_platform_lock unpacks the (acquired, existing) tuple that
+        # acquire_scoped_lock returns — emitting the owner-PID error message and
+        # a retryable=False fatal on conflict, matching Slack/Telegram/Discord
+        # (acquire_scoped_lock hashes the identity before persisting, so the raw
+        # token is never written to disk). The previous bespoke block called
+        # acquire_scoped_lock as `if not acquire_scoped_lock(...)` and treated
+        # the 2-tuple return as a bool: a non-empty tuple is always truthy, so
+        # `not (...)` was always False and the conflict guard was dead code —
+        # two profiles sharing one channel token both passed it.
+        if not self._acquire_platform_lock(
+            "line-channel-token",
+            self.channel_access_token,
+            "LINE channel access token",
+        ):
+            return False
 
         self._client = _LineClient(self.channel_access_token)
 
-        # Best-effort: fetch our own bot userId for self-message filtering.
-        # If the call fails (offline tests, transient 5xx) we fall back to
-        # not filtering self-events; the cost is minor (LINE doesn't
-        # actually echo our own messages back).
+        # Validate the token via the bot-info probe. A 401/403 means the token
+        # is invalid/revoked or lacks Messaging API permission — a permanent
+        # failure. Since LINE is a webhook receiver, a bad token would otherwise
+        # never surface through connect(): the gateway would report "connected"
+        # while every outbound reply/push 401s forever, and the user silently
+        # receives nothing. Escalate to a non-retryable fatal so the gateway
+        # drops it instead of looping. Any other failure (transient 5xx,
+        # timeout, offline tests) stays best-effort: we skip self-message
+        # filtering, which LINE doesn't require since it never echoes our own
+        # messages back.
         try:
             self._bot_user_id = await self._client.get_bot_user_id()
+        except _LineAuthError as exc:
+            self._set_fatal_error(
+                "auth_failed",
+                "LINE channel access token rejected "
+                f"(HTTP {exc.status}) — check LINE_CHANNEL_ACCESS_TOKEN and "
+                "Messaging API permissions",
+                retryable=False,
+            )
+            return False
         except Exception as exc:
             logger.debug("LINE: get_bot_user_id failed: %s", exc)
             self._bot_user_id = None
@@ -832,13 +878,7 @@ class LineAdapter(BasePlatformAdapter):
         self._media_temp_paths.clear()
         self._media_tokens.clear()
 
-        if self._lock_key:
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("line", self._lock_key)
-            except Exception:
-                pass
-            self._lock_key = None
+        self._release_platform_lock()
 
     # ------------------------------------------------------------------
     # Webhook handlers
@@ -880,6 +920,13 @@ class LineAdapter(BasePlatformAdapter):
         return web.Response(status=200, text="ok")
 
     async def _dispatch_event(self, event: Dict[str, Any]) -> None:
+        # Opportunistically reclaim expired postback-cache entries on each
+        # inbound event (eviction-on-touch, the same pattern _register_media
+        # uses for media tokens). Without this, prune() has no callsite and the
+        # cache grows unbounded for the gateway's lifetime — every slow
+        # response and abandoned PENDING entry is retained forever.
+        self._cache.prune()
+
         event_type = event.get("type")
         source = event.get("source") or {}
         webhook_event_id = event.get("webhookEventId", "") or ""

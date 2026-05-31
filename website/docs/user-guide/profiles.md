@@ -148,6 +148,8 @@ Also note:
 - Changes to `SOUL.md` take effect cleanly on a new session. Existing sessions may still be using the old prompt state.
 - Asking the model "what directory are you in?" is not a reliable isolation test. If you need a predictable starting directory for tools, set `terminal.cwd` explicitly.
 
+For friend, colleague, team, or client agents, see [Tenant Workspaces for Profiles](./tenant-workspaces.md) for an operator convention that keeps tenant-created projects, scripts, cron manifests, support packets, and shared-skill candidates organized without claiming to be a sandbox.
+
 ## Running gateways
 
 Each profile runs its own gateway as a separate process with its own bot token:

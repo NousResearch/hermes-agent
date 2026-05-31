@@ -14,8 +14,8 @@ You can also point Hermes at **external skill directories** — additional folde
 
 See also:
 
-- [Bundled Skills Catalog](/docs/reference/skills-catalog)
-- [Official Optional Skills Catalog](/docs/reference/optional-skills-catalog)
+- [Bundled Skills Catalog](/reference/skills-catalog)
+- [Official Optional Skills Catalog](/reference/optional-skills-catalog)
 
 ## Using Skills
 
@@ -107,6 +107,35 @@ platforms: [macos, linux]     # macOS and Linux
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
 
+## Skill output and media delivery
+
+When a skill response (or any agent response) includes a bare absolute path to a media file — for example `/home/user/screenshots/diagram.png` — the gateway auto-detects it, strips it from the visible text, and delivers the file natively to the user's chat (Telegram photo, Discord attachment, etc.) instead of leaving the raw path in the message.
+
+For audio specifically, the `[[audio_as_voice]]` directive promotes audio files to native voice-message bubbles on platforms that support them (Telegram, WhatsApp).
+
+### Forcing document-style delivery: `[[as_document]]`
+
+Sometimes you want the **opposite** of inline preview: you want the file delivered as a downloadable attachment, not a re-compressed image bubble. The classic example is a high-resolution screenshot or chart — Telegram's `sendPhoto` recompresses it to ~200 KB at 1280 px, destroying readability. A 1-2 MB PNG sent via `sendDocument` keeps the original bytes intact.
+
+If a response (or any text inside it — typically the last line) contains the literal directive `[[as_document]]`, every media path extracted from that response is delivered as a document/file attachment rather than an image bubble:
+
+```
+Here is your rendered chart:
+
+/home/user/.hermes/cache/chart-q4-2025.png
+
+[[as_document]]
+```
+
+The directive is stripped before delivery, so users never see it. Granularity is intentionally all-or-nothing per response: emit `[[as_document]]` once and every image path in the same response is delivered as a document. This mirrors the scope of `[[audio_as_voice]]`.
+
+Use it from a skill when:
+
+- You produce screenshots or charts the user needs as files (for editing in another tool, archiving, sharing intact).
+- The default lossy preview would obscure detail (small text, pixel-accurate diagrams, color-sensitive renders).
+
+Platforms without a separate document path (e.g. SMS) fall back to whatever attachment mechanism they have.
+
 ### Conditional Activation (Fallback Skills)
 
 Skills can automatically show or hide themselves based on which tools are available in the current session. This is most useful for **fallback skills** — free or local alternatives that should only appear when a premium tool is unavailable.
@@ -145,7 +174,7 @@ required_environment_variables:
 
 When a missing value is encountered, Hermes asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `hermes setup` or `~/.hermes/.env` locally instead.
 
-Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
+Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
 
 ### Skill Config Settings
 
@@ -163,7 +192,7 @@ metadata:
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.
 
-See [Skill Settings](/docs/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml) for details.
+See [Skill Settings](/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml) for details.
 
 ## Skill Directory Structure
 
@@ -207,7 +236,8 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Read-only**: External dirs are only scanned for skill discovery. When the agent creates or edits a skill, it always writes to `~/.hermes/skills/`.
+- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
@@ -221,7 +251,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 └── mlops/axolotl/
     └── SKILL.md
 
-~/.agents/skills/               # External (read-only, shared)
+~/.agents/skills/               # External (shared, mutable if writable)
 ├── my-custom-workflow/
 │   └── SKILL.md
 └── team-conventions/
@@ -381,7 +411,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to a single-file `SKILL.md`. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
-| `clawhub`, `lobehub`, `claude-marketplace` | Source-specific identifiers | Community or marketplace integrations. |
+| `clawhub`, `lobehub`, `browse-sh` | Source-specific identifiers | Community or marketplace integrations. |
 
 ### Integrated hubs and registries
 
@@ -389,7 +419,7 @@ Hermes currently integrates with these skills ecosystems and discovery sources:
 
 #### 1. Official optional skills (`official`)
 
-These are maintained in the Hermes repository itself and install with builtin trust.
+These are maintained in the Hermes repository itself and install with built-in trust.
 
 - Catalog: [Official Optional Skills Catalog](../../reference/optional-skills-catalog)
 - Source in repo: `optional-skills/`
@@ -437,7 +467,7 @@ Default taps (browsable without any setup):
 - [openai/skills](https://github.com/openai/skills)
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [huggingface/skills](https://github.com/huggingface/skills)
-- [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
+- [NVIDIA/skills](https://github.com/NVIDIA/skills) — NVIDIA-verified skills (signed `skill.oms.sig` + governance `skill-card.md`)
 - [garrytan/gstack](https://github.com/garrytan/gstack)
 
 - Example:
@@ -445,6 +475,25 @@ Default taps (browsable without any setup):
 ```bash
 hermes skills install openai/skills/k8s
 hermes skills tap add myorg/skills-repo
+```
+
+**Category groupings (`skills.sh.json`).** A GitHub tap may ship a
+`skills.sh.json` file at its repo root following the
+[skills.sh schema](https://skills.sh/schemas/skills.sh.schema.json). Its
+`groupings` (each with a `title` and a list of skill names) are read at index
+time and become the category labels shown in the
+[Skills Hub](https://hermes-agent.nousresearch.com/docs) page — instead of a
+tag-derived guess. This is generic: any tap that ships the file gets real
+categorization, no Hermes-side changes required.
+
+```json
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "groupings": [
+    { "title": "Inference AI", "skills": ["dynamo-recipe-runner", "dynamo-router-sla"] },
+    { "title": "Decision Optimization", "skills": ["cuopt-developer", "cuopt-install"] }
+  ]
+}
 ```
 
 #### 5. ClawHub (`clawhub`)
@@ -473,7 +522,24 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
-#### 8. Direct URL (`url`)
+#### 8. browse.sh (`browse-sh`)
+
+Hermes integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Hermes' browser tools and any browser-automation skills you already have installed.
+
+- Site: [browse.sh](https://browse.sh/)
+- Catalog API: `https://browse.sh/api/skills`
+- Hermes source id: `browse-sh`
+- Trust level: `community`
+
+```bash
+hermes skills search airbnb --source browse-sh
+hermes skills inspect browse-sh/airbnb.com/search-listings-ddgioa
+hermes skills install browse-sh/airbnb.com/search-listings-ddgioa
+```
+
+Identifiers use the form `browse-sh/<hostname>/<task-id>` and match the slug exposed by the browse.sh catalog. Content is resolved through the per-skill detail endpoint (`/api/skills/<slug>` → `skillMdUrl`), not through the catalog's GitHub `sourceUrl`.
+
+#### 9. Direct URL (`url`)
 
 Install a single-file `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes fetches the URL, parses the YAML frontmatter, security-scans it, and installs.
 
@@ -523,15 +589,15 @@ hermes skills install skills-sh/anthropics/skills/pdf --force
 Important behavior:
 - `--force` can override policy blocks for caution/warn-style findings.
 - `--force` does **not** override a `dangerous` scan verdict.
-- Official optional skills (`official/...`) are treated as builtin trust and do not show the third-party warning panel.
+- Official optional skills (`official/...`) are treated as built-in trust and do not show the third-party warning panel.
 
 ### Trust levels
 
 | Level | Source | Policy |
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
-| `official` | `optional-skills/` in the repo | Builtin trust, no third-party warning |
-| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills` | More permissive policy than community sources |
+| `official` | `optional-skills/` in the repo | Built-in trust, no third-party warning |
+| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills`, `NVIDIA/skills` | More permissive policy than community sources |
 | `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
 
 ### Update lifecycle

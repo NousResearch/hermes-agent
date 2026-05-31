@@ -253,38 +253,6 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     assert issues == []
 
 
-def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
-    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
-    monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "2048")
-    monkeypatch.setenv("VERCEL_TOKEN", "super-secret-value")
-    monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
-    monkeypatch.setenv("VERCEL_TEAM_ID", "team")
-    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
-
-    fake_model_tools = types.SimpleNamespace(
-        check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
-    )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        doctor_mod.run_doctor(Namespace(fix=False))
-
-    out = buf.getvalue()
-    assert "Vercel runtime" in out
-    assert "python3.13" in out
-    assert "Vercel custom disk unsupported" in out
-    assert "Vercel auth incomplete" in out
-    assert "VERCEL_PROJECT_ID" in out
-    assert "Vercel auth mode: incomplete access token" in out
-    assert "Vercel auth present env: VERCEL_TOKEN, VERCEL_TEAM_ID" in out
-    assert "Vercel auth missing env: VERCEL_PROJECT_ID" in out
-    assert "super-secret-value" not in out
-    assert "snapshot filesystem only" in out
-
-
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 
@@ -522,7 +490,6 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
 @pytest.mark.parametrize(
     ("provider", "default_model"),
     [
-        ("ai-gateway", "anthropic/claude-sonnet-4.6"),
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
@@ -566,7 +533,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode"}:
+    if provider in {"opencode-zen", "kilocode"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
@@ -825,7 +792,7 @@ class TestGitHubTokenCheck:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
-        from hermes_cli.doctor import run_doctor, _DHH
+        from hermes_cli.doctor import run_doctor
         import io, contextlib
 
         buf = io.StringIO()
@@ -1223,3 +1190,87 @@ class TestDoctorXaiOAuthStatus:
         # None → {} → logged_in falsy → shows not-logged-in warn
         assert "xAI OAuth" in out
         assert "(not logged in)" in out
+
+
+# ---------------------------------------------------------------------------
+# ◆ Auth Providers — codex CLI import hint placement (issue #27975)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorCodexCliHintPlacement:
+    """The `codex CLI not installed` hint belongs under OpenAI Codex auth.
+
+    Regression for #27975: the hint used to be emitted as a standalone block
+    after all auth-provider rows, so it visually attached to whichever
+    provider happened to print last (MiniMax OAuth in the reported repro),
+    reading as remediation for an unrelated provider.
+    """
+
+    def _run(self, monkeypatch, tmp_path, *, codex_logged_in: bool, codex_cli_present: bool) -> str:
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": codex_logged_in})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+
+        real_which = doctor_mod.shutil.which
+        monkeypatch.setattr(
+            doctor_mod.shutil,
+            "which",
+            lambda cmd: ("/usr/local/bin/codex" if codex_cli_present else None) if cmd == "codex" else real_which(cmd),
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    @staticmethod
+    def _hint_line() -> str:
+        return "codex CLI not installed"
+
+    def test_hint_appears_under_codex_auth_when_missing(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, codex_logged_in=False, codex_cli_present=False)
+        lines = out.splitlines()
+        codex_idx = next(i for i, l in enumerate(lines) if "OpenAI Codex auth" in l)
+        hint_idx = next(i for i, l in enumerate(lines) if self._hint_line() in l)
+        minimax_idx = next(i for i, l in enumerate(lines) if "MiniMax OAuth" in l)
+        # Hint must sit between Codex auth and the next provider row (#27975).
+        assert codex_idx < hint_idx < minimax_idx
+
+    def test_hint_suppressed_when_codex_cli_present(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, codex_logged_in=False, codex_cli_present=True)
+        assert "OpenAI Codex auth" in out
+        assert self._hint_line() not in out
+
+    def test_hint_suppressed_when_codex_logged_in(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, codex_logged_in=True, codex_cli_present=False)
+        assert "OpenAI Codex auth" in out
+        assert "(logged in)" in out
+        assert self._hint_line() not in out
+
+    def test_hint_never_attaches_to_minimax_row(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, codex_logged_in=False, codex_cli_present=False)
+        # The MiniMax OAuth row and the hint must not be adjacent — the hint
+        # belongs to the Codex auth row directly above it.
+        lines = [l for l in out.splitlines() if l.strip()]
+        minimax_idx = next(i for i, l in enumerate(lines) if "MiniMax OAuth" in l)
+        assert self._hint_line() not in lines[minimax_idx - 1]
+        assert minimax_idx + 1 >= len(lines) or self._hint_line() not in lines[minimax_idx + 1]

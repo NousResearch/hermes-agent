@@ -556,10 +556,11 @@ Generate some audio.
             raising=False,
         )
 
-        with patch.dict(
-            os.environ, {"HERMES_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            from gateway.session_context import clear_session_vars, set_session_vars
+
+            tokens = set_session_vars(platform="telegram")
+            try:
                 _make_skill(
                     tmp_path,
                     "test-skill",
@@ -571,6 +572,8 @@ Generate some audio.
                 )
                 scan_skill_commands()
                 msg = build_skill_invocation_message("/test-skill", "do stuff")
+            finally:
+                clear_session_vars(tokens)
 
         assert msg is not None
         assert "local cli" in msg.lower()

@@ -207,6 +207,7 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
         lambda **kwargs: 0,
     )
     monkeypatch.setattr("gateway.status.terminate_pid", lambda pid, force=False: calls.append((pid, force)))
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
     monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
@@ -247,7 +248,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             (tmp_path / ".gateway-takeover.json").exists() is False  # not yet
         )
         # Actually write the marker so we can verify cleanup later
-        from gateway.status import _get_takeover_marker_path, _write_json_file, _get_process_start_time
+        from gateway.status import _get_takeover_marker_path, _write_json_file
         _write_json_file(_get_takeover_marker_path(), {
             "target_pid": target_pid,
             "target_start_time": 0,

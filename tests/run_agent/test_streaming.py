@@ -3,11 +3,8 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
-import json
-import threading
-import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -783,32 +780,28 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
-        # Mock the stream context manager
-        mock_event_text = SimpleNamespace(
-            type="response.output_text.delta",
-            delta="Hello from Codex!",
-        )
-        mock_event_done = SimpleNamespace(
-            type="response.completed",
-            delta="",
-        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Hello from Codex!",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="r1", usage=None),
+            ),
+        ]
 
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(return_value=iter([mock_event_text, mock_event_done]))
-        mock_stream.get_final_response.return_value = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="Hello from Codex!")],
-            )],
-            status="completed",
-        )
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+            def close(self_inner):
+                return None
 
         mock_client = MagicMock()
-        mock_client.responses.stream.return_value = mock_stream
+        mock_client.responses.create.return_value = _FakeCreateStream()
 
-        response = agent._run_codex_stream({}, client=mock_client)
+        agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
 
     def test_codex_stream_refreshes_activity_on_every_event(self):
@@ -828,56 +821,39 @@ class TestCodexStreamCallbacks:
         touch_calls = []
         agent._touch_activity = lambda desc: touch_calls.append(desc)
 
-        mock_event_text_1 = SimpleNamespace(
-            type="response.output_text.delta",
-            delta="Hello",
-        )
-        mock_event_text_2 = SimpleNamespace(
-            type="response.output_text.delta",
-            delta=" world",
-        )
-        mock_event_done = SimpleNamespace(
-            type="response.completed",
-            delta="",
-        )
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+            SimpleNamespace(type="response.output_text.delta", delta=" world"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="r2", usage=None),
+            ),
+        ]
 
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(
-            return_value=iter([mock_event_text_1, mock_event_text_2, mock_event_done])
-        )
-        mock_stream.get_final_response.return_value = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="Hello world")],
-            )],
-            status="completed",
-        )
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+            def close(self_inner):
+                return None
 
         mock_client = MagicMock()
-        mock_client.responses.stream.return_value = mock_stream
+        mock_client.responses.create.return_value = _FakeCreateStream()
 
         agent._run_codex_stream({}, client=mock_client)
 
         assert touch_calls.count("receiving stream response") == 3
 
-    def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
+    def test_codex_remote_protocol_error_retries_then_raises(self):
+        """Transport errors from ``responses.create`` retry once then re-raise.
+
+        With the migration from ``responses.stream(...)`` to
+        ``responses.create(stream=True)``, there is no longer a separate
+        fallback function — the same call IS the streaming path.  When it
+        raises ``httpx.RemoteProtocolError``, we retry once (matching the
+        old behavior on the helper) and re-raise on the second failure.
+        """
         from run_agent import AIAgent
         import httpx
-
-        fallback_response = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="fallback from create stream")],
-            )],
-            status="completed",
-        )
-
-        mock_client = MagicMock()
-        mock_client.responses.stream.side_effect = httpx.RemoteProtocolError(
-            "peer closed connection without sending complete message body"
-        )
 
         agent = AIAgent(
             api_key="test-key",
@@ -890,11 +866,22 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
-        with patch.object(agent, "_run_codex_create_stream_fallback", return_value=fallback_response) as mock_fallback:
-            response = agent._run_codex_stream({}, client=mock_client)
+        call_count = {"n": 0}
 
-        assert response is fallback_response
-        mock_fallback.assert_called_once_with({}, client=mock_client)
+        def _create_side_effect(**kwargs):
+            call_count["n"] += 1
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body"
+            )
+
+        mock_client = MagicMock()
+        mock_client.responses.create.side_effect = _create_side_effect
+
+        with pytest.raises(httpx.RemoteProtocolError):
+            agent._run_codex_stream({}, client=mock_client)
+
+        # 1 initial + 1 retry = 2 calls
+        assert call_count["n"] == 2
 
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent

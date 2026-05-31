@@ -107,15 +107,15 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
             "client_id": "hermes-cli",
-            "scope": "inference:invoke inference:mint_agent_key",
+            "scope": "inference:invoke",
             "token_type": "Bearer",
             "access_token": token,
             "refresh_token": "refresh-token",
             "obtained_at": "2026-03-23T10:00:00+00:00",
             "expires_at": "2026-03-23T11:00:00+00:00",
             "expires_in": 3600,
-            "agent_key": "ak-test",
-            "agent_key_id": "ak-id",
+            "agent_key": token,
+            "agent_key_id": None,
             "agent_key_expires_at": "2026-03-23T10:30:00+00:00",
             "agent_key_expires_in": 1800,
             "agent_key_reused": False,
@@ -155,17 +155,17 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert not any(item["source"] == "manual:device_code" for item in entries)
     entry = device_code_entries[0]
     assert entry["source"] == "device_code"
-    assert entry["agent_key"] == "ak-test"
+    assert entry["agent_key"] == token
     assert entry["portal_base_url"] == "https://portal.example.com"
 
     # `hermes auth add nous` must also populate providers.nous so the
-    # 401-recovery path (resolve_nous_runtime_credentials) can mint a fresh
-    # agent_key when the 24h TTL expires. If this mirror is missing, recovery
+    # 401-recovery path (resolve_nous_runtime_credentials) can refresh an
+    # invoke JWT when the token expires. If this mirror is missing, recovery
     # raises "Hermes is not logged into Nous Portal" and the agent dies.
     singleton = payload["providers"]["nous"]
     assert singleton["access_token"] == token
     assert singleton["refresh_token"] == "refresh-token"
-    assert singleton["agent_key"] == "ak-test"
+    assert singleton["agent_key"] == token
     assert singleton["portal_base_url"] == "https://portal.example.com"
     assert singleton["inference_base_url"] == "https://inference.example.com/v1"
 
@@ -228,15 +228,15 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
             "portal_base_url": "https://portal.example.com",
             "inference_base_url": "https://inference.example.com/v1",
             "client_id": "hermes-cli",
-            "scope": "inference:invoke inference:mint_agent_key",
+            "scope": "inference:invoke",
             "token_type": "Bearer",
             "access_token": token,
             "refresh_token": "refresh-token",
             "obtained_at": "2026-03-23T10:00:00+00:00",
             "expires_at": "2026-03-23T11:00:00+00:00",
             "expires_in": 3600,
-            "agent_key": "ak-test",
-            "agent_key_id": "ak-id",
+            "agent_key": token,
+            "agent_key_id": None,
             "agent_key_expires_at": "2026-03-23T10:30:00+00:00",
             "agent_key_expires_in": 1800,
             "agent_key_reused": False,
@@ -1590,20 +1590,16 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
+    # The copilot pool entry is no longer persisted directly in auth.json —
+    # `(copilot, gh_cli)` is borrowed and stripped by
+    # sanitize_borrowed_credential_payload (PR #31416, May 2026). Tokens are
+    # hydrated at runtime via resolve_copilot_token(). Mock that path so the
+    # pool has an entry to remove.
     _write_auth_store(
         tmp_path,
         {
             "version": 1,
-            "credential_pool": {
-                "copilot": [{
-                    "id": "c1",
-                    "label": "gh auth token",
-                    "auth_type": "api_key",
-                    "priority": 0,
-                    "source": "gh_cli",
-                    "access_token": "ghp_fake",
-                }]
-            },
+            "credential_pool": {"copilot": []},
         },
     )
 
@@ -1611,7 +1607,14 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     from hermes_cli.auth import is_source_suppressed
     from hermes_cli.auth_commands import auth_remove_command
 
-    auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
+    with patch(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        return_value=("ghp_fake", "gh"),
+    ), patch(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        return_value="ghu_fake_api",
+    ):
+        auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
 
     assert is_source_suppressed("copilot", "gh_cli")
     assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")

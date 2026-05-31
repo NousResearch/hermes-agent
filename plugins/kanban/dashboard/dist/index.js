@@ -24,6 +24,23 @@
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
 
+  // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
+  // Fall back to a native <input type="checkbox"> shim so older hosts that
+  // predate the design-system rollout still render. The shim normalises
+  // Radix's onCheckedChange(checked) signature to native onChange(event).
+  const Checkbox = SDK.components.Checkbox || function (props) {
+    const { checked, onCheckedChange, className, onClick, ...rest } = props;
+    return h("input", Object.assign({
+      type: "checkbox",
+      checked: !!checked,
+      className: className,
+      onClick: onClick,
+      onChange: function (e) {
+        if (onCheckedChange) onCheckedChange(e.target.checked);
+      },
+    }, rest));
+  };
+
   // useI18n is a hook each component calls locally. Older host dashboards
   // may not expose it yet; fall back to a shim so the bundle still renders
   // English against an older host SDK. English fallback strings live
@@ -1648,11 +1665,10 @@
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestration mode"),
             h("label", { className: "flex items-center gap-2 text-xs h-8" },
-              h("input", {
-                type: "checkbox",
+              h(Checkbox, {
                 checked: !!settings.auto_decompose,
-                onChange: function (e) {
-                  saveSettings({ auto_decompose: !!e.target.checked });
+                onCheckedChange: function (checked) {
+                  saveSettings({ auto_decompose: checked === true });
                 },
               }),
               "Auto-decompose triage tasks",
@@ -1908,10 +1924,9 @@
             }),
           ),
           h("label", { className: "flex items-center gap-2 text-xs" },
-            h("input", {
-              type: "checkbox",
+            h(Checkbox, {
               checked: switchTo,
-              onChange: function (e) { setSwitchTo(e.target.checked); },
+              onCheckedChange: function (checked) { setSwitchTo(checked === true); },
             }),
             tx(t, "switchAfterCreate", "Switch to this board after creating it"),
           ),
@@ -1981,19 +1996,17 @@
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: props.includeArchived,
-          onChange: function (e) { props.setIncludeArchived(e.target.checked); },
+          onCheckedChange: function (checked) { props.setIncludeArchived(checked === true); },
         }),
         tx(t, "showArchived", "Show archived"),
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Group the Running column by assigned profile" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: props.laneByProfile,
-          onChange: function (e) { props.setLaneByProfile(e.target.checked); },
+          onCheckedChange: function (checked) { props.setLaneByProfile(checked === true); },
         }),
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
@@ -2122,10 +2135,9 @@
         }, tx(t, "apply", "Apply")),
       ),
       h("label", { className: "hermes-kanban-bulk-reclaim-first", title: "Reclaim any active claims before reassigning" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: reclaimFirst,
-          onChange: function (e) { setReclaimFirst(e.target.checked); },
+          onCheckedChange: function (checked) { setReclaimFirst(checked === true); },
         }),
         "Reclaim first",
       ),
@@ -2313,14 +2325,12 @@
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: colHelp || "" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
           checked: props.column.tasks.length > 0 && props.column.tasks.every(function (t) { return props.selectedIds.has(t.id); }),
-          onChange: function (e) {
-            e.stopPropagation();
+          onCheckedChange: function () {
             if (props.selectAllInColumn) props.selectAllInColumn(props.column.name);
           },
           onClick: function (e) { e.stopPropagation(); },
@@ -2461,8 +2471,7 @@
         if (props.toggleSelected) props.toggleSelected(t.id, false);
       }
     };
-    const handleCheckbox = function (e) {
-      e.stopPropagation();
+    const handleCheckedChange = function () {
       props.toggleSelected(t.id, true);
     };
 
@@ -2495,11 +2504,10 @@
               title: tx(i18n, "selectForBulk", "Select for bulk actions"),
               onClick: function (e) { e.stopPropagation(); },
             },
-              h("input", {
-                type: "checkbox",
+              h(Checkbox, {
                 className: "hermes-kanban-card-check",
                 checked: props.selected,
-                onChange: handleCheckbox,
+                onCheckedChange: handleCheckedChange,
                 onClick: function (e) { e.stopPropagation(); },
                 "aria-label": `Select task ${t.id}`,
               }),
@@ -2733,6 +2741,8 @@
     // Ready/Block/Complete buttons feel like no-ops.  See #26744.
     const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
+    const [uploadBusy, setUploadBusy] = useState(false);
+    const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
@@ -2779,6 +2789,49 @@
         load();
         props.onRefresh();
       }).catch(function (e) { setErr(String(e.message || e)); });
+    };
+
+    // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
+    // so the browser sets the multipart boundary. Auth rides the session
+    // cookie + bearer token, matching the rest of the dashboard.
+    const handleUpload = function (fileList) {
+      const files = Array.prototype.slice.call(fileList || []);
+      if (!files.length) return;
+      setUploadBusy(true);
+      setUploadErr(null);
+      const token = window.__HERMES_SESSION_TOKEN__ || "";
+      const headers = token ? { Authorization: "Bearer " + token } : {};
+      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
+      // Upload sequentially so a partial failure leaves a clear state.
+      let chain = Promise.resolve();
+      files.forEach(function (f) {
+        chain = chain.then(function () {
+          const fd = new FormData();
+          fd.append("file", f, f.name);
+          return fetch(url, { method: "POST", headers: headers, credentials: "same-origin", body: fd })
+            .then(function (resp) {
+              if (!resp.ok) {
+                return resp.text().then(function (txt) {
+                  throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+                });
+              }
+            });
+        });
+      });
+      chain.then(function () {
+        load();
+        props.onRefresh();
+      }).catch(function (e) {
+        setUploadErr(String(e.message || e));
+      }).finally(function () {
+        setUploadBusy(false);
+      });
+    };
+
+    const handleDeleteAttachment = function (attachmentId) {
+      return SDK.fetchJSON(withBoard(`${API}/attachments/${attachmentId}`, boardSlug), { method: "DELETE" })
+        .then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setUploadErr(String(e.message || e)); });
     };
 
     const doPatch = function (patch, opts) {
@@ -2938,6 +2991,10 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          onUpload: handleUpload,
+          onDeleteAttachment: handleDeleteAttachment,
+          uploadBusy: uploadBusy,
+          uploadErr: uploadErr,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -2960,11 +3017,118 @@
     );
   }
 
+  function _fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  // Attachments section in the task drawer (#35338). Upload button +
+  // list with download links and a delete (×) per row. The download
+  // link hits GET /attachments/:id which streams the file; the worker
+  // context surfaces the same files' absolute paths so a kanban worker
+  // can read them with the file/terminal tools.
+  function AttachmentsSection(props) {
+    const i18n = props.i18n;
+    const atts = props.attachments || [];
+    const fileRef = useRef(null);
+    const [dlErr, setDlErr] = useState(null);
+    // Download via authenticated fetch → blob → synthetic anchor click.
+    // A plain <a href> can't carry the session header/bearer the dashboard
+    // auth middleware requires in loopback mode, so fetch with the token
+    // and hand the browser a blob URL instead.
+    function downloadAttachment(a) {
+      const token = window.__HERMES_SESSION_TOKEN__ || "";
+      const headers = token ? { Authorization: "Bearer " + token } : {};
+      const url = withBoard(`${API}/attachments/${a.id}`, props.boardSlug);
+      setDlErr(null);
+      fetch(url, { headers: headers, credentials: "same-origin" })
+        .then(function (resp) {
+          if (!resp.ok) {
+            return resp.text().then(function (txt) {
+              throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+            });
+          }
+          return resp.blob();
+        })
+        .then(function (blob) {
+          const objUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = objUrl;
+          link.download = a.filename || "attachment";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(function () { URL.revokeObjectURL(objUrl); }, 10000);
+        })
+        .catch(function (e) { setDlErr(String(e.message || e)); });
+    }
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        `${tx(i18n, "attachments", "Attachments")} (${atts.length})`),
+      h("input", {
+        ref: fileRef,
+        type: "file",
+        multiple: true,
+        style: { display: "none" },
+        onChange: function (e) {
+          if (props.onUpload) props.onUpload(e.target.files);
+          // Reset so selecting the same file again re-triggers onChange.
+          try { e.target.value = ""; } catch (_e) { /* ignore */ }
+        },
+      }),
+      h("div", { className: "flex items-center gap-2 mb-2" },
+        h(Button, {
+          size: "sm",
+          variant: "outline",
+          disabled: !!props.uploadBusy,
+          onClick: function () { if (fileRef.current) fileRef.current.click(); },
+        }, props.uploadBusy
+            ? tx(i18n, "uploading", "Uploading…")
+            : tx(i18n, "uploadFile", "Upload file")),
+      ),
+      (props.uploadErr || dlErr)
+        ? h("div", { className: "text-xs text-destructive mb-2" }, props.uploadErr || dlErr)
+        : null,
+      atts.length === 0
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(i18n, "noAttachments", "— no attachments —"))
+        : atts.map(function (a) {
+            return h("div", {
+              key: a.id,
+              className: "flex items-center justify-between gap-2 py-1 text-sm",
+            },
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-attachment-link truncate",
+                title: a.filename,
+                onClick: function () { downloadAttachment(a); },
+              }, a.filename),
+              h("span", { className: "text-xs text-muted-foreground whitespace-nowrap" },
+                _fmtBytes(a.size)),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-drawer-close",
+                title: tx(i18n, "removeAttachment", "Remove attachment"),
+                onClick: function () {
+                  if (window.confirm(tx(i18n, "confirmRemoveAttachment",
+                      "Remove this attachment?"))) {
+                    if (props.onDelete) props.onDelete(a.id);
+                  }
+                },
+              }, "×"),
+            );
+          }),
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
     const comments = props.data.comments || [];
     const events = props.data.events || [];
+    const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
@@ -3034,6 +3198,15 @@
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
         h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
       ) : null,
+      h(AttachmentsSection, {
+        attachments: attachments,
+        boardSlug: props.boardSlug,
+        onUpload: props.onUpload,
+        onDelete: props.onDeleteAttachment,
+        uploadBusy: props.uploadBusy,
+        uploadErr: props.uploadErr,
+        i18n: i18n,
+      }),
       h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" },
           `${tx(i18n, "comments", "Comments")} (${comments.length})`),

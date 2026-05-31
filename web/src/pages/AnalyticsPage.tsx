@@ -20,7 +20,7 @@ import { timeAgo } from "@/lib/utils";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -119,7 +119,7 @@ function SortHeader({
             <ArrowDown className="h-3.5 w-3.5 text-foreground/80 shrink-0" />
           )
         ) : (
-          <ArrowUpDown className="h-3 w-3 text-muted-foreground/40 shrink-0" />
+          <ArrowUpDown className="h-3 w-3 text-text-tertiary shrink-0" />
         )}
       </span>
     </th>
@@ -146,7 +146,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
             {t.analytics.dailyTokenUsage}
           </CardTitle>
         </div>
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+        <div className="flex items-center gap-4 font-mondwest normal-case text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 bg-[#ffe6cb]" />
             {t.analytics.input}
@@ -177,7 +177,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 style={{ height: CHART_HEIGHT_PX }}
               >
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
-                  <div className="bg-card border border-border px-2.5 py-1.5 text-[10px] text-foreground shadow-lg whitespace-nowrap">
+                  <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>
                       {t.analytics.input}: {formatTokens(d.input_tokens)}
@@ -207,7 +207,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
           })}
         </div>
 
-        <div className="flex justify-between mt-2 text-[10px] text-muted-foreground">
+        <div className="flex justify-between mt-2 font-mondwest normal-case text-xs text-text-tertiary">
           <span>{daily.length > 0 ? formatDate(daily[0].day) : ""}</span>
           {daily.length > 2 && (
             <span>{formatDate(daily[Math.floor(daily.length / 2)].day)}</span>
@@ -239,7 +239,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
@@ -298,7 +298,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
@@ -353,7 +353,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.skill} col="skill" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
@@ -430,16 +430,28 @@ export default function AnalyticsPage() {
     const periodLabel =
       PERIODS.find((p) => p.days === days)?.label ?? `${days}d`;
     setAfterTitle(
-      <span className="flex items-center gap-2">
-        {loading && <Spinner className="shrink-0 text-base text-primary" />}
-        <Badge tone="secondary" className="text-[10px]">
+      <span className="flex items-center gap-1.5">
+        <Badge tone="secondary" className="text-xs">
           {periodLabel}
         </Badge>
+        {showTokens !== false && (
+          <Button
+            type="button"
+            ghost
+            size="icon"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={load}
+            disabled={loading}
+            aria-label={t.common.refresh}
+          >
+            {loading ? <Spinner /> : <RefreshCw />}
+          </Button>
+        )}
       </span>,
     );
     setEnd(
       showTokens === false ? null : (
-        <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:gap-2">
+        <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
             {PERIODS.map((p) => (
               <Button
@@ -453,16 +465,6 @@ export default function AnalyticsPage() {
               </Button>
             ))}
           </div>
-          <Button
-            type="button"
-            size="sm"
-            outlined
-            onClick={load}
-            disabled={loading}
-            prefix={loading ? <Spinner /> : <RefreshCw />}
-          >
-            {t.common.refresh}
-          </Button>
         </div>
       ),
     );
@@ -484,7 +486,7 @@ export default function AnalyticsPage() {
         <Card>
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
-              <h2 className="font-display text-base tracking-wider uppercase text-foreground">
+              <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
                 Token analytics hidden
               </h2>
               <p>
@@ -586,7 +588,7 @@ export default function AnalyticsPage() {
               <div className="flex flex-col items-center text-muted-foreground">
                 <BarChart3 className="h-8 w-8 mb-3 opacity-40" />
                 <p className="text-sm font-medium">{t.analytics.noUsageData}</p>
-                <p className="text-xs mt-1 text-muted-foreground/60">
+                <p className="text-xs mt-1 text-text-tertiary">
                   {t.analytics.startSession}
                 </p>
               </div>

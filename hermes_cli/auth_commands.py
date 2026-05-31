@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from getpass import getpass
 import math
 import sys
 import time
@@ -30,6 +29,7 @@ from agent.credential_pool import (
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
@@ -196,7 +196,7 @@ def auth_add_command(args) -> None:
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
         if not token:
-            token = getpass("Paste your API key: ").strip()
+            token = masked_secret_prompt("Paste your API key: ").strip()
         if not token:
             raise SystemExit("No API key provided.")
         default_label = _api_key_default_label(len(pool.entries()) + 1)
@@ -272,9 +272,6 @@ def auth_add_command(args) -> None:
                 print("Rehydrating Nous session from shared credentials...")
                 rehydrated = auth_mod._try_import_shared_nous_state(
                     timeout_seconds=getattr(args, "timeout", None) or 15.0,
-                    min_key_ttl_seconds=max(
-                        60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))
-                    ),
                 )
                 if rehydrated is not None:
                     custom_label = (getattr(args, "label", None) or "").strip() or None
@@ -297,7 +294,6 @@ def auth_add_command(args) -> None:
             timeout_seconds=getattr(args, "timeout", None) or 15.0,
             insecure=bool(getattr(args, "insecure", False)),
             ca_bundle=getattr(args, "ca_bundle", None),
-            min_key_ttl_seconds=max(60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))),
         )
         # Honor `--label <name>` so nous matches other providers' UX.  The
         # helper embeds this into providers.nous so that label_from_token

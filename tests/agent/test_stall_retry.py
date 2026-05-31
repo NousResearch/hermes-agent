@@ -11,6 +11,7 @@ from agent.stall_retry import (
     get_stall_retry_max_per_turn,
     get_stall_retry_model,
     get_stall_retry_nudge_enabled,
+    looks_like_incomplete_final_fragment,
     looks_like_stall,
     record_stall_retry_event,
     retry_on_stall,
@@ -109,6 +110,13 @@ def test_incomplete_final_fragment_without_action_preamble_is_a_stall() -> None:
         False,
         400,
     )
+
+
+def test_short_incomplete_connector_tail_is_a_stall() -> None:
+    content = "I see a lot of discord-res tasks (digest Discord content) and some"
+
+    assert looks_like_incomplete_final_fragment(content, "stop", False, 400)
+    assert looks_like_stall(content, "stop", False, 400)
 
 
 def test_empty_visible_response_uses_empty_response_recovery_not_stall_retry() -> None:
@@ -526,6 +534,20 @@ def test_conversation_loop_retries_empty_post_tool_before_tool_branch() -> None:
     assert "not _empty_after_tool_result and looks_like_stall" in source
     assert "EMPTY_AFTER_TOOL_RETRY_NUDGE" in source
     assert "accept_content=True" in source
+
+
+def test_conversation_loop_uses_configured_stall_retry_model() -> None:
+    source = inspect.getsource(conversation_loop.run_conversation)
+
+    assert "get_stall_retry_model(agent)" in source
+    assert 'os.environ.get("HERMES_STALL_RETRY_MODEL"' in source
+
+
+def test_conversation_loop_accepts_content_for_incomplete_final_fragment() -> None:
+    source = inspect.getsource(conversation_loop.run_conversation)
+
+    assert "looks_like_incomplete_final_fragment" in source
+    assert "accept_content=_retry_accepts_content" in source
 
 
 def test_conversation_loop_allows_bounded_multiple_stall_retries() -> None:

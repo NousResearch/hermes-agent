@@ -62,6 +62,14 @@ _COMPLETION_RE = re.compile(
 _NATURAL_END_CHARS = '.!?:)"\']}。！？：）】」』》^'
 _MIN_INCOMPLETE_FINAL_CHARS = 80
 _ACTION_TAIL_CHARS = 500
+_INCOMPLETE_TAIL_RE = re.compile(
+    r"\b("
+    r"and|or|but|so|because|while|with|without|for|to|of|in|on|at|by|from|"
+    r"the|a|an|this|that|these|those|some|any|another|more|other|which|who|"
+    r"where|when|if|then|also"
+    r")\s*$",
+    re.IGNORECASE,
+)
 _STALL_RETRY_NUDGE = (
     "Your previous assistant response ended after describing the next action, "
     "but it did not include the required tool call. Continue the same task now "
@@ -198,6 +206,31 @@ def _has_natural_response_ending(content: str) -> bool:
     if last in _NATURAL_END_CHARS:
         return True
     return ord(last) >= 0x1F300
+
+
+def looks_like_incomplete_final_fragment(
+    content: str,
+    finish_reason: str,
+    has_tool_calls: bool,
+    max_chars: int,
+) -> bool:
+    """True when a short no-tool final looks cut off mid-sentence.
+
+    dflash can occasionally stop with ordinary visible prose after a tool
+    result, e.g. ``"... and some"``. That is not an action preamble, but it is
+    still unsafe to persist as the final answer in a tool loop.
+    """
+    if has_tool_calls or finish_reason not in ("stop", "length"):
+        return False
+    c = (content or "").strip()
+    c = re.sub(r"^<think>.*?</think>\s*", "", c, flags=re.IGNORECASE | re.DOTALL).strip()
+    if not c or len(c) > max_chars:
+        return False
+    if _COMPLETION_RE.search(c) or _has_natural_response_ending(c):
+        return False
+    if len(c) >= _MIN_INCOMPLETE_FINAL_CHARS:
+        return True
+    return len(c) >= 40 and bool(_INCOMPLETE_TAIL_RE.search(c))
 
 
 def _action_after_completion(content: str) -> bool:
@@ -490,7 +523,7 @@ def looks_like_stall(content: str, finish_reason: str, has_tool_calls: bool,
     # the turn). In an agentic tool loop, a short no-tool stop that declares no
     # completion and lacks a natural ending is safer to retry than to persist as
     # a final assistant message.
-    if len(c) >= _MIN_INCOMPLETE_FINAL_CHARS and not _has_natural_response_ending(c):
+    if looks_like_incomplete_final_fragment(c, finish_reason, False, max_chars):
         return True
     return False
 

@@ -6059,6 +6059,30 @@ class GatewayRunner:
             def _phase_elapsed() -> float:
                 return time.monotonic() - _stop_started_at
 
+            # Unconditional hard-exit watchdog: regardless of where the shutdown
+            # sequence gets stuck (drain, interrupt, adapter.disconnect, DB close),
+            # this daemon thread guarantees the process exits within
+            # (drain_timeout + 20s).  This is a belt-and-suspenders guard on top
+            # of the per-zombie watchdog below — the per-zombie guard has a blind
+            # spot when _running_agents is cleared before blocking threads finish.
+            _watchdog_delay = self._restart_drain_timeout + 20.0
+            import threading as _threading_wd
+            def _unconditional_exit_watchdog(delay: float) -> None:
+                import time as _time, os as _os
+                _time.sleep(delay)
+                _os._exit(0)  # noqa: SIM115 — intentional last-resort hard exit
+            _wd_thread = _threading_wd.Thread(
+                target=_unconditional_exit_watchdog,
+                args=(_watchdog_delay,),
+                daemon=True,
+                name="gateway-stop-watchdog",
+            )
+            _wd_thread.start()
+            logger.info(
+                "Shutdown watchdog started: process will os._exit(0) in %.0fs if still alive",
+                _watchdog_delay,
+            )
+
             self._running = False
             self._draining = True
 
@@ -6162,6 +6186,28 @@ class GatewayRunner:
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
+
+                if self._running_agents:
+                    # Zombie sessions whose threads cannot be interrupted.
+                    # Schedule a hard os._exit() 10s from now so launchd /
+                    # systemd does NOT need to SIGKILL us — letting the rest
+                    # of _stop_impl() run for log flushing and DB close, but
+                    # guaranteeing we exit even if an adapter.disconnect() hangs.
+                    _hard_exit_delay = 10.0
+                    logger.warning(
+                        "Gateway drain: %d zombie session(s) remain after interrupt; "
+                        "scheduling os._exit(0) in %.0fs as last-resort watchdog.",
+                        len(self._running_agents),
+                        _hard_exit_delay,
+                    )
+                    import threading as _threading
+                    def _hard_exit_watchdog(delay: float) -> None:
+                        import time as _time
+                        _time.sleep(delay)
+                        import os as _os
+                        _os._exit(0)  # noqa: SIM115 — intentional hard exit after zombie drain
+                    _t = _threading.Thread(target=_hard_exit_watchdog, args=(_hard_exit_delay,), daemon=True)
+                    _t.start()
 
                 # Kill lingering tool subprocesses NOW, before we spend more
                 # budget on adapter disconnect / session DB close.  Under

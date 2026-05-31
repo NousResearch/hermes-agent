@@ -321,3 +321,70 @@ def test_apply_nous_managed_defaults_preserves_existing_video_gen_section(monkey
     assert config["video_gen"]["use_gateway"] is True
     # Pre-existing keys should be preserved
     assert config["video_gen"]["model"] == "pixverse-v6"
+
+
+# ---------------------------------------------------------------------------
+# ensure_nous_portal_access — inline login gate for `hermes tools`
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_nous_portal_access_fast_path_when_already_paid(monkeypatch):
+    """Already-entitled users return True without any login prompt."""
+    login_called = {"v": False}
+
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+
+    def _login(**kw):
+        login_called["v"] = True
+        return True
+
+    monkeypatch.setattr(ns, "_run_nous_portal_login_only", _login)
+
+    assert ns.ensure_nous_portal_access() is True
+    assert login_called["v"] is False
+
+
+def test_ensure_nous_portal_access_logs_in_then_grants(monkeypatch):
+    """Logged-out user logs in, then entitlement re-check shows paid access."""
+    states = iter([
+        _account(logged_in=False, paid=None),  # initial check
+        _account(logged_in=True, paid=True),   # after login
+    ])
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda **kw: next(states),
+    )
+    monkeypatch.setattr(ns, "_run_nous_portal_login_only", lambda **kw: True)
+
+    assert ns.ensure_nous_portal_access() is True
+
+
+def test_ensure_nous_portal_access_returns_false_when_login_declined(monkeypatch):
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=False, paid=None),
+    )
+    monkeypatch.setattr(ns, "_run_nous_portal_login_only", lambda **kw: False)
+
+    assert ns.ensure_nous_portal_access() is False
+
+
+def test_ensure_nous_portal_access_false_when_logged_in_but_unpaid(monkeypatch):
+    """Logged in already but no paid access — no login attempt, returns False."""
+    login_called = {"v": False}
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=False),
+    )
+
+    def _login(**kw):
+        login_called["v"] = True
+        return True
+
+    monkeypatch.setattr(ns, "_run_nous_portal_login_only", _login)
+
+    assert ns.ensure_nous_portal_access() is False
+    # Already logged in, so no device-code login should be attempted.
+    assert login_called["v"] is False

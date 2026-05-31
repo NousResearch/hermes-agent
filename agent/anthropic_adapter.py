@@ -1571,6 +1571,15 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
 
     if ptype == "input_text":
         block: Dict[str, Any] = {"type": "text", "text": part.get("text", "")}
+    elif ptype == "text":
+        # A stored Anthropic text block. Rebuild from whitelisted fields only —
+        # SDK response text blocks carry output-only siblings (parsed_output,
+        # citations=None) that the Messages INPUT schema rejects with HTTP 400
+        # "Extra inputs are not permitted". Do NOT dict(part) it verbatim.
+        block = {"type": "text", "text": part.get("text", "")}
+        cits = part.get("citations")
+        if isinstance(cits, list) and cits:
+            block["citations"] = cits
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
@@ -1685,6 +1694,58 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Strip output-only fields from a stored Anthropic content block so it is
+    valid as REQUEST input on replay.
+
+    The SDK response objects carry output-only attributes that the Messages
+    *input* schema forbids ("Extra inputs are not permitted"): text blocks get
+    ``parsed_output``/``citations`` (when null), tool_use blocks get ``caller``,
+    etc. ``normalize_response`` captured blocks verbatim via ``_to_plain_data``,
+    so these leak back as input on the next turn → HTTP 400.
+
+    Whitelist per type (NOT a blacklist) so future SDK output-only fields can't
+    reintroduce the bug. Returns a clean block, or None to drop it.
+    """
+    if not isinstance(b, dict):
+        return None
+    btype = b.get("type")
+    if btype == "text":
+        out: Dict[str, Any] = {"type": "text", "text": b.get("text", "")}
+        # citations is input-valid ONLY when it's a non-empty list; the SDK
+        # emits citations=None on responses, which the input schema rejects.
+        cits = b.get("citations")
+        if isinstance(cits, list) and cits:
+            out["citations"] = cits
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = b["cache_control"]
+        return out
+    if btype == "thinking":
+        out = {"type": "thinking", "thinking": b.get("thinking", "")}
+        if b.get("signature"):
+            out["signature"] = b["signature"]
+        return out
+    if btype == "redacted_thinking":
+        # Only valid with its data payload; drop if missing.
+        return {"type": "redacted_thinking", "data": b["data"]} if b.get("data") else None
+    if btype == "tool_use":
+        out = {
+            "type": "tool_use",
+            "id": _sanitize_tool_id(b.get("id", "")),
+            "name": b.get("name", ""),
+            "input": b.get("input", {}),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = b["cache_control"]
+        return out
+    if btype == "image":
+        src = b.get("source")
+        return {"type": "image", "source": src} if isinstance(src, dict) else None
+    # Unknown/unsupported block type on the input path — drop rather than risk
+    # another "Extra inputs are not permitted".
+    return None
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
@@ -1694,24 +1755,20 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     content = m.get("content", "")
     # Anthropic interleaved-thinking fast path: when this turn carries a
     # verbatim, order-preserving block list (set by normalize_response only
-    # for turns that interleave SIGNED thinking with tool_use), replay it
-    # unchanged. Reconstructing from the parallel reasoning_details +
-    # tool_calls fields front-loads thinking and reorders signed blocks,
-    # which Anthropic rejects with HTTP 400 ("thinking ... blocks in the
-    # latest assistant message cannot be modified"). Block order — and thus
-    # each thinking block's signature — must survive verbatim. tool_use IDs
-    # are sanitized to match the tool_result IDs produced elsewhere; the
-    # downstream mcp_ prefixing pass handles tool names on these blocks.
+    # for turns that interleave SIGNED thinking with tool_use), replay it.
+    # Each block is run through _sanitize_replay_block to strip output-only
+    # SDK fields (parsed_output, caller, citations=None, …) that the Messages
+    # INPUT schema forbids — replaying them verbatim caused HTTP 400 "Extra
+    # inputs are not permitted" (text.parsed_output). Block ORDER is preserved
+    # (the reason this channel exists); only forbidden sibling fields are
+    # dropped, leaving thinking signatures and tool_use id/name/input intact.
     ordered_blocks = m.get("anthropic_content_blocks")
     if isinstance(ordered_blocks, list) and ordered_blocks:
         replayed: List[Dict[str, Any]] = []
         for b in ordered_blocks:
-            if not isinstance(b, dict):
-                continue
-            blk = copy.deepcopy(b)
-            if blk.get("type") == "tool_use" and "id" in blk:
-                blk["id"] = _sanitize_tool_id(blk.get("id", ""))
-            replayed.append(blk)
+            clean = _sanitize_replay_block(b)
+            if clean is not None:
+                replayed.append(clean)
         if replayed:
             return {"role": "assistant", "content": replayed}
 

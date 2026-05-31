@@ -787,8 +787,10 @@ def AIAgent(*args, **kwargs):
 
 
 def get_tool_definitions(*args, **kwargs):
+    from hermes_cli.mcp_startup import wait_for_mcp_discovery
     from model_tools import get_tool_definitions as _get_tool_definitions
 
+    wait_for_mcp_discovery()
     return _get_tool_definitions(*args, **kwargs)
 
 
@@ -896,9 +898,12 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
     try:
-        from tools.mcp_tool import discover_mcp_tools
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        discover_mcp_tools()
+        start_background_mcp_discovery(
+            logger=logger,
+            thread_name="termux-cli-mcp-discovery",
+        )
     except Exception:
         logger.debug(
             "MCP tool discovery failed at deferred CLI startup",
@@ -1537,8 +1542,16 @@ def _query_osc11_background() -> str | None:
     Most modern terminals reply with \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
     within a few ms.  We wait up to 100ms total before giving up.
     Returns "#RRGGBB" or None on timeout / non-tty.
+
+    Skipped over SSH: the round-trip routinely exceeds our 100ms budget, so a
+    late reply lands after prompt_toolkit has grabbed the tty — its payload
+    leaks in as typed text and the BEL terminator reads as Ctrl+G (open
+    editor), trapping the user in a stray editor. Remote sessions fall back to
+    COLORFGBG / env hints / the dark default instead.
     """
     if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return None
     try:
         import termios
@@ -1587,8 +1600,11 @@ def _query_osc11_background() -> str | None:
         r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
         return f"#{r:02X}{g:02X}{b:02X}"
     finally:
+        # TCSAFLUSH discards any unread input as it restores the original
+        # attributes — scrubs a slow/partial OSC 11 reply out of the tty
+        # buffer before prompt_toolkit can read it as keystrokes.
         try:
-            termios.tcsetattr(fd, termios.TCSANOW, old)
+            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
         except Exception:
             pass
 
@@ -4870,6 +4886,10 @@ class HermesCLI:
 
         if not self._ensure_runtime_credentials():
             return False
+
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:

@@ -845,3 +845,85 @@ class TestResetBundledSkill:
             post_manifest = _read_manifest()
             assert "google-workspace" in post_manifest
         assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()
+
+    def test_reset_restore_succeeds_on_readonly_nix_tree(self, tmp_path):
+        """#34972: --restore must succeed even when the user copy is a fully
+        read-only tree (r-xr-xr-x dirs + files), as produced by copying a
+        Nix-store source. The manifest is re-baselined and bundled re-copied."""
+        import os
+        import stat
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        sub = dest / "references"
+        sub.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# user version\n")
+        (sub / "ref.md").write_text("# nested ref\n")
+        manifest_file.write_text(
+            "google-workspace:STALEHASH000000000000000000000000\n"
+        )
+
+        # Read-only files AND directories — the real Nix-store case.
+        ro_dir = (
+            stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP
+            | stat.S_IROTH | stat.S_IXOTH
+        )
+        os.chmod(sub / "ref.md", stat.S_IREAD)
+        os.chmod(dest / "SKILL.md", stat.S_IREAD)
+        os.chmod(sub, ro_dir)
+        os.chmod(dest, ro_dir)
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = reset_bundled_skill("google-workspace", restore=True)
+
+            assert result["ok"] is True
+            assert result["action"] == "restored"
+            # Bundled version was re-copied over the (deleted) user copy.
+            assert "upstream" in (dest / "SKILL.md").read_text()
+            # The read-only nested user dir/file was fully removed, not left behind.
+            assert not (sub / "ref.md").exists()
+            # sync ran and re-copied the skill (not stuck in limbo).
+            assert "google-workspace" in result["synced"]["copied"]
+        finally:
+            # Restore perms so tmp_path teardown can remove anything left.
+            for p in (sub, dest):
+                if p.exists():
+                    os.chmod(p, stat.S_IRWXU)
+
+    def test_reset_restore_preserves_manifest_on_rmtree_failure(self, tmp_path):
+        """#34972: when the user copy genuinely cannot be removed, the manifest
+        entry must NOT be deleted — otherwise the skill enters a limbo state
+        where future syncs silently skip it forever."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# user version\n")
+        manifest_file.write_text(
+            "google-workspace:STALEHASH000000000000000000000000\n"
+        )
+
+        # Simulate an unremovable tree (e.g. a busy mountpoint or a path even
+        # chmod can't rescue) by making the removal helper raise.
+        def _boom(_path):
+            raise PermissionError(13, "Permission denied")
+
+        with self._patches(bundled, skills_dir, manifest_file), patch(
+            "tools.skills_sync._rmtree_writable", side_effect=_boom
+        ):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+        # Restore failed, and the manifest must be left untouched.
+        assert result["ok"] is False
+        assert result["action"] == "not_reset"
+        assert "Manifest entry preserved" in result["message"]
+        manifest_after = manifest_file.read_text()
+        assert "google-workspace" in manifest_after
+        # User copy is still on disk (we changed nothing).
+        assert (dest / "SKILL.md").exists()

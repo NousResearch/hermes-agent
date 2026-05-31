@@ -189,6 +189,32 @@ class TestBrowserEvalSupervisorPath:
         json.loads(bt._browser_eval("1+1"))
         assert called["subprocess"] is True
 
+    def test_subprocess_reference_chain_error_becomes_guidance(self, monkeypatch):
+        """The CLI subprocess can't retry with returnByValue=False, so the
+        cryptic 'Object reference chain is too long' CDP error must be turned
+        into actionable guidance instead of surfaced raw."""
+        import tools.browser_tool as bt
+
+        # No supervisor → subprocess path runs.
+        _patch_supervisor(monkeypatch, None)
+
+        def _fake_subprocess(task_id, cmd, args):
+            assert cmd == "eval"
+            return {
+                "success": False,
+                "error": "Runtime.evaluate failed: Object reference chain is too long",
+            }
+
+        monkeypatch.setattr(bt, "_run_browser_command", _fake_subprocess)
+
+        out = json.loads(bt._browser_eval("document.body"))
+        assert out["success"] is False
+        # Raw protocol error must NOT leak through.
+        assert "reference chain" not in out["error"].lower()
+        # Actionable guidance instead.
+        assert "primitive" in out["error"].lower()
+        assert "DOM node" in out["error"] or "dom node" in out["error"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Response shaping: CDPSupervisor.evaluate_runtime
@@ -361,3 +387,91 @@ class TestEvaluateRuntimeResponseShaping:
         finally:
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=2)
+
+
+def _make_supervisor_with_cdp_fn(cdp_fn):
+    """Like ``_make_supervisor_with_cdp`` but lets the test supply a coroutine
+    function as ``_cdp`` so behaviour can vary by params (e.g. returnByValue).
+    """
+    import asyncio
+    import threading
+
+    from tools.browser_supervisor import CDPSupervisor
+
+    sup = object.__new__(CDPSupervisor)
+    sup._state_lock = threading.Lock()
+    sup._active = True
+    sup._page_session_id = "test-session-id"
+
+    loop = asyncio.new_event_loop()
+
+    def _runner():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+
+    sup._cdp = cdp_fn  # type: ignore[method-assign]
+    sup._loop = loop
+    sup._thread = thread
+    return sup
+
+
+class TestEvaluateRuntimeDomNodeCrashRetry:
+    """returnByValue=True on a DOM node fails CDP serialization with 'Object
+    reference chain is too long'.  evaluate_runtime must retry with
+    returnByValue=False and return the node's description instead of crashing.
+    """
+
+    def test_reference_chain_crash_retries_without_by_value(self):
+        calls = []
+
+        async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            by_value = (params or {}).get("returnByValue")
+            calls.append(by_value)
+            if by_value:
+                # Mirror _read_loop turning a top-level CDP error into a RuntimeError.
+                raise RuntimeError(
+                    "CDP error on id=7: {'code': -32000, "
+                    "'message': 'Object reference chain is too long'}"
+                )
+            # returnByValue=False: Chrome returns the node's description, no value.
+            return {
+                "id": 8,
+                "result": {
+                    "result": {
+                        "type": "object",
+                        "subtype": "node",
+                        "description": "body",
+                    }
+                },
+            }
+
+        sup = _make_supervisor_with_cdp_fn(_fake_cdp)
+        try:
+            out = sup.evaluate_runtime("document.body")
+            assert out["ok"] is True
+            assert out["result"] == "body"
+            assert out["result_type"] == "object"
+            # First call by_value=True (crashed), retried with by_value=False.
+            assert calls == [True, False]
+        finally:
+            _stop_supervisor(sup)
+
+    def test_unrelated_error_does_not_retry(self):
+        calls = []
+
+        async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            calls.append((params or {}).get("returnByValue"))
+            raise RuntimeError("CDP error on id=3: {'message': 'Target closed'}")
+
+        sup = _make_supervisor_with_cdp_fn(_fake_cdp)
+        try:
+            out = sup.evaluate_runtime("document.body")
+            assert out["ok"] is False
+            assert "Target closed" in out["error"]
+            # No retry for unrelated failures — exactly one call.
+            assert calls == [True]
+        finally:
+            _stop_supervisor(sup)

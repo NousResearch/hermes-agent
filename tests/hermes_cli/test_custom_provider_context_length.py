@@ -183,27 +183,32 @@ class TestGetModelContextLengthHonorsOverride:
                 p.stop()
         assert ctx == 1_050_000
 
-    def test_explicit_config_context_length_still_wins(self):
-        """Top-level model.context_length (step 0) outranks custom_providers (step 0b).
+    def test_per_model_override_wins_over_global_config_default(self):
+        """Per-model custom_providers override (step 0a) outranks the
+        top-level ``model.context_length`` default (step 0b).
 
-        Users who set both should see the top-level value — that's the
-        documented precedence and matches the long-standing step-0 behavior.
+        Rationale: ``model.context_length`` is a *global* default that applies
+        to every model; ``custom_providers[].models.<id>.context_length`` is
+        explicitly per-model and therefore strictly more specific. Without
+        this precedence, a user who sets a high global default for their
+        cloud daily-driver would see the wrong number for a local Ollama
+        model with a baked-in lower ``num_ctx``.
         """
         from agent.model_metadata import get_model_context_length
         custom = [
             {
                 "base_url": "https://example.invalid/v1",
-                "models": {"m": {"context_length": 1_050_000}},
+                "models": {"m": {"context_length": 65_536}},
             }
         ]
         ctx = get_model_context_length(
             "m",
             base_url="https://example.invalid/v1",
             provider="custom",
-            config_context_length=500_000,  # explicit top-level wins
+            config_context_length=200_000,  # global default, less specific
             custom_providers=custom,
         )
-        assert ctx == 500_000
+        assert ctx == 65_536
 
     def test_no_override_falls_through_to_default(self):
         """With custom_providers=None and all probes disabled, resolver

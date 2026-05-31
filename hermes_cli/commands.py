@@ -1598,6 +1598,30 @@ class SlashCommandCompleter(Completer):
         except Exception:
             pass
 
+    def _dollar_alias_completions(self, alias_word: str):
+        """Yield completions for ``$alias`` inline model routing."""
+        alias_lower = alias_word.lower()
+        try:
+            from hermes_cli.model_switch import (
+                _ensure_direct_aliases,
+                DIRECT_ALIASES,
+            )
+            from hermes_cli.providers import get_label
+
+            _ensure_direct_aliases()
+            for name, da in sorted(DIRECT_ALIASES.items()):
+                if name.startswith(alias_lower):
+                    label = get_label(da.provider)
+                    url = f" | {da.base_url}" if da.base_url else ""
+                    yield Completion(
+                        name[len(alias_word):] if alias_word else name,
+                        start_position=-len(alias_word),
+                        display=f"${name}",
+                        display_meta=f"{da.model} ({label}{url})",
+                    )
+        except Exception:
+            pass
+
     def _model_completions(self, sub_text: str, sub_lower: str):
         """Yield completions for /model from config aliases + built-in aliases."""
         seen = set()
@@ -1647,6 +1671,11 @@ class SlashCommandCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
+            # Try $alias inline model routing completion
+            if text.startswith("$"):
+                alias_word = text[1:]
+                yield from self._dollar_alias_completions(alias_word)
+                return
             # Try @ context completion (Claude Code-style)
             ctx_word = self._extract_context_word(text)
             if ctx_word is not None:

@@ -4802,13 +4802,84 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        If the message starts with ``$alias`` (e.g. ``$dsr analyze this``),
+        resolve it as a **one-turn** model switch: delegate to
+        ``switch_model()``, build a route from the result, and return the
+        stripped ``clean_text`` so the ``$alias`` prefix never enters the
+        conversation history.  The session's primary model/provider are
+        **not** changed.
+
+        Otherwise (no ``$alias`` prefix), always uses the session's primary
+        model/provider.  If the user has toggled `/fast` on and the current
+        model supports Priority Processing / Anthropic fast mode, attach
+        ``request_overrides`` so the API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        # ── inline model alias routing ($alias) ──────────────────────────
+        from hermes_cli.model_switch import (
+            parse_inline_model_alias_invocation,
+            switch_model,
+            ModelAliasError,
+        )
+
+        invocation = parse_inline_model_alias_invocation(user_message)
+        if invocation is not None:
+            result = switch_model(
+                raw_input=invocation.alias,
+                current_provider=self.provider or "",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+                current_api_key=self.api_key or "",
+                is_global=False,
+                explicit_provider="",
+                user_providers=None,
+                custom_providers=None,
+            )
+            if not result.success:
+                raise ModelAliasError(
+                    result.error_message
+                    or f"Unknown model alias '{invocation.alias}'"
+                )
+
+            # Build one-turn route from switch result — self.model /
+            # self.provider are NOT mutated (true turn-scoped routing).
+            runtime = {
+                "api_key": result.api_key,
+                "base_url": result.base_url,
+                "provider": result.target_provider,
+                "api_mode": result.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
+                "credential_pool": getattr(self, "_credential_pool", None),
+            }
+            route = {
+                "model": result.new_model,
+                "runtime": runtime,
+                "signature": (
+                    result.new_model,
+                    runtime["provider"],
+                    runtime["base_url"],
+                    runtime["api_mode"],
+                    runtime["command"],
+                    tuple(runtime["args"]),
+                ),
+                "clean_text": invocation.prompt,
+                "model_alias": invocation.alias,
+            }
+
+            service_tier = getattr(self, "service_tier", None)
+            if service_tier:
+                try:
+                    overrides = resolve_fast_mode_overrides(route["model"])
+                except Exception:
+                    overrides = None
+                route["request_overrides"] = overrides
+            else:
+                route["request_overrides"] = None
+            return route
+
+        # ── default: session's primary model/provider ────────────────────
         runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,
@@ -7692,6 +7763,11 @@ class HermesCLI:
         # Parse --provider, --global, and --refresh flags
         model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
 
+        # ── /model alias <subcommand> ────────────────────────────────────
+        if model_input.startswith("alias"):
+            self._handle_model_alias_command(model_input, explicit_provider)
+            return
+
         # --refresh: wipe the on-disk picker cache before building the
         # provider list. Forces a live re-fetch of every authed provider's
         # /v1/models endpoint on this open.
@@ -7857,6 +7933,117 @@ class HermesCLI:
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
+
+    def _handle_model_alias_command(
+        self, model_input: str, explicit_provider: str
+    ) -> None:
+        """Route ``/model alias add|list|show|remove`` sub-commands."""
+        from hermes_cli.model_switch import (
+            save_model_alias,
+            remove_model_alias,
+            _ensure_direct_aliases,
+            DIRECT_ALIASES,
+        )
+        from hermes_cli.providers import get_label
+
+        parts = model_input.split()
+        if len(parts) < 2:
+            _cprint("  Usage: /model alias add|list|show|remove ...")
+            _cprint("    /model alias add <name> [<model> --provider <provider>]")
+            _cprint("    /model alias list")
+            _cprint("    /model alias show <name>")
+            _cprint("    /model alias remove <name>")
+            return
+
+        sub = parts[1].lower()
+
+        # --- /model alias list ---
+        if sub == "list":
+            _ensure_direct_aliases()
+            if not DIRECT_ALIASES:
+                _cprint("  No model aliases defined.")
+                _cprint("  Use /model alias add <name> to create one.")
+                return
+            _cprint("  Saved model aliases:")
+            for name in sorted(DIRECT_ALIASES):
+                da = DIRECT_ALIASES[name]
+                label = get_label(da.provider)
+                url = f" @ {da.base_url}" if da.base_url else ""
+                _cprint(f"    ${name}  →  {da.model}  ({label}{url})")
+            _cprint("")
+            _cprint("  Use $<name> before your message to route one turn.")
+            return
+
+        # --- /model alias remove <name> ---
+        if sub == "remove":
+            if len(parts) < 3:
+                _cprint("  Usage: /model alias remove <name>")
+                return
+            name = parts[2].strip().lower()
+            if remove_model_alias(name):
+                _cprint(f"  ✓ Alias '${name}' removed.")
+            else:
+                _cprint(f"  ✗ Alias '${name}' not found.")
+            return
+
+        # --- /model alias show <name> ---
+        if sub == "show":
+            if len(parts) < 3:
+                _cprint("  Usage: /model alias show <name>")
+                return
+            name = parts[2].strip().lower()
+            _ensure_direct_aliases()
+            da = DIRECT_ALIASES.get(name)
+            if da is None:
+                _cprint(f"  ✗ Alias '${name}' not found.")
+                return
+            label = get_label(da.provider)
+            _cprint(f"  ${name}:")
+            _cprint(f"    Model:    {da.model}")
+            _cprint(f"    Provider: {label} ({da.provider})")
+            if da.base_url:
+                _cprint(f"    Base URL: {da.base_url}")
+            return
+
+        # --- /model alias add <name> [<model> --provider <provider>] ----
+        if sub == "add":
+            if len(parts) < 3:
+                _cprint("  Usage: /model alias add <name> [<model> --provider <provider>]")
+                return
+
+            alias = parts[2].strip().lower()
+            remaining = " ".join(parts[3:]).strip()
+
+            if remaining:
+                # Explicit model+provider given
+                from hermes_cli.model_switch import parse_model_flags
+                model, provider, _global, _refresh = parse_model_flags(remaining)
+                provider = provider or explicit_provider or self.provider or ""
+                if not model:
+                    _cprint("  Usage: /model alias add <name> <model> --provider <provider>")
+                    return
+                da = save_model_alias(
+                    alias, provider=provider, model=model, base_url=""
+                )
+                label = get_label(provider)
+                _cprint(f"  ✓ Alias '${alias}' → {model} ({label})")
+            else:
+                # No explicit model — save current active route
+                da = save_model_alias(
+                    alias,
+                    provider=self.provider or "",
+                    model=self.model or "",
+                    base_url=self.base_url or "",
+                )
+                label = get_label(self.provider or "")
+                url = f" @ {self.base_url}" if self.base_url else ""
+                _cprint(
+                    f"  ✓ Alias '${alias}' → {self.model} ({label}{url})"
+                )
+            return
+
+        _cprint(f"  Unknown alias subcommand: {sub}")
+        _cprint("  Available: add, list, show, remove")
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
@@ -11798,7 +11985,15 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return None
 
-        turn_route = self._resolve_turn_agent_config(message)
+        try:
+            from hermes_cli.model_switch import ModelAliasError
+            turn_route = self._resolve_turn_agent_config(message)
+        except ModelAliasError as e:
+            _cprint(f"  ✗ {e}")
+            return None
+        # Strip $alias prefix from message so it doesn't enter history
+        if isinstance(message, str):
+            message = turn_route.get("clean_text", message)
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 

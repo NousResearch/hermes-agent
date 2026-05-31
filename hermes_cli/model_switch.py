@@ -169,6 +169,16 @@ class DirectAlias(NamedTuple):
     base_url: str
 
 
+class InlineModelAliasInvocation(NamedTuple):
+    """Parsed $alias prefix from a user chat message."""
+    alias: str
+    prompt: str
+
+
+class ModelAliasError(Exception):
+    """Raised when an inline $alias reference cannot be resolved."""
+
+
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
 _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
@@ -253,6 +263,85 @@ def _ensure_direct_aliases() -> None:
     """
     if not DIRECT_ALIASES:
         DIRECT_ALIASES.update(_load_direct_aliases())
+
+
+def parse_inline_model_alias_invocation(
+    text: str,
+) -> "Optional[InlineModelAliasInvocation]":
+    """Parse a ``$alias <prompt>`` prefix from a user chat message.
+
+    Returns an ``InlineModelAliasInvocation`` with the alias name and the
+    remainder of the message (prompt), or ``None`` if the message does not
+    start with an alias prefix.
+
+    Escaped ``$$`` and ``\\$`` are treated as literal characters and return
+    ``None``.
+    """
+    if not text or not text.startswith("$"):
+        return None
+    # Escaped: $$ or \$ → literal dollar sign, not an alias
+    if text.startswith("$$") or text.startswith("\\$"):
+        return None
+    rest = text[1:]  # strip leading $
+    if not rest:
+        return None
+    parts = rest.split(None, 1)
+    alias = parts[0].strip()
+    if not alias:
+        return None
+    prompt = parts[1].strip() if len(parts) > 1 else ""
+    return InlineModelAliasInvocation(alias=alias.lower(), prompt=prompt)
+
+
+def save_model_alias(
+    alias: str,
+    provider: str,
+    model: str,
+    base_url: str = "",
+) -> DirectAlias:
+    """Persist a model alias to ``config.yaml`` under ``model_aliases:``.
+
+    The alias name is lowercased; the provider, model, and optional base_url
+    are stored together.  The in-memory ``DIRECT_ALIASES`` cache is updated
+    immediately so the new alias is usable without restarting.
+
+    Returns the ``DirectAlias`` that was saved.
+    """
+    from hermes_cli.config import read_raw_config, save_config
+
+    alias_key = alias.strip().lower()
+    raw = read_raw_config()
+    if not isinstance(raw.get("model_aliases"), dict):
+        raw["model_aliases"] = {}
+    raw["model_aliases"][alias_key] = {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+    }
+    save_config(raw)
+
+    da = DirectAlias(model=model, provider=provider, base_url=base_url)
+    DIRECT_ALIASES[alias_key] = da
+    return da
+
+
+def remove_model_alias(alias: str) -> bool:
+    """Delete a model alias from ``config.yaml`` and the in-memory cache.
+
+    Returns ``True`` if the alias existed and was removed, ``False`` if it
+    was not found.
+    """
+    from hermes_cli.config import read_raw_config, save_config
+
+    alias_key = alias.strip().lower()
+    raw = read_raw_config()
+    aliases = raw.get("model_aliases")
+    if not isinstance(aliases, dict) or alias_key not in aliases:
+        return False
+    del aliases[alias_key]
+    save_config(raw)
+    DIRECT_ALIASES.pop(alias_key, None)
+    return True
 
 
 # ---------------------------------------------------------------------------

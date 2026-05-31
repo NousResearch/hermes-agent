@@ -44,6 +44,15 @@ DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
 
+# BlueBubbles/iMessage does not expose a stable bot mention identity like
+# Slack (<@U...>), Telegram (@botname), or Matrix (MXID). When users opt into
+# group mention gating without custom aliases, use conservative Hermes wake
+# words so `require_mention: true` is a one-line enablement path.
+DEFAULT_MENTION_PATTERNS = [
+    r"(?<![\w@])@?hermes\s+agent\b[,:\-]?",
+    r"(?<![\w@])@?hermes\b[,:\-]?",
+]
+
 # Tapback reaction codes (BlueBubbles associatedMessageType values)
 _TAPBACK_ADDED = {
     2000: "love", 2001: "like", 2002: "dislike",
@@ -127,6 +136,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self.require_mention = self._bool_setting(
+            extra.get("require_mention"),
+            os.getenv("BLUEBUBBLES_REQUIRE_MENTION"),
+            default=False,
+        )
+        self._mention_patterns = self._compile_mention_patterns(
+            extra.get("mention_patterns")
+            if "mention_patterns" in extra
+            else os.getenv("BLUEBUBBLES_MENTION_PATTERNS")
+        )
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -140,6 +159,77 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _api_url(self, path: str) -> str:
         sep = "&" if "?" in path else "?"
         return f"{self.server_url}{path}{sep}password={quote(self.password, safe='')}"
+
+    @staticmethod
+    def _bool_setting(*values: Any, default: bool = False) -> bool:
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if not text:
+                continue
+            return text in {"true", "1", "yes", "on"}
+        return default
+
+    @staticmethod
+    def _coerce_mention_patterns(raw: Any) -> List[str]:
+        if raw is None:
+            return list(DEFAULT_MENTION_PATTERNS)
+        if isinstance(raw, list):
+            values = raw
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                values = parsed
+            else:
+                values = [
+                    part.strip()
+                    for line in text.splitlines()
+                    for part in line.split(",")
+                    if part.strip()
+                ]
+        else:
+            values = [raw]
+        return [str(value).strip() for value in values if str(value).strip()]
+
+    def _compile_mention_patterns(self, raw: Any) -> List[re.Pattern]:
+        compiled: List[re.Pattern] = []
+        for pattern in self._coerce_mention_patterns(raw):
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as exc:
+                logger.warning("[%s] Invalid BlueBubbles mention pattern %r: %s", self.name, pattern, exc)
+        if compiled:
+            logger.info("[%s] Loaded %d BlueBubbles mention pattern(s)", self.name, len(compiled))
+        return compiled
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        if not text or not self._mention_patterns:
+            return False
+        return any(pattern.search(text) for pattern in self._mention_patterns)
+
+    def _clean_mention_text(self, text: str) -> str:
+        """Strip a leading BlueBubbles wake word before dispatch.
+
+        Custom mention patterns are regular expressions, so stripping only a
+        leading match avoids deleting ordinary words later in the prompt.
+        """
+        if not text:
+            return text
+        for pattern in self._mention_patterns:
+            match = pattern.match(text.lstrip())
+            if match:
+                cleaned = text.lstrip()[match.end():].lstrip(" ,:-")
+                return cleaned or text
+        return text
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
         assert self.client is not None
@@ -921,6 +1011,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        if is_group and self.require_mention:
+            if not self._message_matches_mention_patterns(text):
+                logger.debug(
+                    "[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)"
+                )
+                return web.Response(text="ok")
+            text = self._clean_mention_text(text)
         source = self.build_source(
             chat_id=session_chat_id,
             chat_name=chat_identifier or sender,

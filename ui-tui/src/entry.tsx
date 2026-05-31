@@ -1,20 +1,41 @@
 #!/usr/bin/env -S node --max-old-space-size=8192 --expose-gc
-// Must be first import — mutates process.env.FORCE_COLOR / COLORTERM before
-// any chalk / supports-color import so the banner gradient renders in
-// truecolor instead of being downsampled to 256-color (which collapses
-// gold #FFD700 and amber #FFBF00 to the same slot).
+// Must be first import. If the user explicitly opts into truecolor, this
+// nudges chalk / supports-color before either package is initialized.
 import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
+import { TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+import { openExternalUrl } from './lib/openExternalUrl.js'
+import { clampStdoutDimensions } from './lib/terminalDimensions.js'
+import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
   process.exit(0)
+}
+
+// Some hosts (notably WSL) report bogus window sizes such as 131072x1. Clamp
+// `process.stdout.columns`/`rows` at the source so the Ink renderer, its
+// resize handler, and every component read see sane values. Must run before
+// `ink.render` constructs the renderer.
+clampStdoutDimensions()
+
+// Start from a clean slate. If a previous TUI crashed or was kill -9'd, the
+// terminal tab can still have mouse/focus/paste modes enabled.
+resetTerminalModes()
+
+// Desktop terminals benefit from a clean startup slate because the TUI usually
+// runs in AlternateScreen. On Termux we keep prior output intact so users can
+// review/copy earlier assistant replies after reopening the app.
+if (TERMUX_TUI_MODE) {
+  process.stdout.write('\n')
+} else {
+  process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
 }
 
 const gw = new GatewayClient()
@@ -25,17 +46,28 @@ const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
   `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`
 
 setupGracefulExit({
-  cleanups: [() => gw.kill()],
-  onError: (scope, err) => {
-    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+  cleanups: [
+    () => {
+      resetTerminalModes()
 
-    process.stderr.write(`hermes-tui ${scope}: ${message.slice(0, 2000)}\n`)
+      return gw.kill('graceful-exit-cleanup')
+    }
+  ],
+  onError: (scope, err) => {
+    const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
+
+    process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
   },
-  onSignal: signal => process.stderr.write(`hermes-tui: received ${signal}\n`)
+  onSignal: signal => {
+    resetTerminalModes()
+    process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
+  }
 })
 
 const stopMemoryMonitor = startMemoryMonitor({
   onCritical: (snap, dump) => {
+    resetTerminalModes()
+    process.stderr.write(`hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`)
     process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)
@@ -66,4 +98,14 @@ const onFrame =
       }
     : undefined
 
-ink.render(<App gw={gw} />, { exitOnCtrlC: false, onFrame })
+ink.render(<App gw={gw} />, {
+  exitOnCtrlC: false,
+  onFrame,
+  // Open URLs in the user's default browser when a link cell is clicked.
+  // The TUI's mouse tracking captures click events before Terminal.app's
+  // own URL detection can fire, so without this hook clicks on `<Link>`
+  // do nothing in any terminal where mouseTracking is on.
+  onHyperlinkClick: url => {
+    openExternalUrl(url)
+  }
+})

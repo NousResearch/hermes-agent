@@ -191,6 +191,88 @@ def save_b64_image(
     return path
 
 
+# Extension inference for save_url_image — keep small and explicit.  We don't
+# want to import mimetypes for a handful of formats every image_gen provider
+# actually returns, and we never want to inherit a content-type that points
+# at HTML or JSON when the API gives us a degenerate response.
+_URL_IMAGE_CONTENT_TYPES = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+
+
+def save_url_image(
+    url: str,
+    *,
+    prefix: str = "image",
+    timeout: float = 60.0,
+    max_bytes: int = 25 * 1024 * 1024,
+) -> Path:
+    """Download an image URL and write it under ``$HERMES_HOME/cache/images/``.
+
+    Used by providers (xAI, fallback OpenAI) whose API returns an *ephemeral*
+    URL instead of inline base64 — those URLs frequently expire before a
+    downstream consumer (Telegram ``send_photo``, browser fetch) can resolve
+    them, so we materialise the bytes locally at tool-completion time.
+    Mirrors :func:`save_b64_image`'s shape so providers can swap in one line.
+
+    Returns the absolute :class:`Path` to the saved file.  Raises on any
+    network / HTTP / oversize / non-image-content-type error so callers can
+    fall back to returning the bare URL with a clear error message.
+    """
+    import requests
+
+    response = requests.get(url, timeout=timeout, stream=True)
+    response.raise_for_status()
+
+    # Infer extension from the response content-type, falling back to the
+    # URL suffix when xAI / OpenAI omit a precise type (some CDNs return
+    # ``application/octet-stream``).  Defaults to ``png``.
+    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    extension = _URL_IMAGE_CONTENT_TYPES.get(content_type)
+    if extension is None:
+        url_path = url.split("?", 1)[0].lower()
+        for ext in ("png", "jpg", "jpeg", "webp", "gif"):
+            if url_path.endswith(f".{ext}"):
+                extension = "jpg" if ext == "jpeg" else ext
+                break
+    if extension is None:
+        extension = "png"
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    short = uuid.uuid4().hex[:8]
+    path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
+
+    bytes_written = 0
+    with path.open("wb") as fh:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            bytes_written += len(chunk)
+            if bytes_written > max_bytes:
+                fh.close()
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                raise ValueError(
+                    f"Image at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
+                )
+            fh.write(chunk)
+
+    if bytes_written == 0:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise ValueError(f"Image at {url} returned 0 bytes; refusing to cache.")
+
+    return path
+
+
 def success_response(
     *,
     image: str,

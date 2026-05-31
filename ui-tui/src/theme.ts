@@ -6,6 +6,8 @@ export interface ThemeColors {
   muted: string
   completionBg: string
   completionCurrentBg: string
+  completionMetaBg: string
+  completionMetaCurrentBg: string
 
   label: string
   ok: string
@@ -76,6 +78,162 @@ function mix(a: string, b: string, t: number) {
   return '#' + ((1 << 24) | (lerp(0) << 16) | (lerp(1) << 8) | lerp(2)).toString(16).slice(1)
 }
 
+const XTERM_6_LEVELS = [0, 95, 135, 175, 215, 255] as const
+const ANSI_LIGHT_MAX_LUMINANCE = 0.72
+const ANSI_LIGHT_TARGET_LUMINANCE = 0.34
+const ANSI_LIGHT_MIN_SATURATION = 0.22
+const ANSI_MUTED_BUCKET = 245
+
+const ANSI_NORMALIZED_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
+  'text',
+  'label',
+  'ok',
+  'error',
+  'warn',
+  'prompt',
+  'statusFg',
+  'statusGood',
+  'statusWarn',
+  'statusBad',
+  'statusCritical',
+  'shellDollar'
+]
+
+const ANSI_MUTED_FOREGROUNDS: readonly (keyof ThemeColors)[] = ['muted', 'sessionLabel', 'sessionBorder']
+
+function xtermEightBitRgb(colorNumber: number): [number, number, number] {
+  if (colorNumber >= 232) {
+    const value = 8 + (colorNumber - 232) * 10
+
+    return [value, value, value]
+  }
+
+  if (colorNumber >= 16) {
+    const offset = colorNumber - 16
+
+    return [
+      XTERM_6_LEVELS[Math.floor(offset / 36) % 6]!,
+      XTERM_6_LEVELS[Math.floor(offset / 6) % 6]!,
+      XTERM_6_LEVELS[offset % 6]!
+    ]
+  }
+
+  return [0, 0, 0]
+}
+
+function channelLuminance(value: number): number {
+  const normalized = value / 255
+
+  return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+}
+
+function relativeLuminance(red: number, green: number, blue: number): number {
+  return 0.2126 * channelLuminance(red) + 0.7152 * channelLuminance(green) + 0.0722 * channelLuminance(blue)
+}
+
+function rgbToHsl(red: number, green: number, blue: number): [number, number, number] {
+  const rn = red / 255
+  const gn = green / 255
+  const bn = blue / 255
+  const max = Math.max(rn, gn, bn)
+  const min = Math.min(rn, gn, bn)
+  const lightness = (max + min) / 2
+
+  if (max === min) {
+    return [0, 0, lightness]
+  }
+
+  const delta = max - min
+  const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min)
+
+  const hue =
+    max === rn
+      ? (gn - bn) / delta + (gn < bn ? 6 : 0)
+      : max === gn
+        ? (bn - rn) / delta + 2
+        : (rn - gn) / delta + 4
+
+  return [hue / 6, saturation, lightness]
+}
+
+function circularDistance(a: number, b: number): number {
+  const distance = Math.abs(a - b)
+
+  return Math.min(distance, 1 - distance)
+}
+
+// Mirrors @hermes/ink's colorize.ts. Keep local: app code compiles from
+// ui-tui/src, while @hermes/ink is bundled separately from packages/.
+function richEightBitColorNumber(red: number, green: number, blue: number): number {
+  const [, saturation, lightness] = rgbToHsl(red, green, blue)
+
+  if (saturation < 0.15) {
+    const gray = Math.round(lightness * 25)
+
+    return gray === 0 ? 16 : gray === 25 ? 231 : 231 + gray
+  }
+
+  const sixRed = red < 95 ? red / 95 : 1 + (red - 95) / 40
+  const sixGreen = green < 95 ? green / 95 : 1 + (green - 95) / 40
+  const sixBlue = blue < 95 ? blue / 95 : 1 + (blue - 95) / 40
+
+  return 16 + 36 * Math.round(sixRed) + 6 * Math.round(sixGreen) + Math.round(sixBlue)
+}
+
+function bestReadableAnsiColor(red: number, green: number, blue: number): number {
+  const [hue, saturation, lightness] = rgbToHsl(red, green, blue)
+  let bestColor = richEightBitColorNumber(red, green, blue)
+  let bestScore = Number.POSITIVE_INFINITY
+
+  for (let colorNumber = 16; colorNumber <= 255; colorNumber += 1) {
+    const [candidateRed, candidateGreen, candidateBlue] = xtermEightBitRgb(colorNumber)
+    const candidateLuminance = relativeLuminance(candidateRed, candidateGreen, candidateBlue)
+
+    if (candidateLuminance > ANSI_LIGHT_MAX_LUMINANCE) {
+      continue
+    }
+
+    const [candidateHue, candidateSaturation, candidateLightness] = rgbToHsl(
+      candidateRed,
+      candidateGreen,
+      candidateBlue
+    )
+
+    const saturationFloorPenalty =
+      candidateSaturation < ANSI_LIGHT_MIN_SATURATION ? (ANSI_LIGHT_MIN_SATURATION - candidateSaturation) * 3 : 0
+
+    const score =
+      circularDistance(candidateHue, hue) * 4 +
+      Math.abs(candidateSaturation - Math.max(ANSI_LIGHT_MIN_SATURATION, saturation)) * 0.8 +
+      Math.abs(candidateLightness - Math.min(lightness, ANSI_LIGHT_TARGET_LUMINANCE)) * 2 +
+      saturationFloorPenalty
+
+    if (score < bestScore) {
+      bestColor = colorNumber
+      bestScore = score
+    }
+  }
+
+  return bestColor
+}
+
+function normalizeAnsiForeground(color: string): string {
+  const rgb = parseHex(color)
+
+  if (!rgb) {
+    return color
+  }
+
+  const richAnsi = richEightBitColorNumber(rgb[0], rgb[1], rgb[2])
+  const richRgb = xtermEightBitRgb(richAnsi)
+
+  const ansi = relativeLuminance(richRgb[0], richRgb[1], richRgb[2]) > ANSI_LIGHT_MAX_LUMINANCE
+    ? bestReadableAnsiColor(rgb[0], rgb[1], rgb[2])
+    : richAnsi
+
+  return `ansi256(${ansi})`
+}
+
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
@@ -108,8 +266,10 @@ export const DARK_THEME: Theme = {
     // new value sits ~60% luminance — readable without losing the "muted /
     // secondary" semantic.  Field labels still use `label` (65%) which
     // stays brighter so hierarchy holds.
-    completionBg: '#FFFFFF',
-    completionCurrentBg: mix('#FFFFFF', '#FFBF00', 0.25),
+    completionBg: '#1a1a2e',
+    completionCurrentBg: '#333355',
+    completionMetaBg: '#1a1a2e',
+    completionMetaCurrentBg: '#333355',
 
     label: '#DAA520',
     ok: '#4caf50',
@@ -156,6 +316,8 @@ export const LIGHT_THEME: Theme = {
     muted: '#7A5A0F',
     completionBg: '#F5F5F5',
     completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    completionMetaBg: '#F5F5F5',
+    completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
 
     label: '#7A5A0F',
     ok: '#2E7D32',
@@ -190,12 +352,11 @@ export const LIGHT_THEME: Theme = {
 const TRUE_RE = /^(?:1|true|yes|on)$/
 const FALSE_RE = /^(?:0|false|no|off)$/
 
-// Reserved for future TERM_PROGRAM-based heuristics.  Empty by default:
-// most modern terminals (Ghostty, Warp, iTerm2, Apple_Terminal) ship a
-// dark profile out of the box, so guessing wrong here is more annoying
-// than missing a light user — light users can always set
-// `HERMES_TUI_LIGHT=1` or `HERMES_TUI_THEME=light`.
-const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>()
+// TERM_PROGRAM fallback allow-list for terminals whose default profile is
+// light and which may not expose COLORFGBG. This currently includes Apple
+// Terminal. Explicit HERMES_TUI_THEME / COLORFGBG signals above still win,
+// so dark Apple Terminal profiles that advertise a dark background stay dark.
+const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>(['Apple_Terminal'])
 
 // Best-effort RGB → luminance check.  Currently only accepts a 3- or
 // 6-digit hex value (with or without a leading `#`); the env var name
@@ -247,7 +408,7 @@ function backgroundLuminance(raw: string): null | number {
 //      slot 7 or 15 on light profiles; 0–15 ranges are otherwise
 //      treated as authoritatively dark so the TERM_PROGRAM
 //      allow-list below cannot override an explicit dark profile.
-//   5. `TERM_PROGRAM` light-default allow-list (currently empty).
+//   5. `TERM_PROGRAM` light-default allow-list.
 //
 // Anything we can't decide stays dark — the default Hermes palette
 // is the dark one.
@@ -313,7 +474,42 @@ export function detectLightMode(
   return lightDefaultTermPrograms.has(termProgram)
 }
 
-export const DEFAULT_THEME: Theme = detectLightMode() ? LIGHT_THEME : DARK_THEME
+function shouldNormalizeAnsiLightTheme(env: NodeJS.ProcessEnv = process.env, isLight = detectLightMode(env)): boolean {
+  const colorTerm = (env.COLORTERM ?? '').trim().toLowerCase()
+  const termProgram = (env.TERM_PROGRAM ?? '').trim()
+
+  return termProgram === 'Apple_Terminal' && colorTerm !== 'truecolor' && colorTerm !== '24bit' && isLight
+}
+
+export function normalizeThemeForAnsiLightTerminal(
+  theme: Theme,
+  env: NodeJS.ProcessEnv = process.env,
+  isLight = detectLightMode(env)
+): Theme {
+  if (!shouldNormalizeAnsiLightTheme(env, isLight)) {
+    return theme
+  }
+
+  const color = { ...theme.color }
+
+  for (const key of ANSI_NORMALIZED_FOREGROUNDS) {
+    color[key] = normalizeAnsiForeground(color[key])
+  }
+
+  for (const key of ANSI_MUTED_FOREGROUNDS) {
+    color[key] = `ansi256(${ANSI_MUTED_BUCKET})`
+  }
+
+  return { ...theme, color }
+}
+
+const DEFAULT_LIGHT_MODE = detectLightMode()
+
+export const DEFAULT_THEME: Theme = normalizeThemeForAnsiLightTerminal(
+  DEFAULT_LIGHT_MODE ? LIGHT_THEME : DARK_THEME,
+  process.env,
+  DEFAULT_LIGHT_MODE
+)
 
 // ── Skin → Theme ─────────────────────────────────────────────────────
 
@@ -327,13 +523,21 @@ export function fromSkin(
 ): Theme {
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
+  const hasSkinColors = Object.keys(colors).length > 0
 
   const accent = c('ui_accent') ?? c('banner_accent') ?? d.color.accent
   const bannerAccent = c('banner_accent') ?? c('banner_title') ?? d.color.accent
   const muted = c('banner_dim') ?? d.color.muted
   const completionBg = c('completion_menu_bg') ?? d.color.completionBg
 
-  return {
+  const completionCurrentBg =
+    c('completion_menu_current_bg') ??
+    (hasSkinColors ? mix(completionBg, bannerAccent, 0.25) : d.color.completionCurrentBg)
+
+  const completionMetaBg = c('completion_menu_meta_bg') ?? completionBg
+  const completionMetaCurrentBg = c('completion_menu_meta_current_bg') ?? completionCurrentBg
+
+  return normalizeThemeForAnsiLightTerminal({
     color: {
       primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
       accent,
@@ -341,7 +545,9 @@ export function fromSkin(
       text: c('ui_text') ?? c('banner_text') ?? d.color.text,
       muted,
       completionBg,
-      completionCurrentBg: c('completion_menu_current_bg') ?? mix(completionBg, bannerAccent, 0.25),
+      completionCurrentBg,
+      completionMetaBg,
+      completionMetaCurrentBg,
 
       label: c('ui_label') ?? d.color.label,
       ok: c('ui_ok') ?? d.color.ok,
@@ -358,7 +564,7 @@ export function fromSkin(
       statusWarn: c('ui_warn') ?? d.color.statusWarn,
       statusBad: d.color.statusBad,
       statusCritical: d.color.statusCritical,
-      selectionBg: c('selection_bg') ?? d.color.selectionBg,
+      selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
 
       diffAdded: d.color.diffAdded,
       diffRemoved: d.color.diffRemoved,
@@ -379,5 +585,5 @@ export function fromSkin(
 
     bannerLogo,
     bannerHero
-  }
+  }, process.env, DEFAULT_LIGHT_MODE)
 }

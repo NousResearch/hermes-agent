@@ -150,7 +150,7 @@ def _parse_jpeg_size(buf: bytes) -> Optional[dict[str, int]]:
             i += 1
             continue
         marker = buf[i + 1]
-        if marker in (0xC0, 0xC2):
+        if marker in {0xC0, 0xC2}:
             h = struct.unpack(">H", buf[i + 5: i + 7])[0]
             w = struct.unpack(">H", buf[i + 7: i + 9])[0]
             return {"width": w, "height": h}
@@ -165,7 +165,7 @@ def _parse_gif_size(buf: bytes) -> Optional[dict[str, int]]:
     if len(buf) < 10:
         return None
     sig = buf[:6].decode("ascii", errors="replace")
-    if sig not in ("GIF87a", "GIF89a"):
+    if sig not in {"GIF87a", "GIF89a"}:
         return None
     w = struct.unpack("<H", buf[6:8])[0]
     h = struct.unpack("<H", buf[8:10])[0]

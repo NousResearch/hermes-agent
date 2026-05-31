@@ -1,7 +1,9 @@
 # nix/hermes-agent.nix — Overridable Hermes Agent package
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
-# Users override via: pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+# Users override via:
+#   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "hindsight" ]; }
 {
   lib,
   stdenv,
@@ -14,6 +16,11 @@
   openssh,
   ffmpeg,
   tirith,
+
+  # linux-only deps
+  wl-clipboard,
+  xclip,
+
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
   pyproject-nix,
@@ -25,14 +32,17 @@
   rev ? null,
   # Overridable parameters
   extraPythonPackages ? [ ],
+  extraDependencyGroups ? [ ],
 }:
 let
+  nodejs = nodejs_22;
   hermesVenv = callPackage ./python.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
+    dependency-groups = [ "all" ] ++ extraDependencyGroups;
   };
 
   hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix;
+    inherit npm-lockfile-fix nodejs;
   };
 
   hermesTui = callPackage ./tui.nix {
@@ -48,13 +58,25 @@ let
     filter = path: _type: !(lib.hasInfix "/index-cache/" path);
   };
 
+  # Import bundled plugins (memory, context_engine, platforms/*).  Keeping
+  # them out of the Python site-packages keeps import semantics identical
+  # to a dev checkout — the loader reads them from HERMES_BUNDLED_PLUGINS.
+  bundledPlugins = lib.cleanSourceWith {
+    src = ../plugins;
+    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
+  };
+
   runtimeDeps = [
-    nodejs_22
+    nodejs
     ripgrep
     git
     openssh
     ffmpeg
     tirith
+  ]
+  ++ lib.optionals stdenv.isLinux [
+    wl-clipboard
+    xclip
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;
@@ -74,10 +96,49 @@ let
       builtins.hashString "sha256" (builtins.readFile ../uv.lock)
     else
       "none";
+  checkPackageCollisions = ''
+    import pathlib, sys, re
+
+    def canonical(name):
+        return re.sub(r'[-_.]+', '-', name).lower()
+
+    # Collect core venv package names
+    core = set()
+    venv_sp = pathlib.Path('${hermesVenv}/${sitePackagesPath}')
+    for di in venv_sp.glob('*.dist-info'):
+        meta = di / 'METADATA'
+        if meta.exists():
+            for line in meta.read_text().splitlines():
+                if line.startswith('Name:'):
+                    core.add(canonical(line.split(':', 1)[1].strip()))
+                    break
+
+    # Check each extra package for collisions
+    extras_dirs = [${lib.concatMapStringsSep ", " (p: "'${toString p}'") allExtraPythonPackages}]
+    for edir in extras_dirs:
+        sp = pathlib.Path(edir) / '${sitePackagesPath}'
+        if not sp.exists():
+            continue
+        for di in sp.glob('*.dist-info'):
+            meta = di / 'METADATA'
+            if not meta.exists():
+                continue
+            for line in meta.read_text().splitlines():
+                if line.startswith('Name:'):
+                    pkg = canonical(line.split(':', 1)[1].strip())
+                    if pkg in core:
+                        print(f'ERROR: plugin package \"{pkg}\" collides with a package in hermes sealed venv', file=sys.stderr)
+                        print(f'  from: {di}', file=sys.stderr)
+                        print(f'  Remove this dependency from extraPythonPackages.', file=sys.stderr)
+                        sys.exit(1)
+                    break
+
+    print('No collisions found.')
+  '';
 in
 stdenv.mkDerivation {
   pname = "hermes-agent";
-  version = (builtins.fromTOML (builtins.readFile ../pyproject.toml)).project.version;
+  version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
 
   dontUnpack = true;
   dontBuild = true;
@@ -88,6 +149,7 @@ stdenv.mkDerivation {
 
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
+    cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
     mkdir -p $out/ui-tui
@@ -98,10 +160,11 @@ stdenv.mkDerivation {
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+          --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-          --set HERMES_NODE ${nodejs_22}/bin/node \
+          --set HERMES_NODE ${lib.getExe nodejs} \
           ${lib.optionalString (rev != null) ''--set HERMES_REVISION ${rev} \''}
           ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
       '')
@@ -114,45 +177,7 @@ stdenv.mkDerivation {
 
     ${lib.optionalString (extraPythonPackages != [ ]) ''
       echo "=== Checking for plugin/core package collisions ==="
-      ${hermesVenv}/bin/python3 -c "
-import pathlib, sys, re
-
-def canonical(name):
-    return re.sub(r'[-_.]+', '-', name).lower()
-
-# Collect core venv package names
-core = set()
-venv_sp = pathlib.Path('${hermesVenv}/${sitePackagesPath}')
-for di in venv_sp.glob('*.dist-info'):
-    meta = di / 'METADATA'
-    if meta.exists():
-        for line in meta.read_text().splitlines():
-            if line.startswith('Name:'):
-                core.add(canonical(line.split(':', 1)[1].strip()))
-                break
-
-# Check each extra package for collisions
-extras_dirs = [${lib.concatMapStringsSep ", " (p: "'${toString p}'") allExtraPythonPackages}]
-for edir in extras_dirs:
-    sp = pathlib.Path(edir) / '${sitePackagesPath}'
-    if not sp.exists():
-        continue
-    for di in sp.glob('*.dist-info'):
-        meta = di / 'METADATA'
-        if not meta.exists():
-            continue
-        for line in meta.read_text().splitlines():
-            if line.startswith('Name:'):
-                pkg = canonical(line.split(':', 1)[1].strip())
-                if pkg in core:
-                    print(f'ERROR: plugin package \"{pkg}\" collides with a package in hermes sealed venv', file=sys.stderr)
-                    print(f'  from: {di}', file=sys.stderr)
-                    print(f'  Remove this dependency from extraPythonPackages.', file=sys.stderr)
-                    sys.exit(1)
-                break
-
-print('No collisions found.')
-      "
+      ${hermesVenv}/bin/python3 -c "${checkPackageCollisions}"
       echo "=== No collisions ==="
     ''}
 
@@ -160,7 +185,12 @@ print('No collisions found.')
   '';
 
   passthru = {
-    inherit hermesTui hermesWeb hermesNpmLib hermesVenv;
+    inherit
+      hermesTui
+      hermesWeb
+      hermesNpmLib
+      hermesVenv
+      ;
 
     devShellHook = ''
       STAMP=".nix-stamps/hermes-agent"
@@ -171,7 +201,6 @@ print('No collisions found.')
         source .venv/bin/activate
         uv pip install -e ".[all]"
         [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
-        [ -d tinker-atropos ] && uv pip install -e ./tinker-atropos 2>/dev/null || true
         mkdir -p .nix-stamps
         echo "$STAMP_VALUE" > "$STAMP"
       else

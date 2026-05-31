@@ -21,6 +21,7 @@ Errors in hooks are caught and logged but never block the main pipeline.
 
 import asyncio
 import importlib.util
+import sys
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
@@ -97,16 +98,28 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
 
-                # Dynamically load the handler module
+                # Dynamically load the handler module.
+                # Register in sys.modules BEFORE exec_module so Pydantic /
+                # dataclasses / typing introspection can resolve forward
+                # references (triggered by `from __future__ import annotations`
+                # in the handler). Without this, a handler that declares a
+                # Pydantic BaseModel for webhook/event payloads fails at first
+                # dispatch with "TypeAdapter ... is not fully defined".
+                module_name = f"hermes_hook_{hook_name}"
                 spec = importlib.util.spec_from_file_location(
-                    f"hermes_hook_{hook_name}", handler_path
+                    module_name, handler_path
                 )
                 if spec is None or spec.loader is None:
                     print(f"[hooks] Skipping {hook_name}: could not load handler.py", flush=True)
                     continue
 
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+                sys.modules[module_name] = module
+                try:
+                    spec.loader.exec_module(module)
+                except Exception:
+                    sys.modules.pop(module_name, None)
+                    raise
 
                 handle_fn = getattr(module, "handle", None)
                 if handle_fn is None:

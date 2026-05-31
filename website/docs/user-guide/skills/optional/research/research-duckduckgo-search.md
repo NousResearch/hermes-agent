@@ -19,6 +19,7 @@ Free web search via DuckDuckGo — text, news, images, videos. No API key needed
 | Version | `1.3.0` |
 | Author | gamedevCloudy |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `search`, `duckduckgo`, `web-search`, `free`, `fallback` |
 | Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
 

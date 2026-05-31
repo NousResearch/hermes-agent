@@ -173,6 +173,32 @@ delegate_task(
 )
 ```
 
+## Child Timeout
+
+Subagents are killed as stuck if they go quiet for more than `delegation.child_timeout_seconds` wall-clock seconds. The default is **600** (10 minutes) — bumped up from 300s in earlier releases because high-reasoning models on non-trivial research tasks were getting killed mid-think. Tune it per-install:
+
+```yaml
+delegation:
+  child_timeout_seconds: 600   # default
+```
+
+Lower it for fast local models; raise it for slow reasoning models on hard problems. The timer resets every time the child makes an API call or tool call — only genuinely idle workers trigger the kill.
+
+:::tip Diagnostic dump on zero-call timeout
+If a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, and any early error messages. Much easier to root-cause than the previous silent-timeout behavior.
+:::
+
+## Monitoring Running Subagents (`/agents`)
+
+The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegate_task` fan-out into a first-class audit surface:
+
+- Live tree view of running and recently-finished subagents, grouped by parent
+- Per-branch cost, token, and file-touched rollups
+- Kill and pause controls — cancel a specific subagent mid-flight without interrupting its siblings
+- Post-hoc review: step through each subagent's turn-by-turn history even after they've returned to the parent
+
+The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
+
 ## Depth Limit and Nested Orchestration
 
 By default, delegation is **flat**: a parent (depth 0) spawns children (depth 1), and those children cannot delegate further. This prevents runaway recursive delegation.
@@ -242,13 +268,17 @@ delegation:
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
+  api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
 
 # Or use a direct custom endpoint instead of provider:
 delegation:
   model: "qwen2.5-coder"
   base_url: "http://localhost:1234/v1"
   api_key: "local-key"
+  # api_mode: "anthropic_messages"  # Optional. Wire protocol override for base_url ("chat_completions", "codex_responses", or "anthropic_messages"). Empty = auto-detect from URL (e.g. /anthropic suffix). Set explicitly for endpoints the heuristic can't classify (Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM proxies, …).
 ```
+
+When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.

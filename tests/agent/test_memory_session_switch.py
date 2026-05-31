@@ -7,7 +7,6 @@ state in initialize() (Hindsight, and any plugin that stores session_id
 for scoped writes) keep writing into the old session's record.
 """
 
-import json
 
 import pytest
 
@@ -248,6 +247,14 @@ def _make_hindsight_provider():
     provider._atexit_registered = True
     provider._ensure_writer = lambda: None
     provider._register_atexit = lambda: None
+    # Mode + API state used by _resolve_retain_target; stub the resolver
+    # so tests don't actually probe the API. Real probe behavior is
+    # exercised by tests in tests/plugins/memory/test_hindsight_provider.py.
+    provider._mode = "cloud"
+    provider._api_url = ""
+    provider._api_key = ""
+    provider._client = None
+    provider._resolve_retain_target = lambda fb: (fb, None)
     # Stub the network-touching helper so any enqueued flush closure is
     # a no-op if ever drained in a unit test.
     provider._run_hindsight_operation = lambda _op: None

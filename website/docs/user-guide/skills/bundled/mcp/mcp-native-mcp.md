@@ -1,14 +1,14 @@
 ---
-title: "Native Mcp"
+title: "Native Mcp — MCP client: connect servers, register tools (stdio/HTTP)"
 sidebar_label: "Native Mcp"
-description: "Built-in MCP (Model Context Protocol) client that connects to external MCP servers, discovers their tools, and registers them as native Hermes Agent tools"
+description: "MCP client: connect servers, register tools (stdio/HTTP)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Native Mcp
 
-Built-in MCP (Model Context Protocol) client that connects to external MCP servers, discovers their tools, and registers them as native Hermes Agent tools. Supports stdio and HTTP transports with automatic reconnection, security filtering, and zero-config tool injection.
+MCP client: connect servers, register tools (stdio/HTTP).
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Built-in MCP (Model Context Protocol) client that connects to external MCP serve
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `MCP`, `Tools`, `Integrations` |
 | Related skills | [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter) |
 

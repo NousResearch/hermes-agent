@@ -47,7 +47,7 @@ def _title_case_slug(value: Optional[str]) -> Optional[str]:
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
-    if value in (None, ""):
+    if value in {None, ""}:
         return None
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(float(value), tz=timezone.utc)

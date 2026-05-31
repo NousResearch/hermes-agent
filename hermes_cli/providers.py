@@ -60,6 +60,17 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "openai-api": HermesOverlay(
+        transport="codex_responses",
+        base_url_override="https://api.openai.com/v1",
+        base_url_env_var="OPENAI_BASE_URL",
+    ),
+    "xai-oauth": HermesOverlay(
+        transport="codex_responses",
+        auth_type="oauth_external",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
     "qwen-oauth": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_external",
@@ -132,10 +143,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
-    "vercel": HermesOverlay(
-        transport="openai_chat",
-        is_aggregator=True,
-    ),
     "opencode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -155,6 +162,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
+    ),
+    "novita": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_env_var="NOVITA_BASE_URL",
     ),
     "xai": HermesOverlay(
         transport="codex_responses",
@@ -187,6 +199,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
+        base_url_override="https://ollama.com/v1",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
     # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
@@ -239,6 +252,10 @@ ALIASES: Dict[str, str] = {
     "x-ai": "xai",
     "x.ai": "xai",
     "grok": "xai",
+    "grok-oauth": "xai-oauth",
+    "xai-oauth": "xai-oauth",
+    "x-ai-oauth": "xai-oauth",
+    "xai-grok-oauth": "xai-oauth",
 
     # nvidia
     "nim": "nvidia",
@@ -268,11 +285,6 @@ ALIASES: Dict[str, str] = {
     "copilot": "github-copilot",
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
-
-    # vercel (models.dev ID for AI Gateway)
-    "ai-gateway": "vercel",
-    "aigateway": "vercel",
-    "vercel-ai-gateway": "vercel",
 
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",
@@ -308,6 +320,10 @@ ALIASES: Dict[str, str] = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+
+    # novita
+    "novita-ai": "novita",
+    "novitaai": "novita",
 
     # xiaomi
     "mimo": "xiaomi",
@@ -361,6 +377,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 
@@ -585,6 +602,12 @@ def resolve_custom_provider(
     if not requested:
         return None
 
+    # If the stored provider is the bare string "custom" (corrupt state
+    # from a prior model-switch bug), fall back to the first custom
+    # provider entry so existing configs self-heal.  (GH #17478)
+    bare_custom_fallback = requested == "custom"
+    first_valid = None
+
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
@@ -599,6 +622,10 @@ def resolve_custom_provider(
         if not display_name or not api_url:
             continue
 
+        # Stash the first valid entry for bare-"custom" fallback
+        if first_valid is None:
+            first_valid = (display_name, api_url)
+
         slug = custom_provider_slug(display_name)
         if requested not in {display_name.lower(), slug}:
             continue
@@ -609,6 +636,21 @@ def resolve_custom_provider(
             transport="openai_chat",
             api_key_env_vars=(),
             base_url=api_url,
+            is_aggregator=False,
+            auth_type="api_key",
+            source="user-config",
+        )
+
+    # Self-heal: bare "custom" matched nothing — return first valid entry
+    if bare_custom_fallback and first_valid:
+        dname, aurl = first_valid
+        slug = custom_provider_slug(dname)
+        return ProviderDef(
+            id=slug,
+            name=dname,
+            transport="openai_chat",
+            api_key_env_vars=(),
+            base_url=aurl,
             is_aggregator=False,
             auth_type="api_key",
             source="user-config",

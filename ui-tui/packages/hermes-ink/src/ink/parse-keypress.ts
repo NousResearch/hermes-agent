@@ -63,6 +63,35 @@ const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
 // Button 32=left-drag (0x20 | motion-bit). Plain 0/1/2 = left/mid/right click.
 // eslint-disable-next-line no-control-regex
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/
+const SGR_MOUSE_FRAGMENT_RE = /(?<!\d)(?:\[<|<)?(?:[0-9]|[1-9][0-9]|1\d{2}|2[0-4]\d|25[0-5]);\d+;\d+[Mm]/g
+
+// Whole-text mouse-burst noise fast path. When a heavy render blocks the event
+// loop past App's 50ms flush watchdog, a long burst of SGR mouse reports (mode
+// 1003 any-motion / 1006 SGR) can arrive as a single text token with prefixes
+// AND coordinate digits chewed off across many partial reads. The surviving
+// shards (1- and 2-param remnants, stray focus-in `[I`, lone `M`/`m`
+// terminators) are too degraded for SGR_MOUSE_FRAGMENT_RE, so the leftover
+// tail leaks into the composer and locks the user out (they can't type or exit).
+//
+// If the ENTIRE text token is drawn only from the mouse-leak alphabet
+// (`[ ] < ; I M m`, digits, and the stray spaces a burst can carry) AND it
+// carries the structural signature of mouse coordinates — ≥3 `M`/`m`
+// terminators, at least one digit, and at least one `;` separator — swallow it
+// wholesale. All three constraints together preserve real prose: `Mmm MMM mmm`
+// has no digit and no `;`, `see 1;2;3M for details` contains disqualifying
+// letters, and `1234;56;78M9;10;11M` has only two terminators.
+// eslint-disable-next-line no-control-regex
+const MOUSE_BURST_NOISE_RE = /^(?=[\s\S]*\d)(?=[\s\S]*;)(?=(?:[^Mm]*[Mm]){3})[\d;<\[\]IMm \x1b]+$/
+
+// Residual-shard variant for the gaps BETWEEN / AFTER recovered fragments
+// inside parseTextWithSgrMouseFragments. A real recovery run leaves degraded
+// remnants (e.g. `M6M`, `7M;220;1MM0M`, lone `;157;47M`) that are pure
+// mouse-leak alphabet but too short to satisfy the ≥3-terminator whole-text
+// rule. Swallow such a residue only when it is pure alphabet AND carries a
+// digit AND at least one `M`/`m` — a prose gap like ` for details ` contains
+// disqualifying letters and never matches.
+// eslint-disable-next-line no-control-regex
+const MOUSE_BURST_RESIDUE_RE = /^(?=[^\d]*\d)(?=[^Mm]*[Mm])[\d;<\[\]IMm \x1b]+$/
 
 function createPasteKey(content: string): ParsedKey {
   return {
@@ -267,23 +296,32 @@ export function parseMultipleKeypresses(
     } else if (token.type === 'text') {
       if (inPaste) {
         pasteBuffer += token.value
-      } else if (/^\[<\d+;\d+;\d+[Mm]$/.test(token.value) || /^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
-        // Orphaned SGR/X10 mouse tail (fullscreen only — mouse tracking is off
-        // otherwise). A heavy render blocked the event loop past App's 50ms
-        // flush timer, so the buffered ESC was flushed as a lone Escape and
-        // the continuation `[<btn;col;rowM` arrived as text. Re-synthesize
-        // with the ESC prefix so the scroll event still fires instead of
-        // leaking into the prompt. The spurious Escape is gone; App.tsx's
-        // readableLength check prevents it. The X10 Cb slot is narrowed to
-        // the wheel range [\x60-\x7f] (0x40|modifiers + 32) — a full [\x20-]
-        // range would match typed input like `[MAX]` batched into one read
-        // and silently drop it as a phantom click. Click/drag orphans leak
-        // as visible garbage instead; deletable garbage beats silent loss.
-        const resynthesized = '\x1b' + token.value
-        const mouse = parseMouseEvent(resynthesized)
-        keys.push(mouse ?? parseKeypress(resynthesized))
+      } else if (MOUSE_BURST_NOISE_RE.test(token.value)) {
+        // Fully degraded mouse-burst noise — a heavy render (e.g. a sudo /
+        // secret prompt repaint) blocked the event loop past App's 50ms flush
+        // watchdog, so a long burst of SGR mouse reports arrived as text with
+        // prefixes AND coordinate digits chewed off. Checked BEFORE fragment
+        // recovery: a noise blob can still contain a few intact `<b;c;r M`
+        // fragments, and parseTextWithSgrMouseFragments would then return
+        // non-null and emit a pile of recovered mouse events instead of
+        // dropping the blob wholesale. Swallow it here so it never leaks into
+        // the composer (and we skip the extra fragment-recovery work mid-stall).
       } else {
-        keys.push(parseKeypress(token.value))
+        const mouseFragments = parseTextWithSgrMouseFragments(token.value)
+
+        if (mouseFragments) {
+          keys.push(...mouseFragments)
+        } else if (/^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
+          // Orphaned X10 wheel tail (fullscreen only — mouse tracking is off
+          // otherwise). A heavy render blocked the event loop past App's 50ms
+          // flush timer, so the buffered ESC was flushed as a lone Escape and
+          // the continuation arrived as text. Re-synthesize with ESC so the
+          // scroll event still fires instead of leaking into the prompt.
+          const resynthesized = '\x1b' + token.value
+          keys.push(parseKeypress(resynthesized))
+        } else {
+          keys.push(parseKeypress(token.value))
+        }
       }
     }
   }
@@ -625,6 +663,87 @@ function parseMouseEvent(s: string): ParsedMouse | null {
   }
 }
 
+function normalizeSgrMouseFragment(fragment: string): string {
+  if (fragment.startsWith('[<')) {
+    return `\x1b${fragment}`
+  }
+
+  if (fragment.startsWith('<')) {
+    return `\x1b[${fragment}`
+  }
+
+  return `\x1b[<${fragment}`
+}
+
+function parseSgrMouseFragment(fragment: string): ParsedInput {
+  const sequence = normalizeSgrMouseFragment(fragment)
+  return parseMouseEvent(sequence) ?? parseKeypress(sequence)
+}
+
+function parseTextWithSgrMouseFragments(text: string): ParsedInput[] | null {
+  SGR_MOUSE_FRAGMENT_RE.lastIndex = 0
+
+  const matches = [...text.matchAll(SGR_MOUSE_FRAGMENT_RE)]
+  if (matches.length === 0) {
+    return null
+  }
+
+  const parsed: ParsedInput[] = []
+  let cursor = 0
+  let consumedAny = false
+
+  for (let i = 0; i < matches.length;) {
+    const first = matches[i]!
+    const run: RegExpMatchArray[] = [first]
+    let runEnd = first.index! + first[0].length
+    i++
+
+    while (i < matches.length && matches[i]!.index === runEnd) {
+      run.push(matches[i]!)
+      runEnd = matches[i]!.index! + matches[i]![0].length
+      i++
+    }
+
+    const hasExplicitMousePrefix = run.some(match => match[0].startsWith('[<') || match[0].startsWith('<'))
+    const isFragmentBurst = run.length > 1
+
+    if (!hasExplicitMousePrefix && !isFragmentBurst) {
+      continue
+    }
+
+    if (first.index! > cursor) {
+      const gap = text.slice(cursor, first.index!)
+      // Skip pure mouse-leak residue between recovered fragments; only emit
+      // real text gaps as keypresses.
+      if (!MOUSE_BURST_RESIDUE_RE.test(gap)) {
+        parsed.push(parseKeypress(gap))
+      }
+    }
+
+    for (const match of run) {
+      parsed.push(parseSgrMouseFragment(match[0]))
+    }
+
+    cursor = runEnd
+    consumedAny = true
+  }
+
+  if (!consumedAny) {
+    return null
+  }
+
+  if (cursor < text.length) {
+    const tail = text.slice(cursor)
+    // Swallow a pure mouse-leak residue tail (the head fragments recovered, but
+    // the burst trailed off into chewed-up shards). Emit only real trailing text.
+    if (!MOUSE_BURST_RESIDUE_RE.test(tail)) {
+      parsed.push(parseKeypress(tail))
+    }
+  }
+
+  return parsed
+}
+
 function parseKeypress(s: string = ''): ParsedKey {
   let parts
 
@@ -697,16 +816,17 @@ function parseKeypress(s: string = ''): ParsedKey {
   // never reach here. Mask with 0x43 (bits 6+1+0) to check wheel-flag
   // + direction while ignoring modifier bits (Shift=0x04, Meta=0x08,
   // Ctrl=0x10) — modified wheel events (e.g. Ctrl+scroll, button=80)
-  // should still be recognized as wheelup/wheeldown.
+  // should still be recognized as wheelup/wheeldown. Preserve those
+  // modifier bits for callers that bind modified wheel gestures.
   if ((match = SGR_MOUSE_RE.exec(s))) {
     const button = parseInt(match[1]!, 10)
 
     if ((button & 0x43) === 0x40) {
-      return createNavKey(s, 'wheelup', false)
+      return createWheelKey(s, 'wheelup', button)
     }
 
     if ((button & 0x43) === 0x41) {
-      return createNavKey(s, 'wheeldown', false)
+      return createWheelKey(s, 'wheeldown', button)
     }
 
     // Shouldn't reach here (parseMouseEvent catches non-wheel) but be safe
@@ -722,11 +842,11 @@ function parseKeypress(s: string = ''): ParsedKey {
     const button = s.charCodeAt(3) - 32
 
     if ((button & 0x43) === 0x40) {
-      return createNavKey(s, 'wheelup', false)
+      return createWheelKey(s, 'wheelup', button)
     }
 
     if ((button & 0x43) === 0x41) {
-      return createNavKey(s, 'wheeldown', false)
+      return createWheelKey(s, 'wheeldown', button)
     }
 
     return createNavKey(s, 'mouse', false)
@@ -826,6 +946,22 @@ function createNavKey(s: string, name: string, ctrl: boolean): ParsedKey {
     ctrl,
     meta: false,
     shift: false,
+    option: false,
+    super: false,
+    fn: false,
+    sequence: s,
+    raw: s,
+    isPasted: false
+  }
+}
+
+function createWheelKey(s: string, name: 'wheelup' | 'wheeldown', button: number): ParsedKey {
+  return {
+    kind: 'key',
+    name,
+    ctrl: !!(button & 0x10),
+    meta: !!(button & 0x08),
+    shift: !!(button & 0x04),
     option: false,
     super: false,
     fn: false,

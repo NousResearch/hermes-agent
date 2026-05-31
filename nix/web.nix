@@ -4,15 +4,17 @@ let
   src = ../web;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-HWB1piIPglTXbzQHXFYHLgVZIbDb60esupXSQGa1+lI=";
+    hash = "sha256-HV0aISBVjwbGqDj8qQynSxGFrrZDzuYAW3D3lB/x3zo=";
   };
 
   npm = hermesNpmLib.mkNpmPassthru { folder = "web"; attr = "web"; pname = "hermes-web"; };
+
+  packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
+  version = packageJson.version;
 in
 pkgs.buildNpmPackage (npm // {
   pname = "hermes-web";
-  version = "0.0.0";
-  inherit src npmDeps;
+  inherit src npmDeps version;
 
   doCheck = false;
 

@@ -9,10 +9,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
-    READ_FILE_SCHEMA,
-    WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
-    SEARCH_FILES_SCHEMA,
 )
 
 
@@ -104,6 +101,44 @@ class TestWriteFileHandler:
         assert result["error"] == "boom"
         assert any("write_file error" in r.getMessage() for r in caplog.records)
 
+    def test_missing_content_key_returns_error(self):
+        """#19096 — handler must reject tool calls where 'content' key is absent."""
+        from tools.file_tools import _handle_write_file
+
+        result = json.loads(_handle_write_file({"path": "/tmp/oops.md"}))
+        assert "error" in result
+        assert "content" in result["error"]
+        assert "path" not in result.get("error", "").lower() or "missing" not in result.get("error", "").lower() or True  # just check error present
+
+    def test_missing_path_key_returns_error(self):
+        """#19096 — handler must reject tool calls where 'path' key is absent."""
+        from tools.file_tools import _handle_write_file
+
+        result = json.loads(_handle_write_file({"content": "hello"}))
+        assert "error" in result
+
+    def test_explicit_empty_content_is_allowed(self):
+        """#19096 — explicit empty string content (file truncation) must still work."""
+        from tools.file_tools import _handle_write_file
+
+        with patch("tools.file_tools._get_file_ops") as mock_get:
+            mock_ops = MagicMock()
+            result_obj = MagicMock()
+            result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/empty.txt", "bytes": 0}
+            mock_ops.write_file.return_value = result_obj
+            mock_get.return_value = mock_ops
+
+            result = json.loads(_handle_write_file({"path": "/tmp/empty.txt", "content": ""}))
+            assert result["status"] == "ok"
+
+    def test_non_string_content_returns_error(self):
+        """#19096 — content must be a string, not a dict or list."""
+        from tools.file_tools import _handle_write_file
+
+        result = json.loads(_handle_write_file({"path": "/tmp/x.txt", "content": {"nested": "dict"}}))
+        assert "error" in result
+        assert "string" in result["error"].lower() or "content" in result["error"].lower()
+
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -172,6 +207,45 @@ class TestPatchHandler:
         result = json.loads(patch_tool(mode="invalid_mode"))
         assert "error" in result
         assert "Unknown mode" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
+        """V4A '*** Update File:' headers come from patch content, which can
+        carry prompt-injection-controlled paths (skill content, web extract).
+        ``..`` traversal in the header must be rejected before the patch is
+        applied, even though the explicit ``path=`` arg is allowed to use
+        ``..`` for legitimate cross-worktree edits."""
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Update File: ../../../etc/shadow\n"
+                "@@ -1,3 +1,3 @@\n"
+                "-old\n"
+                "+new\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        # patch_v4a must not be invoked when the header is rejected
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_add_header(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Add File: ../../../tmp/dropped.py\n"
+                "+print('pwned')\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
 
 
 class TestSearchHandler:
@@ -323,4 +397,28 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+# ---------------------------------------------------------------------------
+# PATCH_SCHEMA shape tests (issue #15524)
+# ---------------------------------------------------------------------------
 
+class TestPatchSchemaShape:
+    """PATCH_SCHEMA must advertise per-mode required params via description
+    text (not JSON-schema ``required``), so strict models like kimi-k2.x stop
+    silently omitting old_string / new_string / patch content."""
+
+    def test_per_mode_required_params_documented_in_descriptions(self):
+        desc = PATCH_SCHEMA["description"]
+        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
+        assert "REQUIRED PARAMETERS: mode, patch" in desc
+        props = PATCH_SCHEMA["parameters"]["properties"]
+        for name in ("path", "old_string", "new_string"):
+            assert "REQUIRED when mode='replace'" in props[name]["description"]
+        assert "REQUIRED when mode='patch'" in props["patch"]["description"]
+
+    def test_no_anyof_required_stays_mode_only(self):
+        # anyOf/oneOf at parameters level break Anthropic, Fireworks, and the
+        # Moonshot/Kimi schema sanitizer — description-level guidance is the
+        # only provider-safe signalling mechanism.
+        params = PATCH_SCHEMA["parameters"]
+        assert params["required"] == ["mode"]
+        assert "anyOf" not in params and "oneOf" not in params

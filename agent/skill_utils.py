@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir
+from hermes_constants import get_config_path, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,43 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
+EXCLUDED_SKILL_DIRS = frozenset(
+    (
+        ".git",
+        ".github",
+        ".hub",
+        ".archive",
+        ".venv",
+        "venv",
+        "node_modules",
+        "site-packages",
+        "__pycache__",
+        ".tox",
+        ".nox",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    )
+)
+
+
+def is_excluded_skill_path(path) -> bool:
+    """True if any component of *path* is in EXCLUDED_SKILL_DIRS.
+
+    Use this on every SKILL.md path produced by ``rglob`` to prune
+    dependency, virtualenv, VCS, and cache directories. Centralising the
+    check here keeps every skill-scanning site in sync with the shared
+    exclusion set.
+
+    Accepts a Path or string.
+    """
+    try:
+        parts = path.parts  # Path
+    except AttributeError:
+        from pathlib import PurePath
+        parts = PurePath(str(path)).parts
+    return any(part in EXCLUDED_SKILL_DIRS for part in parts)
+
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
@@ -100,6 +136,14 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 
     If the field is absent or empty the skill is compatible with **all**
     platforms (backward-compatible default).
+
+    Termux note: on Termux/Android, ``sys.platform`` is ``"linux"`` on
+    older Pythons but became ``"android"`` on Python 3.13+. Termux is a
+    Linux userland riding on the Android kernel, so skills tagged
+    ``linux`` are treated as compatible in Termux regardless of which
+    ``sys.platform`` value Python reports. Individual Linux commands
+    inside a skill may still misbehave (no systemd, BusyBox utils, no
+    apt/dnf, etc.) but that is on the skill, not on platform gating.
     """
     platforms = frontmatter.get("platforms")
     if not platforms:
@@ -107,10 +151,20 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     if not isinstance(platforms, list):
         platforms = [platforms]
     current = sys.platform
+    running_in_termux = is_termux()
     for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
         if current.startswith(mapped):
+            return True
+        # Termux runs a Linux userland on Android. Accept linux-tagged
+        # skills regardless of whether sys.platform is "linux" (pre-3.13
+        # Termux) or "android" (Python 3.13+ Termux, and any other
+        # Android runtime).
+        if running_in_termux and mapped == "linux":
+            return True
+        # Explicit termux/android tags match a Termux session too.
+        if running_in_termux and mapped in ("termux", "android"):
             return True
     return False
 
@@ -170,6 +224,19 @@ def _normalize_string_set(values) -> Set[str]:
 
 # ── External skills directories ──────────────────────────────────────────
 
+# (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
+# mtime_ns so a config.yaml edit mid-run is picked up automatically;
+# otherwise every call would re-read + re-YAML-parse the 15KB config,
+# which becomes the dominant cost of ``hermes`` startup when ~120 skills
+# each trigger a category lookup during banner construction (10+ seconds
+# of pure waste).
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+
+
+def _external_dirs_cache_clear() -> None:
+    """Test hook — drop the in-process cache."""
+    _EXTERNAL_DIRS_CACHE.clear()
+
 
 def get_external_skills_dirs() -> List[Path]:
     """Read ``skills.external_dirs`` from config.yaml and return validated paths.
@@ -177,10 +244,30 @@ def get_external_skills_dirs() -> List[Path]:
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+
+    Cached in-process, keyed on ``config.yaml`` mtime — the function is
+    called once per skill during banner / tool-registry scans, and YAML
+    parsing a non-trivial config dominates ``hermes`` cold-start time
+    when the cache is absent.
     """
     config_path = get_config_path()
     if not config_path.exists():
         return []
+
+    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
+    # the full YAML parse, so the fast path is nearly free.
+    try:
+        stat = config_path.stat()
+        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
+    except OSError:
+        cache_key = None  # type: ignore[assignment]
+
+    if cache_key is not None:
+        cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
+        if cached is not None:
+            # Return a copy so callers can't mutate the cached list.
+            return list(cached)
+
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
     except Exception:
@@ -194,7 +281,10 @@ def get_external_skills_dirs() -> List[Path]:
 
     raw_dirs = skills_cfg.get("external_dirs")
     if not raw_dirs:
-        return []
+        result: List[Path] = []
+        if cache_key is not None:
+            _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
+        return result
     if isinstance(raw_dirs, str):
         raw_dirs = [raw_dirs]
     if not isinstance(raw_dirs, list):
@@ -205,7 +295,7 @@ def get_external_skills_dirs() -> List[Path]:
     hermes_home = get_hermes_home()
     local_skills = get_skills_dir().resolve()
     seen: Set[Path] = set()
-    result: List[Path] = []
+    result = []
 
     for entry in raw_dirs:
         entry = str(entry).strip()
@@ -229,6 +319,8 @@ def get_external_skills_dirs() -> List[Path]:
         else:
             logger.debug("External skills dir does not exist, skipping: %s", p)
 
+    if cache_key is not None:
+        _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
     return result
 
 
@@ -440,7 +532,8 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes ``.git``, ``.github``, ``.hub`` directories.
+    Excludes Hermes metadata, VCS, virtualenv/dependency, and cache
+    directories so dependencies cannot register nested skills.
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):

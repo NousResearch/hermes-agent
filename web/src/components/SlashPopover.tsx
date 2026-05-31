@@ -1,5 +1,5 @@
 import type { GatewayClient } from "@/lib/gatewayClient";
-import { ListItem } from "@nous-research/ui";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { ChevronRight } from "lucide-react";
 import {
   forwardRef,
@@ -158,7 +158,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
               </span>
 
               {it.meta && (
-                <span className="text-[0.7rem] text-muted-foreground/70 truncate ml-auto">
+                <span className="text-xs text-text-tertiary truncate ml-auto">
                   {it.meta}
                 </span>
               )}

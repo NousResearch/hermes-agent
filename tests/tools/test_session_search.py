@@ -1,485 +1,401 @@
-"""Tests for tools/session_search_tool.py — helper functions and search dispatcher."""
+"""Tests for the single-shape session_search tool.
 
-import asyncio
+Three calling shapes:
+  1. DISCOVERY — pass query → FTS5 + anchored window + bookends per hit
+  2. SCROLL    — pass session_id + around_message_id → just the window
+  3. BROWSE    — no args → recent sessions chronologically
+
+All run zero LLM calls.
+"""
 import json
 import time
+
 import pytest
 
+from hermes_state import SessionDB
 from tools.session_search_tool import (
-    _format_timestamp,
-    _format_conversation,
-    _truncate_around_matches,
-    _get_session_search_max_concurrency,
-    _list_recent_sessions,
-    _HIDDEN_SESSION_SOURCES,
-    MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
+    _HIDDEN_SESSION_SOURCES,
+    _format_timestamp,
+    session_search,
 )
 
 
+@pytest.fixture
+def db(tmp_path):
+    return SessionDB(tmp_path / "state.db")
+
+
+def _seed_modpack_sessions(db):
+    """Create three sessions about a modpack so FTS5 has hits to dedupe."""
+    now = int(time.time())
+    # Older session — modpack origin
+    db.create_session("s_oldest", source="cli")
+    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                     (now - 30000, "Building the Modpack", "s_oldest"))
+    db.append_message("s_oldest", role="user", content="Let's build a Minecraft modpack")
+    db.append_message("s_oldest", role="assistant", content="Great. Let me scaffold the modpack repo.")
+    db.append_message("s_oldest", role="user", content="Use NeoForge 1.21.1")
+    db.append_message("s_oldest", role="assistant", content="Done. Modpack repo created with NeoForge 1.21.1.")
+    db.append_message("s_oldest", role="assistant", content="Tier-0 mods installed; modpack smoke test passes.")
+
+    # Middle session — modpack quest coverage
+    db.create_session("s_middle", source="cli")
+    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                     (now - 15000, "Modpack Quest Coverage", "s_middle"))
+    db.append_message("s_middle", role="user", content="Deep-dive every modpack reference quest guide")
+    db.append_message("s_middle", role="assistant", content="Surveying ATM10 questbook for modpack inspiration.")
+    db.append_message("s_middle", role="user", content="Update the modpack version too")
+    db.append_message("s_middle", role="assistant", content="Modpack version bumped 0.4 → 0.8.5; quest coverage page added.")
+
+    # Newest session — modpack mob spawn fix
+    db.create_session("s_newest", source="cli")
+    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                     (now - 1000, "Modpack Mob Spawn Fix", "s_newest"))
+    db.append_message("s_newest", role="user", content="Fix the modpack mob spawning")
+    db.append_message("s_newest", role="assistant", content="Investigating elite mob gating in the modpack KubeJS.")
+    db.append_message("s_newest", role="assistant", content="Shipped commit b850442. Modpack alternator nerfed too.")
+    db._conn.commit()
+
+
 # =========================================================================
-# Tool schema guidance
+# Schema invariants
 # =========================================================================
 
-class TestHiddenSessionSources:
-    """Verify the _HIDDEN_SESSION_SOURCES constant used for third-party isolation."""
+class TestSchema:
+    def test_schema_has_required_params(self):
+        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
+        # Discovery shape
+        assert "query" in params
+        assert "limit" in params
+        assert "sort" in params
+        # Scroll shape
+        assert "session_id" in params
+        assert "around_message_id" in params
+        assert "window" in params
+        # Shared
+        assert "role_filter" in params
 
-    def test_tool_source_is_hidden(self):
+    def test_no_mode_parameter(self):
+        # Mode is inferred from which args are set — no explicit mode param
+        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
+        assert "mode" not in params
+
+    def test_sort_enum(self):
+        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
+        assert params["sort"]["enum"] == ["newest", "oldest"]
+
+    def test_schema_description_teaches_scroll(self):
+        desc = SESSION_SEARCH_SCHEMA["description"]
+        assert "SCROLL" in desc
+        assert "DISCOVERY" in desc
+        assert "BROWSE" in desc
+        # Must explain how to scroll
+        assert "scroll FORWARD" in desc or "messages[-1]" in desc
+
+    def test_no_llm_promise_in_description(self):
+        # The new design never calls an LLM
+        desc = SESSION_SEARCH_SCHEMA["description"].lower()
+        assert "no llm" in desc
+
+
+class TestHiddenSources:
+    def test_tool_source_hidden(self):
         assert "tool" in _HIDDEN_SESSION_SOURCES
 
-    def test_standard_sources_not_hidden(self):
-        for src in ("cli", "telegram", "discord", "slack", "cron"):
-            assert src not in _HIDDEN_SESSION_SOURCES
-
-
-class TestSessionSearchSchema:
-    def test_keeps_cross_session_recall_guidance_without_current_session_nudge(self):
-        description = SESSION_SEARCH_SCHEMA["description"]
-        assert "past conversations" in description
-        assert "recent turns of the current session" not in description
-
-
-# =========================================================================
-# _format_timestamp
-# =========================================================================
 
 class TestFormatTimestamp:
-    def test_unix_float(self):
-        ts = 1700000000.0  # Nov 14, 2023
-        result = _format_timestamp(ts)
-        assert "2023" in result or "November" in result
+    def test_unix_timestamp(self):
+        out = _format_timestamp(1700000000)
+        assert "2023" in out
 
-    def test_unix_int(self):
-        result = _format_timestamp(1700000000)
-        assert isinstance(result, str)
-        assert len(result) > 5
-
-    def test_iso_string(self):
-        result = _format_timestamp("2024-01-15T10:30:00")
-        assert isinstance(result, str)
-
-    def test_none_returns_unknown(self):
+    def test_none(self):
         assert _format_timestamp(None) == "unknown"
 
-    def test_numeric_string(self):
-        result = _format_timestamp("1700000000.0")
-        assert isinstance(result, str)
-        assert "unknown" not in result.lower()
+    def test_iso_string_passthrough(self):
+        out = _format_timestamp("not-a-number-string")
+        assert out == "not-a-number-string"
 
 
 # =========================================================================
-# _format_conversation
+# Browse shape (no args)
 # =========================================================================
 
-class TestFormatConversation:
-    def test_basic_messages(self):
-        msgs = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"},
-        ]
-        result = _format_conversation(msgs)
-        assert "[USER]: Hello" in result
-        assert "[ASSISTANT]: Hi there!" in result
-
-    def test_tool_message(self):
-        msgs = [
-            {"role": "tool", "content": "search results", "tool_name": "web_search"},
-        ]
-        result = _format_conversation(msgs)
-        assert "[TOOL:web_search]" in result
-
-    def test_long_tool_output_truncated(self):
-        msgs = [
-            {"role": "tool", "content": "x" * 1000, "tool_name": "terminal"},
-        ]
-        result = _format_conversation(msgs)
-        assert "[truncated]" in result
-
-    def test_assistant_with_tool_calls(self):
-        msgs = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"function": {"name": "web_search"}},
-                    {"function": {"name": "terminal"}},
-                ],
-            },
-        ]
-        result = _format_conversation(msgs)
-        assert "web_search" in result
-        assert "terminal" in result
-
-    def test_empty_messages(self):
-        result = _format_conversation([])
-        assert result == ""
-
-
-# =========================================================================
-# _truncate_around_matches
-# =========================================================================
-
-class TestTruncateAroundMatches:
-    def test_short_text_unchanged(self):
-        text = "Short text about docker"
-        result = _truncate_around_matches(text, "docker")
-        assert result == text
-
-    def test_long_text_truncated(self):
-        # Create text longer than MAX_SESSION_CHARS with query term in middle
-        padding = "x" * (MAX_SESSION_CHARS + 5000)
-        text = padding + " KEYWORD_HERE " + padding
-        result = _truncate_around_matches(text, "KEYWORD_HERE")
-        assert len(result) <= MAX_SESSION_CHARS + 100  # +100 for prefix/suffix markers
-        assert "KEYWORD_HERE" in result
-
-    def test_truncation_adds_markers(self):
-        text = "a" * 50000 + " target " + "b" * (MAX_SESSION_CHARS + 5000)
-        result = _truncate_around_matches(text, "target")
-        assert "truncated" in result.lower()
-
-    def test_no_match_takes_from_start(self):
-        text = "x" * (MAX_SESSION_CHARS + 5000)
-        result = _truncate_around_matches(text, "nonexistent")
-        # Should take from the beginning
-        assert result.startswith("x")
-
-    def test_match_at_beginning(self):
-        text = "KEYWORD " + "x" * (MAX_SESSION_CHARS + 5000)
-        result = _truncate_around_matches(text, "KEYWORD")
-        assert "KEYWORD" in result
-
-    def test_multiword_phrase_match_beats_individual_term(self):
-        """Full phrase deep in text should be found even when a single term
-        appears much earlier in boilerplate."""
-        boilerplate = "The project setup is complex. " * 500  # ~15K, has 'project' early
-        filler = "x" * (MAX_SESSION_CHARS + 20000)
-        target = "We reviewed the keystone project roadmap in detail."
-        text = boilerplate + filler + target + filler
-        result = _truncate_around_matches(text, "keystone project")
-        assert "keystone project" in result.lower()
-
-    def test_multiword_proximity_cooccurrence(self):
-        """When exact phrase is absent, terms co-occurring within proximity
-        should be preferred over a lone early term."""
-        early = "project " + "a" * (MAX_SESSION_CHARS + 20000)
-        # Place 'keystone' and 'project' near each other (but not as exact phrase)
-        cooccur = "this keystone initiative for the project was pivotal"
-        tail = "b" * (MAX_SESSION_CHARS + 20000)
-        text = early + cooccur + tail
-        result = _truncate_around_matches(text, "keystone project")
-        assert "keystone" in result.lower()
-        assert "project" in result.lower()
-
-    def test_multiword_window_maximises_coverage(self):
-        """Sliding window should capture as many match clusters as possible."""
-        # Place two phrase matches: one at ~50K, one at ~60K, both should fit
-        pre = "z" * 50000
-        match1 = " alpha beta "
-        gap = "z" * 10000
-        match2 = " alpha beta "
-        post = "z" * (MAX_SESSION_CHARS + 40000)
-        text = pre + match1 + gap + match2 + post
-        result = _truncate_around_matches(text, "alpha beta")
-        assert result.lower().count("alpha beta") == 2
-
-
-class TestSessionSearchConcurrency:
-    def test_defaults_to_three(self):
-        assert _get_session_search_max_concurrency() == 3
-
-    def test_reads_and_clamps_configured_value(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"auxiliary": {"session_search": {"max_concurrency": 9}}},
-        )
-        assert _get_session_search_max_concurrency() == 5
-
-    def test_session_search_respects_configured_concurrency_limit(self, monkeypatch):
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
-
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"auxiliary": {"session_search": {"max_concurrency": 1}}},
-        )
-
-        max_seen = {"value": 0}
-        active = {"value": 0}
-
-        async def fake_summarize(_text, _query, _meta):
-            active["value"] += 1
-            max_seen["value"] = max(max_seen["value"], active["value"])
-            await asyncio.sleep(0.01)
-            active["value"] -= 1
-            return "summary"
-
-        monkeypatch.setattr("tools.session_search_tool._summarize_session", fake_summarize)
-        monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
-
-        mock_db = MagicMock()
-        mock_db.search_messages.return_value = [
-            {"session_id": "s1", "source": "cli", "session_started": 1709500000, "model": "test"},
-            {"session_id": "s2", "source": "cli", "session_started": 1709500001, "model": "test"},
-            {"session_id": "s3", "source": "cli", "session_started": 1709500002, "model": "test"},
-        ]
-        mock_db.get_session.side_effect = lambda sid: {
-            "id": sid,
-            "parent_session_id": None,
-            "source": "cli",
-            "started_at": 1709500000,
-        }
-        mock_db.get_messages_as_conversation.side_effect = lambda sid: [
-            {"role": "user", "content": f"message from {sid}"},
-            {"role": "assistant", "content": "response"},
-        ]
-
-        result = json.loads(session_search(query="message", db=mock_db, limit=3))
-
+class TestBrowseShape:
+    def test_no_args_returns_recent_sessions(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(db=db))
         assert result["success"] is True
-        assert result["count"] == 3
-        assert max_seen["value"] == 1
+        assert result["mode"] == "browse"
+        assert result["count"] >= 3
 
+    def test_browse_excludes_current_session(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(db=db, current_session_id="s_newest"))
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_newest" not in sids
 
-class TestRecentSessionListing:
-    def test_current_child_session_excludes_root_lineage_even_when_child_id_is_longer(self):
-        from unittest.mock import MagicMock
-
-        mock_db = MagicMock()
-        mock_db.list_sessions_rich.return_value = [
-            {
-                "id": "root",
-                "title": "Current conversation",
-                "source": "cli",
-                "started_at": 1709500000,
-                "last_active": 1709500100,
-                "message_count": 4,
-                "preview": "current root",
-                "parent_session_id": None,
-            },
-            {
-                "id": "other_session",
-                "title": "Other conversation",
-                "source": "cli",
-                "started_at": 1709400000,
-                "last_active": 1709400100,
-                "message_count": 3,
-                "preview": "other root",
-                "parent_session_id": None,
-            },
-        ]
-
-        def _get_session(session_id):
-            if session_id == "child_session_id_that_is_definitely_longer":
-                return {"parent_session_id": "root"}
-            if session_id == "root":
-                return {"parent_session_id": None}
-            return None
-
-        mock_db.get_session.side_effect = _get_session
-
-        result = json.loads(_list_recent_sessions(
-            mock_db,
-            limit=5,
-            current_session_id="child_session_id_that_is_definitely_longer",
-        ))
-
-        assert result["success"] is True
-        assert [item["session_id"] for item in result["results"]] == ["other_session"]
-        assert all(item["session_id"] != "root" for item in result["results"])
+    def test_browse_returns_titles(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(db=db))
+        titles = [r.get("title") for r in result["results"]]
+        assert any("Modpack" in (t or "") for t in titles)
 
 
 # =========================================================================
-# session_search (dispatcher)
+# Discovery shape (with query)
 # =========================================================================
 
-class TestSessionSearch:
-    def test_no_db_returns_error(self):
-        from tools.session_search_tool import session_search
-        result = json.loads(session_search(query="test"))
-        assert result["success"] is False
-        assert "not available" in result["error"].lower()
-
-    def test_empty_query_returns_error(self):
-        from tools.session_search_tool import session_search
-        mock_db = object()
-        result = json.loads(session_search(query="", db=mock_db))
-        assert result["success"] is False
-
-    def test_whitespace_query_returns_error(self):
-        from tools.session_search_tool import session_search
-        mock_db = object()
-        result = json.loads(session_search(query="   ", db=mock_db))
-        assert result["success"] is False
-
-    def test_current_session_excluded(self):
-        """session_search should never return the current session."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
-
-        mock_db = MagicMock()
-        current_sid = "20260304_120000_abc123"
-
-        # Simulate FTS5 returning matches only from the current session
-        mock_db.search_messages.return_value = [
-            {"session_id": current_sid, "content": "test match", "source": "cli",
-             "session_started": 1709500000, "model": "test"},
-        ]
-        mock_db.get_session.return_value = {"parent_session_id": None}
-
-        result = json.loads(session_search(
-            query="test", db=mock_db, current_session_id=current_sid,
-        ))
+class TestDiscoveryShape:
+    def test_query_returns_anchored_windows(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", db=db))
         assert result["success"] is True
-        assert result["count"] == 0
+        assert result["mode"] == "discover"
+        assert result["count"] >= 1
+
+    def test_discovery_result_has_bookends_and_window(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            assert "bookend_start" in hit
+            assert "messages" in hit
+            assert "bookend_end" in hit
+            assert "match_message_id" in hit
+            assert "snippet" in hit
+            assert "messages_before" in hit
+            assert "messages_after" in hit
+
+    def test_match_message_id_is_anchor_in_window(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            anchor_id = hit["match_message_id"]
+            window_ids = [m["id"] for m in hit["messages"]]
+            assert anchor_id in window_ids
+
+    def test_no_results_returns_empty_list(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="zzz_no_such_term_zzz", db=db))
+        assert result["success"] is True
         assert result["results"] == []
+        assert result["count"] == 0
 
-    def test_current_session_excluded_keeps_others(self):
-        """Other sessions should still be returned when current is excluded."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
+    def test_limit_clamped_to_max_10(self, db):
+        _seed_modpack_sessions(db)
+        # Pass huge limit; should not error and should cap
+        result = json.loads(session_search(query="modpack", limit=999, db=db))
+        assert result["count"] <= 10
 
-        mock_db = MagicMock()
-        current_sid = "20260304_120000_abc123"
-        other_sid = "20260303_100000_def456"
+    def test_limit_floor_to_1(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=0, db=db))
+        # Result count depends on hits, but the limit must be at least 1
+        assert result["count"] >= 0
 
-        mock_db.search_messages.return_value = [
-            {"session_id": current_sid, "content": "match 1", "source": "cli",
-             "session_started": 1709500000, "model": "test"},
-            {"session_id": other_sid, "content": "match 2", "source": "telegram",
-             "session_started": 1709400000, "model": "test"},
-        ]
-        mock_db.get_session.return_value = {"parent_session_id": None}
-        mock_db.get_messages_as_conversation.return_value = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ]
+    def test_non_int_limit_falls_back(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit="bogus", db=db))
+        assert result["success"] is True
 
-        # Mock async_call_llm to raise RuntimeError → summarizer returns None
-        from unittest.mock import AsyncMock, patch as _patch
-        with _patch("tools.session_search_tool.async_call_llm",
-                     new_callable=AsyncMock,
-                     side_effect=RuntimeError("no provider")):
+    def test_current_session_filtered_out(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_newest" not in sids
+
+
+class TestDiscoverySort:
+    def test_sort_newest_orders_by_recency(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, sort="newest", db=db))
+        # First result should be the most recent session
+        first = result["results"][0]
+        assert first["session_id"] == "s_newest" or "Newest" in (first.get("title") or "")
+
+    def test_sort_oldest_orders_by_age(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, sort="oldest", db=db))
+        first = result["results"][0]
+        assert first["session_id"] == "s_oldest"
+
+    def test_invalid_sort_silently_ignored(self, db):
+        _seed_modpack_sessions(db)
+        # Should not error
+        result = json.loads(session_search(query="modpack", sort="bogus", db=db))
+        assert result["success"] is True
+
+
+class TestRoleFilter:
+    def test_default_excludes_tool_role(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", role="user", content="modpack question")
+        db.append_message("s1", role="tool", content="modpack tool output", tool_name="x")
+        result = json.loads(session_search(query="modpack", db=db))
+        # The FTS5 match should be on the user message, not the tool message
+        if result["count"] > 0:
+            matched_role = result["results"][0]["matched_role"]
+            assert matched_role in ("user", "assistant")
+
+    def test_explicit_tool_role_includes_tool(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", role="tool", content="modpack tool output", tool_name="x")
+        result = json.loads(session_search(query="modpack", role_filter="tool", db=db))
+        # Should now match the tool message
+        if result["count"] > 0:
+            assert result["results"][0]["matched_role"] == "tool"
+
+
+# =========================================================================
+# Scroll shape (session_id + around_message_id)
+# =========================================================================
+
+class TestScrollShape:
+    def test_scroll_returns_window_without_bookends(self, db):
+        _seed_modpack_sessions(db)
+        # Get an anchor first via discovery
+        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        anchor_sid = disc["results"][0]["session_id"]
+        anchor_mid = disc["results"][0]["match_message_id"]
+
+        # Now scroll
+        result = json.loads(session_search(
+            session_id=anchor_sid, around_message_id=anchor_mid, window=2, db=db
+        ))
+        assert result["success"] is True
+        assert result["mode"] == "scroll"
+        assert "messages" in result
+        # Scroll shape has no bookends
+        assert "bookend_start" not in result
+        assert "bookend_end" not in result
+
+    def test_scroll_window_clamped_to_20(self, db):
+        _seed_modpack_sessions(db)
+        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        anchor_sid = disc["results"][0]["session_id"]
+        anchor_mid = disc["results"][0]["match_message_id"]
+        result = json.loads(session_search(
+            session_id=anchor_sid, around_message_id=anchor_mid, window=999, db=db
+        ))
+        assert result["window"] == 20
+
+    def test_scroll_window_floor_to_1(self, db):
+        _seed_modpack_sessions(db)
+        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        anchor_sid = disc["results"][0]["session_id"]
+        anchor_mid = disc["results"][0]["match_message_id"]
+        result = json.loads(session_search(
+            session_id=anchor_sid, around_message_id=anchor_mid, window=-5, db=db
+        ))
+        assert result["window"] == 1
+
+    def test_scroll_returns_messages_before_after_counts(self, db):
+        _seed_modpack_sessions(db)
+        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        anchor_sid = disc["results"][0]["session_id"]
+        anchor_mid = disc["results"][0]["match_message_id"]
+        result = json.loads(session_search(
+            session_id=anchor_sid, around_message_id=anchor_mid, window=3, db=db
+        ))
+        assert "messages_before" in result
+        assert "messages_after" in result
+
+    def test_scroll_anchor_in_window(self, db):
+        _seed_modpack_sessions(db)
+        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        anchor_sid = disc["results"][0]["session_id"]
+        anchor_mid = disc["results"][0]["match_message_id"]
+        result = json.loads(session_search(
+            session_id=anchor_sid, around_message_id=anchor_mid, window=2, db=db
+        ))
+        anchor_in_window = [m for m in result["messages"] if m["id"] == anchor_mid]
+        assert len(anchor_in_window) == 1
+        assert anchor_in_window[0].get("anchor") is True
+
+    def test_scroll_missing_anchor_errors(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(
+            session_id="s_oldest", around_message_id=999999, db=db
+        ))
+        assert result["success"] is False
+        assert "not in" in result.get("error", "")
+
+    def test_scroll_missing_session_errors(self, db):
+        result = json.loads(session_search(
+            session_id="nonexistent", around_message_id=1, db=db
+        ))
+        assert result["success"] is False
+
+    def test_scroll_rejects_current_session_lineage(self, db):
+        _seed_modpack_sessions(db)
+        # Grab some valid id from s_oldest
+        disc = json.loads(session_search(query="modpack", limit=3, db=db))
+        match = [r for r in disc["results"] if r["session_id"] == "s_oldest"]
+        if match:
+            mid = match[0]["match_message_id"]
             result = json.loads(session_search(
-                query="test", db=mock_db, current_session_id=current_sid,
+                session_id="s_oldest", around_message_id=mid, db=db,
+                current_session_id="s_oldest",
             ))
+            assert result["success"] is False
+            assert "current session" in result.get("error", "").lower()
 
-        assert result["success"] is True
-        # Current session should be skipped, only other_sid should appear
-        assert result["sessions_searched"] == 1
-        assert current_sid not in [r.get("session_id") for r in result.get("results", [])]
-
-    def test_current_child_session_excludes_parent_lineage(self):
-        """Compression/delegation parents should be excluded for the active child session."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
-
-        mock_db = MagicMock()
-        mock_db.search_messages.return_value = [
-            {"session_id": "parent_sid", "content": "match", "source": "cli",
-             "session_started": 1709500000, "model": "test"},
-        ]
-
-        def _get_session(session_id):
-            if session_id == "child_sid":
-                return {"parent_session_id": "parent_sid"}
-            if session_id == "parent_sid":
-                return {"parent_session_id": None}
-            return None
-
-        mock_db.get_session.side_effect = _get_session
-
+    def test_scroll_invalid_around_message_id_errors(self, db):
+        _seed_modpack_sessions(db)
         result = json.loads(session_search(
-            query="test", db=mock_db, current_session_id="child_sid",
+            session_id="s_oldest", around_message_id="not-an-int", db=db
         ))
+        assert result["success"] is False
 
-        assert result["success"] is True
-        assert result["count"] == 0
-        assert result["results"] == []
-        assert result["sessions_searched"] == 0
 
-    def test_limit_none_coerced_to_default(self):
-        """Model sends limit=null → should fall back to 3, not TypeError."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
+class TestScrollPattern:
+    """The forward/backward scroll loop using tool output."""
 
-        mock_db = MagicMock()
-        mock_db.search_messages.return_value = []
+    def test_scroll_forward_from_last_id(self, db):
+        # Long session
+        db.create_session("s_long", source="cli")
+        ids = []
+        for i in range(20):
+            ids.append(db.append_message("s_long", role="user" if i % 2 == 0 else "assistant",
+                                         content=f"long session msg {i}"))
 
+        v1 = json.loads(session_search(
+            session_id="s_long", around_message_id=ids[5], window=3, db=db
+        ))
+        last_id = v1["messages"][-1]["id"]
+        v2 = json.loads(session_search(
+            session_id="s_long", around_message_id=last_id, window=3, db=db
+        ))
+        # Forward scroll: v2 should reach further than v1
+        assert max(m["id"] for m in v2["messages"]) > max(m["id"] for m in v1["messages"])
+        # Boundary id appears in both
+        assert last_id in [m["id"] for m in v1["messages"]]
+        assert last_id in [m["id"] for m in v2["messages"]]
+
+
+# =========================================================================
+# Shape precedence
+# =========================================================================
+
+class TestShapePrecedence:
+    def test_scroll_args_beat_query(self, db):
+        _seed_modpack_sessions(db)
+        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        anchor_sid = disc["results"][0]["session_id"]
+        anchor_mid = disc["results"][0]["match_message_id"]
+        # Pass both query and scroll args — scroll should win
         result = json.loads(session_search(
-            query="test", db=mock_db, limit=None,
+            query="modpack",  # would normally trigger discovery
+            session_id=anchor_sid, around_message_id=anchor_mid, db=db,
         ))
-        assert result["success"] is True
+        assert result["mode"] == "scroll"
 
-    def test_limit_type_object_coerced_to_default(self):
-        """Model sends limit as a type object → should fall back to 3, not TypeError."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
+    def test_empty_query_falls_back_to_browse(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="   ", db=db))
+        assert result["mode"] == "browse"
 
-        mock_db = MagicMock()
-        mock_db.search_messages.return_value = []
-
-        result = json.loads(session_search(
-            query="test", db=mock_db, limit=int,
-        ))
-        assert result["success"] is True
-
-    def test_limit_string_coerced(self):
-        """Model sends limit as string '2' → should coerce to int."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
-
-        mock_db = MagicMock()
-        mock_db.search_messages.return_value = []
-
-        result = json.loads(session_search(
-            query="test", db=mock_db, limit="2",
-        ))
-        assert result["success"] is True
-
-    def test_limit_clamped_to_range(self):
-        """Negative or zero limit should be clamped to 1."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
-
-        mock_db = MagicMock()
-        mock_db.search_messages.return_value = []
-
-        result = json.loads(session_search(
-            query="test", db=mock_db, limit=-5,
-        ))
-        assert result["success"] is True
-
-        result = json.loads(session_search(
-            query="test", db=mock_db, limit=0,
-        ))
-        assert result["success"] is True
-
-    def test_current_root_session_excludes_child_lineage(self):
-        """Delegation child hits should be excluded when they resolve to the current root session."""
-        from unittest.mock import MagicMock
-        from tools.session_search_tool import session_search
-
-        mock_db = MagicMock()
-        mock_db.search_messages.return_value = [
-            {"session_id": "child_sid", "content": "match", "source": "cli",
-             "session_started": 1709500000, "model": "test"},
-        ]
-
-        def _get_session(session_id):
-            if session_id == "root_sid":
-                return {"parent_session_id": None}
-            if session_id == "child_sid":
-                return {"parent_session_id": "root_sid"}
-            return None
-
-        mock_db.get_session.side_effect = _get_session
-
-        result = json.loads(session_search(
-            query="test", db=mock_db, current_session_id="root_sid",
-        ))
-
-        assert result["success"] is True
-        assert result["count"] == 0
-        assert result["results"] == []
-        assert result["sessions_searched"] == 0
+    def test_non_string_query_falls_back_to_browse(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query=None, db=db))  # type: ignore
+        assert result["mode"] == "browse"

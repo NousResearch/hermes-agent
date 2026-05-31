@@ -28,7 +28,7 @@ concurrency:
 jobs:
   # ── Auto-fix on main ───────────────────────────────────────────────
   # Fires when a push to main touches package.json or package-lock.json
-  # in ui-tui/ or web/. Runs fix-lockfiles --apply and pushes the hash
+  # in ui-tui/ or web/. Runs fix-lockfiles and pushes the hash
   # update commit directly to main so Nix builds never stay broken.
   #
   # Safety invariants:
@@ -56,12 +56,14 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: main
           token: ${{ steps.app-token.outputs.token }}
 
       - uses: ./.github/actions/nix-setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Apply lockfile hashes
         id: apply
@@ -192,7 +194,7 @@ jobs:
 
             Triggered by @${{ github.actor }} — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
           ref: ${{ steps.resolve.outputs.ref }}
@@ -200,10 +202,12 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/nix-setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Apply lockfile hashes
         id: apply
-        run: nix run .#fix-lockfiles -- --apply
+        run: nix run .#fix-lockfiles
 
       - name: Commit & push
         if: steps.apply.outputs.changed == 'true'

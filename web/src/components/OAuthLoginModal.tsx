@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, X, Check } from "lucide-react";
-import { Button, CopyButton, H2, Spinner } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { CopyButton } from "@nous-research/ui/ui/components/command-block";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
-import { Input } from "@/components/ui/input";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
+import { cn, themedBody } from "@/lib/utils";
 
 interface Props {
   provider: OAuthProvider;
@@ -166,7 +170,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       aria-modal="true"
       aria-labelledby="oauth-modal-title"
     >
-      <div className="relative w-full max-w-md border border-border bg-card shadow-2xl">
+      <div className={cn(themedBody, "relative w-full max-w-md border border-border bg-card shadow-2xl")}>
         <Button
           ghost
           size="icon"

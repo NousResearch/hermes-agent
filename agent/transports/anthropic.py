@@ -84,7 +84,7 @@ class AnthropicTransport(ProviderTransport):
         to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
         import json
-        from agent.anthropic_adapter import _to_plain_data
+        from agent.anthropic_adapter import _to_plain_data, _sanitize_replay_block
         from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
@@ -108,14 +108,26 @@ class AnthropicTransport(ProviderTransport):
 
         for block in response.content:
             block_dict = _to_plain_data(block)
+            clean_block = None
             if isinstance(block_dict, dict):
-                ordered_blocks.append(block_dict)
+                # Sanitize at capture so output-only SDK fields (parsed_output,
+                # caller, citations=None, …) never persist to state.db and leak
+                # back as request input on replay → HTTP 400 "Extra inputs are
+                # not permitted". Defence-in-depth with the replay-side sanitize.
+                clean_block = _sanitize_replay_block(block_dict)
+                if clean_block is not None:
+                    ordered_blocks.append(clean_block)
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type in ("thinking", "redacted_thinking"):
                 if block.type == "thinking":
                     reasoning_parts.append(block.thinking)
-                if isinstance(block_dict, dict):
+                # Use the sanitized block (clean_block) for reasoning_details too,
+                # since _extract_preserved_thinking_blocks replays these on the
+                # non-ordered path. Falls back to raw only if sanitize dropped it.
+                if isinstance(clean_block, dict):
+                    reasoning_details.append(clean_block)
+                elif isinstance(block_dict, dict):
                     reasoning_details.append(block_dict)
             elif block.type == "tool_use":
                 name = block.name

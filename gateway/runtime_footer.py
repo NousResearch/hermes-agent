@@ -53,6 +53,34 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def resolve_footer_cwd(
+    *,
+    task_id: Optional[str] = None,
+    session_key: Optional[str] = None,
+    fallback: Optional[str] = None,
+) -> str:
+    """Return the live task cwd for footer rendering when the terminal tracks it."""
+    try:
+        from tools.file_tools import _get_live_tracking_cwd
+    except Exception:
+        _get_live_tracking_cwd = None
+
+    if _get_live_tracking_cwd is not None:
+        seen: set[str] = set()
+        for candidate in (task_id, session_key):
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                live_cwd = _get_live_tracking_cwd(candidate)
+            except Exception:
+                live_cwd = None
+            if live_cwd:
+                return str(live_cwd)
+
+    return fallback or os.environ.get("TERMINAL_CWD", "")
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,

@@ -4,7 +4,9 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -869,6 +871,101 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _decimal_or_none(value: Any) -> Optional[Decimal]:
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _money_symbol(currency: str) -> str:
+    normalized = currency.strip().upper()
+    if normalized == "CNY":
+        return "¥"
+    if normalized == "USD":
+        return "$"
+    return f"{normalized} " if normalized else ""
+
+
+def _format_money(value: Decimal, currency: str) -> str:
+    return f"{_money_symbol(currency)}{value:.2f}"
+
+
+def _is_deepseek_base_url(base_url: Optional[str]) -> bool:
+    try:
+        host = urlparse(str(base_url or "")).hostname or ""
+    except Exception:
+        return False
+    host = host.lower().strip(".")
+    return host == "deepseek.com" or host.endswith(".deepseek.com")
+
+
+def _resolve_deepseek_balance_url(base_url: Optional[str]) -> str:
+    parsed = urlparse(str(base_url or "").strip() or "https://api.deepseek.com")
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or parsed.path or "api.deepseek.com"
+    return f"{scheme}://{netloc.rstrip('/')}/user/balance"
+
+
+def _fetch_deepseek_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    if api_key:
+        runtime = {
+            "base_url": (base_url or "https://api.deepseek.com").strip(),
+            "api_key": str(api_key).strip(),
+        }
+    else:
+        runtime = resolve_runtime_provider(
+            requested="deepseek",
+            explicit_base_url=base_url,
+            explicit_api_key=api_key,
+        )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    resolved_base_url = str(runtime.get("base_url", "") or base_url or "https://api.deepseek.com")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(_resolve_deepseek_balance_url(resolved_base_url), headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    details: list[str] = []
+    for info in payload.get("balance_infos") or []:
+        if not isinstance(info, dict):
+            continue
+        currency = str(info.get("currency") or "").strip().upper()
+        total = _decimal_or_none(info.get("total_balance"))
+        if total is None:
+            continue
+        parts = [f"Balance: {_format_money(total, currency)}"]
+        if currency:
+            parts[0] += f" {currency}"
+        subparts: list[str] = []
+        granted = _decimal_or_none(info.get("granted_balance"))
+        topped_up = _decimal_or_none(info.get("topped_up_balance"))
+        if granted is not None and granted > 0:
+            subparts.append(f"granted {_format_money(granted, currency)}")
+        if topped_up is not None and topped_up > 0:
+            subparts.append(f"topped up {_format_money(topped_up, currency)}")
+        if subparts:
+            parts.append(f"({', '.join(subparts)})")
+        details.append(" ".join(parts))
+    unavailable_reason = None
+    if payload.get("is_available") is False and not details:
+        unavailable_reason = "DeepSeek API balance is insufficient."
+    return AccountUsageSnapshot(
+        provider="deepseek",
+        source="balance_api",
+        fetched_at=_utc_now(),
+        title="Account balance",
+        details=tuple(details),
+        unavailable_reason=unavailable_reason,
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -876,7 +973,7 @@ def fetch_account_usage(
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
-    if normalized in {"", "auto", "custom"}:
+    if normalized in {"", "auto", "custom"} and not _is_deepseek_base_url(base_url):
         return None
     try:
         if normalized == "openai-codex":
@@ -885,6 +982,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "deepseek" or _is_deepseek_base_url(base_url):
+            return _fetch_deepseek_account_usage(base_url, api_key)
     except Exception:
         return None
     return None

@@ -12122,6 +12122,8 @@ class GatewayRunner:
                 from gateway.platforms.base import BasePlatformAdapter
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
+                local_files, text_content = adapter.extract_local_files(text_content)
+                local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
@@ -12157,6 +12159,16 @@ class GatewayRunner:
                         await adapter.send_document(
                             chat_id=source.chat_id,
                             file_path=media_path,
+                            metadata=_thread_metadata,
+                        )
+                    except Exception:
+                        pass
+
+                for file_path in (local_files or []):
+                    try:
+                        await adapter.send_document(
+                            chat_id=source.chat_id,
+                            file_path=file_path,
                             metadata=_thread_metadata,
                         )
                     except Exception:

@@ -175,6 +175,132 @@ class TestCompress:
         compressor.compress(msgs)
         assert compressor.compression_count == 2
 
+    def test_auto_compress_respects_min_interval_seconds(self):
+        """Automatic compression should debounce repeated summarizer calls."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\nfirst summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                min_interval_seconds=300,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "system", "content": "System"}] + self._make_messages(12)
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=[100.0, 100.0, 200.0]),
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=10),
+            patch("agent.context_compressor.call_llm", return_value=mock_response) as call_llm,
+        ):
+            first = c.compress(msgs)
+            second = c.compress(msgs)
+
+        assert call_llm.call_count == 1
+        assert first != msgs
+        assert second is msgs
+        assert c._last_compress_status == "deferred"
+        assert c._last_compress_deferred_reason == "min_interval"
+
+    def test_min_interval_defer_is_true_noop_before_tool_pruning(self):
+        """Debounced auto compression should not prune or otherwise mutate context."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\nfirst summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                min_interval_seconds=300,
+                quiet_mode=True,
+            )
+        c.tail_token_budget = 1
+
+        long_tool_output = "x" * 500
+        msgs = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "please inspect"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"command":"pytest"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": long_tool_output},
+        ] + self._make_messages(10)
+
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=[100.0, 100.0, 200.0]),
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=10),
+            patch("agent.context_compressor.call_llm", return_value=mock_response),
+        ):
+            c.compress(msgs)
+            second = c.compress(msgs)
+
+        assert c._last_compress_deferred_reason == "min_interval"
+        assert second is msgs
+        assert second[3]["content"] == long_tool_output
+
+    def test_force_compress_bypasses_min_interval_seconds(self):
+        """Manual /compress force=True should retry even during debounce."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\nforced summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                min_interval_seconds=300,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "system", "content": "System"}] + self._make_messages(12)
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=[100.0, 100.0, 200.0, 200.0]),
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=10),
+            patch("agent.context_compressor.call_llm", return_value=mock_response) as call_llm,
+        ):
+            first = c.compress(msgs)
+            second = c.compress(msgs, force=True)
+
+        assert call_llm.call_count == 2
+        assert c._last_compress_status == "compressed"
+        assert c._last_compress_deferred_reason is None
+
+    def test_min_interval_default_zero_preserves_existing_behavior(self):
+        """Default debounce of zero should preserve back-to-back auto compression."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\ndefault summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "system", "content": "System"}] + self._make_messages(12)
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=10),
+            patch("agent.context_compressor.call_llm", return_value=mock_response) as call_llm,
+        ):
+            c.compress(msgs)
+            c.compress(msgs)
+
+        assert call_llm.call_count == 2
+
     def test_protects_first_and_last(self, compressor):
         msgs = self._make_messages(10)
         result = compressor.compress(msgs)
@@ -1056,6 +1182,77 @@ class TestAbortOnSummaryFailure:
         assert c._last_compress_aborted is False
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
+
+    def test_summary_abort_records_attempt_for_min_interval_debounce(self):
+        """Strict provider 400s should preserve context when abort is enabled.
+
+        This mirrors provider/config-specific 400-format failures: abort + debounce
+        prevents fallback-marker context loss and immediate repeat attempts.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=True,
+                min_interval_seconds=300,
+            )
+        msgs = self._make_msgs()
+        err = Exception("Error code: 400 - Chat completion bad format")
+
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=[100.0, 101.0, 102.0, 200.0]),
+            patch("agent.context_compressor.call_llm", side_effect=err) as call_llm,
+        ):
+            first = c.compress(msgs)
+            assert first is msgs
+            assert c._last_compress_aborted is True
+            assert c._last_summary_fallback_used is False
+
+            second = c.compress(msgs)
+
+        assert call_llm.call_count == 1
+        assert second is msgs
+        assert c._last_compress_deferred_reason == "min_interval"
+        assert c._last_summary_fallback_used is False
+        assert not any(
+            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+            for m in second
+        )
+
+    def test_abort_on_summary_failure_preserves_messages_before_tool_pruning(self):
+        """Abort must return the original context even when old tool output is prunable."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=1,
+                abort_on_summary_failure=True,
+            )
+        c.tail_token_budget = 1
+        long_tool_output = "TOOL_OUTPUT_" * 1000
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "head"},
+            {"role": "tool", "tool_call_id": "old-call", "content": long_tool_output},
+            {"role": "assistant", "content": "after tool"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "tail"},
+        ]
+
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=6),
+            patch("agent.context_compressor.call_llm", side_effect=Exception("400 bad format")),
+        ):
+            result = c.compress(msgs)
+
+        assert c._last_compress_aborted is True
+        assert result == msgs
+        assert any(m.get("content") == long_tool_output for m in result)
 
     def test_force_true_bypasses_failure_cooldown(self):
         """Manual /compress passes force=True so it can retry immediately

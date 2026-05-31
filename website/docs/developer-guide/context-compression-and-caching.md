@@ -60,7 +60,14 @@ grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 - **Threshold**: Fixed at 85% of model context length
 - **Token source**: Prefers actual API-reported tokens from last turn; falls back
   to rough character-based estimate (`estimate_messages_tokens_rough`)
-- **Fires**: Only when `len(history) >= 4` and compression is enabled
+- **Eligible**: Only when `len(history) >= 4` and compression is enabled;
+  actual attempts depend on token pressure, hard message limit, and debounce
+- **Debounce**: Honors `compression.min_interval_seconds` for token-pressure
+  attempts using a persisted per-session timestamp, because hygiene creates a
+  fresh `AIAgent` for each compression attempt. The hard message-count safety
+  valve bypasses this debounce.
+- **Hard message limit**: Also runs when history reaches
+  `compression.hygiene_hard_message_limit` messages (default: 400)
 - **Purpose**: Catch sessions that escaped the agent's own compressor
 
 The gateway hygiene threshold is intentionally higher than the agent's compressor.
@@ -83,7 +90,12 @@ compression:
   enabled: true              # Enable/disable compression (default: true)
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
+  min_interval_seconds: 0    # Debounce in-agent and gateway token-pressure attempts
+  abort_on_summary_failure: false
+  # Preserve original context instead of fallback marker on summary failure
+  protect_first_n: 3         # Non-system head messages to preserve; system prompt is always preserved
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  hygiene_hard_message_limit: 400  # Gateway hard safety valve; bypasses debounce
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -99,8 +111,11 @@ auxiliary:
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
+| `min_interval_seconds` | `0` | ≥0 | Minimum seconds between in-agent and gateway token-pressure compression attempts; `0` disables debounce. Manual `/compress` and gateway hard message-count safety compression bypass it. |
+| `abort_on_summary_failure` | `false` | bool | When `true`, failed summary generation preserves original messages instead of inserting a deterministic fallback marker and dropping the middle window. Useful for strict/flaky providers that return 400 `bad format`, timeouts, or malformed responses. |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
-| `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `protect_first_n` | `3` | ≥0 | Number of non-system head messages to preserve; the system prompt is always preserved implicitly |
+| `hygiene_hard_message_limit` | `400` | ≥1 | Gateway safety valve: attempts hygiene compression once history reaches this many messages, bypassing `min_interval_seconds` |
 
 ### Computed Values (for a 200K context model at defaults)
 
@@ -143,7 +158,7 @@ outputs (file contents, terminal output, search results).
 ┌─────────────────────────────────────────────────────────────┐
 │  Message list                                               │
 │                                                             │
-│  [0..2]  ← protect_first_n (system + first exchange)        │
+│  [head] ← system + protect_first_n non-system messages        │
 │  [3..N]  ← middle turns → SUMMARIZED                        │
 │  [N..end] ← tail (by token budget OR protect_last_n)        │
 │                                                             │
@@ -161,7 +176,7 @@ to find the parent assistant message, keeping groups intact.
 ### Phase 3: Generate Structured Summary
 
 :::warning Summary model context length
-The summary model must have a context window **at least as large** as the main agent model's. The entire middle section is sent to the summary model in a single `call_llm(task="compression")` call. If the summary model's context is smaller, the API returns a context-length error — `_generate_summary()` catches it, logs a warning, and returns `None`. The compressor then drops the middle turns **without a summary**, silently losing conversation context. This is the most common cause of degraded compaction quality.
+The summary model should have enough context for the middle section sent in a single `call_llm(task="compression")` call. If the summary model's context is too small, the API may return a context-length error — `_generate_summary()` catches it, logs a warning, and returns `None`. With the default `abort_on_summary_failure: false`, Hermes inserts a deterministic “summary unavailable” fallback marker before dropping the middle window; with `abort_on_summary_failure: true`, Hermes preserves the original messages unchanged and aborts compression.
 :::
 
 The middle turns are summarized using the auxiliary LLM with a structured

@@ -56,6 +56,8 @@ class TestCompressionBoundaryHook:
             # conversation_compression.py does not short-circuit before the
             # session-id rotation we are asserting on.
             compressor._last_compress_aborted = False
+            compressor._last_compress_status = "compressed"
+            compressor._last_compress_reason = None
             agent.context_compressor = compressor
 
             original_sid = agent.session_id
@@ -127,6 +129,75 @@ class TestCompressionBoundaryHook:
             f"got {comp_calls!r}"
         )
 
+    def test_no_status_unchanged_result_does_not_rotate_session(self):
+        """Legacy/no-status compressors returning unchanged messages must fail closed."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            class LegacyNoStatusCompressor:
+                compression_count = 0
+                last_prompt_tokens = 0
+                last_completion_tokens = 0
+                _last_summary_error = None
+                _last_compress_aborted = False
+
+                def __init__(self):
+                    self.on_session_start = MagicMock()
+
+                def compress(self, messages, **_kwargs):
+                    return messages
+
+            compressor = LegacyNoStatusCompressor()
+            agent.context_compressor = compressor
+            original_sid = agent.session_id
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(10)]
+
+            compressed, _prompt = agent._compress_context(messages, "sys", approx_tokens=10_000)
+
+            assert compressed is messages
+            assert agent.session_id == original_sid
+            compressor.on_session_start.assert_not_called()
+
+    def test_no_status_changed_result_rotates_for_legacy_plugins(self):
+        """Legacy/no-status compressors that actually change messages still work."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            class LegacyNoStatusCompressor:
+                compression_count = 1
+                last_prompt_tokens = 0
+                last_completion_tokens = 0
+                _last_summary_error = None
+                _last_compress_aborted = False
+
+                def __init__(self):
+                    self.on_session_start = MagicMock()
+
+                def compress(self, _messages, **_kwargs):
+                    return [{"role": "user", "content": "compressed legacy output"}]
+
+            compressor = LegacyNoStatusCompressor()
+            agent.context_compressor = compressor
+            original_sid = agent.session_id
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(10)]
+
+            compressed, _prompt = agent._compress_context(messages, "sys", approx_tokens=10_000)
+
+            assert compressed != messages
+            assert agent.session_id != original_sid
+            assert getattr(compressor, "_last_compress_status") == "compressed"
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert comp_calls
+
     def test_hook_failure_does_not_break_compression(self):
         """If the context engine raises from on_session_start, compression still completes."""
         from hermes_state import SessionDB
@@ -142,6 +213,8 @@ class TestCompressionBoundaryHook:
             compressor.last_completion_tokens = 0
             compressor._last_summary_error = None
             compressor._last_compress_aborted = False
+            compressor._last_compress_status = "compressed"
+            compressor._last_compress_reason = None
 
             # Raise only on the compression-boundary call, not on earlier calls.
             def _raise_on_compression(*args, **kwargs):

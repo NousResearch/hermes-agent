@@ -452,6 +452,15 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+
+    # Wall-clock timestamp of the most recent gateway session-hygiene
+    # compression attempt. Persisted so debounce survives the fresh AIAgent
+    # instance created for each hygiene pass and gateway restarts.
+    last_hygiene_compression_at: float = 0.0
+    # Last visible hygiene compression abort warning; avoids chat spam when the
+    # same failing session is retried repeatedly.
+    last_hygiene_compression_warning_key: str = ""
+    last_hygiene_compression_warning_at: float = 0.0
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -506,6 +515,9 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "last_hygiene_compression_at": self.last_hygiene_compression_at,
+            "last_hygiene_compression_warning_key": self.last_hygiene_compression_warning_key,
+            "last_hygiene_compression_warning_at": self.last_hygiene_compression_warning_at,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
@@ -562,6 +574,9 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            last_hygiene_compression_at=float(data.get("last_hygiene_compression_at", 0.0) or 0.0),
+            last_hygiene_compression_warning_key=data.get("last_hygiene_compression_warning_key", ""),
+            last_hygiene_compression_warning_at=float(data.get("last_hygiene_compression_warning_at", 0.0) or 0.0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),

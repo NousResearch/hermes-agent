@@ -192,6 +192,18 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
   return ["token", token];
 }
 
+type CommandAllowlistEntry = {
+  pattern: string;
+  kind: "manual" | "danger_category";
+};
+
+type CommandAllowlistResponse = {
+  patterns: string[];
+  entries: CommandAllowlistEntry[];
+  manual_count: number;
+  danger_category_count: number;
+};
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -254,9 +266,9 @@ export const api = {
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getCommandAllowlist: () =>
-    fetchJSON<{ patterns: string[] }>("/api/config/command-allowlist"),
+    fetchJSON<CommandAllowlistResponse>("/api/config/command-allowlist"),
   addCommandAllowlistEntry: (pattern: string) =>
-    fetchJSON<{ ok: boolean; pattern: string; created: boolean; patterns: string[] }>(
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; pattern: string; created: boolean }>(
       "/api/config/command-allowlist",
       {
         method: "POST",
@@ -265,7 +277,7 @@ export const api = {
       },
     ),
   updateCommandAllowlistEntry: (old_pattern: string, new_pattern: string) =>
-    fetchJSON<{ ok: boolean; old_pattern: string; new_pattern: string; patterns: string[] }>(
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; old_pattern: string; new_pattern: string }>(
       "/api/config/command-allowlist",
       {
         method: "PUT",
@@ -274,7 +286,7 @@ export const api = {
       },
     ),
   deleteCommandAllowlistEntry: (pattern: string) =>
-    fetchJSON<{ ok: boolean; pattern: string; removed_count: number; patterns: string[] }>(
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; pattern: string; removed_count: number }>(
       "/api/config/command-allowlist",
       {
         method: "DELETE",
@@ -283,7 +295,7 @@ export const api = {
       },
     ),
   clearCommandAllowlist: () =>
-    fetchJSON<{ ok: boolean; cleared_count: number; patterns: string[] }>(
+    fetchJSON<CommandAllowlistResponse & { ok: boolean; cleared_count: number }>(
       "/api/config/command-allowlist/clear",
       {
         method: "POST",

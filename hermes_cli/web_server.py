@@ -50,6 +50,7 @@ from hermes_cli.config import (
 )
 from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
+from tools.approval import DANGEROUS_PATTERNS
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -937,14 +938,37 @@ async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
 
 
+_DANGEROUS_APPROVAL_KEYS: set[str] = {
+    str(description).strip()
+    for _pattern, description in DANGEROUS_PATTERNS
+    if str(description).strip()
+}
+
+
+def _serialize_command_allowlist(raw_patterns: list[Any]) -> dict[str, Any]:
+    patterns = [str(p) for p in raw_patterns if str(p).strip()]
+    entries = [
+        {
+            "pattern": pattern,
+            "kind": "danger_category" if pattern in _DANGEROUS_APPROVAL_KEYS else "manual",
+        }
+        for pattern in patterns
+    ]
+    return {
+        "patterns": patterns,
+        "entries": entries,
+        "manual_count": sum(1 for entry in entries if entry["kind"] == "manual"),
+        "danger_category_count": sum(1 for entry in entries if entry["kind"] == "danger_category"),
+    }
+
+
 @app.get("/api/config/command-allowlist")
 async def get_command_allowlist():
     cfg = load_config() or {}
     raw_patterns = cfg.get("command_allowlist", []) or []
     if not isinstance(raw_patterns, list):
         raw_patterns = []
-    patterns = [str(p) for p in raw_patterns if str(p).strip()]
-    return {"patterns": patterns}
+    return _serialize_command_allowlist(raw_patterns)
 
 
 @app.post("/api/config/command-allowlist")
@@ -963,7 +987,7 @@ async def add_command_allowlist_entry(body: CommandAllowlistUpsert):
                 "ok": True,
                 "pattern": pattern,
                 "created": False,
-                "patterns": patterns,
+                **_serialize_command_allowlist(patterns),
             }
         patterns.append(pattern)
         cfg["command_allowlist"] = patterns
@@ -972,7 +996,7 @@ async def add_command_allowlist_entry(body: CommandAllowlistUpsert):
             "ok": True,
             "pattern": pattern,
             "created": True,
-            "patterns": patterns,
+            **_serialize_command_allowlist(patterns),
         }
     except HTTPException:
         raise
@@ -999,7 +1023,7 @@ async def delete_command_allowlist_entry(body: CommandAllowlistDelete):
             "ok": True,
             "pattern": body.pattern,
             "removed_count": removed_count,
-            "patterns": next_patterns,
+            **_serialize_command_allowlist(next_patterns),
         }
     except HTTPException:
         raise
@@ -1038,7 +1062,7 @@ async def replace_command_allowlist_entry(body: CommandAllowlistReplace):
             "ok": True,
             "old_pattern": old_pattern,
             "new_pattern": new_pattern,
-            "patterns": next_patterns,
+            **_serialize_command_allowlist(next_patterns),
         }
     except HTTPException:
         raise
@@ -1057,7 +1081,7 @@ async def clear_command_allowlist():
         cleared_count = len(raw_patterns)
         cfg["command_allowlist"] = []
         save_config(cfg)
-        return {"ok": True, "cleared_count": cleared_count, "patterns": []}
+        return {"ok": True, "cleared_count": cleared_count, **_serialize_command_allowlist([])}
     except Exception:
         _log.exception("POST /api/config/command-allowlist/clear failed")
         raise HTTPException(status_code=500, detail="Internal server error")

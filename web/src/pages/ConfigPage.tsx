@@ -104,6 +104,11 @@ function CategoryIcon({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
+type AllowlistEntry = {
+  pattern: string;
+  kind: "manual" | "danger_category";
+};
+
 export default function ConfigPage() {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [schema, setSchema] = useState<Record<
@@ -123,7 +128,7 @@ export default function ConfigPage() {
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>("");
   const [confirmReset, setConfirmReset] = useState(false);
-  const [allowlistPatterns, setAllowlistPatterns] = useState<string[]>([]);
+  const [allowlistEntries, setAllowlistEntries] = useState<AllowlistEntry[]>([]);
   const [allowlistDraft, setAllowlistDraft] = useState("");
   const [allowlistLoading, setAllowlistLoading] = useState(true);
   const [allowlistBusy, setAllowlistBusy] = useState(false);
@@ -181,7 +186,7 @@ export default function ConfigPage() {
     setAllowlistError(null);
     try {
       const resp = await api.getCommandAllowlist();
-      setAllowlistPatterns(resp.patterns ?? []);
+      setAllowlistEntries(resp.entries ?? []);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setAllowlistError(message);
@@ -290,6 +295,18 @@ export default function ConfigPage() {
   }, [schema, activeCategory, isSearching]);
 
   const exactTestCandidate = allowlistTestCommand.trim();
+  const allowlistPatterns = useMemo(
+    () => allowlistEntries.map((entry) => entry.pattern),
+    [allowlistEntries],
+  );
+  const manualAllowlistEntries = useMemo(
+    () => allowlistEntries.filter((entry) => entry.kind === "manual"),
+    [allowlistEntries],
+  );
+  const dangerCategoryAllowlistEntries = useMemo(
+    () => allowlistEntries.filter((entry) => entry.kind === "danger_category"),
+    [allowlistEntries],
+  );
   const exactTestMatch = useMemo(() => {
     if (!exactTestCandidate) return null;
     return allowlistPatterns.find((pattern) => pattern === exactTestCandidate) ?? null;
@@ -392,14 +409,14 @@ export default function ConfigPage() {
     try {
       if (allowlistConfirm.type === "delete") {
         const resp = await api.deleteCommandAllowlistEntry(allowlistConfirm.pattern);
-        setAllowlistPatterns(resp.patterns ?? []);
+        setAllowlistEntries(resp.entries ?? []);
         if (allowlistEditTarget === allowlistConfirm.pattern) {
           cancelAllowlistEdit();
         }
-        showToast("Always-allow pattern removed.", "success");
+        showToast("Always-allow entry removed.", "success");
       } else {
         const resp = await api.clearCommandAllowlist();
-        setAllowlistPatterns(resp.patterns ?? []);
+        setAllowlistEntries(resp.entries ?? []);
         cancelAllowlistEdit();
         showToast("Always-allow list cleared.", "success");
       }
@@ -423,10 +440,10 @@ export default function ConfigPage() {
     setAllowlistBusy(true);
     try {
       const resp = await api.addCommandAllowlistEntry(pattern);
-      setAllowlistPatterns(resp.patterns ?? []);
+      setAllowlistEntries(resp.entries ?? []);
       setAllowlistDraft("");
       showToast(
-        resp.created ? "Always-allow pattern added." : "Pattern already exists.",
+        resp.created ? "Always-allow entry added." : "Entry already exists.",
         "success",
       );
     } catch (e) {
@@ -459,12 +476,12 @@ export default function ConfigPage() {
     setAllowlistBusy(true);
     try {
       const resp = await api.updateCommandAllowlistEntry(allowlistEditTarget, replacement);
-      setAllowlistPatterns(resp.patterns ?? []);
+      setAllowlistEntries(resp.entries ?? []);
       cancelAllowlistEdit();
-      showToast("Always-allow pattern updated.", "success");
+      showToast("Always-allow entry updated.", "success");
     } catch (e) {
       showToast(
-        `Failed to update always-allow pattern: ${e instanceof Error ? e.message : String(e)}`,
+        `Failed to update always-allow entry: ${e instanceof Error ? e.message : String(e)}`,
         "error",
       );
     } finally {
@@ -563,6 +580,99 @@ export default function ConfigPage() {
     });
   };
 
+  const renderAllowlistEntryRows = (entries: AllowlistEntry[]) => (
+    <div className="grid gap-2">
+      {entries.map((entry) => {
+        const pattern = entry.pattern;
+        const isEditing = allowlistEditTarget === pattern;
+        return (
+          <div
+            key={`${entry.kind}:${pattern}`}
+            className="grid gap-3 border border-border/60 px-3 py-3"
+          >
+            {isEditing ? (
+              <>
+                <Input
+                  value={allowlistEditDraft}
+                  onChange={(e) => setAllowlistEditDraft(e.target.value)}
+                  className="text-xs"
+                  disabled={allowlistBusy}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleSaveAllowlistEdit();
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      cancelAllowlistEdit();
+                    }
+                  }}
+                />
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={cancelAllowlistEdit}
+                    disabled={allowlistBusy}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => void handleSaveAllowlistEdit()}
+                    disabled={allowlistBusy || allowlistEditDraft.trim().length === 0}
+                  >
+                    Save changes
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
+                <div className="flex min-h-9 min-w-0 items-center border border-border/60 bg-muted/10 px-3 font-mono text-xs text-foreground">
+                  <span className="min-w-0 break-all">{pattern}</span>
+                </div>
+                <div className="flex flex-wrap items-stretch justify-end gap-2 lg:shrink-0">
+                  <Button
+                    outlined
+                    size="sm"
+                    className="h-9 min-w-[96px] justify-center"
+                    prefix={<Copy className="h-3.5 w-3.5" />}
+                    onClick={() => void handleCopyToClipboard(pattern, "Entry copied.")}
+                    disabled={allowlistBusy}
+                  >
+                    Copy
+                  </Button>
+                  <Button
+                    outlined
+                    size="sm"
+                    className="h-9 min-w-[96px] justify-center"
+                    prefix={<Pencil className="h-3.5 w-3.5" />}
+                    onClick={() => startAllowlistEdit(pattern)}
+                    disabled={allowlistBusy}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    outlined
+                    size="sm"
+                    className="h-9 min-w-[96px] justify-center text-destructive"
+                    prefix={<Trash2 className="h-3.5 w-3.5" />}
+                    title="Delete entry"
+                    aria-label={`Delete entry ${pattern}`}
+                    onClick={() => setAllowlistConfirm({ type: "delete", pattern })}
+                    disabled={allowlistBusy}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
   const renderAlwaysAllowCard = () => (
     <Card>
       <CardHeader className="py-3 px-4">
@@ -573,8 +683,8 @@ export default function ConfigPage() {
               Always Allow
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Persistent dangerous-command approvals saved in <code>command_allowlist</code>.
-              Removing an entry stops future auto-approval, but active Hermes sessions or gateway processes may need a restart or a fresh session to fully drop in-memory approvals.
+              Persistent dangerous-command approvals and manual exact-match entries saved in <code>command_allowlist</code>.
+              Approval-prompt saves are grouped below as danger categories like <code>recursive delete</code>. Removing an entry stops future auto-approval, but active Hermes sessions or gateway processes may need a restart or a fresh session to fully drop in-memory approvals.
             </p>
           </div>
           <div className="flex items-center gap-2 sm:shrink-0">
@@ -597,7 +707,7 @@ export default function ConfigPage() {
       <CardContent className="grid gap-4 px-4 pb-4">
         <div className="grid gap-2">
           <p className="text-xs text-muted-foreground">
-            Add an exact command pattern to the persistent allowlist.
+            Add a manual exact-match entry to the persistent allowlist. Use this for precise strings you want saved as-is.
           </p>
           <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-stretch">
             <Input
@@ -629,7 +739,7 @@ export default function ConfigPage() {
             <div>
               <p className="text-sm font-medium">Test exact match</p>
               <p className="text-xs text-muted-foreground">
-                Paste a full command to see whether it exactly matches one saved always-allow pattern.
+                Paste a full command to check for an exact saved string match. Approval-generated category keys like <code>recursive delete</code> are shown as stored labels, not reconstructed commands.
               </p>
             </div>
             {exactTestCandidate ? (
@@ -668,99 +778,53 @@ export default function ConfigPage() {
           </div>
         ) : allowlistError ? (
           <p className="text-sm text-destructive">{allowlistError}</p>
-        ) : allowlistPatterns.length === 0 ? (
+        ) : allowlistEntries.length === 0 ? (
           <div className="border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
-            No always-allow patterns saved.
+            No always-allow entries saved.
           </div>
         ) : (
-          <div className="grid gap-2">
-            {allowlistPatterns.map((pattern) => {
-              const isEditing = allowlistEditTarget === pattern;
-              return (
-                <div
-                  key={pattern}
-                  className="grid gap-3 border border-border/60 px-3 py-3"
-                >
-                  {isEditing ? (
-                    <>
-                      <Input
-                        value={allowlistEditDraft}
-                        onChange={(e) => setAllowlistEditDraft(e.target.value)}
-                        className="text-xs"
-                        disabled={allowlistBusy}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            void handleSaveAllowlistEdit();
-                          }
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            cancelAllowlistEdit();
-                          }
-                        }}
-                      />
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <Button
-                          size="sm"
-                          outlined
-                          onClick={cancelAllowlistEdit}
-                          disabled={allowlistBusy}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() => void handleSaveAllowlistEdit()}
-                          disabled={allowlistBusy || allowlistEditDraft.trim().length === 0}
-                        >
-                          Save changes
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
-                      <div className="flex min-h-9 min-w-0 items-center border border-border/60 bg-muted/10 px-3 font-mono text-xs text-foreground">
-                        <span className="min-w-0 break-all">{pattern}</span>
-                      </div>
-                      <div className="flex flex-wrap items-stretch justify-end gap-2 lg:shrink-0">
-                        <Button
-                          outlined
-                          size="sm"
-                          className="h-9 min-w-[96px] justify-center"
-                          prefix={<Copy className="h-3.5 w-3.5" />}
-                          onClick={() => void handleCopyToClipboard(pattern, "Pattern copied.")}
-                          disabled={allowlistBusy}
-                        >
-                          Copy
-                        </Button>
-                        <Button
-                          outlined
-                          size="sm"
-                          className="h-9 min-w-[96px] justify-center"
-                          prefix={<Pencil className="h-3.5 w-3.5" />}
-                          onClick={() => startAllowlistEdit(pattern)}
-                          disabled={allowlistBusy}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          outlined
-                          size="sm"
-                          className="h-9 min-w-[96px] justify-center text-destructive"
-                          prefix={<Trash2 className="h-3.5 w-3.5" />}
-                          title="Delete pattern"
-                          aria-label={`Delete pattern ${pattern}`}
-                          onClick={() => setAllowlistConfirm({ type: "delete", pattern })}
-                          disabled={allowlistBusy}
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  )}
+          <div className="grid gap-4">
+            <div className="grid gap-2 border border-border/60 bg-muted/10 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Manual exact patterns</p>
+                  <p className="text-xs text-muted-foreground">
+                    Exact strings you added yourself from this panel or by editing config directly.
+                  </p>
                 </div>
-              );
-            })}
+                <Badge tone={manualAllowlistEntries.length > 0 ? "secondary" : "secondary"} className="text-xs">
+                  {manualAllowlistEntries.length}
+                </Badge>
+              </div>
+              {manualAllowlistEntries.length > 0 ? (
+                renderAllowlistEntryRows(manualAllowlistEntries)
+              ) : (
+                <div className="border border-dashed border-border px-4 py-4 text-xs text-muted-foreground">
+                  No manual exact patterns saved.
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-2 border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Approval-generated danger categories</p>
+                  <p className="text-xs text-muted-foreground">
+                    Broader dangerous-command approval keys created from prompt approvals, not reconstructed full commands.
+                  </p>
+                </div>
+                <Badge tone={dangerCategoryAllowlistEntries.length > 0 ? "warning" : "secondary"} className="text-xs">
+                  {dangerCategoryAllowlistEntries.length}
+                </Badge>
+              </div>
+              {dangerCategoryAllowlistEntries.length > 0 ? (
+                renderAllowlistEntryRows(dangerCategoryAllowlistEntries)
+              ) : (
+                <div className="border border-dashed border-border px-4 py-4 text-xs text-muted-foreground">
+                  No approval-generated danger categories saved.
+                </div>
+              )}
+            </div>
           </div>
         )}
 

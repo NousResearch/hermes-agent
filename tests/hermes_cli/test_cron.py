@@ -5,7 +5,8 @@ from argparse import Namespace
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cron_status
+from hermes_cli.gateway import GatewayRuntimeSnapshot
 
 
 @pytest.fixture()
@@ -111,3 +112,40 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+
+class TestCronStatus:
+    def test_cron_status_uses_runtime_snapshot_service_only(self, tmp_cron_dir, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "hermes_cli.gateway.get_gateway_runtime_snapshot",
+            lambda: GatewayRuntimeSnapshot(
+                manager="launchd (macOS)",
+                service_installed=True,
+                service_running=True,
+                gateway_pids=(),
+            ),
+        )
+
+        cron_status()
+
+        out = capsys.readouterr().out
+        assert "Gateway is running" in out
+        assert "Manager: launchd (macOS)" in out
+        assert "Service: running" in out
+        assert "Gateway is not running" not in out
+
+    def test_cron_status_prints_normalized_gateway_pids(self, tmp_cron_dir, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "hermes_cli.gateway.get_gateway_runtime_snapshot",
+            lambda: GatewayRuntimeSnapshot(
+                manager="manual process",
+                gateway_pids=(123, 456),
+            ),
+        )
+
+        cron_status()
+
+        out = capsys.readouterr().out
+        assert "Gateway is running" in out
+        assert "Manager: manual process" in out
+        assert "PID: 123, 456" in out

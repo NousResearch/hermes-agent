@@ -30,6 +30,13 @@ class TestOpusFindLibrary:
         assert "sys.platform" in source or "darwin" in source, \
             "Homebrew fallback must be guarded by macOS platform check"
 
+    def test_opus_loading_can_be_disabled_by_env(self):
+        """Voice-channel playback off should skip eager Opus loading."""
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        source = inspect.getsource(DiscordAdapter.connect)
+        assert "DISCORD_VOICE_CHANNEL_PLAYBACK" in source
+        assert "discord.opus.is_loaded" in source
+
     def test_windows_bundled_discord_opus_dll_is_discovered(self, monkeypatch, tmp_path):
         """Native Windows installs should try discord.py's bundled opus DLL."""
         import plugins.platforms.discord.adapter as adapter

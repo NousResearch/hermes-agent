@@ -346,6 +346,42 @@ class TestLoadGatewayConfig:
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    def test_bridges_discord_voice_channel_playback_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.voice_channel_playback should reach the runtime env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  voice_channel_playback: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_VOICE_CHANNEL_PLAYBACK", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_VOICE_CHANNEL_PLAYBACK") == "false"
+
+    def test_discord_voice_channel_playback_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """Explicit env var should win over config.yaml for voice playback."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  voice_channel_playback: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_VOICE_CHANNEL_PLAYBACK", "true")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_VOICE_CHANNEL_PLAYBACK") == "true"
+
     def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""
         hermes_home = tmp_path / ".hermes"

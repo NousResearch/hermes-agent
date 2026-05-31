@@ -627,8 +627,8 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
 
-        # Load opus codec for voice channel support
-        if not discord.opus.is_loaded():
+        # Load opus codec only when Discord voice-channel playback is enabled.
+        if os.getenv("DISCORD_VOICE_CHANNEL_PLAYBACK", "true").strip().lower() not in {"0", "false", "no", "off"} and not discord.opus.is_loaded():
             import ctypes.util
             opus_candidates = []
             bundled_opus = _find_discord_windows_bundled_opus(discord)
@@ -6139,6 +6139,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    if "voice_channel_playback" in discord_cfg and not os.getenv("DISCORD_VOICE_CHANNEL_PLAYBACK"):
+        os.environ["DISCORD_VOICE_CHANNEL_PLAYBACK"] = str(discord_cfg["voice_channel_playback"]).lower()
     # ignored_channels: channels where bot never responds (even when mentioned)
     ic = discord_cfg.get("ignored_channels")
     if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

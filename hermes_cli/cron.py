@@ -154,14 +154,19 @@ def cron_tick():
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
+    from hermes_cli.gateway import _format_gateway_pids, get_gateway_runtime_snapshot
 
     print()
 
-    pids = find_gateway_pids()
-    if pids:
+    snapshot = get_gateway_runtime_snapshot()
+    pids = snapshot.gateway_pids
+    if snapshot.running:
         print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-        print(f"  PID: {', '.join(map(str, pids))}")
+        print(f"  Manager: {snapshot.manager}")
+        if pids:
+            print(f"  PID: {_format_gateway_pids(pids, limit=None)}")
+        elif snapshot.service_running:
+            print("  Service: running")
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()

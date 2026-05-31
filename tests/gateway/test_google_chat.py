@@ -254,6 +254,8 @@ class TestEnvConfigLoading:
         "GOOGLE_CHAT_SUBSCRIPTION_NAME",
         "GOOGLE_CHAT_SUBSCRIPTION",
         "GOOGLE_CHAT_HTTP_EVENTS_URL",
+        "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE",
+        "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
         "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_CHAT_HOME_CHANNEL",
@@ -284,10 +286,32 @@ class TestEnvConfigLoading:
 
     def test_http_events_enable_without_pubsub(self, monkeypatch):
         self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_HTTP_EVENTS_URL", "https://example.test/google-chat/events")
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_URL",
+            "https://example.test/google-chat/events",
+        )
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE",
+            "https://callback.example.test/events",
+        )
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
+            "chat-callback@example.iam.gserviceaccount.com",
+        )
         cfg = load_gateway_config()
         assert _GC in cfg.platforms
-        assert cfg.platforms[_GC].extra["http_events_url"] == "https://example.test/google-chat/events"
+        assert (
+            cfg.platforms[_GC].extra["http_events_url"]
+            == "https://example.test/google-chat/events"
+        )
+        assert (
+            cfg.platforms[_GC].extra["http_events_audience"]
+            == "https://callback.example.test/events"
+        )
+        assert (
+            cfg.platforms[_GC].extra["http_events_service_account_email"]
+            == "chat-callback@example.iam.gserviceaccount.com"
+        )
 
 
 # ===========================================================================
@@ -412,6 +436,82 @@ class TestValidateConfig:
         project, sub = a._validate_config()
         assert project == "inferred"
         assert sub == "projects/inferred/subscriptions/sub"
+
+
+class TestHttpEventIngress:
+    def test_verify_http_event_request_accepts_expected_google_identity(self, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update(
+            {
+                "http_events_url": "https://example.test/google-chat/events",
+                "http_events_service_account_email": (
+                    "chat-callback@example.iam.gserviceaccount.com"
+                ),
+            }
+        )
+        a = GoogleChatAdapter(cfg)
+
+        def fake_verify(token, audience):
+            assert token == "signed-token"
+            assert audience == "https://example.test/google-chat/events"
+            return {"email": "chat-callback@example.iam.gserviceaccount.com"}
+
+        monkeypatch.setattr(_gc_mod, "_verify_google_id_token", fake_verify)
+
+        assert a.verify_http_event_request("Bearer signed-token") == (True, "")
+
+    def test_verify_http_event_request_rejects_unexpected_identity(self, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update(
+            {
+                "http_events_url": "https://example.test/google-chat/events",
+                "http_events_service_account_email": (
+                    "expected@example.iam.gserviceaccount.com"
+                ),
+            }
+        )
+        a = GoogleChatAdapter(cfg)
+        monkeypatch.setattr(
+            _gc_mod,
+            "_verify_google_id_token",
+            lambda _token, _audience: {
+                "email": "other@example.iam.gserviceaccount.com"
+            },
+        )
+
+        ok, code = a.verify_http_event_request("Bearer signed-token")
+
+        assert ok is False
+        assert code == "unexpected_google_bearer_identity"
+
+    def test_verify_http_event_request_requires_callback_identity_config(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["http_events_url"] = "https://example.test/google-chat/events"
+        a = GoogleChatAdapter(cfg)
+
+        assert a.verify_http_event_request("Bearer signed-token") == (
+            False,
+            "google_chat_http_events_not_configured",
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_routes_message_payload(self, adapter):
+        envelope = _make_chat_envelope(text="hello from http")
+
+        result = await adapter.dispatch_http_event(envelope)
+
+        assert result == {}
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "hello from http"
+        assert event.source.chat_id == "spaces/S"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_ignores_bot_messages(self, adapter):
+        envelope = _make_chat_envelope(text="bot echo", sender_type="BOT")
+
+        assert await adapter.dispatch_http_event(envelope) == {}
+        adapter.handle_message.assert_not_awaited()
 
 
 class TestConnectModes:

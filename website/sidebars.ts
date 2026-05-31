@@ -436,6 +436,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/devops/devops-cli',
+                    'user-guide/skills/optional/devops/devops-codex-seo-superpowers',
                     'user-guide/skills/optional/devops/devops-docker-management',
                     'user-guide/skills/optional/devops/devops-pinggy-tunnel',
                     'user-guide/skills/optional/devops/devops-watchers',

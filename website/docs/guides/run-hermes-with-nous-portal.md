@@ -248,7 +248,7 @@ If a model is genuinely unavailable, [open an issue](https://github.com/NousRese
 ### Want to revoke and start clean
 
 ```bash
-hermes auth remove nous       # wipes the local refresh token
+hermes auth logout nous       # wipes the local refresh token
 # Then re-run setup or remove the subscription from the Portal web UI
 ```
 

@@ -99,6 +99,7 @@ class WorkerPool:
         crash_limit: int = 5,
         crash_window: float = 60.0,
         kill_grace: float = 10.0,
+        broken_cooldown: float = 60.0,
     ):
         self._spawn = spawn
         self._probe = probe or self._default_probe
@@ -112,9 +113,13 @@ class WorkerPool:
         self.crash_limit = crash_limit
         self.crash_window = crash_window
         self.kill_grace = kill_grace
+        self.broken_cooldown = broken_cooldown
         self.workers: dict[str, Worker] = {}
         self._crashes: dict[str, deque[float]] = {}
-        self._broken: set[str] = set()
+        # profile -> monotonic time the circuit-break cooldown expires.  After
+        # it elapses, the next acquire() clears the breaker and retries once.
+        self._broken: dict[str, float] = {}
+        self._closed = False
         self._lock = asyncio.Lock()
 
     async def _default_probe(self, worker: Worker) -> bool:
@@ -130,12 +135,20 @@ class WorkerPool:
     async def acquire(self, profile: str) -> Worker:
         """Return a SERVING worker for *profile*, spawning + probing if needed."""
         async with self._lock:
+            if self._closed:
+                raise ProfileBusyError("worker pool is shutting down")
             existing = self.workers.get(profile)
             if existing and existing.state is WorkerState.SERVING and existing.alive():
                 existing.last_used = self._clock()
                 return existing
-            if profile in self._broken:
-                raise ProfileBusyError(f"profile {profile!r} is unhealthy (too many recent crashes)")
+            # A previously serving/probing worker that died unexpectedly is a
+            # crash.  Record it here, on the lazy-respawn path, so the circuit
+            # breaker still trips even when no periodic reap observed the death
+            # first (the live gateway respawns on-demand, not via reap_exited).
+            if existing and existing.state in (WorkerState.SERVING, WorkerState.PROBING) and not existing.alive():
+                self._record_crash(profile)
+            self.workers.pop(profile, None)
+            self._raise_if_broken(profile)
             if (pid := self._interlock(profile)) is not None:
                 raise ProfileBusyError(
                     f"profile {profile!r} is already served by a standalone gateway (pid {pid}); "
@@ -189,8 +202,25 @@ class WorkerPool:
         while hist and now - hist[0] > self.crash_window:
             hist.popleft()
         if len(hist) >= self.crash_limit:
-            self._broken.add(profile)
-            logger.error("worker for %r circuit-broke after %d crashes in %ss", profile, len(hist), self.crash_window)
+            self._broken[profile] = now + self.broken_cooldown
+            logger.error(
+                "worker for %r circuit-broke after %d crashes in %ss; cooling down %ss",
+                profile, len(hist), self.crash_window, self.broken_cooldown,
+            )
+
+    def _raise_if_broken(self, profile: str) -> None:
+        """Raise while the profile's circuit breaker is open; self-heal after cooldown."""
+        until = self._broken.get(profile)
+        if until is None:
+            return
+        if self._clock() < until:
+            raise ProfileBusyError(
+                f"profile {profile!r} is unhealthy (too many recent crashes); cooling down"
+            )
+        # Cooldown elapsed — clear the breaker and the stale crash history so
+        # the profile gets a fresh chance instead of staying broken forever.
+        self._broken.pop(profile, None)
+        self._crashes.pop(profile, None)
 
     async def _reap(self, worker: Worker) -> None:
         if worker.alive():
@@ -202,5 +232,10 @@ class WorkerPool:
         self.workers.pop(worker.profile, None)
 
     async def shutdown(self) -> None:
-        for profile in list(self.workers):
+        # Latch closed under the lock so an acquire() racing shutdown can't spawn
+        # a worker after we snapshot the set — otherwise that child would orphan.
+        async with self._lock:
+            self._closed = True
+            profiles = list(self.workers)
+        for profile in profiles:
             await self.evict(profile)

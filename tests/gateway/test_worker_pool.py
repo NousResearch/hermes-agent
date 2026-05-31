@@ -127,3 +127,57 @@ async def test_circuit_break_after_five_crashes():
         h.advance(1)
     with pytest.raises(ProfileBusyError):
         await pool.acquire("coder")
+
+
+@pytest.mark.asyncio
+async def test_lazy_respawn_records_crash_without_reap():
+    """A worker that dies between messages is counted as a crash on the
+    on-demand respawn path — the breaker must trip without reap_exited ever
+    running (the live gateway respawns lazily, not via a sweep)."""
+    h = Harness()
+    pool = h.make_pool(crash_limit=3, crash_window=60)
+    for _ in range(3):
+        w = await pool.acquire("coder")
+        w.proc.crash()  # dies, but no reap_exited() call
+        h.advance(1)
+    with pytest.raises(ProfileBusyError):
+        await pool.acquire("coder")
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_recovers_after_cooldown():
+    h = Harness()
+    pool = h.make_pool(crash_limit=3, crash_window=60, broken_cooldown=120)
+    for _ in range(3):
+        w = await pool.acquire("coder")
+        w.proc.crash()
+        h.advance(1)
+    with pytest.raises(ProfileBusyError):
+        await pool.acquire("coder")
+    # After the cooldown elapses the breaker self-heals and a fresh spawn works.
+    h.advance(121)
+    w = await pool.acquire("coder")
+    assert w.state is WorkerState.SERVING
+
+
+@pytest.mark.asyncio
+async def test_shutdown_terminates_all_workers():
+    h = Harness()
+    pool = h.make_pool()
+    a = await pool.acquire("coder")
+    b = await pool.acquire("research")
+    await pool.shutdown()
+    assert a.proc.terminated and b.proc.terminated
+    assert pool.workers == {}
+
+
+@pytest.mark.asyncio
+async def test_acquire_after_shutdown_is_refused():
+    """Once shut down, the pool spawns nothing — a late acquire can't orphan a
+    child process by racing the shutdown snapshot."""
+    h = Harness()
+    pool = h.make_pool()
+    await pool.shutdown()
+    with pytest.raises(ProfileBusyError):
+        await pool.acquire("coder")
+    assert h.spawned == []

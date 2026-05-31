@@ -759,6 +759,10 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
+    if goal_bool_error:
+        return tool_error(goal_bool_error)
+    goal_max_turns = args.get("goal_max_turns")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -786,6 +790,10 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                goal_mode=goal_mode,
+                goal_max_turns=(
+                    int(goal_max_turns) if goal_max_turns is not None else None
+                ),
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -1248,6 +1256,29 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "goal_mode": {
+                "type": "boolean",
+                "description": (
+                    "Run the dispatched worker in a goal loop. When true, "
+                    "after each turn an auxiliary judge checks the worker's "
+                    "response against this card's title/body; if the work "
+                    "isn't done and budget remains, the worker keeps going "
+                    "in the same session until the judge agrees it's "
+                    "complete (or the goal-turn budget is exhausted, which "
+                    "blocks the task for human review). Use this for "
+                    "open-ended cards where one shot rarely finishes the "
+                    "work. Defaults to false (classic single-shot worker)."
+                ),
+            },
+            "goal_max_turns": {
+                "type": "integer",
+                "description": (
+                    "Turn budget for goal_mode workers. Caps how many "
+                    "continuation turns the worker may take before the task "
+                    "is blocked for review. Ignored unless goal_mode is "
+                    "true. Defaults to the goal-engine default (20)."
                 ),
             },
             "board": _board_schema_prop(),

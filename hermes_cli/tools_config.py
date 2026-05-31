@@ -52,6 +52,18 @@ from hermes_cli.cli_output import (  # noqa: E402 — late import block
 # Toolsets shown in the configurator, grouped for display.
 # Each entry: (toolset_name, label, description)
 # These map to keys in toolsets.py TOOLSETS dict.
+EMAIL_SAFE_TOOLSETS = {
+    "messaging",
+    "memory",
+    "session_search",
+    "todo",
+    "clarify",
+    "search",
+    "vision",
+    "skills",
+}
+
+
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
@@ -1381,6 +1393,13 @@ def _get_platform_tools(
     if disabled_toolsets:
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
+
+    # Email can be triggered by third-party message bodies, so keep its tool
+    # surface narrow by default. Operators can opt out with
+    # EMAIL_RESTRICT_TOOLS=0 if they intentionally want full email-triggered
+    # sessions.
+    if platform == "email" and os.getenv("EMAIL_RESTRICT_TOOLS", "1").lower() not in {"0", "false", "no", "off"}:
+        enabled_toolsets &= EMAIL_SAFE_TOOLSETS
 
     return enabled_toolsets
 

@@ -45,7 +45,7 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.thread_context import propagate_context_to_thread
 
@@ -74,6 +74,63 @@ DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
+
+
+def _assemble_stdout_result(
+    head: bytes,
+    tail: bytes = b"",
+    *,
+    total_bytes: Optional[int] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Build display stdout plus explicit truncation metadata.
+
+    The agent receives execute_code results as JSON. A textual truncation
+    marker can be missed or later re-truncated by a client layer, so keep the
+    marker for humans and also expose byte counts for deterministic handling.
+    """
+    captured = head + tail
+    total = len(captured) if total_bytes is None else max(total_bytes, len(captured))
+    truncated = total > len(captured)
+    omitted = max(0, total - len(captured))
+
+    if truncated:
+        stdout_text = (
+            head.decode("utf-8", errors="replace")
+            + f"\n\n... [OUTPUT TRUNCATED - {omitted:,} bytes omitted "
+            f"out of {total:,} total] ...\n\n"
+            + tail.decode("utf-8", errors="replace")
+        )
+    else:
+        stdout_text = captured.decode("utf-8", errors="replace")
+
+    metadata: Dict[str, Any] = {
+        "stdout_truncated": truncated,
+        "stdout_bytes_captured": len(captured),
+        "stdout_bytes_total": total,
+        "stdout_bytes_omitted": omitted,
+    }
+    if truncated:
+        metadata["warning"] = (
+            "execute_code stdout was truncated; the script did run, but only "
+            "the captured head/tail output is included. Re-run only with "
+            "narrower output if the omitted data is required."
+        )
+    return stdout_text, metadata
+
+
+def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
+    """Cap a complete stdout string by bytes using the same head/tail policy."""
+    stdout_bytes = stdout_text.encode("utf-8", errors="replace")
+    if len(stdout_bytes) <= MAX_STDOUT_BYTES:
+        return _assemble_stdout_result(stdout_bytes)
+
+    head_bytes = int(MAX_STDOUT_BYTES * 0.4)
+    tail_bytes = MAX_STDOUT_BYTES - head_bytes
+    return _assemble_stdout_result(
+        stdout_bytes[:head_bytes],
+        stdout_bytes[-tail_bytes:],
+        total_bytes=len(stdout_bytes),
+    )
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
@@ -1010,7 +1067,7 @@ def _execute_remote(
             timeout=timeout,
         )
 
-        stdout_text = script_result.get("output", "")
+        stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)
         status = "success"
 
@@ -1052,19 +1109,7 @@ def _execute_remote(
 
     # --- Post-process output (same as local path) ---
 
-    # Truncate stdout to cap
-    if len(stdout_text) > MAX_STDOUT_BYTES:
-        head_bytes = int(MAX_STDOUT_BYTES * 0.4)
-        tail_bytes = MAX_STDOUT_BYTES - head_bytes
-        head = stdout_text[:head_bytes]
-        tail = stdout_text[-tail_bytes:]
-        omitted = len(stdout_text) - len(head) - len(tail)
-        stdout_text = (
-            head
-            + f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
-            f"out of {len(stdout_text):,} total] ...\n\n"
-            + tail
-        )
+    stdout_text, stdout_metadata = _truncate_stdout_text(stdout_text)
 
     # Strip ANSI escape sequences
     from tools.ansi_strip import strip_ansi
@@ -1080,9 +1125,11 @@ def _execute_remote(
     result: Dict[str, Any] = {
         "status": status,
         "output": stdout_text,
+        "exit_code": exit_code,
         "tool_calls_made": tool_call_counter[0],
         "duration_seconds": duration,
     }
+    result.update(stdout_metadata)
 
     if status == "timeout":
         timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1465,21 +1512,13 @@ def execute_code(
         stdout_reader.join(timeout=3)
         stderr_reader.join(timeout=3)
 
-        stdout_head = b"".join(stdout_head_chunks).decode("utf-8", errors="replace")
-        stdout_tail = b"".join(stdout_tail_chunks).decode("utf-8", errors="replace")
         stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
-        # Assemble stdout with head+tail truncation
-        total_stdout = stdout_total_bytes[0]
-        if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
-            omitted = total_stdout - len(stdout_head) - len(stdout_tail)
-            truncated_notice = (
-                f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
-                f"out of {total_stdout:,} total] ...\n\n"
-            )
-            stdout_text = stdout_head + truncated_notice + stdout_tail
-        else:
-            stdout_text = stdout_head + stdout_tail
+        stdout_text, stdout_metadata = _assemble_stdout_result(
+            b"".join(stdout_head_chunks),
+            b"".join(stdout_tail_chunks),
+            total_bytes=stdout_total_bytes[0],
+        )
 
         exit_code = proc.returncode if proc.returncode is not None else -1
         duration = round(time.monotonic() - exec_start, 2)
@@ -1510,9 +1549,11 @@ def execute_code(
         result: Dict[str, Any] = {
             "status": status,
             "output": stdout_text,
+            "exit_code": exit_code,
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
         }
+        result.update(stdout_metadata)
 
         if status == "timeout":
             timeout_msg = f"Script timed out after {timeout}s and was killed."

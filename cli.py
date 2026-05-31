@@ -14662,7 +14662,16 @@ class HermesCLI:
                             try:
                                 from tools.process_registry import process_registry
                                 for _evt, _synth in process_registry.drain_notifications():
-                                    self._pending_input.put(_synth)
+                                    if isinstance(_synth, str):
+                                        wrapped = (
+                                            "[SYSTEM NOTIFICATION - Background task status]\n"
+                                            f"{_synth}\n"
+                                            "[END SYSTEM NOTIFICATION]\n"
+                                            "(Note: This is an automated system event, not a user message.)"
+                                        )
+                                        self._pending_input.put(wrapped)
+                                    else:
+                                        self._pending_input.put(_synth)
                             except Exception:
                                 pass
                         continue
@@ -14790,7 +14799,7 @@ class HermesCLI:
                         try:
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
-                                if isinstance(_synth, str) and _synth.startswith("[IMPORTANT:"):
+                                if isinstance(_synth, str):
                                     wrapped = (
                                         "[SYSTEM NOTIFICATION - Background task status]\n"
                                         f"{_synth}\n"

@@ -207,10 +207,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
       if (hasInterpolation(text)) {
         patchUiState({ busy: true })
 
-        return interpolate(text, send)
+        return interpolate(text, (t: string) => send(t, false))
       }
 
-      send(text)
+      send(text, false)
     },
     [interpolate, send, shellExec]
   )

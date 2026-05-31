@@ -30,7 +30,7 @@
     "@types/react": "^19.2.14",
     "@typescript-eslint/eslint-plugin": "^8",
     "@typescript-eslint/parser": "^8",
-    "esbuild": "~0.27.0",
+    "esbuild": "^0.27.7",
     "eslint": "^9",
     "eslint-plugin-perfectionist": "^5",
     "eslint-plugin-react": "^7",
@@ -42,5 +42,8 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.3"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }

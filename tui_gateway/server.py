@@ -118,6 +118,7 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
+_pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
@@ -729,9 +730,13 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     ev = threading.Event()
     _pending[rid] = (sid, ev)
     payload["request_id"] = rid
-    _emit(event, sid, payload)
-    ev.wait(timeout=timeout)
-    _pending.pop(rid, None)
+    _pending_prompt_payloads[rid] = (event, dict(payload))
+    try:
+        _emit(event, sid, payload)
+        ev.wait(timeout=timeout)
+    finally:
+        _pending.pop(rid, None)
+        _pending_prompt_payloads.pop(rid, None)
     return _answers.pop(rid, "")
 
 
@@ -1061,6 +1066,10 @@ def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
 
+def _session_verbose(sid: str) -> bool:
+    return _session_tool_progress_mode(sid) == "verbose"
+
+
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
@@ -1103,7 +1112,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global = parse_model_flags(raw_input)
+    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(raw_input)
     if not model_input:
         raise ValueError("model value required")
 
@@ -1492,6 +1501,74 @@ def _tool_ctx(name: str, args: dict) -> str:
         return ""
 
 
+_TUI_VERBOSE_TEXT_MAX_CHARS = 16_000
+_TUI_VERBOSE_TEXT_MAX_LINES = 240
+
+
+def _cap_tui_verbose_text(text: str) -> str:
+    if (
+        len(text) <= _TUI_VERBOSE_TEXT_MAX_CHARS
+        and text.count("\n") < _TUI_VERBOSE_TEXT_MAX_LINES
+    ):
+        return text
+
+    idx = len(text)
+    start = 0
+    for _ in range(_TUI_VERBOSE_TEXT_MAX_LINES):
+        idx = text.rfind("\n", 0, idx)
+        if idx < 0:
+            start = 0
+            break
+        start = idx + 1
+
+    line_start = start
+    start = max(line_start, len(text) - _TUI_VERBOSE_TEXT_MAX_CHARS)
+    if start > line_start:
+        next_break = text.find("\n", start)
+        if 0 <= next_break < len(text) - 1:
+            start = next_break + 1
+
+    tail = text[start:].lstrip()
+    omitted_chars = max(0, len(text) - len(tail))
+    omitted_lines = text[:start].count("\n")
+    if omitted_lines:
+        label = (
+            "[showing verbose tail; omitted "
+            f"{omitted_lines} lines / {omitted_chars} chars]\n"
+        )
+    else:
+        label = f"[showing verbose tail; omitted {omitted_chars} chars]\n"
+    return f"{label}{tail}"
+
+
+def _redact_tui_verbose_text(text: str) -> str:
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(str(text), force=True)
+    except Exception:
+        return ""
+    return _cap_tui_verbose_text(redacted)
+
+
+def _tool_args_text(args: dict) -> str:
+    try:
+        raw = json.dumps(args or {}, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        raw = str(args or {})
+    return _redact_tui_verbose_text(raw)
+
+
+def _tool_result_text(result: object) -> str:
+    try:
+        from agent.tool_dispatch_helpers import _multimodal_text_summary
+
+        raw = _multimodal_text_summary(result)
+    except Exception:
+        raw = str(result)
+    return _redact_tui_verbose_text(raw)
+
+
 def _fmt_tool_duration(seconds: float | None) -> str:
     if seconds is None:
         return ""
@@ -1553,13 +1630,18 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
+        payload = {
+            "tool_id": tool_call_id,
+            "name": name,
+            "context": _tool_ctx(name, args),
+        }
+        if _session_verbose(sid):
+            args_text = _tool_args_text(args)
+            if args_text:
+                payload["args_text"] = args_text
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
-        _emit(
-            "tool.start",
-            sid,
-            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
-        )
+        _emit("tool.start", sid, payload)
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -1576,6 +1658,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if _session_verbose(sid):
+        result_text = _tool_result_text(result)
+        if result_text:
+            payload["result_text"] = result_text
     if name == "todo":
         try:
             data = json.loads(result)
@@ -1615,7 +1701,10 @@ def _on_tool_progress(
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
         return
     if event_type == "reasoning.available" and preview:
-        _emit("reasoning.available", sid, {"text": str(preview)})
+        payload: dict[str, object] = {"text": str(preview)}
+        if _session_verbose(sid):
+            payload["verbose"] = True
+        _emit("reasoning.available", sid, payload)
         return
     if event_type.startswith("subagent."):
         payload = {
@@ -1691,7 +1780,11 @@ def _agent_cbs(sid: str) -> dict:
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
-        "reasoning_callback": lambda text: _emit("reasoning.delta", sid, {"text": text}),
+        "reasoning_callback": lambda text: _emit(
+            "reasoning.delta",
+            sid,
+            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
@@ -1912,6 +2005,19 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     from run_agent import AIAgent
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    # MCP tool discovery runs in a background daemon thread at startup so a
+    # dead server can't freeze the shell (see tui_gateway/entry.py).  The agent
+    # snapshots its tool list once here and never re-reads it, so briefly wait
+    # for in-flight discovery to land before building — bounded, so a slow/dead
+    # server still can't block.  No-op once discovery has finished (every build
+    # after the first during a slow startup).
+    try:
+        from tui_gateway.entry import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
+
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
@@ -1945,7 +2051,11 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
         quiet_mode=True,
-        verbose_logging=_load_tool_progress_mode() == "verbose",
+        # verbose_logging controls DEBUG-level agent logging; it is intentionally
+        # independent of tool_progress_mode (which only controls per-tool
+        # display detail).  See cli.py PR (decoupling fix) for the matching
+        # change on the classic CLI side.
+        verbose_logging=False,
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(),
@@ -1962,12 +2072,16 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+    now = time.time()
     _sessions[sid] = {
         "agent": agent,
         "session_key": key,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
+        "inflight_turn": None,
+        "created_at": now,
+        "last_active": now,
         "running": False,
         "attached_images": [],
         "image_counter": 0,
@@ -2139,6 +2253,54 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     return messages
 
 
+def _inflight_text(value: Any) -> str:
+    return _content_display_text(value).strip()
+
+
+def _start_inflight_turn(session: dict, text: Any) -> None:
+    now = time.time()
+    session["inflight_turn"] = {
+        "assistant": "",
+        "started_at": now,
+        "streaming": True,
+        "updated_at": now,
+        "user": _inflight_text(text),
+    }
+
+
+def _append_inflight_delta(session: dict, delta: Any) -> None:
+    text = "" if delta is None else str(delta)
+    if not text:
+        return
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        turn = {"assistant": "", "streaming": True, "user": ""}
+    turn["assistant"] = f"{turn.get('assistant') or ''}{text}"
+    turn["streaming"] = True
+    turn["updated_at"] = time.time()
+    session["inflight_turn"] = turn
+
+
+def _clear_inflight_turn(session: dict) -> None:
+    session["inflight_turn"] = None
+
+
+def _inflight_snapshot(session: dict) -> dict | None:
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return None
+    user = str(turn.get("user") or "").strip()
+    assistant = str(turn.get("assistant") or "")
+    streaming = bool(turn.get("streaming"))
+    if not user and not assistant and not streaming:
+        return None
+    return {
+        "assistant": assistant,
+        "streaming": streaming,
+        "user": user,
+    }
+
+
 # ── Methods: session ─────────────────────────────────────────────────
 
 
@@ -2150,6 +2312,7 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
 
     ready = threading.Event()
+    now = time.time()
 
     _sessions[sid] = {
         "agent": None,
@@ -2157,11 +2320,14 @@ def _(rid, params: dict) -> dict:
         "agent_ready": ready,
         "attached_images": [],
         "cols": cols,
+        "created_at": now,
         "edit_snapshots": {},
         "history": [],
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
+        "inflight_turn": None,
+        "last_active": now,
         "pending_title": None,
         "running": False,
         "session_key": key,
@@ -2332,6 +2498,140 @@ def _(rid, params: dict) -> dict:
             "messages": messages,
             "info": _session_info(agent),
         },
+    )
+
+
+def _session_pending_kind(sid: str) -> str:
+    for rid, (owner_sid, _ev) in list(_pending.items()):
+        if owner_sid != sid:
+            continue
+        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+        return str(event).removesuffix(".request")
+    return ""
+
+
+def _session_live_status(sid: str, session: dict) -> str:
+    if _session_pending_kind(sid):
+        return "waiting"
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set():
+        return "starting"
+    if session.get("running"):
+        return "working"
+    return "idle"
+
+
+def _message_preview(history: list) -> str:
+    for msg in reversed(history or []):
+        text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()
+        if text:
+            return " ".join(text.split())[:160]
+    return ""
+
+
+def _session_live_title(session: dict, key: str) -> str:
+    title = str(session.get("pending_title") or "").strip()
+    db = _get_db()
+    if db is not None:
+        try:
+            title = str(db.get_session_title(key) or title or "").strip()
+        except Exception:
+            pass
+    return title
+
+
+def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
+    key = str(session.get("session_key") or sid)
+    agent = session.get("agent")
+    history = list(session.get("history") or [])
+    status = _session_live_status(sid, session)
+    inflight = _inflight_snapshot(session)
+    preview = _message_preview(history)
+    if inflight:
+        preview = inflight.get("assistant") or inflight.get("user") or preview
+        preview = " ".join(str(preview).split())[:160]
+    now = time.time()
+    return {
+        "current": sid == current_sid,
+        "id": sid,
+        "last_active": float(session.get("last_active") or session.get("created_at") or now),
+        "message_count": len(history),
+        "model": str(getattr(agent, "model", "") or _resolve_model()),
+        "preview": preview,
+        "session_key": key,
+        "started_at": float(session.get("created_at") or now),
+        "status": status,
+        "title": _session_live_title(session, key),
+    }
+
+
+def _fallback_session_info(session: dict) -> dict:
+    agent = session.get("agent")
+    if agent is not None:
+        return _session_info(agent)
+    return {
+        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+        "lazy": True,
+        "model": _resolve_model(),
+        "skills": {},
+        "tools": {},
+    }
+
+
+@method("session.active_list")
+def _(rid, params: dict) -> dict:
+    """Return live TUI sessions in this gateway process.
+
+    Unlike ``session.list`` this is not a historical DB browser: it reports only
+    sessions with in-memory agents/workers that the current TUI can switch to
+    without closing siblings.
+    """
+    current = str(params.get("current_session_id") or "")
+    try:
+        snapshot = list(_sessions.items())
+    except Exception as e:
+        return _err(rid, 5036, f"could not enumerate active sessions: {e}")
+
+    # Keep the natural creation/insertion order from ``_sessions``.  The
+    # frontend marks the focused session with ``current``; it should not jump to
+    # the top just because the user switched to it.
+    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    return _ok(rid, {"sessions": rows})
+
+
+@method("session.activate")
+def _(rid, params: dict) -> dict:
+    """Attach the frontend to an already-live TUI session.
+
+    This intentionally does not close the previously focused session; it merely
+    returns enough state for Ink to redraw around another live session id.
+    """
+    sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait({"session_id": sid}, rid)
+    if err:
+        return err
+
+    with session["history_lock"]:
+        session["last_active"] = time.time()
+        history = list(session.get("display_history") or session.get("history") or [])
+        inflight = _inflight_snapshot(session)
+        running = bool(session.get("running"))
+    status = _session_live_status(sid, session)
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(history),
+        "messages": _history_to_messages(history),
+        "running": running,
+        "session_id": sid,
+        "session_key": session.get("session_key") or sid,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": status,
+    }
+    if inflight:
+        payload["inflight"] = inflight
+    return _ok(
+        rid,
+        payload,
     )
 
 
@@ -2841,7 +3141,6 @@ def _(rid, params: dict) -> dict:
 
 
 def _spawn_trees_root():
-    from pathlib import Path as _P
     from hermes_constants import get_hermes_home
 
     root = get_hermes_home() / "spawn-trees"
@@ -3059,6 +3358,8 @@ def _(rid, params: dict) -> dict:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
         session["running"] = True
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
 
     _start_agent_build(sid, session)
 
@@ -3076,6 +3377,7 @@ def _(rid, params: dict) -> dict:
             )
             with session["history_lock"]:
                 session["running"] = False
+                _clear_inflight_turn(session)
             return
         _run_prompt_submit(rid, sid, session, text)
 
@@ -3188,6 +3490,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        if not isinstance(session.get("inflight_turn"), dict):
+            _start_inflight_turn(session, text)
     agent = session["agent"]
     _emit("message.start", sid)
 
@@ -3262,6 +3566,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         _read_main_model(),
                         _cfg,
                     )
+                    if getattr(agent, "api_mode", "") == "codex_app_server":
+                        _mode = "text"
                 except Exception as _img_exc:
                     print(
                         f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
@@ -3294,6 +3600,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_message = _enrich_with_attached_images(prompt, images)
 
             def _stream(delta):
+                with session["history_lock"]:
+                    _append_inflight_delta(session, delta)
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
@@ -3377,6 +3685,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            with session["history_lock"]:
+                _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -3514,6 +3824,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
+                session["last_active"] = time.time()
+                _clear_inflight_turn(session)
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the
@@ -3827,6 +4139,14 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
+                if session.get("agent") is None:
+                    session_id = params.get("session_id", "")
+                    _start_agent_build(session_id, session)
+                    init_err = _wait_agent(session, rid)
+                    if init_err:
+                        return init_err
+                    if session.get("agent") is None:
+                        return _err(rid, 5032, "agent initialization failed")
                 result = _apply_model_switch(
                     params.get("session_id", ""), session, value
                 )
@@ -4383,8 +4703,28 @@ def _(rid, params: dict) -> dict:
         discover_mcp_tools()
         if session:
             agent = session["agent"]
-            if hasattr(agent, "refresh_tools"):
-                agent.refresh_tools()
+            # Rebuild the cached agent's tool snapshot so the current session
+            # picks up added/removed MCP tools without `/new` (which discards
+            # history).  The agent snapshots tools once at build and never
+            # re-reads the registry, so an explicit rebuild is required here.
+            # The user already consented to the prompt-cache invalidation via
+            # the confirm gate above.  Mirrors gateway/run.py::_execute_mcp_reload.
+            try:
+                from model_tools import get_tool_definitions
+
+                new_defs = get_tool_definitions(
+                    enabled_toolsets=_load_enabled_toolsets(),
+                    quiet_mode=True,
+                )
+                agent.tools = new_defs
+                agent.valid_tool_names = (
+                    {t["function"]["name"] for t in new_defs} if new_defs else set()
+                )
+            except Exception as _exc:
+                logger.warning(
+                    "Failed to refresh cached agent tools after /reload-mcp: %s",
+                    _exc,
+                )
             _emit("session.info", params.get("session_id", ""), _session_info(agent))
 
         # Honor `always=true` by persisting the opt-out to config.
@@ -4440,6 +4780,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
         "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
         "TUI",
     ),
+    ("/sessions", "Switch between live TUI sessions", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -5292,7 +5633,12 @@ def _(rid, params: dict) -> dict:
         items = [
             {
                 "text": c.text,
-                "display": c.display or c.text,
+                # prompt_toolkit gives us FormattedText (a list of (style,
+                # text) tuples) for display/display_meta. Serialize both as
+                # plain strings — the TUI's CompletionItem.display contract
+                # is a string, and sending the raw list trips Ink's row
+                # layout into 1-char truncation of the next column.
+                "display": to_plain_text(c.display) if c.display else c.text,
                 "meta": to_plain_text(c.display_meta) if c.display_meta else "",
             }
             for c in completer.get_completions(doc, None)
@@ -5780,6 +6126,9 @@ def _(rid, params: dict) -> dict:
                 pass
             except Exception as e:
                 logger.warning("voice: stop_continuous failed during toggle off: %s", e)
+
+            # Clear TTS so it can be toggled independently after voice is off.
+            os.environ["HERMES_VOICE_TTS"] = "0"
 
         return _ok(
             rid,

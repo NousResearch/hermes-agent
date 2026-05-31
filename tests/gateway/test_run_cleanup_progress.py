@@ -2,7 +2,7 @@
 
 When ``display.platforms.<plat>.cleanup_progress: true`` is set for a
 platform whose adapter supports message deletion (e.g. Telegram), the
-tool-progress bubble, "⏳ Still working..." notices, and status-callback
+tool-progress bubble, "⏳ Working — N min" heartbeats, and status-callback
 messages sent during a run are deleted after the final response is
 delivered.
 

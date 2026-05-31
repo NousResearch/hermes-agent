@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
-import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -139,6 +139,7 @@ describe('createGatewayEventHandler', () => {
     const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
 
     vi.useFakeTimers()
+
     try {
       onEvent({
         payload: { kind: 'goal', text: verdict },
@@ -303,14 +304,40 @@ describe('createGatewayEventHandler', () => {
     vi.useFakeTimers()
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    createGatewayEventHandler(buildCtx(appended))({ payload: { text: streamed }, type: 'thinking.delta' } as any)
-    vi.runOnlyPendingTimers()
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: streamed }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
 
-    expect(getTurnState().reasoning).toBe(streamed)
-    expect(getTurnState().reasoningActive).toBe(true)
-    expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
-    vi.useRealTimers()
+      expect(getTurnState().reasoning).toBe(streamed)
+      expect(getTurnState().reasoningActive).toBe(true)
+      expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores late thinking.delta after the turn has already completed', () => {
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+      expect(getUiState().busy).toBe(false)
+      expect(getUiState().status).toBe('ready')
+
+      onEvent({ payload: { text: 'thinking...' }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(getUiState().status).toBe('ready')
+      expect(getTurnState().reasoning).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('preserves streamed reasoning as one completed thinking panel after segment flushes', () => {
@@ -340,6 +367,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinking).toBe(streamed)
     expect(appended[0]?.text).toBe('')
     expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
+  it('shows verbose reasoning even when normal reasoning display is off', () => {
+    vi.useFakeTimers()
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const streamed = 'verbose-only reasoning'
+
+    try {
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: { text: streamed, verbose: true }, type: 'reasoning.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(turnController.reasoningText).toBe(streamed)
+      expect(getTurnState().reasoning).toBe(streamed)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {
@@ -483,6 +529,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]?.tools?.[0]).toContain('Patch')
     expect(appended[3]?.text).toBe('patch applied')
     expect(appended[3]?.text).not.toContain('```diff')
+  })
+
+  it('keeps verbose result text on inline_diff tool completions', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { args_text: '{ "path": "foo.ts" }', context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { inline_diff: diff, result_text: 'patched result', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+
+    expect(turnController.segmentMessages[0]).toMatchObject({ kind: 'diff' })
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Args:\n{ "path": "foo.ts" }')
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Result:\npatched result')
   })
 
   it('keeps full final responses from duplicating flushed pre-diff narration', () => {
@@ -830,6 +895,117 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
+  })
+
+  it('nudges toward /agents on the first spawn_requested of a turn', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.spawn_requested'
+    } as any)
+
+    const hints = getTurnState().activity.filter(a => a.text.includes('/agents'))
+    expect(hints).toHaveLength(1)
+    expect(hints[0]).toMatchObject({ tone: 'info' })
+  })
+
+  it('nudges toward /agents on subagent.start (spawn_requested dropped in CLI path)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // In the real CLI→gateway path the delegate callback drops
+    // spawn_requested, so `start` is the first event the TUI sees.
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+  })
+
+  it('nudges at most once per turn and resets on the next message.start', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Multiple spawns in one turn → a single hint.
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'child b', subagent_id: 'sa-b', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+
+    // New turn clears activity AND the once-per-turn guard → nudges again.
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { goal: 'child c', subagent_id: 'sa-c', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+  })
+
+  it('does not nudge when the /agents overlay is already open', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // User already has the dashboard open → nothing to advertise.
+    patchOverlayState({ agents: true })
+
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
+  })
+
+  it('nudges if the /agents overlay is closed mid-turn while delegation continues', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Overlay open on the first delegation event → suppressed, but the
+    // turn's nudge credit must NOT be burned (the user is watching).
+    patchOverlayState({ agents: true })
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
+
+    // User closes the dashboard mid-turn → the next delegation event nudges.
+    patchOverlayState({ agents: false })
+    onEvent({
+      payload: { goal: 'child b', subagent_id: 'sa-b', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+  })
+
+  it('does not nudge when display.tui_agents_nudge is false', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    // config.get → full returns the disable flag.
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { display: { tui_agents_nudge: false } } } : null
+    )
+    const onEvent = createGatewayEventHandler(ctx)
+
+    // Eager config fetch fires at creation; let it resolve before any spawn
+    // (mirrors real usage — config lands well before the first delegation).
+    await Promise.resolve()
+    await Promise.resolve()
+
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
   })
 
   it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {

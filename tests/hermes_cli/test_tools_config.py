@@ -1,9 +1,11 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
@@ -12,8 +14,10 @@ from hermes_cli.tools_config import (
     _get_platform_tools,
     _platform_toolset_summary,
     _reconfigure_tool,
+    _run_post_setup,
     _save_platform_tools,
     _toolset_has_keys,
+    _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
@@ -76,6 +80,46 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_configurable_toolsets_include_context_engine():
+    assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
+    config = {
+        "context": {"engine": "lcm"},
+        "platform_toolsets": {"cli": ["web", "terminal"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "context_engine" in enabled
+    assert "web" in enabled
+    assert "terminal" in enabled
+
+
+def test_get_platform_tools_context_engine_not_added_for_default_compressor():
+    config = {
+        "context": {"engine": "compressor"},
+        "platform_toolsets": {"cli": ["web", "terminal"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "context_engine" not in enabled
+
+
+def test_get_platform_tools_context_engine_respects_explicit_empty_selection():
+    config = {
+        "context": {"engine": "lcm"},
+        "platform_toolsets": {"cli": []},
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "context_engine" not in enabled
+
 
 def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
@@ -551,12 +595,16 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
 
 
 def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
-    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     config = {"model": {"provider": "nous"}}
 
     monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_auth_status",
-        lambda: {"logged_in": True},
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
     )
 
     providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
@@ -564,13 +612,48 @@ def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch)
     assert providers[0]["name"].startswith("Nous Subscription")
 
 
-def test_visible_providers_hide_nous_subscription_when_feature_flag_is_off(monkeypatch):
-    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: False)
+def test_visible_providers_force_fresh_shows_nous_subscription_after_upgrade(monkeypatch):
+    calls = []
+
+    def fake_subscription_features(config, *, force_fresh=False):
+        calls.append(("features", force_fresh))
+        return SimpleNamespace(
+            nous_auth_present=True,
+            account_info=NousPortalAccountInfo(
+                logged_in=True,
+                source="account_api" if force_fresh else "jwt",
+                fresh=force_fresh,
+                paid_service_access=True if force_fresh else False,
+            ),
+            features={},
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_nous_subscription_features",
+        fake_subscription_features,
+    )
+
+    providers = _visible_providers(
+        TOOL_CATEGORIES["browser"],
+        {"model": {"provider": "nous"}},
+        force_fresh=True,
+    )
+
+    assert providers[0]["name"].startswith("Nous Subscription")
+    assert ("features", True) in calls
+
+
+def test_visible_providers_hide_nous_subscription_when_paid_access_is_false(monkeypatch):
     config = {"model": {"provider": "nous"}}
 
     monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_auth_status",
-        lambda: {"logged_in": True},
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+                logged_in=True,
+                source="jwt",
+                fresh=False,
+                paid_service_access=False,
+            ),
     )
 
     providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
@@ -599,7 +682,7 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
 
     monkeypatch.setattr(
         "hermes_cli.tools_config._toolset_has_keys",
-        lambda ts_key, config=None: False,
+        lambda ts_key, config=None, **kwargs: False,
     )
 
     def fake_prompt_choice(question, choices, default=0):
@@ -609,7 +692,7 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
     monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
     monkeypatch.setattr(
         "hermes_cli.tools_config._configure_tool_category_for_reconfig",
-        lambda ts_key, cat, config: configured.append(ts_key),
+        lambda ts_key, cat, config, **kwargs: configured.append(ts_key),
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
 
@@ -620,7 +703,6 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
-    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous"},
@@ -655,8 +737,13 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
         lambda: ["cli"],
     )
     monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_auth_status",
-        lambda: {"logged_in": True},
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda *args, **kwargs: NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
     )
 
     configured = []
@@ -670,7 +757,67 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     assert config["web"]["backend"] == "firecrawl"
     assert config["tts"]["provider"] == "openai"
     assert config["browser"]["cloud_provider"] == "browser-use"
+    assert config["image_gen"]["use_gateway"] is True
     assert configured == []
+
+
+def test_first_install_nous_auto_configures_video_gen(monkeypatch):
+    """When a Nous subscriber checks video_gen in the toolset checklist,
+    apply_nous_managed_defaults must write video_gen.provider and
+    video_gen.use_gateway so the FAL plugin can route through the gateway
+    at runtime.  Regression test for the bug where video_gen was marked as
+    auto-configured but no config was actually written."""
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    config = {
+        "model": {"provider": "nous"},
+        "platform_toolsets": {"cli": []},
+    }
+    for env_var in (
+        "VOICE_TOOLS_OPENAI_KEY",
+        "OPENAI_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "TAVILY_API_KEY",
+        "PARALLEL_API_KEY",
+        "BROWSERBASE_API_KEY",
+        "BROWSERBASE_PROJECT_ID",
+        "BROWSER_USE_API_KEY",
+        "FAL_KEY",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"video_gen"},
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda *args, **kwargs: NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
+    )
+
+    configured = []
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config: configured.append(ts_key),
+    )
+
+    tools_command(first_install=True, config=config)
+
+    assert config["video_gen"]["provider"] == "fal"
+    assert config["video_gen"]["use_gateway"] is True
+    # video_gen should NOT appear in the manual configure list — it's auto-configured
+    assert "video_gen" not in configured
 
 # ── Platform / toolset consistency ────────────────────────────────────────────
 
@@ -751,6 +898,91 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
+
+def test_toolset_has_keys_treats_no_key_providers_as_configured():
+    config = {}
+
+    assert _toolset_has_keys("computer_use", config) is True
+
+
+def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
+    """No-key providers can still need setup when their post_setup is unsatisfied.
+
+    Returning users enabling Computer Use through `hermes tools` must reach the
+    cua-driver post-setup installer even though the provider has no API keys.
+    """
+    with patch("shutil.which", return_value=None):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is True
+
+
+def test_computer_use_skips_configuration_when_cua_driver_already_installed():
+    """Installed post_setup dependencies should keep returning-user toggles no-op."""
+    def fake_which(name: str):
+        return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
+
+    with patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_respects_custom_cua_driver_command():
+    """The setup gate should match runtime's HERMES_CUA_DRIVER_CMD override."""
+    def fake_which(name: str):
+        return "/opt/bin/custom-cua" if name == "custom-cua" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_blank_custom_driver_command_falls_back_to_default():
+    """Blank overrides should not make the setup gate look for an empty command."""
+    def fake_which(name: str):
+        return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "   "}), \
+         patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_post_setup_respects_custom_driver_command_when_installed():
+    """post_setup already-installed checks should version-probe the override."""
+    def fake_which(name: str):
+        return "/opt/bin/custom-cua" if name == "custom-cua" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run:
+        run.return_value.stdout = "custom 1.2.3\n"
+
+        _run_post_setup("cua_driver")
+
+    run.assert_called_once()
+    assert run.call_args.args[0] == ["custom-cua", "--version"]
+
+
+def test_computer_use_post_setup_missing_override_does_not_accept_default_binary():
+    """A default cua-driver binary must not satisfy a missing runtime override."""
+    seen = []
+
+    def fake_which(name: str):
+        seen.append(name)
+        if name == "cua-driver":
+            return "/usr/local/bin/cua-driver"
+        if name == "curl":
+            return None
+        return None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run:
+        _run_post_setup("cua_driver")
+
+    run.assert_not_called()
+    assert "custom-cua" in seen
+    assert "curl" in seen
+
 
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""

@@ -11,12 +11,19 @@ import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
+import { clampStdoutDimensions } from './lib/terminalDimensions.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
   process.exit(0)
 }
+
+// Some hosts (notably WSL) report bogus window sizes such as 131072x1. Clamp
+// `process.stdout.columns`/`rows` at the source so the Ink renderer, its
+// resize handler, and every component read see sane values. Must run before
+// `ink.render` constructs the renderer.
+clampStdoutDimensions()
 
 // Start from a clean slate. If a previous TUI crashed or was kill -9'd, the
 // terminal tab can still have mouse/focus/paste modes enabled.
@@ -43,23 +50,24 @@ setupGracefulExit({
     () => {
       resetTerminalModes()
 
-      return gw.kill()
+      return gw.kill('graceful-exit-cleanup')
     }
   ],
   onError: (scope, err) => {
-    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
 
-    process.stderr.write(`hermes-tui ${scope}: ${message.slice(0, 2000)}\n`)
+    process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
   },
   onSignal: signal => {
     resetTerminalModes()
-    process.stderr.write(`hermes-tui: received ${signal}\n`)
+    process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
   }
 })
 
 const stopMemoryMonitor = startMemoryMonitor({
   onCritical: (snap, dump) => {
     resetTerminalModes()
+    process.stderr.write(`hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`)
     process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)

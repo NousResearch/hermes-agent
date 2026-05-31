@@ -524,19 +524,37 @@ class BaseEnvironment(ABC):
         # U+FFFD substitution rather than clobbering the whole buffer.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-        def _drain():
-            stream = getattr(proc, "stdout", None)
-            if stream is None:
-                return
-
+        def _drain_iterable(stream):
+            # Fallback path: ``stream`` is not backed by a real OS file
+            # descriptor (no usable ``fileno()``).  This covers in-memory
+            # ProcessHandle adapters that expose stdout as a plain iterator of
+            # already-collected output (the legacy ``for line in proc.stdout``
+            # contract) rather than a live pipe.  Iterate it to EOF.  Without
+            # this, the drain thread would raise an unhandled exception and die
+            # silently, losing all of the process's output.
             try:
-                fd = stream.fileno()
-                use_select = isinstance(fd, int)
-            except (AttributeError, OSError, TypeError, ValueError):
-                fd = None
-                use_select = False
-
-            def _flush_decoder_tail():
+                for piece in stream:
+                    if piece is None:
+                        continue
+                    if isinstance(piece, bytes):
+                        output_chunks.append(decoder.decode(piece))
+                    else:
+                        output_chunks.append(str(piece))
+            except TypeError:
+                reader = getattr(stream, "read", None)
+                if callable(reader):
+                    try:
+                        data = reader()
+                    except Exception:
+                        data = None
+                    if data:
+                        if isinstance(data, bytes):
+                            output_chunks.append(decoder.decode(data))
+                        else:
+                            output_chunks.append(str(data))
+            except Exception:
+                pass
+            finally:
                 try:
                     tail = decoder.decode(b"", final=True)
                     if tail:
@@ -544,29 +562,24 @@ class BaseEnvironment(ABC):
                 except Exception:
                     pass
 
-            if not use_select:
-                # Test doubles and threaded process handles may expose stdout as
-                # a plain iterator/StringIO-like object with no fileno(). Drain
-                # them directly instead of crashing a daemon thread.
-                try:
-                    for chunk in stream:
-                        if isinstance(chunk, bytes):
-                            output_chunks.append(decoder.decode(chunk))
-                        else:
-                            output_chunks.append(str(chunk))
-                except TypeError:
-                    reader = getattr(stream, "read", None)
-                    if callable(reader):
-                        data = reader()
-                        if data:
-                            if isinstance(data, bytes):
-                                output_chunks.append(decoder.decode(data))
-                            else:
-                                output_chunks.append(str(data))
-                finally:
-                    _flush_decoder_tail()
+        def _drain():
+            # Resolve a real OS file descriptor up front.  Real subprocesses and
+            # the SDK ``_ThreadedProcessHandle`` (os.pipe-backed) both return an
+            # integer fd here.  Mocks / iterator-style stdout streams either lack
+            # ``fileno()`` entirely or return a non-integer — in that case fall
+            # back to draining the stream as an iterable instead of crashing the
+            # thread (issue: 'list_iterator' object has no attribute 'fileno').
+            stream = proc.stdout
+            if stream is None:
                 return
-
+            fileno = getattr(stream, "fileno", None)
+            try:
+                fd = fileno() if callable(fileno) else None
+            except Exception:
+                fd = None
+            if not isinstance(fd, int) or fd < 0:
+                _drain_iterable(stream)
+                return
             # select.select does NOT work on pipe fds on Windows (only sockets).
             # Use blocking os.read in a daemon thread instead — safe because
             # EOF arrives promptly when bash exits.
@@ -580,16 +593,20 @@ class BaseEnvironment(ABC):
                 except (ValueError, OSError):
                     pass
                 finally:
-                    _flush_decoder_tail()
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
                 return
-
             idle_after_exit = 0
             try:
                 while True:
                     try:
                         ready, _, _ = select.select([fd], [], [], 0.1)
-                    except (ValueError, OSError, TypeError):
-                        break  # fd already closed or not selectable
+                    except (ValueError, OSError):
+                        break  # fd already closed
                     if ready:
                         try:
                             chunk = os.read(fd, 4096)
@@ -610,7 +627,12 @@ class BaseEnvironment(ABC):
                 # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
                 # this emits U+FFFD for any final incomplete sequence rather than
                 # raising.
-                _flush_decoder_tail()
+                try:
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        output_chunks.append(tail)
+                except Exception:
+                    pass
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()

@@ -200,6 +200,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
 
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        self.calls.append(("set_value", {"value": value, "element": element}))
+        return ActionResult(ok=True, action="set_value")
+
 
 # ---------------------------------------------------------------------------
 # Dispatch
@@ -670,6 +674,11 @@ def _maybe_follow_capture(
     backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
 ) -> Any:
     if not do_capture:
+        return _text_response(res)
+    # Skip the follow-up capture when the action itself failed: showing a
+    # normal-looking screenshot after a failure misleads the model into thinking
+    # the action succeeded. Return the error text instead.
+    if not res.ok:
         return _text_response(res)
     try:
         # Preserve the app context established by the preceding capture/focus_app so

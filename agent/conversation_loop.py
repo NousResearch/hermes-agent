@@ -3608,6 +3608,92 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
+
+            # ── Agentic stall-retry (opt-in via HERMES_STALL_RETRY_MODEL) ──
+            # dflash Q4 can stop right after an action preamble ("Let me
+            # check X") without producing the promised tool_call. Retry the
+            # exact same turn on the configured higher-quality lane before
+            # the final-response branch sees it. If the retry returns tool
+            # calls, fall through to the normal executor below in this same
+            # loop iteration. If it still returns no tool call, fail this
+            # turn as partial instead of persisting the planning-only text as
+            # a completed assistant message that poisons future "continue"
+            # turns.
+            retry_model = os.environ.get("HERMES_STALL_RETRY_MODEL", "").strip()
+            if (
+                retry_model
+                and not _stall_retry_used
+                and getattr(agent, "tools", None)
+                and not getattr(assistant_message, "tool_calls", None)
+            ):
+                try:
+                    max_chars = int(
+                        os.environ.get("HERMES_STALL_RETRY_MAX_CHARS", "400") or 400
+                    )
+                except ValueError:
+                    max_chars = 400
+                try:
+                    from agent.stall_retry import looks_like_stall, retry_on_stall
+
+                    if looks_like_stall(
+                        assistant_message.content or "",
+                        finish_reason,
+                        False,
+                        max_chars,
+                    ):
+                        _stall_retry_used = True
+                        retried = retry_on_stall(agent, api_messages, finish_reason)
+                        if retried is not None and getattr(retried, "tool_calls", None):
+                            assistant_message = retried
+                            finish_reason = getattr(retried, "finish_reason", None) or "tool_calls"
+                            if finish_reason != "tool_calls":
+                                finish_reason = "tool_calls"
+                        else:
+                            _turn_exit_reason = "stall_retry_failed_no_tool_call"
+                            agent._mute_post_response = False
+                            agent._vprint(
+                                (
+                                    f"{agent.log_prefix}❌ Stall retry did not produce "
+                                    "tool calls; saving as partial without storing the "
+                                    "planning-only assistant turn."
+                                ),
+                                force=True,
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "failed": True,
+                                "error": (
+                                    "Model stopped after an action preamble with no "
+                                    "tool call; configured stall retry also produced "
+                                    "no tool call."
+                                ),
+                                "failure_subclass": "stall_retry_failed_no_tool_call",
+                            }
+                except Exception as exc:
+                    _turn_exit_reason = "stall_retry_exception"
+                    agent._mute_post_response = False
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Stall retry failed before recovery: {exc}",
+                        force=True,
+                    )
+                    agent._cleanup_task_resources(effective_task_id)
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": None,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "partial": True,
+                        "failed": True,
+                        "error": f"Stall retry failed before recovery: {exc}",
+                        "failure_subclass": "stall_retry_exception",
+                    }
             
             # Check for tool calls
             if assistant_message.tool_calls:
@@ -3944,32 +4030,6 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
-
-                # ── Agentic stall-retry (opt-in via HERMES_STALL_RETRY_MODEL) ──
-                # dflash Q4 sometimes emits EOS right after an action preamble
-                # ("Let me check X:") with no tool_call, ending the turn early
-                # and stalling the agent mid-task. If this no-tool-call turn
-                # looks like that stall (not a genuine final answer) and a retry
-                # lane is configured, re-issue the SAME turn once on a
-                # higher-quality model; if it yields tool calls, adopt it and
-                # continue the loop instead of stopping. No-op unless the env is
-                # set, so default behavior is unchanged.
-                if not _stall_retry_used:
-                    try:
-                        from agent.stall_retry import looks_like_stall, retry_on_stall
-                        if looks_like_stall(
-                            final_response, finish_reason,
-                            bool(getattr(assistant_message, "tool_calls", None)),
-                            int(os.environ.get("HERMES_STALL_RETRY_MAX_CHARS", "400") or 400),
-                        ):
-                            _retried = retry_on_stall(agent, api_messages, finish_reason)
-                            if _retried is not None and getattr(_retried, "tool_calls", None):
-                                _stall_retry_used = True
-                                assistant_message = _retried
-                                finish_reason = "tool_calls"
-                                continue  # re-enter loop top; tool-calls path handles it
-                    except Exception:
-                        pass  # any failure: keep the original response
 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery

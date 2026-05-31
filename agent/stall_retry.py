@@ -9,8 +9,9 @@ same host) continue to a real tool call on the identical prompt.
 
 This module detects that stall signature on a no-tool-call turn and retries
 the SAME turn once against a higher-quality model lane. If the retry produces
-tool_calls, the loop adopts that response and continues; otherwise the
-original response stands (no behavior change).
+tool_calls, the loop adopts that response and continues; otherwise the caller
+should fail the turn as partial rather than persist the planning-only text as
+a final assistant message.
 
 Entirely opt-in: does nothing unless ``HERMES_STALL_RETRY_MODEL`` is set
 (e.g. ``qwen3.6-27b-256k``). Default-off => zero change to existing behavior.
@@ -77,7 +78,8 @@ def retry_on_stall(agent, api_messages, finish_reason):
 
     Returns the normalized assistant_message from the retry IF it produced tool
     calls (caller should adopt it + its finish_reason='tool_calls'), else None.
-    Never raises into the caller — any failure returns None (original stands).
+    Never raises into the caller — any failure returns None so the caller can
+    fail closed without storing the stalled assistant message.
     """
     retry_model = os.environ.get("HERMES_STALL_RETRY_MODEL", "").strip()
     if not retry_model:

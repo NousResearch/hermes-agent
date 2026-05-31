@@ -2046,6 +2046,12 @@ def cmd_chat(args):
     if _query and not sys.stdin.isatty():
         use_tui = False
         os.environ.pop("HERMES_TUI", None)
+        # Debug: write a trace file to confirm this code is reached
+        try:
+            with open("/tmp/hermes-headless-trace.log", "a") as _tf:
+                _tf.write(f"HEADLESS: usetui={use_tui} query={_query[:60]} isatty={sys.stdin.isatty()}\n")
+        except Exception:
+            pass
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)

@@ -1,10 +1,11 @@
-"""/draft slash command — Atlas-aware draft skeleton (Plan 030-A).
+"""/draft slash command — Atlas-aware draft (Plan 030-A/B).
 
-This is the **first phase** of Plan 030 ("Atlas-aware draft skill" — R2 CP3).
-030-A ships the slash-command skeleton + recipient resolution only; the
-Atlas context fetch (030-B) and the actual LLM draft generation (030-C)
-are stubbed and surface as ``TODO`` markers in the returned message so
-the wiring is visible end-to-end without burning model spend.
+This is the **first two phases** of Plan 030 ("Atlas-aware draft skill" —
+R2 CP3). 030-A shipped the slash-command skeleton + recipient resolution.
+030-B layers in the Atlas context fetch: before any LLM call, /draft
+fires three parallel ``atlas_ask`` questions against Atlas to gather
+prior-commitment, contradiction, and last-interaction context for the
+recipient. The actual draft *composition* is still deferred to 030-C.
 
 Usage::
 
@@ -40,10 +41,12 @@ The handler is sync (``fn(raw_args: str) -> str``) per the
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -164,12 +167,13 @@ def _usage() -> str:
 
 
 def _compose_stub_reply(args: DraftArgs) -> str:
-    """Render the 030-A stub message.
+    """Render the 030-A stub message (header + intent line only).
 
-    Format intentionally matches the orchestrator's expected acceptance
-    test in the master plan: a header line ("Drafting message to <display>
-    (<recipient value>)") followed by two TODO markers pointing at the
-    next two phases (030-B context lookup, 030-C draft generation).
+    Phase 030-B layers Atlas context underneath this header via
+    :func:`_compose_full_reply`. The original 030-A acceptance smoke
+    tests assert the TODO markers are present in the *combined* reply,
+    so we keep this helper focused on the header/intent prefix and let
+    030-B's composer append the context blocks + TODO 030-C marker.
     """
     if args.recipient.kind == "email":
         header = (
@@ -184,11 +188,189 @@ def _compose_stub_reply(args: DraftArgs) -> str:
     intent_line = (
         f"Intent: {args.intent}" if args.intent else "Intent: (none provided)"
     )
+    return f"{header}\n{intent_line}"
+
+
+# ---------------------------------------------------------------------------
+# 030-B — Atlas context fetch (3 parallel asks)
+# ---------------------------------------------------------------------------
+
+# The three context questions Hermes asks Atlas before composing a draft.
+# Each is a (label, template) pair. ``{recipient}`` is substituted with
+# the recipient's display name (for emails: friendly first name; for
+# handles: ``@handle``; for unresolved: raw token). The labels become
+# the section headers Blake sees in Slack.
+_CONTEXT_QUESTIONS: List[Tuple[str, str]] = [
+    (
+        "Prior commitments",
+        "What outstanding commitments do I have with {recipient}?",
+    ),
+    (
+        "Open contradictions",
+        "Are there any open contradictions involving {recipient} I should be aware of?",
+    ),
+    (
+        "Last interaction",
+        "What was the last meaningful interaction I had with {recipient}, and what was its outcome?",
+    ),
+]
+
+# Empty/no-fact responses each section falls back to when Atlas returns
+# nothing meaningful. Keyed by section label so the reply still surfaces
+# three sections even on a cold corpus (AC1).
+_EMPTY_FALLBACKS: dict[str, str] = {
+    "Prior commitments": "No commitments found.",
+    "Open contradictions": "No contradictions found.",
+    "Last interaction": "No prior interactions found.",
+}
+
+
+def _default_ask_factory():
+    """Build a thread-safe ``ask(question) -> dict`` callable.
+
+    Lazy-instantiates a single :class:`AtlasMemoryProvider` and returns
+    its ``_ask`` bound method. Imported lazily so the slash module can
+    still be imported in test contexts that don't have Atlas configured
+    (AC: ``test_no_llm_imports_at_module_load`` still passes).
+    """
+    # Local import — keeps module load free of provider dependencies.
+    from plugins.memory.atlas import AtlasMemoryProvider
+
+    provider = AtlasMemoryProvider()
+    provider.initialize(session_id="draft-slash")
+    return provider._ask
+
+
+def _extract_answer(payload: dict | str | None) -> str:
+    """Pull a human-readable answer string out of an /v1/ask response.
+
+    The Atlas ``AskResponse`` shape is ``{"answer": "...",
+    "citations": [...]}``; we preserve any ``[cite:<chunk_id>]`` markers
+    verbatim. If the payload is a string (already-rendered), return it.
+    If it's empty/None, return the empty string so the caller can pick a
+    section-specific fallback.
+    """
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload.strip()
+    if not isinstance(payload, dict):
+        return ""
+    answer = payload.get("answer") or payload.get("result") or ""
+    if isinstance(answer, str):
+        return answer.strip()
+    # Some Atlas envelopes wrap the answer dict — coerce to JSON so the
+    # user at least sees the raw data rather than a bare ``{}``.
+    try:
+        return json.dumps(answer)
+    except Exception:
+        return str(answer)
+
+
+def _is_empty_answer(answer: str) -> bool:
+    """Heuristic for "Atlas has nothing on this".
+
+    Atlas's /v1/ask synthesizer sometimes returns phrases like "I don't
+    have information" or "no records" when the corpus is sparse. We
+    don't try to be exhaustive — only the obvious zero-information
+    phrases trigger the fallback. Real answers (even short ones) pass
+    through verbatim so citations are preserved.
+    """
+    if not answer:
+        return True
+    lowered = answer.lower().strip()
+    if len(lowered) < 3:
+        return True
+    empty_markers = (
+        "no information",
+        "i don't have",
+        "i do not have",
+        "no records",
+        "no data",
+        "not aware of",
+        "nothing found",
+    )
+    return any(m in lowered for m in empty_markers)
+
+
+def fetch_atlas_context(
+    recipient_display: str,
+    *,
+    ask_fn: Optional[Callable[..., dict]] = None,
+    max_workers: int = 3,
+) -> List[Tuple[str, str]]:
+    """Fire the three Atlas questions in parallel and collect answers.
+
+    Returns a list of ``(label, answer_text)`` tuples in the same order
+    as :data:`_CONTEXT_QUESTIONS`. Each entry is guaranteed non-empty —
+    if Atlas returned nothing useful, the section-specific fallback from
+    :data:`_EMPTY_FALLBACKS` is substituted. If a single ask raises, its
+    section falls back to a short error sentinel; the other two are
+    unaffected (best-effort parallel fan-out).
+
+    ``ask_fn`` is the injection seam tests use to replace the real
+    Atlas client. Production callers pass ``None`` and we lazily build
+    the provider via :func:`_default_ask_factory`.
+    """
+    if ask_fn is None:
+        try:
+            ask_fn = _default_ask_factory()
+        except Exception as e:
+            logger.warning("draft.atlas_unavailable err=%s", e)
+            # Atlas not configured — fall back to all-empty sections so
+            # the surface still works (AC1: always 3 sections).
+            return [(label, _EMPTY_FALLBACKS[label]) for label, _ in _CONTEXT_QUESTIONS]
+
+    questions = [
+        (label, template.format(recipient=recipient_display))
+        for label, template in _CONTEXT_QUESTIONS
+    ]
+
+    def _ask_one(label_q: Tuple[str, str]) -> Tuple[str, str]:
+        label, question = label_q
+        try:
+            payload = ask_fn(question=question)
+            answer = _extract_answer(payload)
+            if _is_empty_answer(answer):
+                return (label, _EMPTY_FALLBACKS[label])
+            return (label, answer)
+        except Exception as e:
+            logger.info("draft.atlas_ask_failed label=%s err=%s", label, e)
+            return (label, f"(Atlas lookup failed: {e})")
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="draft-atlas") as pool:
+        results = list(pool.map(_ask_one, questions))
+    return results
+
+
+def _compose_context_block(sections: List[Tuple[str, str]]) -> str:
+    """Render fetched Atlas sections as a Slack-friendly block.
+
+    Markdown is intentionally minimal — Slack's slash-command response
+    surface renders ``*bold*`` and plain newlines but not full markdown.
+    Each section is one bold label followed by the answer body.
+    """
+    lines = ["Context found:"]
+    for label, answer in sections:
+        lines.append("")
+        lines.append(f"*{label}:*")
+        lines.append(answer)
+    return "\n".join(lines)
+
+
+def _compose_full_reply(
+    args: DraftArgs,
+    *,
+    ask_fn: Optional[Callable[..., dict]] = None,
+) -> str:
+    """030-B full reply: header + intent + Atlas context + 030-C TODO."""
+    head = _compose_stub_reply(args)
+    sections = fetch_atlas_context(args.recipient.display, ask_fn=ask_fn)
+    context_block = _compose_context_block(sections)
     return (
-        f"{header}\n"
-        f"{intent_line}\n"
-        "[context lookup: TODO 030-B]\n"
-        "[draft generation: TODO 030-C]"
+        f"{head}\n\n"
+        f"{context_block}\n\n"
+        "Draft TODO 030-C — context loaded, ready for composition."
     )
 
 
@@ -197,13 +379,22 @@ def _compose_stub_reply(args: DraftArgs) -> str:
 # ---------------------------------------------------------------------------
 
 
-def handle_draft(raw_args: str) -> str:
-    """``/draft <recipient> <context>`` — Plan 030-A skeleton.
+def handle_draft(
+    raw_args: str,
+    *,
+    ask_fn: Optional[Callable[..., dict]] = None,
+) -> str:
+    """``/draft <recipient> <context>`` — Plan 030-A/B handler.
 
-    Returns a stub message acknowledging the recipient + intent. Atlas
-    context fetch and LLM draft generation are deferred to 030-B/030-C;
-    this phase exists to lock in the public command surface and the
-    recipient-resolution contract.
+    030-A parses the recipient + intent. 030-B fans out three parallel
+    ``atlas_ask`` calls (prior commitments, contradictions, last
+    interaction) and renders the result as a Slack context block. The
+    LLM draft composition itself is still deferred to 030-C and surfaces
+    as the trailing ``Draft TODO 030-C`` line.
+
+    ``ask_fn`` is the test seam used by ``test_draft.py`` to inject a
+    mock Atlas client. Production callers omit it; the handler lazily
+    builds an :class:`AtlasMemoryProvider` and reuses its ``_ask`` path.
     """
     args = _parse_args(raw_args)
     if args is None:
@@ -214,4 +405,4 @@ def handle_draft(raw_args: str) -> str:
         args.recipient.value,
         len(args.intent),
     )
-    return _compose_stub_reply(args)
+    return _compose_full_reply(args, ask_fn=ask_fn)

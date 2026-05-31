@@ -8717,6 +8717,15 @@ class GatewayRunner:
         profile = getattr(event, "routed_profile", None)
         if not profile:
             return False
+        if getattr(self, "_profile_rate_limiter", None) is None:
+            from gateway.rate_limit import ProfileRateLimiter
+
+            self._profile_rate_limiter = ProfileRateLimiter()
+        if not self._profile_rate_limiter.allow(profile):
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                await adapter.send(source.chat_id, f"⏳ '{profile}' is busy right now — please retry shortly.")
+            return True
         try:
             await self._dispatch_to_worker(event, source, profile)
         except Exception as e:

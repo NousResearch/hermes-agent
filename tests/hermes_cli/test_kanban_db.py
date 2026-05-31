@@ -47,6 +47,39 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_kanban_db_path_defaults_to_hermes_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB_PATH", raising=False)
+
+    assert kb.kanban_db_path() == home / "kanban.db"
+
+
+def test_kanban_db_path_uses_env_override(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    override = tmp_path / "state" / "kanban.db"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB_PATH", str(override))
+
+    assert kb.kanban_db_path() == override
+
+
+def test_connect_initializes_override_parent_and_schema(tmp_path, monkeypatch):
+    override = tmp_path / "local-state" / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB_PATH", str(override))
+
+    with kb.connect() as conn:
+        names = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+
+    assert override.exists()
+    assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------

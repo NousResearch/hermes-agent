@@ -2711,3 +2711,86 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
             timeout=3.0,
         )
     )
+
+
+def test_gateway_dispatcher_watcher_does_not_init_db_each_tick(monkeypatch):
+    """The dispatcher relies on connect() auto-init instead of per-tick init."""
+    import asyncio
+    import gateway.run as gateway_run
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+
+    class FakeConn:
+        def close(self):
+            pass
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True, "dispatch_interval_seconds": 1}},
+    )
+    monkeypatch.setattr(kb, "connect", lambda: FakeConn())
+    monkeypatch.setattr(
+        kb,
+        "init_db",
+        lambda *args, **kwargs: pytest.fail("dispatcher tick called init_db()"),
+    )
+
+    def dispatch_once(conn):
+        runner._running = False
+        return type("DispatchResult", (), {"spawned": 0, "reclaimed": 0})()
+
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(kb, "dispatch_once", dispatch_once)
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", fast_sleep)
+
+    asyncio.run(
+        asyncio.wait_for(
+            runner._kanban_dispatcher_watcher(),
+            timeout=3.0,
+        )
+    )
+
+
+def test_gateway_notifier_watcher_does_not_init_db_each_tick(monkeypatch):
+    """The notifier relies on connect() auto-init instead of per-tick init."""
+    import asyncio
+    import gateway.run as gateway_run
+    from gateway.run import GatewayRunner
+
+    class FakeConn:
+        def close(self):
+            pass
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {}
+
+    monkeypatch.setattr(kb, "connect", lambda: FakeConn())
+    monkeypatch.setattr(
+        kb,
+        "init_db",
+        lambda *args, **kwargs: pytest.fail("notifier tick called init_db()"),
+    )
+
+    def list_notify_subs(conn):
+        runner._running = False
+        return []
+
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(kb, "list_notify_subs", list_notify_subs)
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", fast_sleep)
+
+    asyncio.run(
+        asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=3.0,
+        )
+    )

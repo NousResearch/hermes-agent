@@ -62,7 +62,14 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
+    """Return the active Kanban DB path.
+
+    ``HERMES_KANBAN_DB_PATH`` lets deployments keep the live SQLite file on
+    fast local persistent disk while leaving ``HERMES_HOME`` on shared storage.
+    """
+    override = os.environ.get("HERMES_KANBAN_DB_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "kanban.db"
 
@@ -371,9 +378,6 @@ _INITIALIZED_PATHS: set[str] = set()
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
-    WAL mode is enabled on every connection; it's a no-op after the first
-    time but keeps the code robust if the DB file is ever re-created.
-
     The first connection to a given path auto-runs :func:`init_db` so
     fresh installs and test harnesses that construct `connect()`
     directly don't have to remember a separate init step. Subsequent
@@ -385,13 +389,14 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     needs_init = resolved not in _INITIALIZED_PATHS
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=NORMAL")
     if needs_init:
         # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
         # migrations. Cached so subsequent connect() calls in the same
-        # process are cheap.
+        # process are cheap. WAL setup is also cached because changing
+        # journal_mode can briefly need an exclusive lock.
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA_SQL)
         _migrate_add_optional_columns(conn)
         _INITIALIZED_PATHS.add(resolved)

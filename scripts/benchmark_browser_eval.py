@@ -28,6 +28,12 @@ def _find_chrome() -> str:
     sys.exit(1)
 
 
+def _mac_chrome_keychain_flags() -> list[str]:
+    if sys.platform != "darwin":
+        return []
+    return ["--password-store=basic", "--use-mock-keychain"]
+
+
 def _start_chrome(port: int):
     profile = tempfile.mkdtemp(prefix="hermes-bench-eval-")
     proc = subprocess.Popen(
@@ -39,6 +45,7 @@ def _start_chrome(port: int):
             "--no-default-browser-check",
             "--headless=new",
             "--disable-gpu",
+            *_mac_chrome_keychain_flags(),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

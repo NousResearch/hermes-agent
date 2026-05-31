@@ -19,6 +19,7 @@ import base64
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -37,6 +38,12 @@ def _find_chrome() -> str:
         if path:
             return path
     pytest.skip("no Chrome binary found")
+
+
+def _mac_chrome_keychain_flags() -> list[str]:
+    if sys.platform != "darwin":
+        return []
+    return ["--password-store=basic", "--use-mock-keychain"]
 
 
 @pytest.fixture
@@ -67,6 +74,7 @@ def chrome_cdp(request):
             "--no-default-browser-check",
             "--headless=new",
             "--disable-gpu",
+            *_mac_chrome_keychain_flags(),
             "--site-per-process",  # force OOPIFs for cross-origin iframes
         ],
         stdout=subprocess.DEVNULL,

@@ -124,13 +124,20 @@ def chrome_debug_data_dir() -> str:
     return str(get_hermes_home() / "chrome-debug")
 
 
-def _chrome_debug_args(port: int) -> list[str]:
-    return [
+def _chrome_debug_args(port: int, system: str | None = None) -> list[str]:
+    system = system or platform.system()
+    args = [
         f"--remote-debugging-port={port}",
         f"--user-data-dir={chrome_debug_data_dir()}",
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    if system == "Darwin":
+        # Agent-launched Chrome must not touch the user's login keychain. If it
+        # does and the keychain is unavailable, macOS shows foreground
+        # "Keychain Not Found" dialogs even for headless/background agents.
+        args.extend(["--password-store=basic", "--use-mock-keychain"])
+    return args
 
 
 def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
@@ -174,14 +181,15 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     candidates = get_chrome_debug_candidates(system)
 
     if candidates:
-        argv = [candidates[0], *_chrome_debug_args(port)]
+        argv = [candidates[0], *_chrome_debug_args(port, system)]
         return subprocess.list2cmdline(argv) if system == "Windows" else shlex.join(argv)
 
     if system == "Darwin":
         data_dir = chrome_debug_data_dir()
         return (
             f'open -a "Google Chrome" --args --remote-debugging-port={port} '
-            f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
+            f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check '
+            f'--password-store=basic --use-mock-keychain'
         )
 
     return None
@@ -206,7 +214,7 @@ def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | 
     for candidate in candidates:
         try:
             subprocess.Popen(
-                [candidate, *_chrome_debug_args(port)],
+                [candidate, *_chrome_debug_args(port, system)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **_detach_kwargs(system),

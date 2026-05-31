@@ -123,6 +123,30 @@ class TestChromeDebugLaunch:
         assert command is not None
         assert command.startswith(f"{chrome} --remote-debugging-port=9222")
 
+    def test_darwin_launch_uses_mock_keychain_flags(self):
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return object()
+
+        with patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == chrome), \
+             patch("subprocess.Popen", side_effect=fake_popen):
+            assert HermesCLI._try_launch_chrome_debug(9222, "Darwin") is True
+
+        _assert_chrome_debug_cmd(captured["cmd"], chrome, 9222)
+        assert "--password-store=basic" in captured["cmd"]
+        assert "--use-mock-keychain" in captured["cmd"]
+
+    def test_manual_darwin_open_fallback_uses_mock_keychain_flags(self):
+        with patch("hermes_cli.browser_connect.os.path.isfile", return_value=False):
+            command = manual_chrome_debug_command(9222, "Darwin")
+
+        assert command is not None
+        assert "--password-store=basic" in command
+        assert "--use-mock-keychain" in command
+
     def test_linux_candidates_prefer_chrome_install_path_before_brave_on_path(self):
         chrome = "/opt/google/chrome/chrome"
         brave = "/usr/bin/brave-browser"

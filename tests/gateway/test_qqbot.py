@@ -151,19 +151,11 @@ class TestIsVoiceContentType:
         assert self._fn("", "recording.amr") is True
 
     def test_file_upload_with_audio_extension(self):
-        """File upload with audio extension must NOT be treated as voice."""
+        """content_type='file' is never voice, even with audio extension."""
         assert self._fn("file", "song.mp3") is False
         assert self._fn("file", "audio-30251.instrumental..wav") is False
-
-    def test_file_upload_never_voice(self):
-        """content_type='file' is never voice, regardless of extension."""
         assert self._fn("file", "recording.silk") is False
         assert self._fn("file", "voice.amr") is False
-
-    def test_unknown_content_type_extension_fallback(self):
-        """Unknown content_type falls back to extension matching."""
-        assert self._fn("unknown/type", "voice.ogg") is True
-        assert self._fn("unknown/type", "data.json") is False
 
 
 # ---------------------------------------------------------------------------

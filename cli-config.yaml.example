@@ -8,7 +8,7 @@
 model:
   # Default model to use (can be overridden with --model flag)
   # Both "default" and "model" work as the key name here.
-  default: "anthropic/claude-opus-4.6"
+  default: "deepseek-v4-flash"
   
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
@@ -39,11 +39,11 @@ model:
   #   It works with both no-auth and auth-enabled server modes.
   #
   # Can also be overridden for a single invocation with the --provider flag.
-  provider: "auto"
+  provider: "custom"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
-  base_url: "https://openrouter.ai/api/v1"
+  base_url: "https://api.deepseek.com/v1"
 
   # Azure Foundry keyless auth example:
   # provider: "azure-foundry"

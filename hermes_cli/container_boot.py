@@ -290,6 +290,110 @@ def _cleanup_stale_runtime_files(profile_dir: Path) -> None:
         (profile_dir / name).unlink(missing_ok=True)
 
 
+def _resolve_container_log_dir(hermes_home: Path, profile: str) -> Path | None:
+    """Resolve the per-container nested log dir the s6-log run script
+    will lock, *without* running the script.
+
+    Mirrors the runtime resolution in
+    :meth:`S6ServiceManager._render_log_run` exactly so that the dir we
+    pre-create at register time is the *same* dir s6-log will use on the
+    hot path:
+
+        $HERMES_HOME/logs/gateways/<profile>[/<container-id>]
+
+    Per-container nesting (issue #34457) is on by default and opted out
+    with ``HERMES_GATEWAY_LOG_PER_CONTAINER=0``. The container token is
+    ``HERMES_CONTAINER_ID`` else ``$HOSTNAME`` (Docker seeds the
+    hostname with the unique container id by default). When nesting is
+    enabled but no token can be resolved, the script falls back to the
+    flat path — so do we, by returning the flat ``base_dir``.
+
+    Returns ``None`` only if ``hermes_home`` itself is unusable; callers
+    treat that as "skip pre-creation, let the script's own ``mkdir -p``
+    handle it".
+    """
+    base_dir = hermes_home / "logs" / "gateways" / profile
+
+    per_container = os.environ.get("HERMES_GATEWAY_LOG_PER_CONTAINER", "1")
+    if per_container in ("0", "false", "FALSE", "False", "no", "NO", "No"):
+        return base_dir
+
+    container_id = os.environ.get("HERMES_CONTAINER_ID", "").strip()
+    if not container_id:
+        container_id = os.environ.get("HOSTNAME", "").strip()
+    if not container_id:
+        import socket
+        try:
+            container_id = socket.gethostname().strip()
+        except OSError:
+            container_id = ""
+    if not container_id:
+        try:
+            container_id = Path("/etc/hostname").read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError:
+            container_id = ""
+
+    if container_id:
+        return base_dir / container_id
+    # No token resolvable: script falls back to the flat path.
+    return base_dir
+
+
+def _precreate_log_dir(hermes_home: Path, profile: str) -> None:
+    """Pre-create + chown the per-container s6-log dir at register time.
+
+    Why this exists (issue #34473): the ``log/run`` script rendered by
+    :meth:`S6ServiceManager._render_log_run` runs ``mkdir -p`` and a
+    recursive ``chown`` *on the hot path* — every time s6-supervise
+    (re)starts the logger. On a cold container boot the gateway's
+    rich-console startup banner is written to stdout before the logger
+    pipeline has finished that mkdir/chown and taken over the fd, so the
+    banner can be lost and never reach ``docker logs`` (the
+    ``test_supervised_gateway_stdout_reaches_docker_logs`` failure).
+
+    cont-init.d runs as **root** before s6-svscan starts the loggers, so
+    here is the right place to create the directory tree and hand it to
+    the ``hermes`` user once, up front. With the dir already present and
+    correctly owned, the script's ``mkdir -p`` is a no-op and s6-log
+    starts forwarding stdout immediately — no startup race.
+
+    Best-effort: any failure (no such user yet, EPERM, unresolved
+    container token) is swallowed; the script's own ``mkdir -p`` /
+    ``chown`` remain as the fallback so behavior never regresses.
+    """
+    log_dir = _resolve_container_log_dir(hermes_home, profile)
+    if log_dir is None:
+        return
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    # chown the whole gateways/<profile> subtree to hermes so both the
+    # base dir and the nested per-container dir are writable by the
+    # unprivileged logger. Resolve the hermes uid/gid by name; if the
+    # user doesn't exist yet, leave ownership to the script's chown.
+    try:
+        import grp
+        import pwd
+
+        uid = pwd.getpwnam("hermes").pw_uid
+        gid = grp.getgrnam("hermes").gr_gid
+    except (KeyError, ImportError):
+        return
+    # chown from the gateways/<profile> base down so the nested dir and
+    # its parent are both owned by hermes (mirrors the script's
+    # ``chown -R "$log_dir"`` but rooted one level up to cover base_dir
+    # when we created an intermediate per-container level).
+    base_dir = hermes_home / "logs" / "gateways" / profile
+    for target in {base_dir, log_dir}:
+        try:
+            os.chown(target, uid, gid)
+        except OSError:
+            pass
+
+
 def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     """Recreate the s6 service slot for one profile.
 
@@ -352,6 +456,16 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
         log_run = log_subdir / "run"
         log_run.write_text(S6ServiceManager._render_log_run(profile))
         log_run.chmod(0o755)
+
+        # Pre-create + chown the per-container log dir now (issue
+        # #34473) so s6-log doesn't mkdir/chown on the hot path and
+        # lose the gateway's startup banner before it can tee stdout to
+        # docker logs. Best-effort; the script's own mkdir -p remains a
+        # fallback. hermes_home comes from the same env the script
+        # reads (HERMES_HOME), so the path resolves identically.
+        _precreate_log_dir(
+            Path(os.environ.get("HERMES_HOME", "/opt/data")), profile
+        )
 
         # The presence of a `down` file tells s6-supervise to NOT
         # start the service when s6-svscan picks it up. User brings

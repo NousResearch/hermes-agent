@@ -859,3 +859,95 @@ def test_main_ignores_removed_skip_reconcile_env_var(
     assert rc == 0
     # Reconcile still ran despite the stale env var.
     assert (scandir / "gateway-worker").exists()
+# Per-container log-dir pre-creation (issue #34473)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_container_log_dir_nests_under_container_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With per-container nesting on (default) and HERMES_CONTAINER_ID
+    set, the resolved dir matches the script's nested layout:
+    logs/gateways/<profile>/<container-id>."""
+    from hermes_cli.container_boot import _resolve_container_log_dir
+
+    monkeypatch.setenv("HERMES_CONTAINER_ID", "abc123")
+    monkeypatch.delenv("HERMES_GATEWAY_LOG_PER_CONTAINER", raising=False)
+
+    resolved = _resolve_container_log_dir(tmp_path, "coder")
+    assert resolved == tmp_path / "logs" / "gateways" / "coder" / "abc123"
+
+
+def test_resolve_container_log_dir_prefers_hostname_over_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HERMES_CONTAINER_ID wins; absent it, $HOSTNAME is used."""
+    from hermes_cli.container_boot import _resolve_container_log_dir
+
+    monkeypatch.delenv("HERMES_CONTAINER_ID", raising=False)
+    monkeypatch.setenv("HOSTNAME", "host-token")
+    monkeypatch.delenv("HERMES_GATEWAY_LOG_PER_CONTAINER", raising=False)
+
+    resolved = _resolve_container_log_dir(tmp_path, "writer")
+    assert resolved == tmp_path / "logs" / "gateways" / "writer" / "host-token"
+
+
+def test_resolve_container_log_dir_flat_when_opted_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HERMES_GATEWAY_LOG_PER_CONTAINER=0 yields the flat legacy path,
+    matching the script's opt-out branch."""
+    from hermes_cli.container_boot import _resolve_container_log_dir
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOG_PER_CONTAINER", "0")
+    monkeypatch.setenv("HERMES_CONTAINER_ID", "ignored")
+
+    resolved = _resolve_container_log_dir(tmp_path, "coder")
+    assert resolved == tmp_path / "logs" / "gateways" / "coder"
+
+
+def test_precreate_log_dir_creates_nested_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_precreate_log_dir makes the per-container dir up front so s6-log
+    never has to mkdir on the hot path. (chown is best-effort and a
+    no-op without the hermes user, which is fine off-container.)"""
+    from hermes_cli.container_boot import _precreate_log_dir
+
+    monkeypatch.setenv("HERMES_CONTAINER_ID", "ctr-9")
+    monkeypatch.delenv("HERMES_GATEWAY_LOG_PER_CONTAINER", raising=False)
+
+    target = tmp_path / "logs" / "gateways" / "coder" / "ctr-9"
+    assert not target.exists()
+
+    _precreate_log_dir(tmp_path, "coder")
+
+    assert target.is_dir(), "per-container log dir was not pre-created"
+
+
+def test_register_service_precreates_log_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a running profile registered at boot has its
+    per-container log dir present afterward, so the s6-log run script's
+    mkdir is a no-op and the startup banner reaches docker logs."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_CONTAINER_ID", "boot-ctr")
+    monkeypatch.delenv("HERMES_GATEWAY_LOG_PER_CONTAINER", raising=False)
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "coder", state="running")
+
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    nested = tmp_path / "logs" / "gateways" / "coder" / "boot-ctr"
+    assert nested.is_dir(), (
+        "register path did not pre-create the per-container log dir"
+    )

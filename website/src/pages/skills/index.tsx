@@ -163,6 +163,13 @@ const SOURCE_CONFIG: Record<
     border: "rgba(251, 191, 36, 0.2)",
     icon: "\u{1F917}",
   },
+  NVIDIA: {
+    label: "NVIDIA",
+    color: "#76b900",
+    bg: "rgba(118, 185, 0, 0.08)",
+    border: "rgba(118, 185, 0, 0.25)",
+    icon: "\u{25B6}",
+  },
   VoltAgent: {
     label: "VoltAgent",
     color: "#facc15",
@@ -207,6 +214,7 @@ const SOURCE_ORDER = [
   "Anthropic",
   "OpenAI",
   "HuggingFace",
+  "NVIDIA",
   "skills.sh",
   "ClawHub",
   "browse.sh",
@@ -500,7 +508,7 @@ export default function SkillsDashboard() {
   const sources = useMemo(() => {
     const set = new Set(allSkillsLocal.map((s) => s.source));
     return SOURCE_ORDER.filter((s) => s === "all" || set.has(s));
-  }, []);
+  }, [allSkillsLocal]);
 
   const categoryEntries = useMemo(() => {
     const pool =
@@ -523,7 +531,7 @@ export default function SkillsDashboard() {
     return Array.from(map.entries())
       .sort((a, b) => b[1].count - a[1].count)
       .map(([key, { label, count }]) => ({ key, label, count }));
-  }, [sourceFilter]);
+  }, [sourceFilter, allSkillsLocal]);
 
   const filtered = useMemo(() => {
     const q = debouncedSearch.toLowerCase().trim();

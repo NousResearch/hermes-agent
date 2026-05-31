@@ -1,10 +1,8 @@
 """Tests for the Camofox browser backend."""
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from tools.browser_camofox import (
     camofox_back,
@@ -20,6 +18,7 @@ from tools.browser_camofox import (
     camofox_vision,
     check_camofox_available,
     is_camofox_mode,
+    _rewrite_loopback_url_for_camofox,
 )
 
 
@@ -59,6 +58,10 @@ class TestCamofoxMode:
 # ---------------------------------------------------------------------------
 
 
+def _config_with_camofox(**camofox_config):
+    return {"browser": {"camofox": camofox_config}}
+
+
 def _mock_response(status=200, json_data=None):
     resp = MagicMock()
     resp.status_code = status
@@ -73,6 +76,60 @@ def _mock_response(status=200, json_data=None):
 # ---------------------------------------------------------------------------
 
 
+class TestCamofoxLoopbackRewrite:
+    @patch("tools.browser_camofox.load_config")
+    def test_rewrites_localhost_when_enabled(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        monkeypatch.delenv("CAMOFOX_LOOPBACK_HOST_ALIAS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=True)
+
+        rewritten, metadata = _rewrite_loopback_url_for_camofox("http://127.0.0.1:8766/#settings")
+
+        assert rewritten == "http://host.docker.internal:8766/#settings"
+        assert metadata == {
+            "from": "127.0.0.1",
+            "to": "host.docker.internal",
+            "original_url": "http://127.0.0.1:8766/#settings",
+            "rewritten_url": "http://host.docker.internal:8766/#settings",
+        }
+
+    @patch("tools.browser_camofox.load_config")
+    def test_rewrite_is_opt_in(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=False)
+
+        rewritten, metadata = _rewrite_loopback_url_for_camofox("http://localhost:3000/app?x=1")
+
+        assert rewritten == "http://localhost:3000/app?x=1"
+        assert metadata is None
+
+    @patch("tools.browser_camofox.load_config")
+    def test_preserves_public_urls_when_enabled(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=True)
+
+        rewritten, metadata = _rewrite_loopback_url_for_camofox("https://example.com:8443/path?q=1#top")
+
+        assert rewritten == "https://example.com:8443/path?q=1#top"
+        assert metadata is None
+
+    @patch("tools.browser_camofox.load_config")
+    def test_env_alias_takes_precedence(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_REWRITE_LOOPBACK_URLS", "true")
+        monkeypatch.setenv("CAMOFOX_LOOPBACK_HOST_ALIAS", "192.168.1.10")
+        mock_config.return_value = _config_with_camofox(
+            rewrite_loopback_urls=False,
+            loopback_host_alias="host.docker.internal",
+        )
+
+        rewritten, metadata = _rewrite_loopback_url_for_camofox("http://[::1]:8080/path")
+
+        assert rewritten == "http://192.168.1.10:8080/path"
+        assert metadata is not None
+        assert metadata["from"] == "::1"
+        assert metadata["to"] == "192.168.1.10"
+
+
 class TestCamofoxNavigate:
     @patch("tools.browser_camofox.requests.post")
     def test_creates_tab_on_first_navigate(self, mock_post, monkeypatch):
@@ -82,6 +139,24 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t1"))
         assert result["success"] is True
         assert result["url"] == "https://example.com"
+
+    @patch("tools.browser_camofox.load_config")
+    @patch("tools.browser_camofox.requests.post")
+    def test_navigate_uses_rewritten_loopback_url(self, mock_post, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        monkeypatch.delenv("CAMOFOX_LOOPBACK_HOST_ALIAS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=True)
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab_rewrite"})
+
+        result = json.loads(camofox_navigate("http://127.0.0.1:8766/#settings", task_id="t_rewrite"))
+
+        assert result["success"] is True
+        assert result["url"] == "http://host.docker.internal:8766/#settings"
+        assert result["requested_url"] == "http://127.0.0.1:8766/#settings"
+        assert result["url_rewrite"]["to"] == "host.docker.internal"
+        assert "Rewrote loopback URL" in result["warning"]
+        assert mock_post.call_args.kwargs["json"]["url"] == "http://host.docker.internal:8766/#settings"
 
     @patch("tools.browser_camofox.requests.post")
     def test_navigates_existing_tab(self, mock_post, monkeypatch):

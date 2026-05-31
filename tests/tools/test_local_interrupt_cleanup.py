@@ -161,7 +161,6 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
         # which is how signal delivery to non-main threads is simulated.
         import ctypes
-        import sys as _sys
         # py-thread-state exception targets need the ident, not the Thread
         tid = t.ident
         assert tid is not None

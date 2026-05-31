@@ -422,6 +422,17 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             candidates = [
                 os.path.join(hermes_home, "node", "bin", resolved_command),
                 os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
+                # /usr/local/bin is the canonical install location for Node on
+                # Linux from-source builds, the upstream node:bookworm-slim
+                # image (which the Hermes Docker image copies node + npm +
+                # corepack from since #4977), and macOS Homebrew on Intel.
+                # Without this candidate, any MCP server configured with an
+                # env.PATH that omits /usr/local/bin (a common pattern when
+                # users hand-author PATH for sandboxing) fails with ENOENT
+                # at execvp, and a naive symlink workaround into the user's
+                # PATH only fails one layer deeper because npx's shebang
+                # re-execs /usr/bin/env node which needs the same directory.
+                os.path.join(os.sep, "usr", "local", "bin", resolved_command),
             ]
             for candidate in candidates:
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
@@ -1384,9 +1395,22 @@ class MCPServerTask:
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
                 new_pids = _snapshot_child_pids() - pids_before
                 if new_pids:
+                    # Capture pgid while the child is alive — once it exits we
+                    # can no longer call ``os.getpgid`` on it, and the cleanup
+                    # sweep needs the pgid to reach any reparented descendants
+                    # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
+                    new_pgids: Dict[int, int] = {}
+                    for _pid in new_pids:
+                        try:
+                            new_pgids[_pid] = os.getpgid(_pid)
+                        except (AttributeError, ProcessLookupError, OSError):
+                            # AttributeError: Windows (os.getpgid is POSIX-only)
+                            # ProcessLookupError: child raced and already exited
+                            pass
                     with _lock:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
+                        _stdio_pgids.update(new_pgids)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -1405,16 +1429,33 @@ class MCPServerTask:
             # on Linux, where setsid() children escape the parent cgroup).
             # Mark them as orphans so the next cleanup sweep can reap them.
             if new_pids:
+                from gateway.status import _pid_exists
+                _killpg = getattr(os, "killpg", None)
                 with _lock:
                     for _pid in new_pids:
                         _stdio_pids.pop(_pid, None)
                     for pid in new_pids:
                         # ``os.kill(pid, 0)`` is NOT a no-op on Windows
                         # (bpo-14484). Use the cross-platform check.
-                        from gateway.status import _pid_exists
-                        if not _pid_exists(pid):
-                            continue  # process already exited — nothing to do
-                        _orphan_stdio_pids.add(pid)
+                        pid_alive = _pid_exists(pid)
+                        pgroup_alive = False
+                        pgid = _stdio_pgids.get(pid)
+                        if not pid_alive and pgid is not None and _killpg is not None:
+                            # Direct child exited but descendants may still be
+                            # in its pgroup (e.g. ``claude mcp serve`` spawned
+                            # by an MCP wrapper that exited first).  Probe with
+                            # signal 0 — succeeds iff any pgroup member is alive.
+                            try:
+                                _killpg(pgid, 0)
+                                pgroup_alive = True
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pgroup_alive = False
+                        if pid_alive or pgroup_alive:
+                            _orphan_stdio_pids.add(pid)
+                        else:
+                            # Nothing left to reap — drop the pgid entry so
+                            # PID-reuse can't surface stale pgroup state later.
+                            _stdio_pgids.pop(pid, None)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -1999,14 +2040,27 @@ def _handle_auth_error_and_retry(
             loop = _mcp_loop
             if loop is not None and loop.is_running():
                 loop.call_soon_threadsafe(srv._reconnect_event.set)
+
                 # Wait briefly for the session to come back ready. Bounded
                 # so that a stuck reconnect falls through to the error
-                # path rather than hanging the caller.
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline:
-                    if srv.session is not None and srv._ready.is_set():
-                        break
-                    time.sleep(0.25)
+                # path rather than hanging the caller.  The async helper
+                # runs on the MCP event loop via _run_on_mcp_loop so it
+                # does NOT block the event loop during the poll interval.
+                async def _await_ready() -> bool:
+                    deadline = time.monotonic() + 15
+                    while time.monotonic() < deadline:
+                        if srv.session is not None and srv._ready.is_set():
+                            return True
+                        await asyncio.sleep(0.25)
+                    return False
+
+                try:
+                    _run_on_mcp_loop(_await_ready(), timeout=15)
+                except Exception as exc:
+                    logger.warning(
+                        "MCP OAuth '%s': ready poll failed: %s",
+                        server_name, exc,
+                    )
 
         # A successful OAuth recovery is independent evidence that the
         # server is viable again, so close the circuit breaker here —
@@ -2212,6 +2266,19 @@ _stdio_pids: Dict[int, str] = {}  # pid -> server_name
 # Separate from _stdio_pids so cleanup sweeps never race with active
 # sessions (e.g. concurrent cron jobs or live user chats).
 _orphan_stdio_pids: set = set()
+
+# Process-group IDs of stdio MCP subprocesses, captured at spawn time.
+# The MCP SDK spawns stdio children with ``start_new_session=True`` so each
+# direct child becomes its own session/pgroup leader (PGID == its own PID).
+# Grandchildren spawned by that child (e.g. a wrapper MCP server that itself
+# launches helper subprocesses like ``claude mcp serve``) inherit that PGID
+# unless they call ``setsid`` themselves.  When the direct child exits, those
+# grandchildren reparent to init/systemd-user but keep the original PGID, so
+# ``killpg(pgid, sig)`` still reaches them.  Tracked separately from
+# ``_stdio_pids`` so we retain the PGID even after the direct child has
+# exited and been removed from the active map.  Empty on Windows
+# (``os.getpgid`` is POSIX-only).
+_stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 
 
 def _snapshot_child_pids() -> set:
@@ -3355,7 +3422,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             return_exceptions=True,
         )
         for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
                 logger.warning(
                     "Failed to connect to MCP server '%s'%s: %s",
@@ -3629,6 +3696,12 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     survivors, avoiding shared-resource collisions when multiple hermes
     processes run on the same host (each has its own ``_stdio_pids`` dict).
 
+    On POSIX, signals are sent via ``os.killpg`` to the spawn-time pgid when
+    one is tracked, so reparented grandchildren in the same process group
+    (e.g. ``claude mcp serve`` spawned by a stdio MCP wrapper that exited
+    first) are reaped alongside the direct child.  Falls back to ``os.kill``
+    on Windows and when no pgid is recorded.
+
     With ``include_active=True`` also kills every PID in ``_stdio_pids`` —
     used only at final shutdown, after the MCP event loop has stopped and no
     sessions can still be in flight.
@@ -3643,19 +3716,41 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         if include_active:
             pids.update(dict(_stdio_pids))
             _stdio_pids.clear()
+        # Snapshot pgids for the pids we're about to kill, then drop the
+        # entries so a future spawn can't collide with stale state.
+        pgids: Dict[int, int] = {pid: _stdio_pgids[pid] for pid in pids if pid in _stdio_pgids}
+        for pid in pgids:
+            _stdio_pgids.pop(pid, None)
 
     # Fast path: no tracked stdio PIDs to reap. Skip the SIGTERM/sleep/SIGKILL
     # dance entirely — otherwise every MCP-free shutdown pays a 2s sleep tax.
     if not pids:
         return
 
-    # Phase 1: SIGTERM (graceful)
-    for pid, server_name in pids.items():
+    def _send_signal(pid: int, sig: int, server_name: str) -> None:
+        """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
+        pgid = pgids.get(pid)
+        killpg = getattr(os, "killpg", None)
+        if pgid is not None and killpg is not None:
+            try:
+                killpg(pgid, sig)
+                return
+            except (ProcessLookupError, PermissionError, OSError) as exc:
+                # Pgroup gone (all members exited) or refused — fall back to
+                # the per-pid path so we still try the direct child if alive.
+                logger.debug(
+                    "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
+                    pgid, sig, server_name, exc,
+                )
         try:
-            os.kill(pid, _signal.SIGTERM)
-            logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
+            os.kill(pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+    # Phase 1: SIGTERM (graceful)
+    for pid, server_name in pids.items():
+        _send_signal(pid, _signal.SIGTERM, server_name)
+        logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
 
     # Phase 2: Wait for graceful exit
     time.sleep(2)
@@ -3668,14 +3763,11 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     for pid, server_name in pids.items():
         if not _pid_exists(pid):
             continue  # Good — exited after SIGTERM
-        try:
-            os.kill(pid, _sigkill)
-            logger.warning(
-                "Force-killed MCP process %d (%s) after SIGTERM timeout",
-                pid, server_name,
-            )
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        _send_signal(pid, _sigkill, server_name)
+        logger.warning(
+            "Force-killed MCP process %d (%s) after SIGTERM timeout",
+            pid, server_name,
+        )
 
 
 def _stop_mcp_loop():

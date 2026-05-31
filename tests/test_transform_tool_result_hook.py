@@ -5,10 +5,8 @@ Mirrors the ``transform_terminal_output`` hook tests from Phase 1 but
 targets the generic tool-result seam that runs for every tool dispatch.
 """
 
-import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import hermes_cli.plugins as plugins_mod
 import model_tools

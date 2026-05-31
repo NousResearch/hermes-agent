@@ -285,9 +285,22 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     Resolution order:
     1. Stamped ``~/.hermes/.install_method`` file (written by installers)
     2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
-    3. Container detection (/.dockerenv, /run/.containerenv, cgroup)
-    4. .git directory presence -> 'git'
-    5. Fallback -> 'pip'
+    3. .git directory presence -> 'git'
+    4. Fallback -> 'pip'
+
+    Note: running inside a container is NOT treated as "docker" on its own.
+    The two supported install paths both self-identify via the
+    ``.install_method`` stamp (caught by step 1), so neither relies on
+    container detection here:
+      - the curl installer (scripts/install.sh, the README/website install
+        command) git-clones the repo and stamps ``git``;
+      - the published ``nousresearch/hermes-agent`` image stamps ``docker``
+        at boot via ``docker/stage2-hook.sh``.
+    An unsupported manual install dropped into a container (no stamp) was
+    wrongly classified as the published image by bare container detection,
+    so ``hermes update`` bailed with "doesn't apply inside the Docker
+    container". Without that fallback such installs fall through to the
+    ``.git``/pip checks and behave like any off-path install. See issue #34397.
     """
     stamp = get_hermes_home() / ".install_method"
     try:
@@ -299,9 +312,6 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    from hermes_constants import is_container
-    if is_container():
-        return "docker"
     if project_root is None:
         project_root = Path(__file__).parent.parent.resolve()
     if (project_root / ".git").is_dir():
@@ -319,6 +329,34 @@ def stamp_install_method(method: str) -> None:
         pass
 
 
+def is_uv_tool_install() -> bool:
+    """Return True when the *running* Hermes lives in a ``uv tool`` layout.
+
+    ``uv tool install hermes-agent`` places the install at
+    ``.../uv/tools/hermes-agent/...`` (default ``~/.local/share/uv/tools``,
+    or ``$UV_TOOL_DIR/...``). Such installs live outside any virtualenv, so
+    ``uv pip install`` fails with ``No virtual environment found`` and the
+    update path must use ``uv tool upgrade`` instead.
+
+    Detection is intentionally restricted to properties of the running
+    interpreter (``sys.prefix`` / ``sys.executable``). We deliberately do
+    NOT consult ``uv tool list``: it would also return True when
+    ``hermes-agent`` happens to be uv-tool-installed on the machine while
+    the *active* Hermes is a regular pip/venv install, causing
+    ``hermes update`` to upgrade the wrong copy. It would also block on a
+    subprocess call (~seconds) just to compute a recommendation string.
+    """
+    def _has_uv_tool_marker(path: str) -> bool:
+        norm = os.path.normpath(path).replace(os.sep, "/").lower()
+        return "/uv/tools/hermes-agent/" in norm + "/"
+
+    if _has_uv_tool_marker(sys.prefix):
+        return True
+    if _has_uv_tool_marker(sys.executable or ""):
+        return True
+    return False
+
+
 def recommended_update_command_for_method(method: str) -> str:
     """Return the update command or guidance for a given install method."""
     if method == "nixos":
@@ -328,9 +366,10 @@ def recommended_update_command_for_method(method: str) -> str:
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
     if method == "pip":
+        if is_uv_tool_install():
+            return "uv tool upgrade hermes-agent"
         import shutil
-        uv = shutil.which("uv")
-        if uv:
+        if shutil.which("uv"):
             return "uv pip install --upgrade hermes-agent"
         return "pip install --upgrade hermes-agent"
     return "hermes update"
@@ -669,6 +708,27 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Universal "finish the job" guidance — short prompt block applied to
+        # all models that targets two cross-family failure modes: (1) stopping
+        # after a stub instead of finishing the artifact, (2) fabricating
+        # plausible-looking output when a real path is blocked.  Costs ~80
+        # tokens in the cached system prompt.  Set False to disable globally.
+        "task_completion_guidance": True,
+        # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
+        # state in the system prompt when something non-default is detected
+        # (e.g. python3 has no pip module, pip→python version mismatch, PEP
+        # 668 enforcement without uv).  Costs zero tokens when the env is
+        # clean (probe emits nothing).  Skipped for remote terminal backends
+        # (docker/modal/ssh — they have their own probe).  Set False to
+        # disable entirely.
+        "environment_probe": True,
+        # Embedder-supplied environment description appended to the system
+        # prompt's environment-hints block. Lets a host that wraps Hermes
+        # (sandbox runner, managed platform) explain the runtime environment
+        # — proxy, credential handling, mount layout — without editing the
+        # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
+        # env var overrides this (build-time/container mechanism).
+        "environment_hint": "",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -836,6 +896,11 @@ DEFAULT_CONFIG = {
             "session_key": "",
             # Rehydrate tab_id from Camofox before creating a new tab.
             "adopt_existing_tab": False,
+            # Docker Camofox opens page URLs from inside the container. Enable
+            # this to rewrite loopback page URLs (localhost/127.0.0.1/::1) to a
+            # host alias while leaving CAMOFOX_URL itself unchanged.
+            "rewrite_loopback_urls": False,
+            "loopback_host_alias": "host.docker.internal",
         },
     },
 
@@ -1157,6 +1222,11 @@ DEFAULT_CONFIG = {
         # Mirrors `hermes -c` muscle memory.  Default off so existing
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # When true (default), `hermes --tui` drops a one-time hint
+        # ("subagents working · /agents to watch live") the first time a turn
+        # starts delegating, nudging the user toward the live spawn-tree
+        # dashboard. Set false to suppress the hint.
+        "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
@@ -1176,6 +1246,13 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
+        # Turn-completion explainer.  When true (default), the agent appends a
+        # one-line explanation to its final response whenever a turn ends
+        # abnormally with no usable reply — empty content after retries, a
+        # partial/truncated stream, a still-pending tool result, or an
+        # iteration/budget limit.  Replaces the bare "(empty)" sentinel so the
+        # failure isn't silent from the UI's perspective.  Set false to suppress.
+        "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
@@ -1726,6 +1803,15 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Per-profile concurrency cap (#21582). When set to a positive int,
+        # no single profile can have more than N workers running at once,
+        # even if the global max_in_progress / max_spawn caps would allow
+        # it. Tasks blocked this way defer to the next dispatcher tick.
+        # Unset (None) means "no per-profile cap" — backward-compatible
+        # with existing installs. Useful for fan-out workflows that would
+        # otherwise saturate one profile's local model / API quota /
+        # browser pool while leaving other profiles idle.
+        "max_in_progress_per_profile": None,
         # When true, the kanban dispatcher auto-runs the decomposer on
         # tasks that land in Triage (every dispatcher tick). When false,
         # decomposition is manual via `hermes kanban decompose <id>` or
@@ -1757,6 +1843,38 @@ DEFAULT_CONFIG = {
         "mode": "project",
     },
 
+    # Tool Search (progressive disclosure for large tool surfaces).
+    # When the model is connected to many MCP servers or non-core plugin
+    # tools, their JSON schemas can consume a substantial fraction of the
+    # context window on every turn. When enabled, those tools are replaced
+    # in the model-facing tools array with three bridge tools —
+    # tool_search / tool_describe / tool_call — and surfaced on demand.
+    #
+    # Core Hermes tools (terminal, read_file, write_file, patch,
+    # search_files, todo, memory, browser_*, etc.) are NEVER deferred.
+    # See tools/tool_search.py for full design notes and the
+    # openclaw-tool-search-report PDF in this PR for the rationale.
+    "tools": {
+        "tool_search": {
+            # "auto" (default) — activate only when deferrable tool schemas
+            #   exceed ``threshold_pct`` of the active model's context length,
+            #   so small toolsets pay no overhead.
+            # "on"  — always activate when there is at least one deferrable
+            #   tool. Use when you have many MCP servers and want maximum
+            #   token reduction unconditionally.
+            # "off" — disable entirely. Tools-array assembly is a pass-through.
+            "enabled": "auto",
+            # Percentage of context length at which "auto" mode kicks in.
+            # 10 matches the Claude Code default. Range 0..100.
+            "threshold_pct": 10,
+            # When the model calls tool_search without a ``limit`` argument,
+            # how many hits to return. Range 1..max_search_limit.
+            "search_default_limit": 5,
+            # Hard upper bound the model can request via ``limit``. Range 1..50.
+            "max_search_limit": 20,
+        },
+    },
+
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {
@@ -1785,7 +1903,7 @@ DEFAULT_CONFIG = {
         # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
         # next /model or `hermes model` invocation; network failures
         # silently fall back to the stale cache.
-        "ttl_hours": 24,
+        "ttl_hours": 1,
         # Optional per-provider override URLs for third parties that want
         # to self-host their own curation list using the same schema.
         # Example:
@@ -1806,6 +1924,21 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # When false (default), any file path the agent emits is delivered
+        # as a native attachment as long as it isn't under the credential /
+        # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
+        # auth.json, etc.). This matches the symmetry of inbound delivery
+        # — we accept any document type the user uploads, and the agent
+        # can hand back any file that isn't a credential.
+        #
+        # When true, fall back to the older allowlist+recency-window
+        # behavior: files must live under the Hermes cache, under
+        # ``media_delivery_allow_dirs``, or be freshly produced inside the
+        # ``trust_recent_files_seconds`` window. Recommended for
+        # public-facing gateways where prompt injection from one user
+        # shouldn't be able to exfiltrate the host's secrets to that same
+        # user. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
+        "strict": False,
         # Extra directories from which model-emitted bare file paths may be
         # uploaded as native gateway attachments. Files inside the Hermes
         # cache (~/.hermes/cache/{documents,images,audio,video,screenshots})
@@ -1813,7 +1946,7 @@ DEFAULT_CONFIG = {
         # (project dirs, scratch dirs, mounted shares). Accepts a list of
         # absolute paths or a single os.pathsep-separated string. Bridged
         # to HERMES_MEDIA_ALLOW_DIRS at gateway startup. Tilde paths are
-        # expanded.
+        # expanded. Honored in both default and strict mode.
         "media_delivery_allow_dirs": [],
         # When true, files whose mtime is within ``trust_recent_files_seconds``
         # of "now" are trusted for native delivery even outside the cache /
@@ -1821,10 +1954,12 @@ DEFAULT_CONFIG = {
         # PDFs the agent writes into a working directory. System paths
         # (/etc, /proc, ~/.ssh, ~/.aws, etc.) remain blocked regardless.
         # Disable to fall back to pure-allowlist mode. Bridged to
-        # HERMES_MEDIA_TRUST_RECENT_FILES.
+        # HERMES_MEDIA_TRUST_RECENT_FILES. Only consulted when ``strict``
+        # is true; in default mode the denylist alone gates delivery.
         "trust_recent_files": True,
         # Recency window in seconds. 600 (10 min) comfortably covers a
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
+        # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
     },
 
@@ -2016,7 +2151,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 24,
+    "_config_version": 25,
 }
 
 # =============================================================================
@@ -2505,10 +2640,10 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "TAVILY_API_KEY": {
-        "description": "Tavily API key for AI-native web search, extract, and crawl",
+        "description": "Tavily API key for AI-native web search and extract",
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
-        "tools": ["web_search", "web_extract", "web_crawl"],
+        "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",
     },
@@ -4209,6 +4344,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         f"{', '.join(added_aux)}"
                     )
 
+    # ── Version 24 → 25: lower model_catalog TTL 24h → 1h ──
+    # The model picker now refreshes its curated list hourly so freshly
+    # published model-catalog.json deploys reach users without a day-long
+    # stale window. Only rewrite the OLD default (24) — never clobber a
+    # value the user deliberately customized.
+    if current_ver < 25:
+        config = read_raw_config()
+        raw_mc = config.get("model_catalog")
+        if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 24:
+            raw_mc["ttl_hours"] = 1
+            config["model_catalog"] = raw_mc
+            save_config(config)
+            results["config_added"].append("model_catalog.ttl_hours 24→1")
+            if not quiet:
+                print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -5534,6 +5685,8 @@ def set_config_value(key: str, value: str):
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "terminal.docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "terminal.docker_env": "TERMINAL_DOCKER_ENV",
         # terminal.cwd intentionally excluded — CLI resolves at runtime,
         # gateway bridges it in gateway/run.py. Persisting to .env causes

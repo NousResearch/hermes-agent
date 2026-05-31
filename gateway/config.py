@@ -1275,6 +1275,11 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(signal_cfg, dict):
                 if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
                     os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+                if "free_response_groups" in signal_cfg and not os.getenv("SIGNAL_FREE_RESPONSE_GROUPS"):
+                    frc = signal_cfg["free_response_groups"]
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["SIGNAL_FREE_RESPONSE_GROUPS"] = str(frc)
 
             # DingTalk settings → env vars: migrated to the dingtalk plugin's
             # apply_yaml_config_fn hook (plugins/platforms/dingtalk/adapter.py).

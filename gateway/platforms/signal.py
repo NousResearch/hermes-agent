@@ -265,6 +265,34 @@ class SignalAdapter(BasePlatformAdapter):
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
+        free_response_raw = extra.get("free_response_groups")
+        if free_response_raw is None:
+            free_response_raw = os.getenv("SIGNAL_FREE_RESPONSE_GROUPS", "")
+        if isinstance(free_response_raw, list):
+            self.free_response_groups = {
+                str(g).strip() for g in free_response_raw if str(g).strip()
+            }
+        else:
+            self.free_response_groups = {
+                part.strip() for part in str(free_response_raw).split(",") if part.strip()
+            }
+
+        mention_aliases_raw = extra.get("mention_aliases")
+        if mention_aliases_raw is None:
+            mention_aliases_raw = os.getenv("SIGNAL_MENTION_ALIASES", "hermes")
+        if isinstance(mention_aliases_raw, list):
+            self.mention_aliases = {
+                str(alias).strip().lstrip("@").lower()
+                for alias in mention_aliases_raw
+                if str(alias).strip().lstrip("@")
+            }
+        else:
+            self.mention_aliases = {
+                part.strip().lstrip("@").lower()
+                for part in str(mention_aliases_raw).split(",")
+                if part.strip().lstrip("@")
+            }
+
         # Mention filter — only respond in groups when the bot account is @mentioned.
         # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
         _rm_cfg = extra.get("require_mention")
@@ -303,6 +331,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Normalize account for self-message filtering
         self._account_normalized = self.account.strip()
+        self._account_identifiers = {self._account_normalized}
 
         # Track recently sent message timestamps to prevent echo-back loops
         # in Note to Self / self-chat mode and linked-device group sync-sents.
@@ -367,6 +396,9 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
                 return False
 
+            await self._resolve_account_identifiers()
+            await self._resolve_group_allowlist_names()
+
             self._running = True
             self._last_sse_activity = time.time()
             self._sse_task = asyncio.create_task(self._sse_listener())
@@ -412,6 +444,100 @@ class SignalAdapter(BasePlatformAdapter):
         self._release_platform_lock()
 
         logger.info("Signal: disconnected")
+
+    async def _resolve_account_identifiers(self) -> None:
+        """Populate known identifiers (number/UUID) for this Signal account."""
+        identifiers = {self._account_normalized, self.account, redact_phone(self.account)}
+        try:
+            contacts = await self._rpc(
+                "listContacts",
+                {"account": self.account},
+                rpc_id="listContacts_account_identifiers",
+                log_failures=False,
+                timeout=15.0,
+            )
+        except Exception:
+            logger.debug("Signal: failed to resolve account identifiers", exc_info=True)
+            contacts = None
+        if isinstance(contacts, list):
+            for contact in contacts:
+                if not isinstance(contact, dict):
+                    continue
+                contact_number = str(contact.get("number") or "").strip()
+                if contact_number != self._account_normalized:
+                    continue
+                for key in ("number", "uuid", "serviceId"):
+                    value = str(contact.get(key) or "").strip()
+                    if value:
+                        identifiers.add(value)
+                profile = contact.get("profile")
+                if isinstance(profile, dict):
+                    for key in ("uuid", "serviceId"):
+                        value = str(profile.get(key) or "").strip()
+                        if value:
+                            identifiers.add(value)
+                break
+        self._account_identifiers = {i for i in identifiers if i}
+
+    async def _resolve_group_allowlist_names(self) -> None:
+        """Expand name-based group allowlist/free-response entries to group ids.
+
+        Existing setups often configure SIGNAL_GROUP_ALLOWED_USERS with human
+        names (for example "AgentChat"). Incoming Signal events are not
+        guaranteed to carry group names, so resolve names once at connect time
+        via signal-cli's listGroups RPC and add matching IDs to the sets.
+        """
+        names_to_resolve = {
+            item
+            for item in (self.group_allow_from | self.free_response_groups)
+            if item and item != "*" and not item.startswith("group:")
+        }
+        if not names_to_resolve:
+            return
+        try:
+            groups = await self._rpc(
+                "listGroups",
+                {"account": self.account},
+                rpc_id="listGroups_allowlist",
+                log_failures=False,
+                timeout=15.0,
+            )
+        except Exception:
+            logger.debug("Signal: failed to resolve group allowlist names", exc_info=True)
+            return
+        if not isinstance(groups, list):
+            return
+
+        group_name_to_ids: Dict[str, set[str]] = {}
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_id = str(group.get("id") or "").strip()
+            group_name = str(group.get("name") or "").strip()
+            if not group_id or not group_name:
+                continue
+            group_name_to_ids.setdefault(group_name, set()).update({
+                group_id,
+                f"group:{group_id}",
+            })
+
+        resolved_group_ids: set[str] = set()
+        resolved_free_response_ids: set[str] = set()
+        for configured_name, ids in group_name_to_ids.items():
+            if configured_name in self.group_allow_from:
+                resolved_group_ids.update(ids)
+            if configured_name in self.free_response_groups:
+                resolved_free_response_ids.update(ids)
+        if resolved_group_ids:
+            self.group_allow_from.update(resolved_group_ids)
+        if resolved_free_response_ids:
+            self.free_response_groups.update(resolved_free_response_ids)
+        if resolved_group_ids or resolved_free_response_ids:
+            logger.info(
+                "Signal: resolved %d group allow/free-response name entr%s to group ids",
+                len(resolved_group_ids | resolved_free_response_ids),
+                "y" if len(resolved_group_ids | resolved_free_response_ids) == 1 else "ies",
+            )
 
     # ------------------------------------------------------------------
     # SSE Streaming (inbound messages)
@@ -543,7 +669,11 @@ class SignalAdapter(BasePlatformAdapter):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
                     sent_msg_group_info = sent_msg.get("groupInfo") or {}
-                    sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
+                    sent_msg_group_v2 = sent_msg.get("groupV2") or {}
+                    sent_msg_group_id = (
+                        (sent_msg_group_v2.get("id") if isinstance(sent_msg_group_v2, dict) else None)
+                        or (sent_msg_group_info.get("groupId") if isinstance(sent_msg_group_info, dict) else None)
+                    )
                     if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if self._consume_sent_timestamp(sent_ts):
@@ -585,21 +715,33 @@ class SignalAdapter(BasePlatformAdapter):
         if not data_message:
             return
 
-        # Check for group message
+        # Check for group message.
+        # Modern Signal groups surface on dataMessage.groupV2.id; legacy V1
+        # groups still arrive under dataMessage.groupInfo.groupId.
         group_info = data_message.get("groupInfo")
-        group_id = group_info.get("groupId") if group_info else None
+        group_v2 = data_message.get("groupV2")
+        group_id = (
+            (group_v2.get("id") if isinstance(group_v2, dict) else None)
+            or (group_info.get("groupId") if isinstance(group_info, dict) else None)
+        )
+        group_name = (
+            (group_v2.get("name") if isinstance(group_v2, dict) else None)
+            or (group_info.get("groupName") if isinstance(group_info, dict) else None)
+        )
         is_group = bool(group_id)
 
         # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
         # - No env var set → groups disabled (default safe behavior)
-        # - Env var set with group IDs → only those groups allowed
+        # - Env var set with group IDs or names → only those groups allowed
         # - Env var set with "*" → all groups allowed
         # DM auth is fully handled by run.py (_is_user_authorized)
         if is_group:
-            if not self.group_allow_from:
-                logger.debug("Signal: ignoring group message (no SIGNAL_GROUP_ALLOWED_USERS)")
-                return
-            if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
+            group_allow_keys = {group_id, f"group:{group_id}"}
+            if group_name:
+                group_allow_keys.add(str(group_name))
+            if "*" not in self.group_allow_from and not (
+                group_allow_keys & self.group_allow_from
+            ):
                 logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
                 return
 
@@ -613,22 +755,47 @@ class SignalAdapter(BasePlatformAdapter):
         if text and mentions:
             text = _render_mentions(text, mentions)
 
+        # Command bypass: if user sent a slash command, process even when
+        # mention-only mode is enabled.
+        is_command = bool(text and text.lstrip().startswith("/"))
+
         # Mention filter: in groups, only process messages that @mention the bot account
-        if is_group and self.require_mention:
+        if is_group and self.require_mention and not is_command:
             account_norm = self._account_normalized
-            # Check rendered mention tags OR raw mention metadata
-            mentioned_in_text = account_norm and (
-                f"@{account_norm}" in (text or "")
-            )
+            account_raw = self.account
+            account_redacted = redact_phone(account_raw)
+            account_candidates = {
+                candidate for candidate in (
+                    self._account_identifiers | {account_norm, account_raw, account_redacted}
+                ) if candidate
+            }
+            text_lower = (text or "").lower()
+            alias_candidates = {
+                alias for alias in self.mention_aliases if alias
+            }
+            # Check rendered mention tags OR raw mention metadata. Signal's
+            # rendered text can include either the account number or a local
+            # contact/display alias (for example "@hermes"), depending on how
+            # the sender has named the linked device in their contacts.
+            mentioned_in_text = bool((text or "") and (
+                any(a and f"@{a}" in text for a in account_candidates)
+                or any(f"@{alias}" in text_lower for alias in alias_candidates)
+            ))
             mentioned_in_metadata = any(
-                m.get("number") == account_norm or m.get("uuid") == account_norm
+                (m.get("number") in account_candidates) or (m.get("uuid") in account_candidates)
                 for m in (data_message.get("mentions") or [])
             )
             if not mentioned_in_text and not mentioned_in_metadata:
-                logger.debug(
-                    "Signal: ignoring group message (require_mention=true, bot not mentioned)"
+                is_free_response_group = "*" in self.free_response_groups or bool(
+                    {group_id, f"group:{group_id}", str(group_name or "")}
+                    & self.free_response_groups
                 )
-                return
+                if not is_free_response_group:
+                    logger.debug(
+                        "Signal: ignoring group message (require_mention=true, bot not mentioned)"
+                    )
+                    return
+
 
         # Strip the bot's own @mention from any group message so the agent
         # doesn't misinterpret "@+155****4567 say hello" as a directive to

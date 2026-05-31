@@ -33,7 +33,7 @@ def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposi
     assert "☤" not in json.dumps(metadata)
 
 
-def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
+def test_default_config_warns_and_redirects_without_hard_stop():
     cfg = ToolCallGuardrailConfig()
 
     assert cfg.warnings_enabled is True
@@ -41,9 +41,12 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
+    assert cfg.low_information_warn_after == 3
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
+    assert cfg.low_information_redirect_after == 4
+    assert cfg.low_information_halt_after == 6
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -55,11 +58,14 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
                 "exact_failure": 3,
                 "same_tool_failure": 4,
                 "idempotent_no_progress": 5,
+                "low_information": 6,
             },
             "hard_stop_after": {
                 "exact_failure": 6,
                 "same_tool_failure": 7,
                 "idempotent_no_progress": 8,
+                "low_information_redirect": 9,
+                "low_information": 10,
             },
         }
     )
@@ -69,9 +75,12 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.exact_failure_warn_after == 3
     assert cfg.same_tool_failure_warn_after == 4
     assert cfg.no_progress_warn_after == 5
+    assert cfg.low_information_warn_after == 6
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
+    assert cfg.low_information_redirect_after == 9
+    assert cfg.low_information_halt_after == 10
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
@@ -229,6 +238,47 @@ def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_defaul
     assert decision.code == "idempotent_no_progress_warning"
     assert controller.before_call("read_file", args).action == "allow"
     assert controller.halt_decision is None
+
+
+def test_low_information_search_variants_redirect_before_exact_repeat_block():
+    controller = ToolCallGuardrailController()
+    empty_search = json.dumps({"total_count": 0})
+
+    decisions = [
+        controller.after_call(
+            "search_files",
+            {"pattern": pattern, "path": "/repo", "target": "content"},
+            empty_search,
+            failed=False,
+        )
+        for pattern in ("def.*drain", "drain_command", "dispatch_command", "select.*task")
+    ]
+
+    assert [decision.action for decision in decisions] == ["allow", "allow", "warn", "warn"]
+    assert decisions[2].code == "low_information_strategy_warning"
+    assert decisions[3].code == "low_information_strategy_warning"
+
+    redirected = controller.before_call(
+        "search_files",
+        {"pattern": "another variation", "path": "/repo", "target": "content"},
+    )
+
+    assert redirected.action == "redirect"
+    assert redirected.code == "low_information_tool_redirect"
+    assert redirected.should_halt is False
+    assert controller.halt_decision is None
+
+    controller.after_call(
+        "terminal",
+        {"command": "pwd && rg --files | head"},
+        json.dumps({"exit_code": 0, "output": "/repo\nrun_agent.py"}),
+        failed=False,
+    )
+
+    assert controller.before_call(
+        "search_files",
+        {"pattern": "run_conversation", "path": "/repo", "target": "content"},
+    ).action == "allow"
 
 
 def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():

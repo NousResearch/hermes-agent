@@ -64,9 +64,10 @@ MUTATING_TOOL_NAMES = frozenset(
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
-    Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    Warnings are enabled by default. Hard stops remain explicit opt-in, but
+    repeated low-information read-only calls may redirect the same tool for one
+    turn so the model has to verify assumptions with a different tool path
+    instead of burning the iteration budget on harmless-looking empty results.
     """
 
     warnings_enabled: bool = True
@@ -77,6 +78,9 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    low_information_warn_after: int = 3
+    low_information_redirect_after: int = 4
+    low_information_halt_after: int = 6
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -109,6 +113,10 @@ class ToolCallGuardrailConfig:
                 warn_after.get("idempotent_no_progress", data.get("no_progress_warn_after")),
                 defaults.no_progress_warn_after,
             ),
+            low_information_warn_after=_positive_int(
+                warn_after.get("low_information", data.get("low_information_warn_after")),
+                defaults.low_information_warn_after,
+            ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
                 defaults.exact_failure_block_after,
@@ -120,6 +128,14 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            low_information_redirect_after=_positive_int(
+                hard_stop_after.get("low_information_redirect", data.get("low_information_redirect_after")),
+                defaults.low_information_redirect_after,
+            ),
+            low_information_halt_after=_positive_int(
+                hard_stop_after.get("low_information", data.get("low_information_halt_after")),
+                defaults.low_information_halt_after,
             ),
         )
 
@@ -145,7 +161,7 @@ class ToolCallSignature:
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
-    action: str = "allow"  # allow | warn | block | halt
+    action: str = "allow"  # allow | warn | redirect | block | halt
     code: str = "allow"
     message: str = ""
     tool_name: str = ""
@@ -232,6 +248,8 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._low_information_counts: dict[tuple[str, str], int] = {}
+        self._tool_redirects: dict[str, ToolGuardrailDecision] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -240,6 +258,28 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        redirect = self._tool_redirects.get(tool_name)
+        if redirect is not None:
+            redirected_count = redirect.count + 1
+            action = "halt" if redirected_count >= self.config.low_information_halt_after else "redirect"
+            code = (
+                "low_information_tool_halt"
+                if action == "halt"
+                else "low_information_tool_redirect"
+            )
+            decision = ToolGuardrailDecision(
+                action=action,
+                code=code,
+                message=_low_information_recovery_hint(tool_name, redirected_count),
+                tool_name=tool_name,
+                count=redirected_count,
+                signature=signature,
+            )
+            self._tool_redirects[tool_name] = decision
+            if decision.should_halt:
+                self._halt_decision = decision
+            return decision
+
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -368,7 +408,43 @@ class ToolCallGuardrailController:
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            self._clear_low_information_state()
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        low_info_kind = _low_information_result(tool_name, result)
+        if low_info_kind is not None:
+            key = (tool_name, low_info_kind)
+            low_info_count = self._low_information_counts.get(key, 0) + 1
+            self._low_information_counts[key] = low_info_count
+            if low_info_count >= self.config.low_information_redirect_after:
+                redirect = ToolGuardrailDecision(
+                    action="redirect",
+                    code="low_information_tool_redirect",
+                    message=_low_information_recovery_hint(tool_name, low_info_count),
+                    tool_name=tool_name,
+                    count=low_info_count,
+                    signature=signature,
+                )
+                self._tool_redirects[tool_name] = redirect
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="low_information_strategy_warning",
+                    message=_low_information_recovery_hint(tool_name, low_info_count),
+                    tool_name=tool_name,
+                    count=low_info_count,
+                    signature=signature,
+                )
+            if self.config.warnings_enabled and low_info_count >= self.config.low_information_warn_after:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="low_information_strategy_warning",
+                    message=_low_information_recovery_hint(tool_name, low_info_count),
+                    tool_name=tool_name,
+                    count=low_info_count,
+                    signature=signature,
+                )
+        else:
+            self._clear_low_information_state()
 
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
@@ -398,6 +474,16 @@ class ToolCallGuardrailController:
             return False
         return tool_name in self.config.idempotent_tools
 
+    def _clear_low_information_state(self, tool_name: str | None = None) -> None:
+        if tool_name is None:
+            self._low_information_counts.clear()
+            self._tool_redirects.clear()
+            return
+        for key in list(self._low_information_counts):
+            if key[0] == tool_name:
+                self._low_information_counts.pop(key, None)
+        self._tool_redirects.pop(tool_name, None)
+
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
@@ -412,9 +498,14 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
 
 def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
     """Append runtime guidance to the current tool result content."""
-    if decision.action not in {"warn", "halt"} or not decision.message:
+    if decision.action not in {"warn", "redirect", "halt"} or not decision.message:
         return result
-    label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
+    if decision.action == "halt":
+        label = "Tool loop hard stop"
+    elif decision.action == "redirect":
+        label = "Tool strategy redirect"
+    else:
+        label = "Tool loop warning"
     suffix = (
         f"\n\n[{label}: "
         f"{decision.code}; count={decision.count}; {decision.message}]"
@@ -440,6 +531,62 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
     )
+
+
+def _low_information_recovery_hint(tool_name: str, count: int) -> str:
+    """Guidance for repeated successful tool calls that returned no usable facts."""
+    common = (
+        f"{tool_name} has returned low-information results {count} times this turn. "
+        "This is no longer an information-gathering phase; change strategy before "
+        "calling the same tool again. "
+    )
+    if tool_name == "search_files":
+        return common + (
+            "Likely causes are the wrong search root, wrong target mode, or a query "
+            "that is too abstract for grep-style search. First verify cwd/path with "
+            "another tool such as terminal (`pwd`, `rg --files`, `rg -n`) or inspect "
+            "a known candidate file with read_file; do not keep varying the same "
+            "empty search."
+        )
+    if tool_name == "read_file":
+        return common + (
+            "The file content already in the conversation is still current. Use it "
+            "to edit/respond, read a different range only if you need new lines, or "
+            "switch to search_files/terminal to locate a different file."
+        )
+    return common + "Use a different tool path, make an edit, ask for clarification, or report the blocker."
+
+
+def _low_information_result(tool_name: str, result: str | None) -> str | None:
+    """Classify successful but non-progressing read-only results.
+
+    Exact-repeat detection catches identical calls. This catches the systemic
+    loop class where a model makes small query variations that all produce the
+    same empty/unchanged payload, so exact-signature counters never fire.
+    """
+    parsed = safe_json_loads(result or "")
+    if not isinstance(parsed, dict) or parsed.get("error"):
+        return None
+
+    if tool_name == "search_files":
+        if (
+            parsed.get("total_count") == 0
+            and not parsed.get("matches")
+            and not parsed.get("files")
+            and not parsed.get("counts")
+        ):
+            return "empty_search_result"
+        return None
+
+    if tool_name == "read_file":
+        if (
+            parsed.get("status") == "unchanged"
+            and parsed.get("dedup") is True
+            and parsed.get("content_returned") is False
+        ):
+            return "unchanged_read_stub"
+
+    return None
 
 
 def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:

@@ -301,6 +301,25 @@ class TestSearchHandler:
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_zero_result_search_includes_root_metadata_and_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"total_count": 0}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        result = json.loads(search_tool(pattern="missing_symbol", target="content", path="/src"))
+
+        assert result["total_count"] == 0
+        assert result["pattern"] == "missing_symbol"
+        assert result["target"] == "content"
+        assert result["path"] == "/src"
+        assert result["searched_path"] == "/src"
+        assert "absolute path" in result["_hint"]
+        assert "rg --files" in result["_hint"]
+
 
 # ---------------------------------------------------------------------------
 # Tool result hint tests (#722)

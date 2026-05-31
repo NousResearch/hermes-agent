@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-29T11:20:16Z",
+  "updated_at": "2026-05-31T03:15:23Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -125,6 +125,10 @@
           "description": ""
         },
         {
+          "id": "deepseek/deepseek-v4-flash",
+          "description": ""
+        },
+        {
           "id": "openrouter/elephant-alpha",
           "description": "free"
         },
@@ -226,6 +230,9 @@
         },
         {
           "id": "deepseek/deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek/deepseek-v4-flash"
         }
       ]
     }

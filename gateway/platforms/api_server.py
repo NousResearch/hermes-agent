@@ -900,6 +900,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
+        self.gateway_runner: Optional[Any] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1071,6 +1072,118 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    @staticmethod
+    def _normalize_callback_platform(value: str) -> str:
+        normalized = (value or "").strip().lower().replace("-", "_")
+        if not re.fullmatch(r"[a-z0-9_]+", normalized):
+            return ""
+        return normalized
+
+    def _get_platform_callback_adapter(
+        self,
+        request: "web.Request",
+        platform_name: str,
+    ) -> Optional[Any]:
+        injected = request.app.get("platform_event_adapters")
+        if isinstance(injected, dict):
+            adapter = injected.get(platform_name)
+            if adapter is not None:
+                return adapter
+
+        adapter = request.app.get(f"{platform_name}_adapter")
+        if adapter is not None:
+            return adapter
+
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        adapters = getattr(runner, "adapters", None)
+        if not adapters:
+            return None
+
+        try:
+            from gateway.config import Platform as _Platform
+            return adapters.get(_Platform(platform_name))
+        except Exception:
+            for platform, candidate in adapters.items():
+                if getattr(platform, "value", platform) == platform_name:
+                    return candidate
+        return None
+
+    async def _handle_platform_event_callback(self, request: "web.Request") -> "web.Response":
+        platform_name = self._normalize_callback_platform(
+            request.match_info.get("platform", "")
+        )
+        if not platform_name:
+            return web.json_response(
+                _openai_error(
+                    "Invalid platform name",
+                    code="invalid_platform",
+                ),
+                status=400,
+            )
+
+        adapter = self._get_platform_callback_adapter(request, platform_name)
+        if adapter is None:
+            return web.json_response(
+                _openai_error(
+                    "Platform adapter is not connected",
+                    code="platform_unavailable",
+                ),
+                status=503,
+            )
+
+        verifier = getattr(adapter, "verify_http_event_request", None)
+        dispatcher = getattr(adapter, "dispatch_http_event", None)
+        if verifier is None or dispatcher is None:
+            return web.json_response(
+                _openai_error(
+                    "Platform adapter does not support HTTP events",
+                    code="platform_http_events_unsupported",
+                ),
+                status=503,
+            )
+
+        ok, code = verifier(request.headers.get("Authorization", ""))
+        if not ok:
+            return web.json_response(
+                _openai_error(
+                    "Invalid platform event authorization",
+                    code=code or "invalid_platform_event_authorization",
+                ),
+                status=401,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                _openai_error("Invalid JSON in platform event", code="invalid_json"),
+                status=400,
+            )
+
+        if not isinstance(payload, dict):
+            return web.json_response(
+                _openai_error(
+                    "Platform event must be a JSON object",
+                    code="invalid_request",
+                ),
+                status=400,
+            )
+
+        try:
+            result = await dispatcher(payload)
+        except Exception:
+            logger.exception("Platform HTTP event dispatch failed for %s", platform_name)
+            return web.json_response(
+                _openai_error(
+                    "Platform event dispatch failed",
+                    err_type="server_error",
+                    code="platform_event_dispatch_failed",
+                ),
+                status=500,
+            )
+
+        return web.json_response(result if isinstance(result, dict) else {})
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -4787,6 +4900,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_post(
+                "/api/platforms/{platform}/events",
+                self._handle_platform_event_callback,
+            )
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
@@ -4812,6 +4929,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # native routes first lets those shims no-op instead of shadowing the
             # upstream session-control handlers.
             self._app["api_server_adapter"] = self
+            if self.gateway_runner is not None:
+                self._app["gateway_runner"] = self.gateway_runner
 
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())

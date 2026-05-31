@@ -197,6 +197,50 @@ class TestWebSocketHostOriginGuard:
 
         assert exc.value.code == 4403
 
+    @pytest.mark.parametrize("endpoint", [
+        "/api/pty",
+        "/api/ws",
+        "/api/pub?channel=security-test",
+        "/api/events?channel=security-test",
+    ])
+    def test_rejected_gated_websocket_origin_does_not_consume_ticket(
+        self, monkeypatch, endpoint
+    ):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            _reset_for_tests,
+            consume_ticket,
+            mint_ticket,
+        )
+
+        _reset_for_tests()
+        monkeypatch.setattr(ws.app.state, "auth_required", True, raising=False)
+        monkeypatch.setattr(ws.app.state, "bound_host", "fly-app.fly.dev", raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        ticket = mint_ticket(user_id="u1", provider="stub")
+        client = TestClient(ws.app, base_url="https://fly-app.fly.dev")
+        separator = "&" if "?" in endpoint else "?"
+        url = f"{endpoint}{separator}ticket={ticket}"
+        try:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect(
+                    url,
+                    headers={
+                        "Host": "fly-app.fly.dev",
+                        "Origin": "https://evil.example",
+                    },
+                ):
+                    pass
+
+            assert exc.value.code == 4403
+            assert consume_ticket(ticket)["user_id"] == "u1"
+        finally:
+            _reset_for_tests()
+
     def test_loopback_websocket_host_and_origin_are_accepted(self, monkeypatch):
         from fastapi.testclient import TestClient
 

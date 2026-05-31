@@ -153,7 +153,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
 | `HINDSIGHT_USER_MODEL_ID` | Hindsight mental model ID for the user. Used to customize context injection right after the user profile block and per-turn prompts. |
-| `HINDSIGHT_AGENT_MODEL_ID` | Hindsight mental model ID for the agent. Used to customize context injection right after the soul.md block and per-turn prompts. |
+| `HINDSIGHT_AGENT_MODEL_ID` | **WARNING: High Risk.** Hindsight mental model ID for the agent. Setting this value is not recommended unless experimenting with evolving personas, as it can cause highly unpredictable results. **It is highly recommended to read the manual in the Hindsight plugin README before configuring this variable.** Used to customize context injection right after the soul.md block and per-turn prompts. |
 | `HINDSIGHT_CACHE_TTL` | Cache TTL in seconds (default: `300` / 5 minutes) for Hindsight user and agent mental models. |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |

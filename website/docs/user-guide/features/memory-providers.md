@@ -366,7 +366,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
 | `user_model_id` | — | Hindsight mental model ID for the user. Maps to environment variable `HINDSIGHT_USER_MODEL_ID`. |
-| `agent_model_id` | — | Hindsight mental model ID for the agent. Maps to environment variable `HINDSIGHT_AGENT_MODEL_ID`. |
+| `agent_model_id` | — | **WARNING: High Risk.** Extends the agent's core identity (`soul.md`). Setting this value is not recommended unless experimenting with evolving personas, as it can cause highly unpredictable results. **It is highly recommended to read the manual in the plugin README before configuring this value.** Maps to environment variable `HINDSIGHT_AGENT_MODEL_ID`. |
 | `cache_ttl` | `300` | Cache TTL in seconds (5 minutes) for both mental models. Maps to environment variable `HINDSIGHT_CACHE_TTL`. |
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.

@@ -73,7 +73,7 @@ DEFAULT_CATALOG_URL = (
 DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
     "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/api/model-catalog.json",
 )
-DEFAULT_TTL_HOURS = 24
+DEFAULT_TTL_HOURS = 1
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
 

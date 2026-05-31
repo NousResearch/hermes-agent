@@ -153,6 +153,37 @@ class TestMemoryManager:
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
 
+    def test_memory_manager_prompt_extension_hooks(self):
+        class HookMockProvider(MemoryProvider):
+            @property
+            def name(self) -> str:
+                return "hook_mock"
+            def is_available(self) -> bool:
+                return True
+            def initialize(self, session_id, **kwargs):
+                pass
+            def get_tool_schemas(self):
+                return []
+            def get_soul_extension_prompt(self):
+                return "Soul Extension Prompt Content"
+            def get_user_profile_extension_prompt(self):
+                return "User Profile Extension Prompt Content"
+            def get_per_turn_context(self):
+                return "Per Turn Context Content"
+
+        mgr = MemoryManager()
+        # Test empty manager defaults to empty string
+        assert mgr.get_soul_extension_prompt() == ""
+        assert mgr.get_user_profile_extension_prompt() == ""
+        assert mgr.get_per_turn_context() == ""
+
+        # Add provider and test aggregation
+        p = HookMockProvider()
+        mgr.add_provider(p)
+        assert mgr.get_soul_extension_prompt() == "Soul Extension Prompt Content"
+        assert mgr.get_user_profile_extension_prompt() == "User Profile Extension Prompt Content"
+        assert mgr.get_per_turn_context() == "Per Turn Context Content"
+
     def test_add_provider(self):
         mgr = MemoryManager()
         p = FakeMemoryProvider("test1")

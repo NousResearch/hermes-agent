@@ -365,6 +365,9 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 | `retain_user_prefix` | `User` | 自动保留的对话记录中用户轮次前的标签 |
 | `retain_assistant_prefix` | `Assistant` | 自动保留的对话记录中助手轮次前的标签 |
 | `recall_tags` | — | 召回时用于过滤的标签 |
+| `user_model_id` | — | 用户的 Hindsight 心理模型 ID。映射到环境变量 `HINDSIGHT_USER_MODEL_ID`。 |
+| `agent_model_id` | — | 助手的 Hindsight 心理模型 ID。映射到环境变量 `HINDSIGHT_AGENT_MODEL_ID`。 |
+| `cache_ttl` | `300` | 两个心理模型的缓存 TTL（以秒为单位，默认为 5 分钟）。映射到环境变量 `HINDSIGHT_CACHE_TTL`。 |
 
 完整配置参考参见[插件 README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md)。
 

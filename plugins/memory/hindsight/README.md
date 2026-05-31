@@ -63,6 +63,9 @@ Config file: `~/.hermes/hindsight/config.json`
 | `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
+| `user_model_id` | — | Hindsight mental model ID for the user. Maps to environment variable `HINDSIGHT_USER_MODEL_ID`. |
+| `agent_model_id` | — | Hindsight mental model ID for the agent. Maps to environment variable `HINDSIGHT_AGENT_MODEL_ID`. |
+| `cache_ttl` | `300` | Cache TTL in seconds (5 minutes) for both mental models. Maps to environment variable `HINDSIGHT_CACHE_TTL`. |
 
 ### Recall
 

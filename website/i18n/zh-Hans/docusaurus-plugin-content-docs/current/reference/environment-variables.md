@@ -149,6 +149,9 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `HONCHO_API_KEY` | 跨会话用户建模（[honcho.dev](https://honcho.dev/)） |
 | `HONCHO_BASE_URL` | 自托管 Honcho 实例的 base URL（默认：Honcho 云）。本地实例无需 API 密钥 |
 | `HINDSIGHT_TIMEOUT` | Hindsight 内存提供商 API 调用超时（秒，默认：`60`）。如果 Hindsight 实例在 `/sync` 或 `on_session_switch` 期间响应缓慢并出现超时，请增大此值，并检查 `errors.log`。 |
+| `HINDSIGHT_USER_MODEL_ID` | 用户的 Hindsight 心理模型 ID。用于在用户 profile 块之后和每轮提示词中自定义上下文注入。 |
+| `HINDSIGHT_AGENT_MODEL_ID` | 助手的 Hindsight 心理模型 ID。用于在 soul.md 块之后和每轮提示词中自定义上下文注入。 |
+| `HINDSIGHT_CACHE_TTL` | Hindsight 用户和助手心理模型的缓存 TTL（秒，默认：`300` / 5 分钟）。 |
 | `SUPERMEMORY_API_KEY` | 支持 profile 召回和会话摄取的语义长期记忆（[supermemory.ai](https://supermemory.ai)） |
 | `DAYTONA_API_KEY` | Daytona 云沙箱（[daytona.io](https://daytona.io/)） |
 

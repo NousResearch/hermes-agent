@@ -1,10 +1,8 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
 
-# Enforce LF for scripts that run inside Linux containers.
-# Without this, Windows checkout converts to CRLF and breaks `exec` in the
-# container entrypoint with "no such file or directory".
-*.sh        text eol=lf
-Dockerfile  text eol=lf
-*.dockerfile text eol=lf
-docker/entrypoint.sh text eol=lf
+# s6-overlay metadata and shell scripts are parsed byte-for-byte inside the
+# Linux container; CRLF breaks service `type` files and can also break shebangs.
+docker/s6-rc.d/** text eol=lf
+docker/cont-init.d/** text eol=lf
+docker/*.sh text eol=lf

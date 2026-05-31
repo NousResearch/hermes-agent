@@ -105,4 +105,35 @@ describe('clampStdoutDimensions', () => {
 
     expect(() => clampStdoutDimensions(stream)).not.toThrow()
   })
+
+  it('skips patching in Warp terminal to avoid breaking Ink layout', () => {
+    const original = process.env.TERM_PROGRAM
+    try {
+      process.env.TERM_PROGRAM = 'WarpTerminal'
+      const stream: { columns?: number; rows?: number } = { columns: 211, rows: 54 }
+
+      clampStdoutDimensions(stream)
+
+      // Properties should NOT be overridden — Warp reports correct dimensions.
+      expect(stream.columns).toBe(211)
+      expect(stream.rows).toBe(54)
+    } finally {
+      process.env.TERM_PROGRAM = original
+    }
+  })
+
+  it('still patches in non-Warp terminals', () => {
+    const original = process.env.TERM_PROGRAM
+    try {
+      process.env.TERM_PROGRAM = 'WezTerm'
+      const stream: { columns?: number; rows?: number } = { columns: 131072, rows: 1 }
+
+      clampStdoutDimensions(stream)
+
+      expect(stream.columns).toBe(MAX_COLUMNS)
+      expect(stream.rows).toBe(1)
+    } finally {
+      process.env.TERM_PROGRAM = original
+    }
+  })
 })

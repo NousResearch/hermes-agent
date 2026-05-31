@@ -56,6 +56,14 @@ export interface SanitizedTerminalSize {
   rows: number
 }
 
+/**
+ * Known terminals where `Object.defineProperty` on `process.stdout` breaks
+ * Ink's dimension reads. Warp wraps `process.stdout` in its own emulation
+ * layer — redefining `columns`/`rows` changes Ink's internal layout path,
+ * collapsing the status bar onto the input line.
+ */
+const PROBLEMATIC_TERMINALS = new Set(['WarpTerminal'])
+
 /** Sanitize a (columns, rows) pair using the TUI's bounds. */
 export function sanitizeTerminalSize(columns: unknown, rows: unknown): SanitizedTerminalSize {
   return {
@@ -85,6 +93,14 @@ export function clampStdoutDimensions(stream: ClampableStream = process.stdout):
   const target = stream as ClampableStream & { [PATCHED]?: boolean }
 
   if (target[PATCHED]) {
+    return
+  }
+
+  // Some terminals (e.g. Warp) wrap process.stdout in a non-standard layer
+  // where Object.defineProperty changes Ink's internal layout path, breaking
+  // the TUI. Skip the patch — these terminals report correct dimensions, so
+  // the component-level ?? 80 guards are sufficient.
+  if (PROBLEMATIC_TERMINALS.has(process.env.TERM_PROGRAM ?? '')) {
     return
   }
 

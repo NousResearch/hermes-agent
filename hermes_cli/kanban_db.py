@@ -349,14 +349,20 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
        back-compat and for the dispatcher→worker handoff (defense in
        depth: dispatcher injects this into worker env so workers are
        immune to any path-resolution disagreement).
-    2. When ``board`` arg is None, the active board from
+    2. ``HERMES_KANBAN_DB_PATH`` env var — pins the live SQLite file
+       directly for deployments that keep ``HERMES_HOME`` on shared
+       storage but want the DB on fast local persistent disk.
+    3. When ``board`` arg is None, the active board from
        :func:`get_current_board` is used.
-    3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
+    4. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
     override = os.environ.get("HERMES_KANBAN_DB", "").strip()
     if override:
         return Path(override).expanduser()
+    path_override = os.environ.get("HERMES_KANBAN_DB_PATH", "").strip()
+    if path_override:
+        return Path(path_override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()

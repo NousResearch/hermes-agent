@@ -51,6 +51,42 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_kanban_db_path_uses_local_db_path_override(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    override = tmp_path / "local-state" / "kanban.db"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB_PATH", str(override))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+
+    assert kb.kanban_db_path() == override
+
+
+def test_kanban_db_path_legacy_db_override_takes_precedence(tmp_path, monkeypatch):
+    local_override = tmp_path / "local-state" / "kanban.db"
+    legacy_override = tmp_path / "handoff" / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB_PATH", str(local_override))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(legacy_override))
+
+    assert kb.kanban_db_path() == legacy_override
+
+
+def test_connect_initializes_local_db_path_override_parent_and_schema(tmp_path, monkeypatch):
+    override = tmp_path / "local-state" / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB_PATH", str(override))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+
+    with kb.connect() as conn:
+        names = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+
+    assert override.exists()
+    assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+
 def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
     """All kanban connections should use the explicit busy-timeout knob.
 

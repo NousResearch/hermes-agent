@@ -104,6 +104,124 @@ def read_menu_key(stdscr) -> str:
     return NAV_NONE
 
 
+# Sentinel: an on_action reducer returns this to mean "keep looping" (the
+# keypress changed cursor/selection state but didn't resolve the menu).
+_KEEP = object()
+
+
+def _run_curses_menu(
+    *,
+    initial_cursor,
+    item_count,
+    draw_header,
+    draw_row,
+    on_action,
+    reserve_bottom=1,
+    draw_footer=None,
+    extra_color_pairs=False,
+    fallback,
+    cancel_value,
+):
+    """Shared curses single-/multi-select event loop.
+
+    Owns every piece the three public menus used to duplicate verbatim:
+    the non-TTY guard, ``curses.wrapper`` setup (cursor hide + color pairs),
+    the per-frame ``clear``/``getmaxyx``/``refresh`` cycle, scroll-offset math,
+    row iteration, the ``read_menu_key`` dispatch with ``NAV_UP``/``NAV_DOWN``
+    cursor wrap, ``flush_stdin``, and the ``KeyboardInterrupt`` / curses-
+    unavailable fallback. Per-menu behavior is supplied as callbacks so the
+    rendered output stays byte-identical to the old hand-rolled loops.
+
+    Callbacks / params:
+        draw_header(stdscr, max_y, max_x) -> int
+            Draw the title/hint/description rows. Returns the first screen row
+            index where the scrollable item list should start.
+        draw_row(stdscr, y, idx, is_cursor, max_x) -> None
+            Draw one item row.
+        on_action(action, cursor) -> value
+            Reducer for SELECT/TOGGLE/CANCEL. Return ``_KEEP`` to continue the
+            loop; return anything else to resolve the menu with that value.
+            (UP/DOWN cursor movement is handled by the driver itself.)
+        reserve_bottom: number of bottom screen rows kept clear of items
+            (1 = leave the final row blank, matching the old loops).
+        draw_footer(stdscr, max_y, max_x) -> None
+            Optional bottom-row painter (e.g. a status bar). Drawn after the
+            item rows; its row budget must be included in ``reserve_bottom``.
+        extra_color_pairs: also init pair 3 (dim gray) for status bars.
+        fallback() -> value
+            Called when curses errors out on a real TTY (curses unavailable).
+        cancel_value: returned on non-TTY stdin, ESC/cancel, or KeyboardInterrupt.
+    """
+    # Non-TTY (piped/redirected stdin): curses and input() both hang or spin,
+    # so return the cancel value directly — matching the pre-refactor guard in
+    # each menu (the numbered fallback is only for curses errors on a real TTY).
+    if not sys.stdin.isatty():
+        return cancel_value
+
+    try:
+        import curses
+        result_holder = [_KEEP]
+
+        def _draw(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+                if extra_color_pairs:
+                    curses.init_pair(
+                        3, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1
+                    )
+            cursor = initial_cursor
+            scroll_offset = 0
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+
+                items_start = draw_header(stdscr, max_y, max_x)
+
+                visible_rows = max_y - items_start - reserve_bottom
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible_rows:
+                    scroll_offset = cursor - visible_rows + 1
+
+                for draw_i, i in enumerate(
+                    range(scroll_offset, min(item_count, scroll_offset + visible_rows))
+                ):
+                    y = draw_i + items_start
+                    if y >= max_y - reserve_bottom:
+                        break
+                    draw_row(stdscr, y, i, i == cursor, max_x)
+
+                if draw_footer is not None:
+                    draw_footer(stdscr, max_y, max_x)
+
+                stdscr.refresh()
+                action = read_menu_key(stdscr)
+
+                if action == NAV_UP:
+                    cursor = (cursor - 1) % item_count
+                elif action == NAV_DOWN:
+                    cursor = (cursor + 1) % item_count
+                elif action in (NAV_SELECT, NAV_TOGGLE, NAV_CANCEL):
+                    outcome = on_action(action, cursor)
+                    if outcome is not _KEEP:
+                        result_holder[0] = outcome
+                        return
+
+        curses.wrapper(_draw)
+        flush_stdin()
+        return result_holder[0] if result_holder[0] is not _KEEP else cancel_value
+
+    except KeyboardInterrupt:
+        return cancel_value
+    except Exception:
+        return fallback()
+
+
 def curses_checklist(
     title: str,
     items: List[str],
@@ -126,112 +244,73 @@ def curses_checklist(
     if cancel_returns is None:
         cancel_returns = set(selected)
 
-    # Safety: curses and input() both hang or spin when stdin is not a
-    # terminal (e.g. subprocess pipe).  Return defaults immediately.
-    if not sys.stdin.isatty():
-        return cancel_returns
+    chosen = set(selected)
 
-    try:
+    def _draw_header(stdscr, max_y, max_x):
         import curses
-        chosen = set(selected)
-        result_holder: list = [None]
-
-        def _draw(stdscr):
-            curses.curs_set(0)
+        try:
+            hattr = curses.A_BOLD
             if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim gray
-            cursor = 0
-            scroll_offset = 0
+                hattr |= curses.color_pair(2)
+            stdscr.addnstr(0, 0, title, max_x - 1, hattr)
+            stdscr.addnstr(
+                1, 0,
+                "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel",
+                max_x - 1, curses.A_DIM,
+            )
+        except curses.error:
+            pass
+        return 3
 
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
+    def _draw_row(stdscr, y, i, is_cursor, max_x):
+        import curses
+        check = "✓" if i in chosen else " "
+        arrow = "→" if is_cursor else " "
+        line = f" {arrow} [{check}] {items[i]}"
+        attr = curses.A_NORMAL
+        if is_cursor:
+            attr = curses.A_BOLD
+            if curses.has_colors():
+                attr |= curses.color_pair(1)
+        try:
+            stdscr.addnstr(y, 0, line, max_x - 1, attr)
+        except curses.error:
+            pass
 
-                # Reserve bottom row for status bar when status_fn provided
-                footer_rows = 1 if status_fn else 0
+    def _draw_footer(stdscr, max_y, max_x):
+        import curses
+        try:
+            status_text = status_fn(chosen)
+            if status_text:
+                # Right-align on the bottom row
+                sx = max(0, max_x - len(status_text) - 1)
+                sattr = curses.A_DIM
+                if curses.has_colors():
+                    sattr |= curses.color_pair(3)
+                stdscr.addnstr(max_y - 1, sx, status_text, max_x - sx - 1, sattr)
+        except curses.error:
+            pass
 
-                # Header
-                try:
-                    hattr = curses.A_BOLD
-                    if curses.has_colors():
-                        hattr |= curses.color_pair(2)
-                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-                    stdscr.addnstr(
-                        1, 0,
-                        "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel",
-                        max_x - 1, curses.A_DIM,
-                    )
-                except curses.error:
-                    pass
+    def _on_action(action, cursor):
+        if action == NAV_TOGGLE:
+            chosen.symmetric_difference_update({cursor})
+            return _KEEP
+        if action == NAV_SELECT:
+            return set(chosen)
+        return cancel_returns  # NAV_CANCEL
 
-                # Scrollable item list
-                visible_rows = max_y - 3 - footer_rows
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible_rows:
-                    scroll_offset = cursor - visible_rows + 1
-
-                for draw_i, i in enumerate(
-                    range(scroll_offset, min(len(items), scroll_offset + visible_rows))
-                ):
-                    y = draw_i + 3
-                    if y >= max_y - 1 - footer_rows:
-                        break
-                    check = "✓" if i in chosen else " "
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow} [{check}] {items[i]}"
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                # Status bar (bottom row, right-aligned)
-                if status_fn:
-                    try:
-                        status_text = status_fn(chosen)
-                        if status_text:
-                            # Right-align on the bottom row
-                            sx = max(0, max_x - len(status_text) - 1)
-                            sattr = curses.A_DIM
-                            if curses.has_colors():
-                                sattr |= curses.color_pair(3)
-                            stdscr.addnstr(max_y - 1, sx, status_text, max_x - sx - 1, sattr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                action = read_menu_key(stdscr)
-
-                if action == NAV_UP:
-                    cursor = (cursor - 1) % len(items)
-                elif action == NAV_DOWN:
-                    cursor = (cursor + 1) % len(items)
-                elif action == NAV_TOGGLE:
-                    chosen.symmetric_difference_update({cursor})
-                elif action == NAV_SELECT:
-                    result_holder[0] = set(chosen)
-                    return
-                elif action == NAV_CANCEL:
-                    result_holder[0] = cancel_returns
-                    return
-
-        curses.wrapper(_draw)
-        flush_stdin()
-        return result_holder[0] if result_holder[0] is not None else cancel_returns
-
-    except KeyboardInterrupt:
-        return cancel_returns
-    except Exception:
-        return _numbered_fallback(title, items, selected, cancel_returns, status_fn)
+    return _run_curses_menu(
+        initial_cursor=0,
+        item_count=len(items),
+        draw_header=_draw_header,
+        draw_row=_draw_row,
+        on_action=_on_action,
+        reserve_bottom=(2 if status_fn else 1),
+        draw_footer=_draw_footer if status_fn else None,
+        extra_color_pairs=bool(status_fn),
+        fallback=lambda: _numbered_fallback(title, items, selected, cancel_returns, status_fn),
+        cancel_value=cancel_returns,
+    )
 
 
 def curses_radiolist(
@@ -256,106 +335,68 @@ def curses_radiolist(
     if cancel_returns is None:
         cancel_returns = selected
 
-    if not sys.stdin.isatty():
-        return cancel_returns
-
     desc_lines: list[str] = []
     if description:
         desc_lines = description.splitlines()
 
-    try:
+    def _draw_header(stdscr, max_y, max_x):
         import curses
-        result_holder: list = [None]
-
-        def _draw(stdscr):
-            curses.curs_set(0)
+        row = 0
+        try:
+            hattr = curses.A_BOLD
             if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-            cursor = selected
-            scroll_offset = 0
+                hattr |= curses.color_pair(2)
+            stdscr.addnstr(row, 0, title, max_x - 1, hattr)
+            row += 1
 
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
+            # Description lines
+            for dline in desc_lines:
+                if row >= max_y - 1:
+                    break
+                stdscr.addnstr(row, 0, dline, max_x - 1, curses.A_NORMAL)
+                row += 1
 
-                row = 0
+            stdscr.addnstr(
+                row, 0,
+                "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel",
+                max_x - 1, curses.A_DIM,
+            )
+            row += 1
+        except curses.error:
+            pass
+        # One blank row between the hint and the item list.
+        return row + 1
 
-                # Header
-                try:
-                    hattr = curses.A_BOLD
-                    if curses.has_colors():
-                        hattr |= curses.color_pair(2)
-                    stdscr.addnstr(row, 0, title, max_x - 1, hattr)
-                    row += 1
+    def _draw_row(stdscr, y, i, is_cursor, max_x):
+        import curses
+        radio = "\u25cf" if i == selected else "\u25cb"
+        arrow = "\u2192" if is_cursor else " "
+        line = f" {arrow} ({radio}) {items[i]}"
+        attr = curses.A_NORMAL
+        if is_cursor:
+            attr = curses.A_BOLD
+            if curses.has_colors():
+                attr |= curses.color_pair(1)
+        try:
+            stdscr.addnstr(y, 0, line, max_x - 1, attr)
+        except curses.error:
+            pass
 
-                    # Description lines
-                    for dline in desc_lines:
-                        if row >= max_y - 1:
-                            break
-                        stdscr.addnstr(row, 0, dline, max_x - 1, curses.A_NORMAL)
-                        row += 1
+    def _on_action(action, cursor):
+        if action in (NAV_SELECT, NAV_TOGGLE):
+            return cursor
+        return cancel_returns  # NAV_CANCEL
 
-                    stdscr.addnstr(
-                        row, 0,
-                        "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel",
-                        max_x - 1, curses.A_DIM,
-                    )
-                    row += 1
-                except curses.error:
-                    pass
-
-                # Scrollable item list
-                items_start = row + 1
-                visible_rows = max_y - items_start - 1
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible_rows:
-                    scroll_offset = cursor - visible_rows + 1
-
-                for draw_i, i in enumerate(
-                    range(scroll_offset, min(len(items), scroll_offset + visible_rows))
-                ):
-                    y = draw_i + items_start
-                    if y >= max_y - 1:
-                        break
-                    radio = "\u25cf" if i == selected else "\u25cb"
-                    arrow = "\u2192" if i == cursor else " "
-                    line = f" {arrow} ({radio}) {items[i]}"
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                action = read_menu_key(stdscr)
-
-                if action == NAV_UP:
-                    cursor = (cursor - 1) % len(items)
-                elif action == NAV_DOWN:
-                    cursor = (cursor + 1) % len(items)
-                elif action in (NAV_SELECT, NAV_TOGGLE):
-                    result_holder[0] = cursor
-                    return
-                elif action == NAV_CANCEL:
-                    result_holder[0] = cancel_returns
-                    return
-
-        curses.wrapper(_draw)
-        flush_stdin()
-        return result_holder[0] if result_holder[0] is not None else cancel_returns
-
-    except KeyboardInterrupt:
-        return cancel_returns
-    except Exception:
-        return _radio_numbered_fallback(title, items, selected, cancel_returns)
+    return _run_curses_menu(
+        initial_cursor=selected,
+        item_count=len(items),
+        draw_header=_draw_header,
+        draw_row=_draw_row,
+        on_action=_on_action,
+        reserve_bottom=1,
+        fallback=lambda: _radio_numbered_fallback(title, items, selected, cancel_returns),
+        cancel_value=cancel_returns,
+    )
 
 
 def _radio_numbered_fallback(
@@ -396,93 +437,58 @@ def curses_single_select(
     Works inside prompt_toolkit because curses.wrapper() restores the terminal
     safely, unlike simple_term_menu which conflicts with /dev/tty.
     """
-    if not sys.stdin.isatty():
-        return None
+    all_items = list(items) + [cancel_label]
+    cancel_idx = len(items)
 
-    try:
+    def _draw_header(stdscr, max_y, max_x):
         import curses
-        result_holder: list = [None]
-
-        all_items = list(items) + [cancel_label]
-        cancel_idx = len(items)
-
-        def _draw(stdscr):
-            curses.curs_set(0)
+        try:
+            hattr = curses.A_BOLD
             if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-            cursor = min(default_index, len(all_items) - 1)
-            scroll_offset = 0
+                hattr |= curses.color_pair(2)
+            stdscr.addnstr(0, 0, title, max_x - 1, hattr)
+            stdscr.addnstr(
+                1, 0,
+                "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
+                max_x - 1, curses.A_DIM,
+            )
+        except curses.error:
+            pass
+        return 3
 
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
+    def _draw_row(stdscr, y, i, is_cursor, max_x):
+        import curses
+        arrow = "→" if is_cursor else " "
+        line = f" {arrow} {all_items[i]}"
+        attr = curses.A_NORMAL
+        if is_cursor:
+            attr = curses.A_BOLD
+            if curses.has_colors():
+                attr |= curses.color_pair(1)
+        try:
+            stdscr.addnstr(y, 0, line, max_x - 1, attr)
+        except curses.error:
+            pass
 
-                try:
-                    hattr = curses.A_BOLD
-                    if curses.has_colors():
-                        hattr |= curses.color_pair(2)
-                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-                    stdscr.addnstr(
-                        1, 0,
-                        "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
-                        max_x - 1, curses.A_DIM,
-                    )
-                except curses.error:
-                    pass
-
-                visible_rows = max_y - 3
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible_rows:
-                    scroll_offset = cursor - visible_rows + 1
-
-                for draw_i, i in enumerate(
-                    range(scroll_offset, min(len(all_items), scroll_offset + visible_rows))
-                ):
-                    y = draw_i + 3
-                    if y >= max_y - 1:
-                        break
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow} {all_items[i]}"
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                action = read_menu_key(stdscr)
-
-                if action == NAV_UP:
-                    cursor = (cursor - 1) % len(all_items)
-                elif action == NAV_DOWN:
-                    cursor = (cursor + 1) % len(all_items)
-                elif action == NAV_SELECT:
-                    result_holder[0] = cursor
-                    return
-                elif action == NAV_CANCEL:
-                    result_holder[0] = None
-                    return
-
-        curses.wrapper(_draw)
-        flush_stdin()
-        if result_holder[0] is not None and result_holder[0] >= cancel_idx:
+    def _on_action(action, cursor):
+        if action == NAV_SELECT:
+            # Selecting the synthetic cancel row resolves to None, mirroring
+            # the old post-loop ``>= cancel_idx`` guard.
+            return None if cursor >= cancel_idx else cursor
+        if action == NAV_CANCEL:
             return None
-        return result_holder[0]
+        return _KEEP  # NAV_TOGGLE — no-op for this menu
 
-    except KeyboardInterrupt:
-        return None
-    except Exception:
-        all_items = list(items) + [cancel_label]
-        cancel_idx = len(items)
-        return _numbered_single_fallback(title, all_items, cancel_idx)
+    return _run_curses_menu(
+        initial_cursor=min(default_index, len(all_items) - 1),
+        item_count=len(all_items),
+        draw_header=_draw_header,
+        draw_row=_draw_row,
+        on_action=_on_action,
+        reserve_bottom=1,
+        fallback=lambda: _numbered_single_fallback(title, all_items, cancel_idx),
+        cancel_value=None,
+    )
 
 
 def _numbered_single_fallback(

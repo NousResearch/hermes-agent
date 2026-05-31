@@ -8,6 +8,7 @@ import { HashRouter } from 'react-router-dom'
 import App from './app'
 import { HapticsProvider } from './components/haptics-provider'
 import { installClipboardShim } from './lib/clipboard'
+import { isDemoMode } from './lib/demo-flag'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -30,16 +31,27 @@ const queryClient = new QueryClient({
   }
 })
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <HapticsProvider>
-          <HashRouter>
-            <App />
-          </HashRouter>
-        </HapticsProvider>
-      </ThemeProvider>
-    </QueryClientProvider>
-  </StrictMode>
-)
+async function bootstrap() {
+  // Opt-in demo / fixture mode: run against canned data + a fake gateway (no
+  // backend). Dynamically imported so production builds tree-shake it out.
+  if (isDemoMode()) {
+    const { installDemo } = await import('./demo')
+    installDemo()
+  }
+
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <HapticsProvider>
+            <HashRouter>
+              <App />
+            </HashRouter>
+          </HapticsProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </StrictMode>
+  )
+}
+
+void bootstrap()

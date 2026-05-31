@@ -25,6 +25,37 @@ def test_completion_text_is_not_a_stall() -> None:
     )
 
 
+def test_incomplete_final_fragment_without_action_preamble_is_a_stall() -> None:
+    assert looks_like_stall(
+        (
+            "I'm on main with a clean tree. The fix I made was on Taro "
+            "(remote machine), not locally. The change was on Taro's "
+            "`~/.gitconfig` and the worktree's local git config. These are "
+            "machine-specific runtime"
+        ),
+        "stop",
+        False,
+        400,
+    )
+
+
+def test_short_status_answer_without_punctuation_is_not_a_stall() -> None:
+    assert not looks_like_stall("main", "stop", False, 400)
+
+
+def test_complete_agentic_answer_without_action_preamble_is_not_a_stall() -> None:
+    assert not looks_like_stall(
+        (
+            "I'm on main with a clean tree. The Taro git identity and SSH "
+            "push configuration are machine-local runtime settings, so there "
+            "is no repository diff to publish."
+        ),
+        "stop",
+        False,
+        400,
+    )
+
+
 def test_retry_on_stall_switches_model_and_returns_tool_calls(monkeypatch) -> None:
     captured: dict[str, object] = {}
     tool_call = SimpleNamespace(

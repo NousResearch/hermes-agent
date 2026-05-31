@@ -43,6 +43,20 @@ _COMPLETION_RE = re.compile(
     r"in summary\b|to summarize\b|the answer is\b)",
     re.IGNORECASE,
 )
+_NATURAL_END_CHARS = '.!?:)"\']}。！？：）】」』》^'
+_MIN_INCOMPLETE_FINAL_CHARS = 80
+
+
+def _has_natural_response_ending(content: str) -> bool:
+    stripped = (content or "").rstrip()
+    if not stripped:
+        return False
+    if stripped.endswith("```"):
+        return True
+    last = stripped[-1]
+    if last in _NATURAL_END_CHARS:
+        return True
+    return ord(last) >= 0x1F300
 
 
 def looks_like_stall(content: str, finish_reason: str, has_tool_calls: bool,
@@ -67,6 +81,13 @@ def looks_like_stall(content: str, finish_reason: str, has_tool_calls: bool,
     # Short prose that doesn't declare completion and isn't an obvious answer:
     # a trailing colon strongly implies "about to do something".
     if c.endswith(":"):
+        return True
+    # dflash can also stop after a tool result with ordinary-looking prose that
+    # is simply cut off mid-sentence (for example after a CLI interrupt resumes
+    # the turn). In an agentic tool loop, a short no-tool stop that declares no
+    # completion and lacks a natural ending is safer to retry than to persist as
+    # a final assistant message.
+    if len(c) >= _MIN_INCOMPLETE_FINAL_CHARS and not _has_natural_response_ending(c):
         return True
     return False
 

@@ -535,3 +535,63 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ---------------------------------------------------------------------------
+# Reconnect resilience — a previously-connected server must never be permanently
+# abandoned after the reconnect cap, and only *consecutive* fast failures count
+# toward that cap.
+# ---------------------------------------------------------------------------
+class TestMCPReconnectResilience:
+    """MCPServerTask.run() keeps retrying past the reconnect cap (degraded
+    slow-retry) instead of dying until a full gateway restart."""
+
+    def test_reconnect_streak_reset_constant_exists(self):
+        from tools.mcp_tool import _RECONNECT_STREAK_RESET_SECONDS
+        assert _RECONNECT_STREAK_RESET_SECONDS > 0
+
+    def test_reconnect_does_not_give_up_after_cap(self):
+        """Server that connected once keeps retrying past _MAX_RECONNECT_RETRIES.
+
+        Old behavior: after the cap the _serve loop ``return``ed and the MCP
+        stayed dead forever. A multi-hour egress outage burned all retries then
+        permanently killed the server until a full gateway restart.
+        """
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        call_count = 0
+        stop_after = _MAX_RECONNECT_RETRIES + 4  # well past the old give-up point
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-degraded")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # First connection succeeds (marks ready), then drops fast
+                    # so subsequent failures take the reconnect (not initial)
+                    # path.
+                    self_inner._ready.set()
+                    raise ConnectionError("egress flap")
+                if call_count >= stop_after:
+                    # Proven it kept retrying past the cap — stop cleanly.
+                    self_inner._shutdown_event.set()
+                    return
+                raise ConnectionError("egress flap")
+
+            # Collapse backoff so the test does not actually wait.
+            with patch.object(mcp_mod, "_MAX_BACKOFF_SECONDS", 0), \
+                 patch.object(MCPServerTask, "_run_stdio", fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await asyncio.wait_for(task, timeout=10)
+
+            # Old code stopped at _MAX_RECONNECT_RETRIES + 1 calls.
+            assert call_count >= stop_after, (
+                f"server gave up early at {call_count} calls; expected to keep "
+                f"retrying past the cap (degraded slow-retry)"
+            )
+
+        asyncio.get_event_loop().run_until_complete(_run())

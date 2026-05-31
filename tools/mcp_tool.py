@@ -262,6 +262,13 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+# A reconnect streak only counts *consecutive* fast failures. If a session
+# stayed healthy at least this long before dropping, the earlier failures were
+# transient (network blip, OAuth token lapse) so the streak resets. Without
+# this, cumulative drops over the process lifetime eventually trip the cap on a
+# perfectly healthy server, and a multi-hour outage permanently kills the MCP
+# until a full gateway restart.
+_RECONNECT_STREAK_RESET_SECONDS = 120
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -1703,6 +1710,7 @@ class MCPServerTask:
         backoff = 1.0
 
         while True:
+            conn_start = time.monotonic()
             try:
                 if self._is_http():
                     await self._run_http(config)
@@ -1792,21 +1800,41 @@ class MCPServerTask:
                     )
                     return
 
+                # Only *consecutive* fast failures count toward the cap. A
+                # session that stayed healthy for a meaningful period before
+                # dropping means the prior failures were transient, so reset
+                # the streak — this stops cumulative lifetime drops from ever
+                # tripping the cap on a healthy server.
+                if (time.monotonic() - conn_start) >= _RECONNECT_STREAK_RESET_SECONDS:
+                    retries = 0
+                    backoff = 1.0
+
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
+                    # Past the streak cap we do NOT abandon the server. A remote
+                    # that connected successfully before is worth retrying: a
+                    # multi-hour egress outage (e.g. a flaky uplink) must not
+                    # require a full gateway restart to recover. Drop to degraded
+                    # slow-retry at max backoff. The tool-call circuit breaker
+                    # already shields the model from spam, and every reconnect
+                    # re-runs the OAuth flow, so a refreshed token is picked up
+                    # automatically once the network heals.
+                    backoff = _MAX_BACKOFF_SECONDS
+                    if retries == _MAX_RECONNECT_RETRIES + 1:
+                        logger.warning(
+                            "MCP server '%s' failed %d consecutive reconnects; "
+                            "entering slow-retry every %ds until it recovers: %s",
+                            self.name, _MAX_RECONNECT_RETRIES,
+                            _MAX_BACKOFF_SECONDS, exc,
+                        )
+                else:
                     logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
+                        "MCP server '%s' connection lost (attempt %d/%d), "
+                        "reconnecting in %.0fs: %s",
+                        self.name, retries, _MAX_RECONNECT_RETRIES,
+                        backoff, exc,
                     )
-                    return
 
-                logger.warning(
-                    "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s",
-                    self.name, retries, _MAX_RECONNECT_RETRIES,
-                    backoff, exc,
-                )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 

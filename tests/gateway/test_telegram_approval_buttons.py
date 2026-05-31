@@ -232,6 +232,34 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert "..." in kwargs["text"]
         assert len(kwargs["text"]) < 5000
+        assert len(kwargs["text"]) <= adapter._EXEC_APPROVAL_TEXT_BUDGET
+
+    @pytest.mark.asyncio
+    async def test_long_command_and_reason_stay_under_telegram_limit(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 1
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        # These characters expand when HTML-escaped, so this catches the real
+        # failure mode: raw truncation can still overflow Telegram's text limit.
+        long_cmd = "python - <<'PY'\n" + ('print("<&>")\n' * 2000) + "PY"
+        long_reason = "Tirith security scan: " + ("<&> suspicious heredoc " * 500)
+        result = await adapter.send_exec_approval(
+            chat_id="12345",
+            command=long_cmd,
+            session_key="s",
+            description=long_reason,
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert "HTML" in repr(kwargs["parse_mode"])
+        assert len(kwargs["text"]) <= adapter._EXEC_APPROVAL_TEXT_BUDGET
+        assert len(kwargs["text"]) < adapter.MAX_MESSAGE_LENGTH
+        assert "&lt;&amp;&gt;" in kwargs["text"]
+        assert "..." in kwargs["text"]
+        assert "Reason: Tirith security scan:" in kwargs["text"]
 # _handle_callback_query — approval button clicks
 # ===========================================================================
 

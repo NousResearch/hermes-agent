@@ -344,6 +344,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    # Keep inline approval prompts comfortably under Telegram's 4096-character
+    # text limit. The previous command-only 3800-char truncation could still
+    # overflow once the header, HTML escaping, and a long Tirith reason were
+    # added, causing button prompts to fail and fall back to plain /approve.
+    _EXEC_APPROVAL_TEXT_BUDGET = 3900
+    _EXEC_APPROVAL_REASON_BUDGET = 900
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -367,6 +373,52 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
+
+    @staticmethod
+    def _html_preview_with_budget(value: str, max_len: int, *, ellipsis: str = "...") -> str:
+        """Return an HTML-escaped preview that fits within ``max_len`` chars.
+
+        The budget is measured after HTML escaping because Telegram enforces the
+        final message length, not the raw Python string length. A binary search
+        avoids cutting escaped entities like ``&lt;`` or ``&amp;`` in half.
+        """
+        if max_len <= 0:
+            return ""
+
+        escaped = _html.escape(value or "")
+        if len(escaped) <= max_len:
+            return escaped
+
+        if max_len <= len(ellipsis):
+            return ellipsis[:max_len]
+
+        content_budget = max_len - len(ellipsis)
+        lo, hi = 0, len(value or "")
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if len(_html.escape((value or "")[:mid])) <= content_budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        return _html.escape((value or "")[:lo]) + ellipsis
+
+    @classmethod
+    def _build_exec_approval_text(cls, command: str, description: str) -> str:
+        """Build an HTML approval prompt bounded by Telegram's text limit."""
+        budget = cls._EXEC_APPROVAL_TEXT_BUDGET
+        header = "⚠️ <b>Command Approval Required</b>\n\n<pre>"
+        middle = "</pre>\n\nReason: "
+
+        static_len = len(header) + len(middle)
+        reason_budget = min(
+            cls._EXEC_APPROVAL_REASON_BUDGET,
+            max(0, budget - static_len),
+        )
+        reason_preview = cls._html_preview_with_budget(description, reason_budget)
+
+        cmd_budget = max(0, budget - static_len - len(reason_preview))
+        cmd_preview = cls._html_preview_with_budget(command, cmd_budget)
+        return f"{header}{cmd_preview}{middle}{reason_preview}"
 
     @staticmethod
     def _env_float_clamped(
@@ -2632,12 +2684,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
+            text = self._build_exec_approval_text(command, description)
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)

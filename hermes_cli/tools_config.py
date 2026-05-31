@@ -741,8 +741,24 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     else:
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
+    # Detect Clash Verge / system proxy so the upstream install script's
+    # internal curl downloads go through it. GitHub Releases via a proxy
+    # is dramatically more reliable than a direct connection on this network.
+    env = os.environ.copy()
+    proxy = "http://127.0.0.1:7897"
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        # Quick connectivity check — don't set proxy if it's not listening.
+        import urllib.request
+        req = urllib.request.Request("https://github.com", method="HEAD")
+        req.set_proxy(proxy, "https")
+        urllib.request.urlopen(req, timeout=3)
+        env.setdefault("https_proxy", proxy)
+        env.setdefault("HTTPS_PROXY", proxy)
+    except Exception:
+        pass  # proxy not reachable; use direct connection
+
+    try:
+        result = subprocess.run(install_cmd, shell=True, timeout=300, env=env)
         if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")

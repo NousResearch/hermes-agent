@@ -236,8 +236,14 @@ def run_oneshot(
         try:
             from hermes_cli import kanban_db as _kb
 
-            with _kb.connect_closing(board=_kanban_board or None) as _conn:
-                _kb.complete_task(_conn, _kanban_task, summary="oneshot: agent responded successfully")
+            _board_kw = _kanban_board or None
+            with _kb.connect_closing(board=_board_kw) as _conn:
+                _t = _kb.get_task(_conn, _kanban_task)
+                if _t and _t.status in ("running", "ready"):
+                    _kb.complete_task(_conn, _kanban_task, summary="oneshot: agent responded successfully")
+                elif not _t:
+                    real_stderr.write(f"hermes -z: kanban task {_kanban_task} not found (board={_board_kw!r})\n")
+                    real_stderr.flush()
         except Exception as _exc:
             real_stderr.write(f"hermes -z: kanban_complete failed for {_kanban_task}: {_exc}\n")
             real_stderr.flush()

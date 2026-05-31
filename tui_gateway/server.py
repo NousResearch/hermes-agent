@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from tools.approval import detect_dangerous_command
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
@@ -493,7 +494,15 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         if isinstance(normalized, dict):
             return normalized
 
-        _rid, method, _params = normalized
+        rid, method, params = normalized
+
+        # Auth check: reject requests with an invalid/expired session_id
+        # Exempt: session.create (creates a new session), session.resume (uses provided params)
+        if method not in ("session.create", "session.resume"):
+            session_id = params.get("session_id", "") if isinstance(params, dict) else ""
+            if not session_id or _sessions.get(session_id) is None:
+                return _err(rid, -32000, "unauthorized: invalid session")
+
         if method not in _LONG_HANDLERS:
             return handle_request(req)
 
@@ -4986,8 +4995,16 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            cmd = qc.get("command", "")
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            if is_dangerous:
+                return _err(
+                    rid,
+                    4005,
+                    f"blocked: {desc}. Use the agent for dangerous commands.",
+                )
             r = subprocess.run(
-                qc.get("command", ""),
+                cmd,
                 shell=True,
                 capture_output=True,
                 text=True,
@@ -7001,16 +7018,11 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
-    try:
-        from tools.approval import detect_dangerous_command
-
-        is_dangerous, _, desc = detect_dangerous_command(cmd)
-        if is_dangerous:
-            return _err(
-                rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
-            )
-    except ImportError:
-        pass
+    is_dangerous, _, desc = detect_dangerous_command(cmd)
+    if is_dangerous:
+        return _err(
+            rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
+        )
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()

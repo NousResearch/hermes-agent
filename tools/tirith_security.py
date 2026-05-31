@@ -440,7 +440,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                 except OSError:
                     pass
                 return None, "cross_device_copy_failed"
-        os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR)
 
         verification = "cosign + SHA-256" if cosign_verified else "SHA-256 only"
         logger.info("tirith installed to %s (%s)", dest, verification)

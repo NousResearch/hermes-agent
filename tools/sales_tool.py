@@ -335,6 +335,11 @@ def _handle_customer_workspace_create(args: dict, **_kwargs) -> str:
                 "html": html,
                 "metadata": {"workspace_id": workspace_id, "document_type": document_type, "document_id": document_id},
             })
+            sql.statement_one(f"""
+              INSERT INTO sales.customer_workspace_events (workspace_id, event_type, actor_type, actor_ref, comment, metadata, occurred_at)
+              VALUES ({_q(workspace_id)}, 'sent', 'agent', {_q(args.get('customer_email'))}, {_q(subject)}, {_j({'email': email_result})}, now())
+              RETURNING *
+            """, user=_user())
         return _ok(workspace=row, email=email_result)
     except Exception as exc:
         return _err(exc)

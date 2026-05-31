@@ -836,7 +836,6 @@ def _reconcile_classification(
     Every removed skill is placed in exactly one bucket.
     """
     heur_cons = {e["name"]: e for e in heuristic.get("consolidated", [])}
-    heur_pruned = {e["name"] for e in heuristic.get("pruned", [])}
 
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}

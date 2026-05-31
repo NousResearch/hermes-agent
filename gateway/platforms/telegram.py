@@ -331,6 +331,33 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+def _probe_audio_duration(audio_path: str) -> Optional[int]:
+    """Return the duration of *audio_path* in whole seconds, or ``None``.
+
+    Tries mutagen (if installed) for accurate metadata, then falls back to a
+    rough file-size estimate so that Telegram always receives a ``duration``
+    kwarg — without it, clips longer than ~4 min 50 s render as 0:00.
+    """
+    # --- mutagen (accurate) ---
+    try:
+        import mutagen  # noqa: F811
+        info = mutagen.File(audio_path)
+        if info is not None and info.info is not None:
+            return max(1, int(info.info.length))
+    except Exception:
+        pass
+
+    # --- file-size fallback (very rough) ---
+    try:
+        size_bytes = os.path.getsize(audio_path)
+        ext = os.path.splitext(audio_path)[1].lower()
+        # OGG/Opus voice ≈ 16 kbps; MP3/M4A ≈ 128 kbps
+        bytes_per_sec = 2000 if ext in {".ogg", ".opus"} else 16000
+        return max(1, int(size_bytes / bytes_per_sec))
+    except Exception:
+        return None
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -3697,6 +3724,8 @@ class TelegramAdapter(BasePlatformAdapter):
             
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
+                # Probe duration so Telegram shows correct time for long clips.
+                duration_secs = _probe_audio_duration(audio_path)
                 # .ogg / .opus files -> send as voice (round playable bubble)
                 if ext in {".ogg", ".opus"}:
                     _voice_thread = self._metadata_thread_id(metadata)
@@ -3708,16 +3737,19 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
+                    voice_kwargs: Dict[str, Any] = {
+                        "chat_id": int(chat_id),
+                        "voice": audio_file,
+                        "caption": caption[:1024] if caption else None,
+                        "reply_to_message_id": reply_to_id,
+                        **voice_thread_kwargs,
+                        **self._notification_kwargs(metadata),
+                    }
+                    if duration_secs is not None:
+                        voice_kwargs["duration"] = duration_secs
                     msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_voice,
-                        {
-                            "chat_id": int(chat_id),
-                            "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
-                            "reply_to_message_id": reply_to_id,
-                            **voice_thread_kwargs,
-                            **self._notification_kwargs(metadata),
-                        },
+                        voice_kwargs,
                         metadata,
                         reply_to_id,
                         "voice",
@@ -3734,16 +3766,19 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
+                    audio_kwargs: Dict[str, Any] = {
+                        "chat_id": int(chat_id),
+                        "audio": audio_file,
+                        "caption": caption[:1024] if caption else None,
+                        "reply_to_message_id": reply_to_id,
+                        **audio_thread_kwargs,
+                        **self._notification_kwargs(metadata),
+                    }
+                    if duration_secs is not None:
+                        audio_kwargs["duration"] = duration_secs
                     msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_audio,
-                        {
-                            "chat_id": int(chat_id),
-                            "audio": audio_file,
-                            "caption": caption[:1024] if caption else None,
-                            "reply_to_message_id": reply_to_id,
-                            **audio_thread_kwargs,
-                            **self._notification_kwargs(metadata),
-                        },
+                        audio_kwargs,
                         metadata,
                         reply_to_id,
                         "audio",

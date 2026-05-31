@@ -550,8 +550,11 @@ def _sanitize_error_msg(exc: Exception, max_len: int = 200) -> str:
     """
     import re
     msg = str(exc)
-    # Strip absolute paths (Unix and Windows)
-    msg = re.sub(r'/(?:[\w.-]+/)+[\w.-]+', '<path>', msg)
+    # Strip absolute filesystem paths (Unix and Windows).
+    # Only match paths rooted at known system directories to avoid
+    # clobbering API endpoints like /api/v1/chat/completions.
+    _FS_ROOTS = r'(?:home|Users|opt|var|tmp|etc|usr|root|srv|proc|sys|dev|mnt|media|run|boot|lib|bin|sbin|snap|nix|private)'
+    msg = re.sub(r'(?:/' + _FS_ROOTS + r')(?:/[\w.-]+)+', '<path>', msg)
     msg = re.sub(r'[A-Za-z]:\\(?:[\w.-]+\\)+[\w.-]+', '<path>', msg)
     if len(msg) > max_len:
         msg = msg[:max_len] + "..."

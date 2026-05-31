@@ -86,6 +86,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._watch_all: bool = bool(extra.get("watch_all", False))
         self._cooldown_seconds: int = int(extra.get("cooldown_seconds", 30))
 
+        # Cross-platform forwarding
+        self._forward_to: list = extra.get("forward_to", [])
+        self.gateway_runner = None  # Injected by gateway for cross-platform delivery
+
         # Cooldown tracking: entity_id -> last_event_timestamp
         self._last_event_time: Dict[str, float] = {}
 
@@ -390,11 +394,32 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a notification via HA REST API (persistent_notification.create).
+        """Send a notification via HA REST API or forward to another platform.
 
-        Uses the REST API instead of WebSocket to avoid a race condition
-        with the event listener loop that reads from the same WS connection.
+        If forward_to is configured, route to target platforms first.
+        Fallback to HA persistent_notification if forwarding fails or is not configured.
         """
+        # Forward to configured platforms
+        if self._forward_to:
+            forwarded = False
+            for target in self._forward_to:
+                platform_name = target.get("platform", "")
+                target_chat = target.get("chat_id", "")
+                if not platform_name or not target_chat:
+                    continue
+                result = await self._forward_to_platform(platform_name, target_chat, content)
+                if result and result.success:
+                    forwarded = True
+                    logger.info("[Homeassistant] Forwarded to %s:%s", platform_name, target_chat)
+                else:
+                    error = result.error if result else "unknown error"
+                    logger.warning("[Homeassistant] Forward to %s failed: %s", platform_name, error)
+
+            # If forwarding succeeded, skip HA persistent notification
+            if forwarded:
+                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+
+        # Fallback: send to HA persistent notification
         url = f"{self._hass_url}/api/services/persistent_notification/create"
         headers = {
             "Authorization": f"Bearer {self._hass_token}",
@@ -434,6 +459,32 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending notification to HA")
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def _forward_to_platform(
+        self, platform_name: str, chat_id: str, content: str
+    ) -> Optional[SendResult]:
+        """Forward a message to another platform via the gateway runner."""
+        if not self.gateway_runner:
+            return SendResult(
+                success=False, error="No gateway runner for cross-platform delivery"
+            )
+
+        try:
+            from gateway.config import Platform
+            target_platform = Platform(platform_name)
+        except ValueError:
+            return SendResult(success=False, error=f"Unknown platform: {platform_name}")
+
+        adapter = self.gateway_runner.adapters.get(target_platform)
+        if not adapter:
+            return SendResult(
+                success=False, error=f"Platform {platform_name} not connected"
+            )
+
+        try:
+            return await adapter.send(chat_id, content)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 

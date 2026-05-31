@@ -31,12 +31,14 @@ from .orchestrator import (
     DRAIN_WORKFLOW_ID,
 )
 from .draft import handle_draft
+from .daily import handle_daily
 
 __all__ = [
     "register",
     "handle_resume",
     "handle_skip",
     "handle_draft",
+    "handle_daily",
     "PHASE_ID_PATTERN",
     "DRAIN_WORKFLOW_ID",
 ]
@@ -63,4 +65,13 @@ def register(ctx) -> None:
         handler=handle_draft,
         description="Draft a follow-up email (Atlas-aware; 030-A skeleton).",
         args_hint="<recipient> <context>",
+    )
+    # Plan 026-A — /daily morning brief with parallel fan-out across
+    # Calendar, Inbox, Atlas (commitments / contradictions / contacts),
+    # and orchestrator drain status.
+    ctx.register_command(
+        "daily",
+        handler=handle_daily,
+        description="Morning brief — top 3 items across Atlas + Calendar + Inbox + orchestrator.",
+        args_hint="",
     )

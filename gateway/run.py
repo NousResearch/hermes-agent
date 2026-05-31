@@ -7856,6 +7856,9 @@ class GatewayRunner:
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
+        if canonical == "rewind":
+            return await self._handle_rewind_command(event)
+
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
@@ -13526,6 +13529,169 @@ class GatewayRunner:
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+
+    async def _handle_rewind_command(self, event: MessageEvent) -> str:
+        """Handle /rewind — jump back to the previous user message and re-prompt.
+
+        Gateway behavior (mirrors v1 TUI auto-pick):
+        - Targets the most recent user message in the active transcript.
+        - Soft-deletes (active=0) every message at-or-after that turn.
+        - Refuses if any rewound rows were posted into a *different*
+          (chat_id, thread_id) than the caller's — keeps the blast
+          radius predictable per the v2 spec (#21910).
+        - Best-effort calls ``platform.delete_message`` on every recorded
+          outbound message in the rewound range.  Surfaces a count of
+          successful vs. attempted deletions in the reply notice.
+        - Notifies the memory provider with ``rewound=True``.
+
+        Per-message picker UI is a v2 follow-up — for now the gateway
+        behaves like single-step undo, matching Claude Code's double-Esc.
+        """
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        current_entry = self.session_store.get_or_create_session(source)
+        session_id = current_entry.session_id
+
+        # Find the most recent user message.
+        try:
+            items = self._session_db.list_recent_user_messages(session_id, limit=1)
+        except Exception as e:
+            logger.debug("rewind: list_recent_user_messages failed: %s", e)
+            return "Rewind failed: could not read session history."
+        if not items:
+            return "No user messages to rewind to."
+        target_id = items[0]["id"]
+
+        # Build the thread-scope tuple for the v13 guard.  We use the
+        # source's (chat_id, thread_id) verbatim — for platforms that
+        # don't expose threads (SMS, email) the thread_id is None and
+        # the guard still works (None matches None).
+        scope_chat = str(source.chat_id) if source.chat_id is not None else None
+        scope_thread = str(source.thread_id) if source.thread_id is not None else None
+        scope = (scope_chat, scope_thread)
+
+        try:
+            result = self._session_db.rewind_to_message(
+                session_id, target_id, require_thread_scope=scope,
+            )
+        except ValueError as e:
+            return f"Rewind refused: {e}"
+        except Exception as e:
+            logger.error("rewind: rewind_to_message failed: %s", e, exc_info=True)
+            return f"Rewind failed: {e}"
+
+        # Best-effort delete the bot's outbound messages within the
+        # rewound range.  We re-query the inactive set (which now
+        # includes the rows we just rewound) scoped to the caller's
+        # chat/thread so a single rewind never deletes messages in a
+        # sibling thread even if outbound stamping is racy.
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        outbound_rows = []
+        try:
+            outbound_rows = self._session_db.get_inactive_outbound_ids(
+                session_id,
+                chat_id=scope_chat,
+                thread_id=scope_thread,
+            )
+        except Exception as e:
+            logger.debug("rewind: get_inactive_outbound_ids failed: %s", e)
+
+        attempted = 0
+        deleted = 0
+        can_delete: Optional[bool] = None
+        if outbound_rows and adapter is not None:
+            # Permission probe once per rewind to surface a clean
+            # "missing perms" notice when applicable.
+            try:
+                probe = adapter.can_delete_messages(scope_chat)
+                if asyncio.iscoroutine(probe):
+                    can_delete = await probe
+                else:
+                    can_delete = probe
+            except Exception as e:
+                logger.debug("rewind: permission probe failed: %s", e)
+                can_delete = None
+
+            if can_delete is False:
+                # Adapter knows it can't delete in this scope.  Skip the
+                # batch entirely so we don't spam the platform's logs.
+                attempted = len(outbound_rows)
+            else:
+                for row in outbound_rows:
+                    out_msg_id = row.get("outbound_message_id")
+                    out_chat = row.get("outbound_chat_id") or scope_chat
+                    if not out_msg_id or not out_chat:
+                        continue
+                    attempted += 1
+                    try:
+                        ok = await adapter.delete_message(
+                            chat_id=str(out_chat),
+                            message_id=str(out_msg_id),
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "rewind: delete_message %s/%s raised: %s",
+                            out_chat, out_msg_id, e,
+                        )
+                        ok = False
+                    if ok:
+                        deleted += 1
+
+        # Evict any cached agent and surface the memory hook so per-turn
+        # state caches (Hindsight et al.) invalidate.
+        try:
+            self._evict_cached_agent(session_key)
+        except Exception:
+            pass
+        agent = self._running_agents.get(session_key)
+        if agent and agent is not _AGENT_PENDING_SENTINEL:
+            _mm = getattr(agent, "_memory_manager", None)
+            if _mm is not None:
+                try:
+                    _mm.on_session_switch(
+                        session_id,
+                        parent_session_id="",
+                        reset=False,
+                        rewound=True,
+                    )
+                except Exception:
+                    pass
+
+        rewound = result.get("rewound_count", 0)
+        notice_parts = [f"↶ Rewound {rewound} message(s)."]
+        if attempted:
+            if can_delete is False:
+                notice_parts.append(
+                    f"Skipped {attempted} platform delete(s) — adapter reports no perms."
+                )
+            elif deleted == attempted:
+                notice_parts.append(f"Deleted {deleted} platform message(s).")
+            elif deleted:
+                notice_parts.append(
+                    f"Deleted {deleted}/{attempted} platform message(s) "
+                    f"(remainder failed: perms, age, or rate limit)."
+                )
+            else:
+                notice_parts.append(
+                    f"Could not delete {attempted} platform message(s) "
+                    f"(perms, age, or rate limit)."
+                )
+        target_text = (result.get("target_message") or {}).get("content") or ""
+        if isinstance(target_text, list):
+            target_text = " ".join(
+                p.get("text", "") for p in target_text
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        target_text = str(target_text).strip()
+        if target_text:
+            preview = target_text if len(target_text) <= 200 else target_text[:197] + "..."
+            notice_parts.append(f"Next prompt is: {preview}")
+        notice_parts.append("Send your next message to continue from there.")
+        return " ".join(notice_parts)
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.

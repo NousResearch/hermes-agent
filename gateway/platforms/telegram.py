@@ -2472,6 +2472,17 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return False
 
+    async def can_delete_messages(self, chat_id: str) -> Optional[bool]:
+        """Telegram bots can always delete their own messages within 48h.
+
+        The Bot API's ``deleteMessage`` succeeds for any message the bot
+        sent itself regardless of channel admin rights, with a 48-hour
+        window after posting.  We return ``True`` whenever the bot is
+        connected; the actual call still falls back to ``False`` on
+        expired messages, which the caller treats as best-effort.
+        """
+        return True if self._bot else False
+
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,

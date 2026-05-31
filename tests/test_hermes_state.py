@@ -3272,6 +3272,184 @@ class TestFTS5ToolCallMigration:
             session_db.close()
 
 
+
+# =========================================================================
+# /rewind primitives (#21910)
+# =========================================================================
+
+class TestRewindPrimitives:
+    """SessionDB.rewind_to_message + restore_rewound + list_recent_user_messages."""
+
+    def _seed(self, db, session_id="rw1"):
+        db.create_session(session_id=session_id, source="cli")
+        return session_id
+
+    def test_rewind_to_first_user_message(self, db):
+        """One user msg, rewind to it — that row becomes inactive."""
+        sid = self._seed(db)
+        db.append_message(sid, role="user", content="hello")
+        uid = db.get_messages(sid)[0]["id"]
+
+        result = db.rewind_to_message(sid, uid)
+
+        assert result["rewound_count"] == 1
+        assert result["target_message"]["content"] == "hello"
+        assert result["new_head_id"] is None
+        assert db.get_messages(sid) == []
+        assert len(db.get_messages(sid, include_inactive=True)) == 1
+
+    def test_rewind_mid_session(self, db):
+        """4 user turns w/ assistant responses, rewind to turn 2."""
+        sid = self._seed(db, "rw_mid")
+        ids = []
+        for i in range(1, 5):
+            db.append_message(sid, role="user", content=f"u{i}")
+            db.append_message(sid, role="assistant", content=f"a{i}")
+        rows = db.get_messages(sid)
+        # turn 2 user id
+        user_msgs = [r for r in rows if r["role"] == "user"]
+        target_id = user_msgs[1]["id"]  # u2
+
+        result = db.rewind_to_message(sid, target_id)
+
+        # u2 + a2 + u3 + a3 + u4 + a4 = 6 messages flipped
+        assert result["rewound_count"] == 6
+        active = db.get_messages(sid)
+        contents = [m["content"] for m in active]
+        assert contents == ["u1", "a1"]
+
+    def test_rewind_then_continue(self, db):
+        """Rewind, append a new message, conversation reflects active head only."""
+        sid = self._seed(db, "rw_cont")
+        db.append_message(sid, role="user", content="u1")
+        db.append_message(sid, role="assistant", content="a1")
+        db.append_message(sid, role="user", content="u2")
+        db.append_message(sid, role="assistant", content="a2")
+        rows = db.get_messages(sid)
+        target_id = [r for r in rows if r["role"] == "user"][1]["id"]
+
+        db.rewind_to_message(sid, target_id)
+        db.append_message(sid, role="user", content="u2-edited")
+
+        conv = db.get_messages_as_conversation(sid)
+        contents = [m["content"] for m in conv]
+        assert contents == ["u1", "a1", "u2-edited"]
+
+    def test_rewind_across_tool_call_boundary(self, db):
+        """Assistant + tool result rows are all flipped together when target precedes them."""
+        sid = self._seed(db, "rw_tool")
+        db.append_message(sid, role="user", content="first")
+        db.append_message(sid, role="assistant", content="ok")
+        db.append_message(sid, role="user", content="use a tool")
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
+        ]
+        db.append_message(sid, role="assistant", content="", tool_calls=tool_calls)
+        db.append_message(
+            sid, role="tool", content="result", tool_name="web_search",
+            tool_call_id="call_1",
+        )
+        rows = db.get_messages(sid)
+        target_id = [r for r in rows if r["role"] == "user"][1]["id"]  # "use a tool"
+
+        result = db.rewind_to_message(sid, target_id)
+
+        # target user + assistant w/ tool_calls + tool result = 3 rows
+        assert result["rewound_count"] == 3
+        active = db.get_messages(sid)
+        roles = [m["role"] for m in active]
+        assert roles == ["user", "assistant"]
+
+    def test_rewound_rows_preserved_in_db(self, db):
+        """include_inactive=True surfaces rewound rows; rewind_count is bumped."""
+        sid = self._seed(db, "rw_audit")
+        db.append_message(sid, role="user", content="keep me forever")
+        uid = db.get_messages(sid)[0]["id"]
+
+        db.rewind_to_message(sid, uid)
+
+        all_rows = db.get_messages(sid, include_inactive=True)
+        assert len(all_rows) == 1
+        assert all_rows[0]["content"] == "keep me forever"
+        sess = db.get_session(sid)
+        assert sess["rewind_count"] == 1
+
+        # Re-rewinding past the same target is a no-op on rows but still bumps the counter.
+        db.rewind_to_message(sid, uid)
+        sess = db.get_session(sid)
+        assert sess["rewind_count"] == 2
+
+    def test_session_search_excludes_inactive_by_default(self, db):
+        """search_messages skips rewound content unless include_inactive=True."""
+        sid = self._seed(db, "rw_search1")
+        db.append_message(sid, role="user", content="UNIQ_REWIND_TOKEN once")
+        uid = db.get_messages(sid)[0]["id"]
+        db.rewind_to_message(sid, uid)
+
+        hits = db.search_messages("UNIQ_REWIND_TOKEN")
+        assert hits == []
+
+    def test_session_search_includes_inactive_when_opted_in(self, db):
+        """Opting in returns the rewound rows."""
+        sid = self._seed(db, "rw_search2")
+        db.append_message(sid, role="user", content="UNIQTOKEN42 hello")
+        uid = db.get_messages(sid)[0]["id"]
+        db.rewind_to_message(sid, uid)
+
+        hits = db.search_messages("UNIQTOKEN42", include_inactive=True)
+        assert len(hits) >= 1
+
+    def test_rewind_target_must_be_user_role(self, db):
+        """ValueError when target is assistant or tool."""
+        sid = self._seed(db, "rw_role")
+        db.append_message(sid, role="user", content="u1")
+        db.append_message(sid, role="assistant", content="a1")
+        rows = db.get_messages(sid)
+        assistant_id = [r for r in rows if r["role"] == "assistant"][0]["id"]
+
+        with pytest.raises(ValueError):
+            db.rewind_to_message(sid, assistant_id)
+
+    def test_rewind_target_must_belong_to_session(self, db):
+        """ValueError when target id belongs to a different session."""
+        sid_a = self._seed(db, "rw_sa")
+        sid_b = self._seed(db, "rw_sb")
+        db.append_message(sid_a, role="user", content="hi from A")
+        a_id = db.get_messages(sid_a)[0]["id"]
+
+        # Try to rewind session B to a message that belongs to session A.
+        with pytest.raises(ValueError):
+            db.rewind_to_message(sid_b, a_id)
+
+    def test_list_recent_user_messages_excludes_inactive_by_default(self, db):
+        sid = self._seed(db, "rw_list")
+        db.append_message(sid, role="user", content="u1")
+        db.append_message(sid, role="assistant", content="a1")
+        db.append_message(sid, role="user", content="u2")
+        rows = db.get_messages(sid)
+        u2_id = [r for r in rows if r["role"] == "user"][1]["id"]
+
+        db.rewind_to_message(sid, u2_id)
+
+        items = db.list_recent_user_messages(sid)
+        assert [i["preview"] for i in items] == ["u1"]
+        items_all = db.list_recent_user_messages(sid, include_inactive=True)
+        assert sorted(i["preview"] for i in items_all) == ["u1", "u2"]
+
+    def test_restore_rewound_round_trips(self, db):
+        sid = self._seed(db, "rw_restore")
+        db.append_message(sid, role="user", content="u1")
+        db.append_message(sid, role="assistant", content="a1")
+        rows = db.get_messages(sid)
+        u_id = [r for r in rows if r["role"] == "user"][0]["id"]
+
+        db.rewind_to_message(sid, u_id)
+        assert db.get_messages(sid) == []
+
+        restored = db.restore_rewound(sid, u_id)
+        assert restored == 2
+        assert len(db.get_messages(sid)) == 2
+
 # ---------------------------------------------------------------------------
 # apply_wal_with_fallback — read-only probe tests
 # ---------------------------------------------------------------------------

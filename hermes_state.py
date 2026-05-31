@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    rewind_count INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -281,6 +282,18 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    -- v14: gateway outbound-message tracking for /rewind v2 (best-effort
+    -- message deletion).  Stamped on assistant rows after the platform
+    -- adapter confirms a successful send.  All four are nullable so
+    -- non-gateway sessions (CLI/TUI) and pre-v14 rows leave them empty.
+    outbound_platform TEXT,
+    outbound_chat_id TEXT,
+    outbound_thread_id TEXT,
+    outbound_message_id TEXT,
+    -- v12: platform-side message id (e.g. yuanbao msg_id, telegram
+    -- update_id) so platform-specific flows like recall can match by
+    -- external identifier instead of falling back to content-match.
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0
 );
@@ -302,6 +315,18 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+"""
+
+# Indexes that reference columns added in later schema versions must be
+# created AFTER _reconcile_columns() has had a chance to ADD them on
+# existing databases. SCHEMA_SQL above is run by sqlite executescript
+# which would otherwise fail on legacy DBs ("no such column: active").
+DEFERRED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_messages_session_active
+    ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id
+    ON messages(session_id, platform_message_id)
+    WHERE platform_message_id IS NOT NULL;
 """
 
 FTS_SQL = """
@@ -731,18 +756,12 @@ class SessionDB:
         # column gets created here.
         self._reconcile_columns(cursor)
 
-        # Indexes that reference reconciler-added columns must be created
-        # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
-        # makes the initial executescript fail on legacy DBs (the index's
-        # WHERE clause references a column that doesn't exist yet).
-        try:
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id "
-                "ON messages(session_id, platform_message_id) "
-                "WHERE platform_message_id IS NOT NULL"
-            )
-        except sqlite3.OperationalError as exc:
-            logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
+        # ── Deferred indexes ───────────────────────────────────────────
+        # Indexes that reference columns added by reconcile_columns()
+        # above must run AFTER reconciliation, not as part of SCHEMA_SQL
+        # (which sqlite3.executescript would fail to apply against a
+        # legacy table missing those columns).
+        cursor.executescript(DEFERRED_INDEX_SQL)
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
@@ -843,6 +862,39 @@ class SessionDB:
                             fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
+            if current_version < 12:
+                # v12: messages.active flag for /rewind soft-deletion.
+                # The declarative reconcile_columns() above adds the
+                # column itself; this UPDATE is belt-and-suspenders to
+                # ensure any rows that pre-existed the ADD COLUMN have
+                # active=1 rather than NULL.  Required because SQLite's
+                # ALTER TABLE ADD COLUMN populates existing rows with
+                # the DEFAULT, but only when the DEFAULT is a literal —
+                # NULL would otherwise be possible on some older builds
+                # or if reconciliation ever ran without a DEFAULT.
+                try:
+                    cursor.execute(
+                        "UPDATE messages SET active = 1 WHERE active IS NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < 13:
+                # v13: gateway outbound-message tracking for /rewind v2.
+                # New columns (outbound_platform, outbound_chat_id,
+                # outbound_thread_id, outbound_message_id) are added by
+                # _reconcile_columns() above.  Pre-v13 rows have NULL
+                # values which is the correct "no outbound recorded"
+                # signal — no backfill needed.  We add a partial index
+                # here (deferred until after reconcile so the column
+                # exists) to keep the rewind-delete lookup cheap.
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_messages_outbound "
+                        "ON messages(session_id, outbound_chat_id) "
+                        "WHERE outbound_message_id IS NOT NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1954,11 +2006,21 @@ class SessionDB:
 
         self._execute_write(_do)
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages for a session, ordered by insertion order."""
+    def get_messages(
+        self, session_id: str, include_inactive: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Load messages for a session, ordered by insertion order.
+
+        By default only active messages are returned. Pass
+        ``include_inactive=True`` to load soft-deleted rows (e.g. for
+        audit / debug views of rewound history). See
+        :meth:`rewind_to_message` for the soft-delete mechanic.
+        """
+        active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                "SELECT * FROM messages WHERE session_id = ?"
+                f"{active_clause} ORDER BY id",
                 (session_id,),
             )
             rows = cursor.fetchall()
@@ -2240,23 +2302,32 @@ class SessionDB:
         return session_id
 
     def get_messages_as_conversation(
-        self, session_id: str, include_ancestors: bool = False
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        include_inactive: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
+
+        By default only active messages are returned. Pass
+        ``include_inactive=True`` to load soft-deleted (rewound) rows
+        as well. See :meth:`rewind_to_message`.
         """
         session_ids = [session_id]
         if include_ancestors:
             session_ids = self._session_lineage_root_to_tip(session_id)
 
+        active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed "
-                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
+                f"FROM messages WHERE session_id IN ({placeholders})"
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -2355,6 +2426,303 @@ class SessionDB:
         return False
 
     # =========================================================================
+    # Rewind (soft-delete) — see /rewind slash command + issue #21910
+    # =========================================================================
+
+    def rewind_to_message(
+        self,
+        session_id: str,
+        target_message_id: int,
+        *,
+        require_thread_scope: Optional[tuple] = None,
+    ) -> Dict[str, Any]:
+        """Soft-delete all messages with id >= ``target_message_id`` in *session_id*.
+
+        The target message itself becomes inactive as well so the caller
+        can pre-fill it as the next user prompt without it appearing
+        twice in the replayed transcript.  Rewound rows are kept on
+        disk with ``active=0`` for audit / forensic inspection — use
+        :meth:`get_messages` with ``include_inactive=True`` to see them.
+
+        ``require_thread_scope`` (v13, /rewind v2) — when set to a
+        ``(chat_id, thread_id)`` tuple, the call refuses with
+        ``ValueError`` if any of the messages that would be soft-deleted
+        carry a different outbound ``(chat_id, thread_id)``.  Used by
+        the gateway to enforce thread-scoped rewinds so a user in one
+        Discord thread can't rewind messages that were posted into a
+        sibling thread.  Pass ``None`` (the default) to skip the check —
+        appropriate for CLI/TUI sessions which have no thread concept.
+        Either element of the tuple may be ``None`` to match rows
+        recorded without that field; the comparison is exact-string.
+
+        Returns a dict::
+
+            {
+                "rewound_count": int,    # number of rows newly flipped to active=0
+                "target_message": dict,  # full row dict of the target
+                "new_head_id":   int|None  # id of the last still-active row, or None
+            }
+
+        Raises ``ValueError`` if the target message does not exist in
+        *session_id*, if its role is not ``"user"``, or if
+        ``require_thread_scope`` is set and any in-scope row's outbound
+        ``(chat_id, thread_id)`` disagrees with it.
+
+        Always increments ``sessions.rewind_count`` — even when the
+        target is already inactive — so the counter accurately reflects
+        the number of rewind operations performed against the session.
+        Idempotent on the ``active`` flag: re-rewinding past the same
+        target is a no-op on row state but still bumps the counter.
+        """
+
+        # 1) Validate target up-front (read-only, outside the write txn).
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+                (target_message_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"message {target_message_id} not found in session {session_id}"
+            )
+        target_row = dict(row)
+        if target_row.get("role") != "user":
+            raise ValueError(
+                f"rewind target must be a 'user' message (got role="
+                f"{target_row.get('role')!r}, id={target_message_id})"
+            )
+
+        # Decode content for callers (prefill the prompt buffer).
+        target_row["content"] = self._decode_content(target_row.get("content"))
+
+        # 1b) Thread-scope guard for gateway /rewind v2.
+        # Refuse to truncate rows whose outbound (chat, thread) is
+        # different from the caller's context — keeps the blast radius
+        # of a Discord/Telegram rewind predictable per the v2 spec.
+        if require_thread_scope is not None:
+            req_chat, req_thread = require_thread_scope
+            with self._lock:
+                offenders = self._conn.execute(
+                    "SELECT id, outbound_chat_id, outbound_thread_id "
+                    "FROM messages "
+                    "WHERE session_id = ? AND id >= ? AND active = 1 "
+                    "AND outbound_message_id IS NOT NULL",
+                    (session_id, target_message_id),
+                ).fetchall()
+            for off in offenders:
+                off_chat = off["outbound_chat_id"] if isinstance(off, sqlite3.Row) else off[1]
+                off_thread = off["outbound_thread_id"] if isinstance(off, sqlite3.Row) else off[2]
+                if off_chat != req_chat or off_thread != req_thread:
+                    raise ValueError(
+                        f"rewind would cross thread boundary: row id="
+                        f"{off['id'] if isinstance(off, sqlite3.Row) else off[0]} "
+                        f"is in ({off_chat!r}, {off_thread!r}), caller is "
+                        f"in ({req_chat!r}, {req_thread!r})"
+                    )
+
+        rewound: List[int] = []
+
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 1",
+                (session_id, target_message_id),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            conn.execute(
+                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            return ids
+
+        rewound = self._execute_write(_do)
+
+        # 2) Compute new head id (largest still-active row id in session).
+        with self._lock:
+            head_row = self._conn.execute(
+                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+
+        return {
+            "rewound_count": len(rewound),
+            "target_message": target_row,
+            "new_head_id": new_head_id,
+        }
+
+    def restore_rewound(self, session_id: str, since_message_id: int) -> int:
+        """Mark inactive messages with id >= *since_message_id* active again.
+
+        Returns the number of rows flipped back to ``active=1``.
+        Intended for undo-of-rewind and test cleanup; not wired to a
+        slash command in v1.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 0",
+                (session_id, since_message_id),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 1 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            return len(ids)
+
+        return self._execute_write(_do)
+
+    # ---- /rewind v2: outbound-message tracking ------------------------------
+
+    def set_outbound_ids(
+        self,
+        message_row_id: int,
+        *,
+        platform: Optional[str],
+        chat_id: Optional[str],
+        thread_id: Optional[str],
+        message_id: Optional[str],
+    ) -> None:
+        """Stamp gateway outbound-message coordinates onto a persisted row.
+
+        Called by the gateway after ``adapter.send`` succeeds, so that a
+        later ``/rewind`` can locate the platform message IDs to attempt
+        to delete.  All four fields are stored verbatim; pass ``None``
+        for any that are unavailable (e.g. ``thread_id`` for non-threaded
+        platforms).  Silent no-op if ``message_id`` is falsy.
+        """
+        if not message_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE messages SET "
+                "outbound_platform = ?, outbound_chat_id = ?, "
+                "outbound_thread_id = ?, outbound_message_id = ? "
+                "WHERE id = ?",
+                (
+                    platform,
+                    chat_id,
+                    thread_id,
+                    str(message_id),
+                    message_row_id,
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def get_inactive_outbound_ids(
+        self,
+        session_id: str,
+        *,
+        since_message_id: Optional[int] = None,
+        chat_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return outbound coordinates for *inactive* (rewound) rows.
+
+        Filters:
+        - ``since_message_id`` — only rows with ``id >= since_message_id``.
+          Use the ``new_head_id + 1`` returned from ``rewind_to_message``
+          if you only want rows just rewound; omit to scan all inactive
+          rows in the session (idempotent rerun safe).
+        - ``chat_id`` / ``thread_id`` — restrict to a specific gateway
+          delivery scope.  When both are ``None`` (CLI default), every
+          inactive row with a recorded outbound id is returned.
+
+        Each result dict carries ``id``, ``outbound_platform``,
+        ``outbound_chat_id``, ``outbound_thread_id``, and
+        ``outbound_message_id``.  Used by the gateway rewind hook to
+        drive best-effort ``platform.delete_message`` calls.
+        """
+        sql = (
+            "SELECT id, outbound_platform, outbound_chat_id, "
+            "outbound_thread_id, outbound_message_id "
+            "FROM messages "
+            "WHERE session_id = ? AND active = 0 "
+            "AND outbound_message_id IS NOT NULL"
+        )
+        params: List[Any] = [session_id]
+        if since_message_id is not None:
+            sql += " AND id >= ?"
+            params.append(since_message_id)
+        if chat_id is not None:
+            sql += " AND outbound_chat_id = ?"
+            params.append(chat_id)
+        if thread_id is not None:
+            sql += " AND outbound_thread_id = ?"
+            params.append(thread_id)
+        sql += " ORDER BY id ASC"
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_recent_user_messages(
+        self,
+        session_id: str,
+        limit: int = 20,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return the *limit* most-recent user messages, newest first.
+
+        Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
+        ``preview`` is the first 80 characters of the message content
+        (with line breaks collapsed to spaces). Used by the /rewind
+        slash command picker.
+
+        By default only active messages are returned.
+        """
+        active_clause = "" if include_inactive else " AND active = 1"
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, timestamp, content FROM messages "
+                "WHERE session_id = ? AND role = 'user'"
+                f"{active_clause} "
+                "ORDER BY timestamp DESC, id DESC LIMIT ?",
+                (session_id, int(limit)),
+            )
+            rows = cursor.fetchall()
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            decoded = self._decode_content(row["content"])
+            if isinstance(decoded, list):
+                # Multimodal — flatten text parts.
+                text_parts = [
+                    p.get("text", "") for p in decoded
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                preview = " ".join(t for t in text_parts if t).strip()
+                if not preview:
+                    preview = "[multimodal content]"
+            elif isinstance(decoded, str):
+                preview = decoded
+            else:
+                preview = ""
+            preview = " ".join(preview.split())  # collapse whitespace
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            result.append(
+                {
+                    "id": row["id"],
+                    "timestamp": row["timestamp"],
+                    "preview": preview,
+                }
+            )
+        return result
+
+    # =========================================================================
     # Search
     # =========================================================================
 
@@ -2450,6 +2818,7 @@ class SessionDB:
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
+        include_inactive: bool = False,
         sort: str = None,
     ) -> List[Dict[str, Any]]:
         """
@@ -2463,6 +2832,9 @@ class SessionDB:
 
         Returns matching messages with session metadata, content snippet,
         and surrounding context (1 message before and after the match).
+
+        Rewound (``active=0``) rows are excluded by default. Pass
+        ``include_inactive=True`` to search every row.
 
         ``sort`` controls temporal ordering:
           - ``None`` (default): FTS5 BM25 relevance only. Time-neutral.
@@ -2505,6 +2877,8 @@ class SessionDB:
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
+        if not include_inactive:
+            where_clauses.append("m.active = 1")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -2584,6 +2958,8 @@ class SessionDB:
                 trigram_query = " ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
+                if not include_inactive:
+                    tri_where.append("m.active = 1")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)

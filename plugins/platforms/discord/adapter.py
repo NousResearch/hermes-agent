@@ -1655,6 +1655,63 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Discord message.
+
+        Uses ``discord.Message.delete`` (REST ``DELETE /channels/.../messages/...``).
+        The bot can delete its *own* messages without any special perms; deleting
+        anyone else's requires ``manage_messages`` on the channel.  Failures
+        (permissions, message already gone, channel deleted) are non-fatal —
+        callers (stream-consumer cleanup, ``/rewind`` v2) treat ``False`` as
+        "best-effort, leave it".
+        """
+        if not self._client:
+            return False
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if channel is None:
+                return False
+            msg = await channel.fetch_message(int(message_id))
+            await msg.delete()
+            return True
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to delete Discord message %s in %s: %s",
+                self.name, message_id, chat_id, e,
+            )
+            return False
+
+    async def can_delete_messages(self, chat_id: str) -> Optional[bool]:
+        """Best-effort permission probe for Discord deletion in *chat_id*.
+
+        The bot can always delete its own messages, so we just need to
+        confirm the bot is connected and the channel is reachable.
+        Returns ``True`` when the channel resolves, ``False`` when it
+        clearly doesn't (channel deleted, bot kicked), ``None`` when the
+        probe itself errors out so the caller falls back to optimism.
+
+        For deleting *other* users' messages (not the /rewind v2 use
+        case — rewind only ever targets the bot's own outbound), the
+        caller would need to check ``channel.permissions_for(bot_member)
+        .manage_messages``.  We keep that out of the default probe to
+        avoid an extra round trip on the hot path.
+        """
+        if not self._client:
+            return False
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if channel is None:
+                channel = await self._client.fetch_channel(int(chat_id))
+            return channel is not None
+        except Exception as e:
+            logger.debug(
+                "[%s] can_delete_messages probe failed for %s: %s",
+                self.name, chat_id, e,
+            )
+            return None
+
     async def _send_file_attachment(
         self,
         chat_id: str,

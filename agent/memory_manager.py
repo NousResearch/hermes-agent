@@ -503,6 +503,11 @@ class MemoryManager:
         per-session state so subsequent writes land in the correct
         session's record. See ``MemoryProvider.on_session_switch`` for
         the full contract.
+
+        Callers may pass ``rewound=True`` (forwarded via ``**kwargs``)
+        to signal that session_id is unchanged but the transcript was
+        truncated; providers caching per-turn document state should
+        invalidate.
         """
         if not new_session_id:
             return

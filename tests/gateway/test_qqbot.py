@@ -2197,3 +2197,45 @@ class TestCloseCodeClassification:
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
 
+
+
+# ---------------------------------------------------------------------------
+# _is_authorized_interaction_for_session — DM (chat_type="dm") parity with c2c
+# Regression test for #35760: QQ adapter creates DM sessions with chat_type="dm"
+# but authorization only accepted "c2c", so approval clicks were always rejected.
+# ---------------------------------------------------------------------------
+
+class TestIsAuthorizedInteractionForSession:
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="aid", client_secret="sec"))
+
+    def test_dm_chat_type_authorizes_when_operator_matches_chat_id(self):
+        adapter = self._make_adapter()
+        session_key = "agent:main:qqbot:dm:user_open_id_123"
+        event = SimpleNamespace(
+            operator_openid="user_open_id_123",
+            group_openid=None,
+            guild_id=None,
+        )
+        assert adapter._is_authorized_interaction_for_session(event, session_key) is True
+
+    def test_c2c_chat_type_still_authorizes(self):
+        adapter = self._make_adapter()
+        session_key = "agent:main:qqbot:c2c:user_open_id_123"
+        event = SimpleNamespace(
+            operator_openid="user_open_id_123",
+            group_openid=None,
+            guild_id=None,
+        )
+        assert adapter._is_authorized_interaction_for_session(event, session_key) is True
+
+    def test_dm_chat_type_rejects_when_operator_mismatched(self):
+        adapter = self._make_adapter()
+        session_key = "agent:main:qqbot:dm:user_open_id_123"
+        event = SimpleNamespace(
+            operator_openid="someone_else",
+            group_openid=None,
+            guild_id=None,
+        )
+        assert adapter._is_authorized_interaction_for_session(event, session_key) is False

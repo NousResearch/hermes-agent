@@ -1,19 +1,15 @@
 ---
-title: "Windows（原生）指南 — 早期 Beta"
-description: "早期 BETA：在 Windows 10 / 11 上原生运行 Hermes Agent — 安装、功能矩阵、UTF-8 控制台、Git Bash、将 gateway 作为计划任务、编辑器处理、PATH、卸载及常见问题"
-sidebar_label: "Windows（原生）— Beta"
+title: "Windows（原生）指南"
+description: "在 Windows 10 / 11 上原生运行 Hermes Agent — 安装、功能矩阵、UTF-8 控制台、Git Bash、将 gateway 作为计划任务、编辑器处理、PATH、卸载及常见问题"
+sidebar_label: "Windows（原生）"
 sidebar_position: 3
 ---
 
-# Windows（原生）指南 — 早期 Beta
-
-:::warning 早期 BETA
-原生 Windows 支持处于**早期 beta** 阶段。它可以安装、运行，并通过了我们的 Windows 陷阱（footgun）lint 检查，但尚未像 Linux/macOS/WSL2 路径那样经过大规模实战验证。预计会有一些粗糙之处——尤其是子进程处理、路径怪癖和非 ASCII 控制台输出方面。遇到问题时，请[提交 issue](https://github.com/NousResearch/hermes-agent/issues) 并附上复现步骤。如果你今天想要一个经过充分验证的环境，请改用 [WSL2 下的 Linux/macOS 安装程序](./windows-wsl-quickstart.md)。
-:::
+# Windows（原生）指南
 
 Hermes 可在 Windows 10 和 Windows 11 上原生运行——无需 WSL、Cygwin 或 Docker。本页是深度指南：原生支持哪些功能、哪些仅限 WSL、安装程序实际做了什么，以及你可能需要调整的 Windows 专属配置项。
 
-如果你只是想安装，[首页](/) 或[安装页面](../getting-started/installation#windows-native-powershell--early-beta)上的一行命令就够了。遇到意外情况时再回来查阅本页。
+如果你只是想安装，[首页](/) 或[安装页面](../getting-started/installation#windows原生powershell)上的一行命令就够了。遇到意外情况时再回来查阅本页。
 
 :::tip 想用 WSL？
 如果你更倾向于真正的 POSIX 环境（用于 dashboard 内嵌终端、`fork` 语义、Linux 风格文件监视器等），请参阅 **[Windows（WSL2）指南](./windows-wsl-quickstart.md)**。两者可以干净共存：原生数据存放在 `%LOCALAPPDATA%\hermes`，WSL 数据存放在 `~/.hermes`。
@@ -83,7 +79,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 10. **运行 `hermes setup`** — 正常的首次运行向导（模型、提供商、工具集）。使用 `-SkipSetup` 跳过。
 
 :::tip 在 Windows 上跳过繁琐的提供商配置
-原生 Windows 仍处于早期 beta 阶段，逐个配置工具 API key（Firecrawl、FAL、Browser Use、OpenAI TTS）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `hermes setup --portal` 完成配置。
+在 Windows 上，逐个配置工具 API key（Firecrawl、FAL、Browser Use、OpenAI TTS）是获得可用 agent 摩擦最大的部分。[Nous Portal](/user-guide/features/tool-gateway) 订阅通过一次 OAuth 登录即可覆盖模型**以及**所有这些工具。安装程序完成后，运行 `hermes setup --portal` 完成配置。
 :::
 
 ## 功能矩阵

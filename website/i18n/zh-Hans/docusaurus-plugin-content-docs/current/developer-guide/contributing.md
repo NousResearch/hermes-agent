@@ -94,7 +94,7 @@ pytest tests/ -v
 
 ## 跨平台兼容性
 
-Hermes 官方支持 **Linux、macOS、WSL2 以及原生 Windows（早期 beta — 通过 PowerShell 安装）**。原生 Windows 使用 [Git for Windows](https://git-scm.com/download/win) 提供的 Git Bash 执行 shell 命令。部分功能依赖 POSIX 内核原语，已做条件限制：dashboard 内嵌的 PTY 终端面板（`/chat` 标签页）仅支持 WSL2。原生 Windows 路径较新且迭代较快 — 如果您主要在 Windows 上开发，请做好遇到并修复粗糙边缘的准备。
+Hermes 官方支持 **Linux、macOS、WSL2 以及原生 Windows（通过 PowerShell 安装）**。原生 Windows 使用 [Git for Windows](https://git-scm.com/download/win) 提供的 Git Bash 执行 shell 命令。部分功能依赖 POSIX 内核原语，已做条件限制：dashboard 内嵌的 PTY 终端面板（`/chat` 标签页）仅支持 WSL2。如果您主要在 Windows 上开发，推送前请运行 Windows 陷阱（footgun）lint（`scripts/check-windows-footguns.py`）。
 
 贡献代码时，请遵守以下规则：
 

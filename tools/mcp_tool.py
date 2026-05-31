@@ -1457,6 +1457,54 @@ class MCPServerTask:
                             # PID-reuse can't surface stale pgroup state later.
                             _stdio_pgids.pop(pid, None)
 
+    @staticmethod
+    async def _preflight_content_type(
+        url: str,
+        *,
+        headers: Optional[dict] = None,
+        ssl_verify: bool = True,
+        timeout: float = 5.0,
+    ) -> None:
+        """Quick content-type probe before handing *url* to the MCP SDK.
+
+        A misconfigured ``mcp_servers.<name>.url`` that points at a plain web
+        app (returning ``text/html``) causes the MCP SDK to sit on the
+        connection for the full ``connect_timeout`` (default 60 s) before
+        surfacing ``CancelledError``.  A cheap HEAD request lets us detect
+        this in ≤ 5 s and raise immediately with an actionable message.
+
+        Non-HTML responses (``application/json``, missing header, network
+        errors) silently pass through so the normal MCP handshake proceeds.
+        """
+        try:
+            import httpx as _httpx
+
+            probe_headers = dict(headers) if headers else {}
+            # HEAD is idempotent and lightweight; fall back to GET if the
+            # server rejects HEAD (405 Method Not Allowed).
+            async with _httpx.AsyncClient(
+                verify=ssl_verify,
+                follow_redirects=True,
+                timeout=_httpx.Timeout(timeout),
+            ) as client:
+                resp = await client.head(url, headers=probe_headers)
+                if resp.status_code == 405:
+                    resp = await client.get(url, headers=probe_headers)
+            ct = resp.headers.get("content-type", "")
+            if "text/html" in ct.lower():
+                raise ConnectionError(
+                    f"MCP server '{url}' returned Content-Type: {ct}. "
+                    "This looks like a regular web page, not an MCP endpoint. "
+                    "Verify the URL points to an MCP Streamable HTTP or SSE "
+                    "endpoint (e.g. https://host/mcp, not https://host/)."
+                )
+        except ConnectionError:
+            raise
+        except Exception:
+            # Network errors, timeouts, etc. — let the real MCP handshake
+            # deal with them; this is just a best-effort early check.
+            pass
+
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
         if not _MCP_HTTP_AVAILABLE:
@@ -1467,6 +1515,14 @@ class MCPServerTask:
             )
 
         url = config["url"]
+        # Pre-flight: reject obvious non-MCP endpoints (e.g. a web app
+        # returning HTML) in seconds instead of waiting the full
+        # connect_timeout (default 60 s).
+        await self._preflight_content_type(
+            url,
+            headers=dict(config.get("headers") or {}),
+            ssl_verify=config.get("ssl_verify", True),
+        )
         headers = dict(config.get("headers") or {})
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.

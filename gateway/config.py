@@ -1253,7 +1253,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if telegram_token:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
-        config.platforms[Platform.TELEGRAM].enabled = True
+            config.platforms[Platform.TELEGRAM].enabled = True
         config.platforms[Platform.TELEGRAM].token = telegram_token
     
     # Reply threading mode for Telegram (off/first/all)

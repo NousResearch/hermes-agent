@@ -36,6 +36,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -443,6 +444,64 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
+def _build_task_xml(task_name: str, script_path: str, user: str | None = None) -> str:
+    """Build a Scheduled Task XML definition with proper long-running settings.
+
+    The bare ``schtasks /Create /SC ONLOGON`` approach relies on Windows
+    defaults that are hostile to long-running daemons:
+
+    * ``ExecutionTimeLimit`` defaults to PT72H — Windows hard-kills the
+      process after 72 hours.
+    * ``StopIfGoingOnBatteries`` / ``DisallowStartIfOnBatteries`` default to
+      ``true`` — gateway dies when a laptop switches to battery.
+    * ``StartWhenAvailable`` defaults to ``false`` — missed triggers are
+      silently skipped.
+
+    XML registration via ``schtasks /Create /XML`` lets us override all of
+    these. See issue #35692.
+    """
+    # XML-escape the script path and task name (angle brackets + ampersands).
+    esc = lambda s: s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    user_block = ""
+    if user:
+        # Principals section: run as the resolved user, interactive, limited.
+        user_block = f"""
+  <Principals>
+    <Principal id="Author">
+      <UserId>{esc(user)}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>"""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Hermes Agent gateway — auto-start on logon</Description>
+  </RegistrationInfo>{user_block}
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>false</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>4</Priority>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{esc(script_path)}</Command>
+    </Exec>
+  </Actions>
+</Task>"""
+
+
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
 
@@ -450,9 +509,11 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     experiments may have left repeat/restart settings on the task; ``/Change``
     preserves those stale triggers and can make the gateway relaunch every
     minute. Delete+create gives us a clean ONLOGON task every install.
-    """
-    quoted_script = _quote_schtasks_arg(str(script_path))
 
+    Uses XML task registration to set proper long-running daemon settings
+    (unlimited execution time, battery tolerance, etc.). Falls back to the
+    old bare ``schtasks /Create`` approach if XML registration fails.
+    """
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
     delete_detail = (delete_err or delete_out or "").strip()
     if delete_code != 0 and delete_detail and "cannot find" not in delete_detail.lower():
@@ -460,7 +521,33 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
             return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
         # Non-fatal: /Create /F below may still replace it. Keep the detail in
         # the final error if creation also fails.
-    # password" variant; if that fails, retry without /RU /NP /IT.
+
+    # --- Primary: XML-based registration with proper settings (issue #35692) ---
+    user = _resolve_task_user()
+    xml = _build_task_xml(task_name, str(script_path), user=user)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", prefix="hermes_task_", delete=False, encoding="utf-16"
+        ) as f:
+            f.write(xml)
+            xml_path = f.name
+        try:
+            code, out, err = _exec_schtasks(["/Create", "/F", "/XML", xml_path, "/TN", task_name])
+            detail = (err or out or "").strip()
+            if code == 0:
+                return (True, f"Created Scheduled Task {task_name!r} (XML)")
+            # XML registration may fail on locked-down boxes — fall through to
+            # bare schtasks as a last resort.
+        finally:
+            try:
+                os.unlink(xml_path)
+            except OSError:
+                pass
+    except OSError:
+        pass  # temp file creation failed — fall through
+
+    # --- Fallback: bare schtasks /Create (original approach) ---
+    quoted_script = _quote_schtasks_arg(str(script_path))
     base = [
         "/Create",
         "/F",
@@ -473,7 +560,6 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         "/TR",
         quoted_script,
     ]
-    user = _resolve_task_user()
     variants = []
     if user:
         variants.append([*base, "/RU", user, "/NP", "/IT"])

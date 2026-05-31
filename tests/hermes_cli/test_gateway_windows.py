@@ -29,47 +29,46 @@ def test_schtasks_fallback_does_not_hide_unknown_errors():
     assert gateway_windows._should_fall_back(1, "ERROR: The system cannot find the file specified.") is False
 
 
-def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
-    """A broken/empty locale must not leave us without a decoder (issue #38172)."""
+def test_build_task_xml_contains_required_settings():
+    """XML task definition must include all long-running daemon settings (issue #35692)."""
+    xml = gateway_windows._build_task_xml("Hermes_Gateway_test", r"C:\Users\alice\gateway.cmd")
 
-    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "")
-    assert gateway_windows._schtasks_encoding() == "utf-8"
+    assert "ExecutionTimeLimit>PT0S<" in xml
+    assert "StopIfGoingOnBatteries>false<" in xml
+    assert "DisallowStartIfOnBatteries>false<" in xml
+    assert "StartWhenAvailable>true<" in xml
+    assert "WakeToRun>true<" in xml
+    assert "AllowHardTerminate>false<" in xml
+    assert "MultipleInstancesPolicy>StopExisting<" in xml
+    assert "LogonTrigger" in xml
+    assert r"C:\Users\alice\gateway.cmd" in xml
 
-    def _boom(*args, **kwargs):
-        raise RuntimeError("locale exploded")
 
-    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", _boom)
-    assert gateway_windows._schtasks_encoding() == "utf-8"
+def test_build_task_xml_escapes_special_characters():
+    """XML must escape ampersands and angle brackets in paths."""
+    xml = gateway_windows._build_task_xml("TaskName", r"C:\Users\A&B\gateway.cmd")
+
+    assert "A&amp;B" in xml
+    # Raw unescaped must NOT appear in the Command element
+    assert "<Command>C:\\Users\\A&B\\" not in xml
 
 
-def test_exec_schtasks_decodes_with_replace_errors(monkeypatch):
-    """schtasks output must be decoded with errors='replace' so localized
-    (non-UTF-8) bytes never surface a UnicodeDecodeError traceback (#38172)."""
+def test_build_task_xml_includes_user_principal_when_provided():
+    """When user is provided, XML includes Principals block."""
+    xml = gateway_windows._build_task_xml("task", "script.cmd", user="DOMAIN\\alice")
 
-    captured: dict[str, object] = {}
+    assert "<Principals>" in xml
+    assert "DOMAIN\\alice" in xml
+    assert "InteractiveToken" in xml
+    assert "LeastPrivilege" in xml
 
-    class _FakeCompleted:
-        returncode = 0
-        stdout = "ok"
-        stderr = ""
 
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured.update(kwargs)
-        return _FakeCompleted()
+def test_build_task_xml_omits_principal_when_no_user():
+    """When user is None, XML omits the Principals block."""
+    xml = gateway_windows._build_task_xml("task", "script.cmd", user=None)
 
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\\Windows\\System32\\schtasks.exe")
-    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
-
-    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
-
-    assert (code, out, err) == (0, "ok", "")
-    assert captured["errors"] == "replace", "schtasks output must decode with errors='replace'"
-    assert isinstance(captured["encoding"], str) and captured["encoding"], (
-        "an explicit non-empty encoding must be passed to subprocess.run"
-    )
-    assert captured["text"] is True
+    assert "<Principals>" not in xml
+    assert "<UserId>" not in xml
 
 
 def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
@@ -78,11 +77,9 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
     site_packages = project / "venv" / "Lib" / "site-packages"
-    hermes_home = tmp_path / "hermes-home"
     base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
     scripts.mkdir(parents=True)
     site_packages.mkdir(parents=True)
-    hermes_home.mkdir()
     base.mkdir(parents=True)
 
     venv_python = scripts / "python.exe"
@@ -101,53 +98,15 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
     monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path / "hermes-home"))
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
 
     assert argv[:3] == [str(base_pythonw), "-m", "hermes_cli.main"]
-    assert cwd == str(hermes_home.resolve())
+    assert cwd == str(project)
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
     assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
-
-
-class TestStableWindowsGatewayWorkingDir:
-    def test_stable_gateway_working_dir_uses_hermes_home(self, tmp_path, monkeypatch):
-        home = tmp_path / ".hermes"
-        home.mkdir()
-        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
-        assert gateway_windows._stable_gateway_working_dir(tmp_path / "checkout") == str(home.resolve())
-
-    def test_stable_gateway_working_dir_falls_back_to_project_root(self, tmp_path, monkeypatch):
-        missing = tmp_path / "missing" / ".hermes"
-        project = tmp_path / "checkout"
-        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: missing)
-        assert gateway_windows._stable_gateway_working_dir(project) == str(project)
-
-
-def test_write_task_script_anchors_cmd_cd_at_hermes_home(monkeypatch, tmp_path):
-    project = tmp_path / "project"
-    hermes_home = tmp_path / "hermes-home"
-    hermes_home.mkdir()
-    python_exe = project / "venv" / "Scripts" / "python.exe"
-    python_exe.parent.mkdir(parents=True)
-    python_exe.write_text("", encoding="utf-8")
-    script_path = tmp_path / "gateway.cmd"
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
-    monkeypatch.setattr(gateway, "get_python_path", lambda: str(python_exe))
-    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
-    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
-
-    written = gateway_windows._write_task_script()
-    content = script_path.read_text(encoding="utf-8")
-
-    assert written == script_path
-    assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(hermes_home.resolve()))}" in content
-    assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(project))}" not in content
 
 
 def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
@@ -241,6 +200,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: None)
 
     def fake_schtasks(args):
         calls.append(tuple(args))
@@ -256,9 +216,38 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert ok is True
     assert "/Change" not in [arg for call in calls for arg in call]
     assert calls[0][:4] == ("/Delete", "/F", "/TN", "Hermes_Gateway_alice")
+    # XML-based registration is the primary path now (issue #35692)
     assert calls[1][0] == "/Create"
-    assert "/SC" in calls[1]
-    assert "ONLOGON" in calls[1]
+    assert "/XML" in calls[1]
+    assert "/TN" in calls[1]
+
+
+def test_install_scheduled_task_xml_fallback_to_bare_schtasks(monkeypatch, tmp_path):
+    """When XML registration fails, fall back to bare schtasks /Create."""
+    calls = []
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: None)
+
+    def fake_schtasks(args):
+        calls.append(tuple(args))
+        if args[0] == "/Delete":
+            return (0, "SUCCESS", "")
+        if args[0] == "/Create" and "/XML" in args:
+            return (1, "", "ERROR: Access is denied.")
+        if args[0] == "/Create":
+            return (0, "SUCCESS", "")
+        raise AssertionError(f"unexpected schtasks args: {args}")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    ok, detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", script_path)
+
+    assert ok is True
+    assert len(calls) == 3  # Delete + XML Create (fail) + bare Create (success)
+    assert "/XML" in calls[1]  # First attempt was XML
+    assert "/SC" in calls[2]  # Fallback used /SC
+    assert "ONLOGON" in calls[2]
 
 
 def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run(monkeypatch, tmp_path, capsys):

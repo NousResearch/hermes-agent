@@ -207,6 +207,15 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "crm": {
+        "description": "Agent-native CRM backed by the shared Agent Core DB",
+        "tools": [
+            "crm_status", "crm_organization_upsert", "crm_contact_upsert",
+            "crm_interaction_record", "crm_search",
+        ],
+        "includes": []
+    },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",

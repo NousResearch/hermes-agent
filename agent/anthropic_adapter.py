@@ -1918,12 +1918,25 @@ def _manage_thinking_signatures(
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
         else:
-            # Latest assistant on direct Anthropic: keep signed, downgrade unsigned
-            # to text so the reasoning isn't lost.
+            # Latest assistant on direct Anthropic: keep signed thinking only
+            # when the assistant content can be replayed byte-for-byte. Hermes
+            # rebuilds tool_use blocks from OpenAI-style tool_calls (and may
+            # prefix names for Claude Code OAuth), so a signed thinking block
+            # attached to a tool-call turn is no longer safe to replay.
+            latest_has_tool_use = any(
+                isinstance(b, dict) and b.get("type") == "tool_use"
+                for b in m["content"]
+            )
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
+                    continue
+                if latest_has_tool_use:
+                    # Anthropic returns HTTP 400 "thinking/redacted_thinking
+                    # blocks ... cannot be modified" when signed thinking is
+                    # replayed beside transformed tool_use blocks. Drop it;
+                    # the visible text/tool_use content remains intact.
                     continue
                 if b.get("type") == "redacted_thinking":
                     # Redacted blocks use 'data' for the signature payload —

@@ -654,8 +654,26 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.thinking_signature
         assert result.retryable is True
 
+    def test_anthropic_modified_thinking_blocks_are_retryable_signature_failure(self):
+        """Anthropic rejects replayed signed thinking when the assistant turn changed."""
+        message = (
+            "messages.3.content.7: `thinking` or `redacted_thinking` blocks in "
+            "the latest assistant message cannot be modified. These blocks must "
+            "remain as they were in the original response."
+        )
+        e = MockAPIError(
+            "Error code: 400 - " + message,
+            status_code=400,
+            body={"error": {"message": message, "type": "invalid_request_error"}},
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+        assert result.should_compress is False
+        assert result.should_fallback is False
+
     def test_non_anthropic_400_with_signature_not_classified_as_thinking(self):
-        """400 with 'signature' but from non-Anthropic → format error."""
+        """400 with 'signature' but without 'thinking' stays a format error."""
         e = MockAPIError("invalid signature", status_code=400)
         result = classify_api_error(e, provider="openrouter", approx_tokens=0)
         # Without "thinking" in the message, it shouldn't be thinking_signature

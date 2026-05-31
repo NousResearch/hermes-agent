@@ -549,11 +549,24 @@ def classify_api_error(
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
     # provider may be "openrouter" even though the error is Anthropic-specific.
-    # The message pattern ("signature" + "thinking") is unique enough.
+    # Anthropic currently uses two related wordings:
+    #   * "signature" + "thinking" for invalid signatures;
+    #   * "thinking or redacted_thinking blocks ... cannot be modified" when
+    #     a replayed latest assistant turn was structurally changed.
+    _modified_thinking_replay = (
+        ("thinking" in error_msg or "redacted_thinking" in error_msg)
+        and "latest assistant message" in error_msg
+        and (
+            "cannot be modified" in error_msg
+            or "must remain as they were" in error_msg
+        )
+    )
     if (
         status_code == 400
-        and "signature" in error_msg
-        and "thinking" in error_msg
+        and (
+            ("signature" in error_msg and "thinking" in error_msg)
+            or _modified_thinking_replay
+        )
     ):
         return _result(
             FailoverReason.thinking_signature,

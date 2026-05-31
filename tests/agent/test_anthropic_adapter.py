@@ -890,7 +890,7 @@ class TestConvertMessages:
         assert tool_block["content"] == "result"
         assert tool_block["cache_control"] == {"type": "ephemeral"}
 
-    def test_preserved_thinking_blocks_are_rehydrated_before_tool_use(self):
+    def test_preserved_signed_thinking_blocks_are_stripped_before_rebuilt_tool_use(self):
         messages = [
             {
                 "role": "assistant",
@@ -912,10 +912,8 @@ class TestConvertMessages:
         _, result = convert_messages_to_anthropic(messages)
         assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")["content"]
 
-        assert assistant_blocks[0]["type"] == "thinking"
-        assert assistant_blocks[0]["thinking"] == "Need to inspect the tool result first."
-        assert assistant_blocks[0]["signature"] == "sig_123"
-        assert assistant_blocks[1]["type"] == "tool_use"
+        assert all(block.get("type") != "thinking" for block in assistant_blocks)
+        assert assistant_blocks[0]["type"] == "tool_use"
 
     def test_converts_data_url_image_to_anthropic_image_block(self):
         messages = [
@@ -1583,10 +1581,12 @@ class TestRoleAlternation:
 
 class TestThinkingBlockSignatureManagement:
     """Tests for the thinking block handling strategy:
-    strip from old turns, preserve latest signed, downgrade unsigned."""
+    strip from old/transformed tool turns, preserve latest signed text-only,
+    downgrade unsigned.
+    """
 
-    def test_thinking_stripped_from_non_last_assistant(self):
-        """Thinking blocks are removed from all assistant messages except the last."""
+    def test_thinking_stripped_from_non_last_and_latest_tool_use_assistants(self):
+        """Signed thinking is removed from old turns and rebuilt tool-use turns."""
         messages = [
             {
                 "role": "assistant",
@@ -1617,21 +1617,44 @@ class TestThinkingBlockSignatureManagement:
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 2
 
-        # First (non-last) assistant: no thinking blocks
-        first_types = [b.get("type") for b in assistants[0]["content"]]
-        assert "thinking" not in first_types
-        assert "redacted_thinking" not in first_types
-        assert "tool_use" in first_types  # tool_use should survive
+        for assistant in assistants:
+            block_types = [b.get("type") for b in assistant["content"]]
+            assert "thinking" not in block_types
+            assert "redacted_thinking" not in block_types
+            assert "tool_use" in block_types  # tool_use should survive
 
-        # Last assistant: thinking block preserved with signature
-        last_blocks = assistants[1]["content"]
-        thinking_blocks = [b for b in last_blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0]["thinking"] == "Latest reasoning."
-        assert thinking_blocks[0]["signature"] == "sig_new"
+    def test_multiple_signed_thinking_blocks_stripped_from_latest_tool_use_turn(self):
+        """Parallel tool calls must not replay any signed thinking blocks."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Private step 1.", "signature": "sig_1"},
+                    {"type": "thinking", "thinking": "Private step 2.", "signature": "sig_2"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistant = next(m for m in result if m["role"] == "assistant")
+        user = next(m for m in result if m["role"] == "user")
+        assistant_types = [b.get("type") for b in assistant["content"]]
+        user_types = [b.get("type") for b in user["content"]]
+
+        assert assistant_types.count("thinking") == 0
+        assert assistant_types.count("redacted_thinking") == 0
+        assert assistant_types.count("tool_use") == 2
+        assert user_types.count("tool_result") == 2
 
     def test_signed_thinking_preserved_on_last_turn(self):
-        """A signed thinking block on the last assistant message is kept."""
+        """A signed thinking block on the last text-only assistant message is kept."""
         messages = [
             {
                 "role": "assistant",
@@ -1701,8 +1724,8 @@ class TestThinkingBlockSignatureManagement:
         blocks = result[0]["content"]
         assert not any(b.get("type") == "redacted_thinking" for b in blocks)
 
-    def test_cache_control_stripped_from_thinking_blocks(self):
-        """cache_control markers are removed from thinking/redacted_thinking blocks."""
+    def test_redacted_thinking_with_data_stripped_on_latest_tool_use_turn(self):
+        """Signed redacted thinking is unsafe when replaying rebuilt tool_use."""
         messages = [
             {
                 "role": "assistant",
@@ -1710,6 +1733,24 @@ class TestThinkingBlockSignatureManagement:
                 "tool_calls": [
                     {"id": "tc_1", "function": {"name": "t", "arguments": "{}"}},
                 ],
+                "reasoning_details": [
+                    {"type": "redacted_thinking", "data": "opaque_signature_data"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        block_types = [b.get("type") for b in assistant["content"]]
+        assert "redacted_thinking" not in block_types
+        assert "tool_use" in block_types
+
+    def test_cache_control_stripped_from_thinking_blocks(self):
+        """cache_control markers are removed from preserved thinking blocks."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Answer.",
                 "reasoning_details": [
                     {
                         "type": "thinking",
@@ -1719,13 +1760,16 @@ class TestThinkingBlockSignatureManagement:
                     },
                 ],
             },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
         ]
         _, result = convert_messages_to_anthropic(messages)
         assistant = next(m for m in result if m["role"] == "assistant")
-        for block in assistant["content"]:
-            if block.get("type") in {"thinking", "redacted_thinking"}:
-                assert "cache_control" not in block
+        thinking_blocks = [
+            block for block in assistant["content"]
+            if block.get("type") in {"thinking", "redacted_thinking"}
+        ]
+        assert thinking_blocks
+        for block in thinking_blocks:
+            assert "cache_control" not in block
 
     def test_thinking_stripped_from_merged_consecutive_assistants(self):
         """When consecutive assistants are merged, second one's thinking is dropped."""

@@ -324,15 +324,109 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+_PROJECT_LOCAL_SUBDIRS: Tuple[str, ...] = (".claude/skills", ".agents/skills", "skills")
+_PROJECT_LOCAL_FLAG_CACHE: Dict[Tuple[str, int], bool] = {}
+
+
+def _project_local_enabled() -> bool:
+    """True if ``skills.project_local`` is set in config.yaml (default False).
+
+    Cached on config.yaml mtime, mirroring :func:`get_external_skills_dirs`: this
+    is consulted once per skill during banner / tool-registry scans, so the YAML
+    parse must not run on every call.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        stat = config_path.stat()
+        cache_key: Optional[Tuple[str, int]] = (str(config_path), stat.st_mtime_ns)
+    except OSError:
+        cache_key = None
+    if cache_key is not None:
+        cached = _PROJECT_LOCAL_FLAG_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+        enabled = bool(isinstance(skills_cfg, dict) and skills_cfg.get("project_local"))
+    except Exception:
+        enabled = False
+    if cache_key is not None:
+        _PROJECT_LOCAL_FLAG_CACHE[cache_key] = enabled
+    return enabled
+
+
+def _find_project_root(start: Path) -> Path:
+    """Nearest ancestor (including ``start``) containing a ``.git``; else ``start``."""
+    try:
+        cur = start.resolve()
+    except Exception:
+        cur = start
+    for _ in range(50):  # bounded walk to the filesystem root
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start
+
+
+def get_project_local_skills_dirs(cwd: Optional[Path] = None) -> List[Path]:
+    """Project-local skill directories for the working repo (issue #4667).
+
+    Discovers ``.claude/skills`` / ``.agents/skills`` / ``skills`` at the
+    *project root* (nearest git root at/above ``cwd``, else ``cwd``) so a repo's
+    own skills load when Hermes works inside it -- without the global
+    ``skills.external_dirs`` pollution of every other project.
+
+    Off by default; enable with ``skills.project_local: true`` in config.yaml
+    (settable per profile).  Returns only existing directories, deduped, and
+    never the local ``~/.hermes/skills/`` dir.
+    """
+    if not _project_local_enabled():
+        return []
+    base = Path(cwd) if cwd is not None else Path(os.getcwd())
+    root = _find_project_root(base)
+    local_skills = get_skills_dir().resolve()
+    seen: Set[Path] = set()
+    result: List[Path] = []
+    for sub in _PROJECT_LOCAL_SUBDIRS:
+        candidate = root / sub
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            continue
+        if candidate == local_skills or candidate in seen:
+            continue
+        if candidate.is_dir():
+            seen.add(candidate)
+            result.append(candidate)
+    return result
+
+
 def get_all_skills_dirs() -> List[Path]:
     """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
     """
-    dirs = [get_skills_dir()]
-    dirs.extend(get_external_skills_dirs())
-    return dirs
+    ordered = [get_skills_dir()]
+    ordered.extend(get_project_local_skills_dirs())  # #4667 (opt-in)
+    ordered.extend(get_external_skills_dirs())
+    seen: Set[Path] = set()
+    deduped: List[Path] = []
+    for d in ordered:
+        try:
+            resolved = d.resolve()
+        except Exception:
+            resolved = d
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(d)
+    return deduped
 
 
 # ── Condition extraction ──────────────────────────────────────────────────

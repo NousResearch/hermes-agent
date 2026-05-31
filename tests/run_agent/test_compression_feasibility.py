@@ -141,6 +141,56 @@ def test_no_warning_when_aux_context_sufficient(mock_get_client, mock_ctx_len):
     assert agent._compression_warning is None
 
 
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_resolves_slug_keyed_custom_provider_context(mock_get_client):
+    """Aux feasibility honors a slug-keyed custom_providers context_length.
+
+    The aux compression model runs under an LM Studio ``publisher/slug``
+    runtime id (``lmstudio/qwen3-coder-30b``) while ``custom_providers`` keys
+    the bare slug (``qwen3-coder-30b``). The shared slug-tolerant resolver must
+    surface the full 1M window through ``get_model_context_length`` step-0b, so
+    the feasibility check sees a context far above the threshold and does NOT
+    auto-lower it.
+
+    Regression guard for the slug path *through* compression: the other tests
+    in this file stub ``get_model_context_length`` and therefore cannot observe
+    a step-0b regression. Here it is deliberately NOT mocked — the resolver
+    chain is the unit under test. ``base_url`` is a localhost custom endpoint,
+    so step-0b short-circuits before any live probe (hermetic).
+
+    The 500K threshold is chosen ABOVE DEFAULT_FALLBACK_CONTEXT (256K, the
+    largest probe tier): only the slug-resolved 1M window can clear it, so the
+    assertions are genuinely RED if the slug fallback regresses (the resolver
+    would return None, resolution would fall through to the 256K default,
+    256K < 500K would trip the auto-lower warning).
+    """
+    agent = _make_agent(main_context=1_000_000, threshold_percent=0.50)
+    # threshold = 500,000 — above every probe tier (max 256K)
+    agent.provider = "custom"
+    agent._custom_providers = [
+        {
+            "name": "lmstudio",
+            "base_url": "http://localhost:1234/v1",
+            "models": {"qwen3-coder-30b": {"context_length": 1_048_576}},
+        }
+    ]
+    mock_client = MagicMock()
+    mock_client.base_url = "http://localhost:1234/v1"
+    mock_client.api_key = "lm-studio"
+    # Prefixed runtime id ≠ bare "qwen3-coder-30b" config key → slug fallback.
+    mock_get_client.return_value = (mock_client, "lmstudio/qwen3-coder-30b")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    # 1,048,576 > 500,000 threshold → no warning, none stored, threshold kept.
+    assert messages == []
+    assert agent._compression_warning is None
+    assert agent.context_compressor.threshold_tokens == 500_000
+
+
 def test_feasibility_check_passes_live_main_runtime():
     """Compression feasibility should probe using the live session runtime."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)

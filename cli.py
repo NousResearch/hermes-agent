@@ -4026,10 +4026,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Format per-prompt elapsed time for the status bar.
 
         Always returns a string — shows 0s on fresh start before first turn.
-        Keeps seconds visible at all scales so it increments smoothly:
-            59s → 1m → 1m 1s → ... → 1m 59s → 2m → 2m 1s → ...
-            59m 59s → 1h → 1h 0m 1s → ...
-            23h 59m 59s → 1d → 1d 0h 1m → ...
+        Keeps seconds visible and zero-padded once minutes are shown so the
+        live footer never shrinks at minute/hour rollovers:
+            59s → 1m00s → 1m01s → ... → 1m59s → 2m00s
+            59m59s → 1h00m00s → 1h00m01s → ...
+            23h59m59s → 1d00h00m00s → ...
 
         Emoji prefix: ⏱ when turn is live, ⏲ when frozen or fresh start.
         Uses width-1 (no variation selector) glyphs so the status bar stays
@@ -4038,23 +4039,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if prompt_start_time is None and prompt_duration == 0.0:
             return "⏲ 0s"
         elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
-        elapsed = max(0.0, elapsed)
+        total_seconds = max(0, int(elapsed))
 
-        days = int(elapsed // 86400)
-        remaining = elapsed % 86400
-        hours = int(remaining // 3600)
-        remaining = remaining % 3600
-        minutes = int(remaining // 60)
-        seconds = int(remaining % 60)
+        days, remaining = divmod(total_seconds, 86400)
+        hours, remaining = divmod(remaining, 3600)
+        minutes, seconds = divmod(remaining, 60)
 
         if days > 0:
-            time_str = f"{days}d {hours}h {minutes}m"
+            time_str = f"{days}d{hours:02d}h{minutes:02d}m{seconds:02d}s"
         elif hours > 0:
-            time_str = f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m"
+            time_str = f"{hours}h{minutes:02d}m{seconds:02d}s"
         elif minutes > 0:
-            time_str = f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+            time_str = f"{minutes}m{seconds:02d}s"
         else:
-            time_str = f"{int(elapsed)}s"
+            time_str = f"{total_seconds}s"
 
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"

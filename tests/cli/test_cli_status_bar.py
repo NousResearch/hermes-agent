@@ -414,6 +414,20 @@ class TestCLIStatusBar:
         assert len(short_elapsed) == len(long_elapsed)
         assert "m" in long_elapsed and "s" in long_elapsed
 
+    def test_prompt_elapsed_format_is_rollover_stable(self):
+        before = HermesCLI._format_prompt_elapsed(None, (25 * 60) + 59, live=True)
+        after = HermesCLI._format_prompt_elapsed(None, 26 * 60, live=True)
+
+        assert before == "⏱ 25m59s"
+        assert after == "⏱ 26m00s"
+        assert len(after) == len(before)
+
+    def test_prompt_elapsed_seconds_component_never_exceeds_59(self):
+        rendered = HermesCLI._format_prompt_elapsed(None, (25 * 60) + 35.1, live=True)
+
+        assert rendered == "⏱ 25m35s"
+        assert "351s" not in rendered
+
     def test_voice_status_bar_compacts_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._voice_mode = True

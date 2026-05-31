@@ -1,0 +1,10 @@
+name: web-yandex
+version: 1.0.0
+description: "Yandex Cloud Search API (paid) — sync /web/search; requires billing account and Search API key (YANDEX_CLOUD_*), separate from YANDEX_API_KEY used for LLM"
+author: pamnard
+kind: backend
+provides_web_providers:
+  - yandex
+requires_env:
+  - YANDEX_CLOUD_API_KEY
+  - YANDEX_CLOUD_FOLDER_ID

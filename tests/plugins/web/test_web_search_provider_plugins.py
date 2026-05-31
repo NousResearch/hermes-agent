@@ -45,6 +45,8 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "YANDEX_CLOUD_API_KEY",
+        "YANDEX_CLOUD_FOLDER_ID",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -70,7 +72,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestBundledPluginsRegister:
     """All eight bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_nine_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -84,6 +86,7 @@ class TestBundledPluginsRegister:
             "searxng",
             "tavily",
             "xai",
+            "yandex",
         ]
 
     @pytest.mark.parametrize(
@@ -98,6 +101,7 @@ class TestBundledPluginsRegister:
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
+            ("yandex", True, False),
         ],
     )
     def test_capability_flags_match_spec(
@@ -116,7 +120,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "yandex"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +133,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "yandex"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -244,6 +248,18 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False  # no XAI_API_KEY, no auth.json
         monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_yandex_requires_cloud_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("yandex")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("YANDEX_CLOUD_API_KEY", "real")
+        assert p.is_available() is False
+        monkeypatch.setenv("YANDEX_CLOUD_FOLDER_ID", "folder")
         assert p.is_available() is True
 
 
@@ -491,6 +507,17 @@ class TestErrorResponseShapes:
         from agent.web_search_registry import get_provider
 
         p = get_provider("xai")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    def test_yandex_search_returns_error_dict_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("yandex")
         assert p is not None
         result = p.search("test", limit=5)
         assert isinstance(result, dict)

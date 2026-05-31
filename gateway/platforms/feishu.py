@@ -163,98 +163,58 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# ---------------------------------------------------------------------------
+# Interactive card (Schema 2.0) payloads — used for content that the post-type
+# 'md' renderer cannot handle (notably GFM tables).
+# ---------------------------------------------------------------------------
 
 
-def _convert_gfm_tables_to_list(content: str) -> str:
-    """Convert GFM markdown tables to Feishu-friendly list format.
+def _build_interactive_card_payload(content: str) -> str:
+    """Build a Schema 2.0 interactive card that renders GFM tables natively.
 
-    Feishu post-type ``md`` elements do not render GFM tables.  Instead of
-    letting ``_build_outbound_payload`` force a plain-text fallback (which
-    loses *all* formatting), we pre-convert tables to bullet-list items so
-    the surrounding markdown (headings, bold, links, code blocks, etc.)
-    remains intact.
+    Feishu JSON 2.0 ``tag: markdown`` components support CommonMark tables,
+    while the post-type ``tag: md`` renderer does not.  When the caller
+    detects a GFM table in the content, it should route through this function
+    instead of ``_build_markdown_post_payload``.
 
-    Conversion rules
-    ----------------
-    - Header row becomes the first bullet: ``- **col1** · **col2** · ...``
-    - Separator row (``|---|---|``) is dropped.
-    - Data rows become: ``- val1 · val2 · ...``
-    - Single-column tables emit plain ``- value`` (no middle-dot separator).
-    - Tables inside fenced code blocks are left untouched.
+    For content longer than ~4 000 characters, split into multiple
+    ``tag: markdown`` elements so the card isn't truncated.
     """
-    if not content or "|" not in content:
-        return content
+    _MAX_CARD_SEGMENT = 4000
 
-    lines = content.split("\n")
-    result: list[str] = []
-    in_code_block = False
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Track code-block boundaries.
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
-            result.append(line)
-            i += 1
+    segments = []
+    start = 0
+    while start < len(content):
+        end = start + _MAX_CARD_SEGMENT
+        if end >= len(content):
+            segments.append(content[start:])
+        else:
+            # Try to break at a newline.
+            break_pos = content.rfind("\n", start, end)
+            if break_pos > start:
+                segments.append(content[start:break_pos])
+                start = break_pos
+            else:
+                segments.append(content[start:end])
+                start = end
             continue
-        if in_code_block:
-            result.append(line)
-            i += 1
-            continue
+        start = len(content)
 
-        # Detect table start: header row followed by separator row.
-        if (
-            re.match(r"^\|.+\|$", stripped)
-            and i + 1 < len(lines)
-            and re.match(r"^\|[-|: ]+\|$", lines[i + 1].strip())
-        ):
-            # Parse header.
-            headers = [c.strip() for c in stripped[1:-1].split("|")]
-            if any(h for h in headers):
-                header_parts = [f"**{h}**" for h in headers if h]
-                if len(header_parts) > 1:
-                    result.append("- " + " · ".join(header_parts))
-                elif header_parts:
-                    result.append(f"- {header_parts[0]}")
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Hermes"},
+            "template": "blue",
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": seg} for seg in segments
+            ],
+        },
+    }
 
-            # Skip separator row.
-            i += 2
-
-            # Parse data rows until a non-table line.
-            while i < len(lines):
-                row_stripped = lines[i].strip()
-                if not re.match(r"^\|.+\|$", row_stripped):
-                    break
-                cells = [c.strip() for c in row_stripped[1:-1].split("|")]
-                # Pad or trim to match header length.
-                while len(cells) < len(headers):
-                    cells.append("")
-                cells = cells[: len(headers)]
-                if len(headers) > 1:
-                    row_parts = []
-                    for h, v in zip(headers, cells):
-                        if h and v:
-                            row_parts.append(f"**{h}** {v}")
-                        elif v:
-                            row_parts.append(v)
-                    if row_parts:
-                        result.append("- " + " · ".join(row_parts))
-                else:
-                    val = cells[0] if cells else ""
-                    if val:
-                        result.append(f"- {val}")
-                i += 1
-            # Add a blank line after the converted table for readability.
-            result.append("")
-            continue
-
-        result.append(line)
-        i += 1
-
-    return "\n".join(result)
+    return json.dumps(card, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1870,7 +1830,6 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        formatted = _convert_gfm_tables_to_list(formatted)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1929,7 +1888,6 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
-        content = _convert_gfm_tables_to_list(content)
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -4400,12 +4358,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # Send tables via interactive card (Schema 2.0) where the
+        # tag:markdown component supports GFM tables natively.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_interactive_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

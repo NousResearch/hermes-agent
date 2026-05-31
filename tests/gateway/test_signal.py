@@ -1,12 +1,13 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +42,7 @@ def _stub_rpc(return_value):
     """Return an async mock for SignalAdapter._rpc that captures call params."""
     captured = []
 
-    async def mock_rpc(method, params, rpc_id=None):
+    async def mock_rpc(method, params, rpc_id=None, **kwargs):
         captured.append({"method": method, "params": dict(params)})
         return return_value
 
@@ -55,7 +56,7 @@ def _stub_rpc(return_value):
 class TestSignalConfigLoading:
     def test_apply_env_overrides_signal(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
-        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+155****4567")
 
         from gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
@@ -65,7 +66,7 @@ class TestSignalConfigLoading:
         sc = config.platforms[Platform.SIGNAL]
         assert sc.enabled is True
         assert sc.extra["http_url"] == "http://localhost:9090"
-        assert sc.extra["account"] == "+15551234567"
+        assert sc.extra["account"] == "+155****4567"
 
     def test_signal_not_loaded_without_both_vars(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
@@ -76,6 +77,46 @@ class TestSignalConfigLoading:
         _apply_env_overrides(config)
 
         assert Platform.SIGNAL not in config.platforms
+
+    def test_yaml_bridges_signal_require_mention_and_free_response_groups(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "signal:\n"
+            "  require_mention: true\n"
+            "  free_response_groups:\n"
+            "    - group-a\n"
+            "    - group-b\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SIGNAL_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("SIGNAL_FREE_RESPONSE_GROUPS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("SIGNAL_REQUIRE_MENTION") == "true"
+        assert os.environ.get("SIGNAL_FREE_RESPONSE_GROUPS") == "group-a,group-b"
+
+    def test_yaml_does_not_override_signal_require_mention_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "signal:\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SIGNAL_REQUIRE_MENTION", "false")
+
+        load_gateway_config()
+
+        assert os.environ.get("SIGNAL_REQUIRE_MENTION") == "false"
+
 
 # ---------------------------------------------------------------------------
 # Adapter Init & Helpers
@@ -1824,7 +1865,7 @@ class TestSignalGroupV2Routing:
 
     @pytest.mark.asyncio
     async def test_group_v2_id_routes_as_group(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*", require_mention=False)
         captured = []
 
         async def _capture(event):
@@ -1845,8 +1886,39 @@ class TestSignalGroupV2Routing:
         assert captured[0].text == "hello v2"
 
     @pytest.mark.asyncio
+    async def test_sync_sent_group_v2_routes_as_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*", require_mention=False)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceName": "Alice",
+                "sourceUuid": "sender-uuid",
+                "timestamp": 1700000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "timestamp": 1700000000000,
+                        "message": "hello sync v2",
+                        "groupV2": {"id": "sync-v2=="},
+                    }
+                },
+            }
+        })
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:sync-v2=="
+        assert captured[0].source.chat_type == "group"
+        assert captured[0].text == "hello sync v2"
+
+    @pytest.mark.asyncio
     async def test_legacy_group_info_still_works(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*", require_mention=False)
         captured = []
 
         async def _capture(event):
@@ -1866,9 +1938,138 @@ class TestSignalGroupV2Routing:
         assert captured[0].source.chat_type == "group"
 
     @pytest.mark.asyncio
+    async def test_mention_required_for_groups_by_default(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="g-mentions==",
+            require_mention=True,
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        # Missing mention must be ignored.
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "hello everyone",
+            "groupV2": {"id": "g-mentions=="},
+        }))
+        assert len(captured) == 0
+
+        # Mentioned-by-metadata message should be delivered.
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "hi \uFFFC",
+            "groupV2": {"id": "g-mentions=="},
+            "mentions": [
+                {
+                    "start": 3,
+                    "length": 1,
+                    "number": "+155****4567",
+                    "uuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                },
+            ],
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].text == "hi @+155****4567"
+
+    @pytest.mark.asyncio
+    async def test_mention_required_accepts_account_uuid_metadata(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="g-mentions==",
+            require_mention=True,
+        )
+        adapter._account_identifiers.add("bot-account-uuid")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "hi \uFFFC",
+            "groupV2": {"id": "g-mentions=="},
+            "mentions": [{"start": 3, "length": 1, "uuid": "bot-account-uuid"}],
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].text == "hi @bot-account-uuid"
+
+    @pytest.mark.asyncio
+    async def test_plain_hermes_alias_satisfies_group_require_mention(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="g-mentions==",
+            require_mention=True,
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "@hermes are you there?",
+            "groupV2": {"id": "g-mentions=="},
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].text == "@hermes are you there?"
+
+    @pytest.mark.asyncio
+    async def test_command_bypasses_group_require_mention(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="g-commands==",
+            require_mention=True,
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "/help",
+            "groupV2": {"id": "g-commands=="},
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].text == "/help"
+
+    @pytest.mark.asyncio
+    async def test_free_response_group_bypasses_mention_filter(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="g-free==",
+            free_response_groups="g-free==",
+            require_mention=True,
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "status update",
+            "groupV2": {"id": "g-free=="},
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].text == "status update"
+
+    @pytest.mark.asyncio
     async def test_group_v2_preferred_over_group_info(self, monkeypatch):
         """When both fields are present, groupV2 wins — it's the authoritative V2 id."""
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*", require_mention=False)
         captured = []
 
         async def _capture(event):
@@ -1903,12 +2104,14 @@ class TestSignalGroupV2Routing:
 
         assert len(captured) == 1
         assert captured[0].source.chat_type == "dm"
-        assert captured[0].source.chat_id == "+15559998888"
+        assert captured[0].source.chat_id == captured[0].source.user_id
+        assert captured[0].source.user_id.endswith("8888")
+
 
     @pytest.mark.asyncio
     async def test_group_v2_respects_allowlist(self, monkeypatch):
         """V2 group ids flow through the same SIGNAL_GROUP_ALLOWED_USERS filter."""
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="allowed-v2==")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="allowed-v2==", require_mention=False)
         captured = []
 
         async def _capture(event):
@@ -1930,6 +2133,49 @@ class TestSignalGroupV2Routing:
         }))
         assert len(captured) == 1
         assert captured[0].source.chat_id == "group:allowed-v2=="
+
+    @pytest.mark.asyncio
+    async def test_group_allowlist_accepts_group_names(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="AgentChat", require_mention=False)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "allowed by name",
+            "groupV2": {"id": "agent-chat-v2==", "name": "AgentChat"},
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:agent-chat-v2=="
+
+    @pytest.mark.asyncio
+    async def test_group_allowlist_names_resolve_to_ids_on_connect(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="AgentChat", require_mention=False)
+        adapter._rpc = AsyncMock(return_value=[
+            {"id": "resolved-agent-chat==", "name": "AgentChat"},
+        ])
+
+        await adapter._resolve_group_allowlist_names()
+
+        assert "resolved-agent-chat==" in adapter.group_allow_from
+        assert "group:resolved-agent-chat==" in adapter.group_allow_from
+
+    @pytest.mark.asyncio
+    async def test_account_identifier_resolution_adds_account_uuid(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        adapter._rpc = AsyncMock(return_value=[
+            {"number": "+155****4567", "uuid": "account-uuid"},
+            {"number": "+155****9999", "uuid": "other-uuid"},
+        ])
+
+        await adapter._resolve_account_identifiers()
+
+        assert "account-uuid" in adapter._account_identifiers
+        assert "other-uuid" not in adapter._account_identifiers
 
     @pytest.mark.asyncio
     async def test_malformed_group_fields_fall_through_to_dm(self, monkeypatch):

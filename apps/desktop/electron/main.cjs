@@ -1127,6 +1127,15 @@ async function applyUpdates(opts = {}) {
 
   try {
     const updater = resolveUpdaterBinary()
+    if (!updater && !IS_WINDOWS) {
+      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
+      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
+      // there's no mandatory file locking here, so the desktop can drive the
+      // whole update itself: `hermes update` (backend) + `hermes desktop
+      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
+      // with the freshly built one and relaunch.
+      return await applyUpdatesPosixInApp(opts)
+    }
     if (!updater) {
       // No staged updater binary — this is a CLI-installed user (they ran
       // `hermes desktop`, never the Tauri installer that self-copies
@@ -1176,6 +1185,174 @@ async function applyUpdates(opts = {}) {
   } finally {
     updateInFlight = false
   }
+}
+
+// Resolve the hermes CLI to drive an in-app update: prefer the venv shim in
+// the install we're updating, fall back to `hermes` on PATH.
+function resolveHermesCliBinary(updateRoot) {
+  const venvHermes = path.join(updateRoot, 'venv', 'bin', 'hermes')
+  if (fileExists(venvHermes)) return venvHermes
+  return findOnPath('hermes') || null
+}
+
+// Spawn a command and stream each output line to the update progress channel.
+function runStreamedUpdate(command, args, { cwd, env, stage } = {}) {
+  return new Promise(resolve => {
+    let child
+    try {
+      child = spawn(command, args, {
+        cwd,
+        env: { ...process.env, ...(env || {}) },
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+    } catch (err) {
+      resolve({ code: 1, error: err.message })
+      return
+    }
+    const emitLines = chunk => {
+      for (const line of chunk.toString().split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed) emitUpdateProgress({ stage, message: trimmed, percent: null })
+      }
+    }
+    child.stdout.on('data', emitLines)
+    child.stderr.on('data', emitLines)
+    child.once('error', err => resolve({ code: 1, error: err.message }))
+    child.once('exit', code => resolve({ code }))
+  })
+}
+
+// The running app's .app bundle (packaged macOS): execPath is
+// <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
+function runningAppBundle() {
+  if (!IS_MAC) return null
+  let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
+  for (let i = 0; i < 2; i++) dir = path.dirname(dir) // -> .../X.app
+  return dir.endsWith('.app') ? dir : null
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+// macOS/Linux in-app update: backend (`hermes update`) + OS-aware GUI rebuild
+// (`hermes desktop --build-only`), then atomically swap the running .app bundle
+// with the freshly built one and relaunch. Degrades to "backend updated,
+// restart to load the new GUI" if the swap can't be performed.
+async function applyUpdatesPosixInApp(opts = {}) {
+  const updateRoot = resolveUpdateRoot()
+  const hermes = resolveHermesCliBinary(updateRoot)
+  if (!hermes) {
+    emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
+    return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
+  }
+
+  // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
+  // npm build can find them on a machine with no system Node.
+  const extraPath = [path.join(HERMES_HOME, 'node', 'bin'), path.join(updateRoot, 'venv', 'bin')]
+    .filter(Boolean)
+    .join(path.delimiter)
+  const env = {
+    HERMES_HOME,
+    PATH: [extraPath, process.env.PATH].filter(Boolean).join(path.delimiter)
+  }
+
+  // Branch-pin so a non-main checkout doesn't get switched to main.
+  let branchArgs = []
+  try {
+    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+    const branch = (head.stdout || '').trim()
+    if (head.code === 0 && branch && branch !== 'HEAD') branchArgs = ['--branch', branch]
+  } catch {
+    // best effort
+  }
+
+  emitUpdateProgress({ stage: 'update', message: 'Updating Hermes (git + dependencies)…', percent: 10 })
+  const updated = await runStreamedUpdate(hermes, ['update', '--yes', ...branchArgs], {
+    cwd: updateRoot,
+    env,
+    stage: 'update'
+  })
+  if (updated.code !== 0) {
+    emitUpdateProgress({ stage: 'error', message: 'hermes update failed.', error: updated.error || 'update-failed' })
+    return { ok: false, error: 'hermes update failed' }
+  }
+
+  emitUpdateProgress({ stage: 'rebuild', message: 'Rebuilding the desktop app…', percent: 60 })
+  const rebuilt = await runStreamedUpdate(hermes, ['desktop', '--build-only'], {
+    cwd: updateRoot,
+    env,
+    stage: 'rebuild'
+  })
+  if (rebuilt.code !== 0) {
+    emitUpdateProgress({
+      stage: 'error',
+      message: 'Backend updated, but the desktop rebuild failed. Restart Hermes to retry.',
+      error: rebuilt.error || 'rebuild-failed'
+    })
+    return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
+  }
+
+  const rebuiltApp = [
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
+  ].find(directoryExists)
+  const targetApp = runningAppBundle()
+
+  // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
+  // backend is updated; the next launch picks up the rebuilt GUI.
+  if (!rebuiltApp || !targetApp) {
+    emitUpdateProgress({
+      stage: 'done',
+      message: 'Backend updated. Restart Hermes to load the new version.',
+      percent: 100
+    })
+    return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
+  }
+
+  emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
+
+  // Detached swapper: wait for THIS process to exit (so the bundle is free),
+  // ditto the rebuilt app over the running one, clear quarantine, relaunch.
+  const swapScript = `#!/bin/bash
+set -u
+APP_PID=${process.pid}
+SRC=${shellQuote(rebuiltApp)}
+DST=${shellQuote(targetApp)}
+for _ in $(seq 1 240); do
+  kill -0 "$APP_PID" 2>/dev/null || break
+  sleep 0.5
+done
+if [ "$SRC" != "$DST" ]; then
+  if /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
+    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
+    mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
+    mv "$DST.hermes-update-new" "$DST"
+    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
+  fi
+fi
+/usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
+/usr/bin/open "$DST"
+`
+  const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
+  try {
+    fs.writeFileSync(scriptPath, swapScript, { mode: 0o755 })
+  } catch (err) {
+    emitUpdateProgress({
+      stage: 'done',
+      message: 'Backend + app updated. Restart Hermes to load the new version.',
+      percent: 100
+    })
+    rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${rebuiltApp}`)
+    return { ok: true, backendUpdated: true, rebuiltApp }
+  }
+
+  const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+  child.unref()
+  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
+
+  setTimeout(() => app.quit(), 600)
+  return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
 
 function readJson(filePath) {

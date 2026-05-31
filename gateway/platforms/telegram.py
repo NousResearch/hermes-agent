@@ -5802,6 +5802,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None
+        topic_model = None
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
@@ -5827,6 +5828,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")
                             topic_skill = topic.get("skill")
+                            topic_model = str(topic.get("model") or "").strip() or None
                             break
                     break
 
@@ -5897,6 +5899,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            channel_model=topic_model,
             timestamp=message.date,
         )
 

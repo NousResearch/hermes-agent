@@ -1330,6 +1330,10 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Per-route model override (e.g. Telegram group_topics model).  Resolved
+    # in the adapter (scoped by chat_id) so it can't collide across groups.
+    channel_model: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the

@@ -2520,6 +2520,7 @@ class GatewayRunner:
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        channel_model: Optional[str] = None,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session, honoring session-scoped /model overrides.
 
@@ -2549,6 +2550,11 @@ class GatewayRunner:
                     model = routed
             except Exception:
                 logger.debug("channel_models lookup failed", exc_info=True)
+
+        # A per-route model the adapter already resolved (e.g. Telegram
+        # group_topics, scoped by chat_id) wins over flat channel_models.
+        if channel_model:
+            model = channel_model
 
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
@@ -9287,6 +9293,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                channel_model=getattr(event, "channel_model", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -16671,6 +16678,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        channel_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -17389,6 +17397,7 @@ class GatewayRunner:
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                    channel_model=channel_model,
                 )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
@@ -18754,6 +18763,7 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_channel_model = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -18771,6 +18781,7 @@ class GatewayRunner:
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_channel_model = getattr(pending_event, "channel_model", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -18796,6 +18807,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    channel_model=next_channel_model,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

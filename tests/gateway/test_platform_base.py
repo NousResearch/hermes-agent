@@ -449,6 +449,54 @@ class TestMediaExtensionAllowlistParity:
         assert "Here is your report:" in stripped
 
 
+class TestSourceCodeMediaDelivery:
+    """Source code, build manifests, and log files are deliverable as MEDIA:.
+
+    Code review, snippet sharing, and log triage are common chat-driven
+    workflows; without ``.py``/``.js``/``.ts``/``.log`` etc. in the allowlist
+    the agent silently dropped the attachment and the user only saw the prose
+    around it. Sensitive single-purpose config formats (``.env``, ``.conf``,
+    ``.ini``) are intentionally excluded — the credential-path denylist is a
+    backstop, but keeping these out of the extension allowlist is the cheaper
+    layer of defence.
+    """
+
+    SOURCE_CODE_EXTS = [
+        # Python / shell / Web
+        "py", "js", "ts", "tsx", "jsx", "mjs", "cjs",
+        "sh", "bash", "zsh", "fish",
+        # Systems / native
+        "go", "rs", "sol", "cpp", "cc", "cxx", "c", "h", "hpp",
+        # JVM / mobile
+        "java", "kt", "scala", "swift",
+        # Scripting
+        "rb", "php", "lua", "pl", "r",
+        # Build / metadata / web
+        "toml", "css",
+        # Logs
+        "log",
+    ]
+
+    def test_source_code_extensions_extract_via_media_tag(self):
+        for ext in self.SOURCE_CODE_EXTS:
+            path = f"/home/u/snippet.{ext}"
+            media, _ = BasePlatformAdapter.extract_media(f"See MEDIA:{path}")
+            assert media == [(path, False)], (
+                f".{ext} should extract via MEDIA: tag"
+            )
+
+    def test_sensitive_config_extensions_are_NOT_in_allowlist(self):
+        """``.env``/``.conf``/``.ini`` are deliberately omitted — adding them
+        would let a prompt-injected agent run exfiltrate credentials by
+        emitting ``MEDIA:~/.env`` even on hosts where the path-denylist
+        somehow doesn't cover the location."""
+        from gateway.platforms.base import MEDIA_DELIVERY_EXTS
+        for ext in (".env", ".conf", ".ini"):
+            assert ext not in MEDIA_DELIVERY_EXTS, (
+                f"{ext} must stay out of the MEDIA allowlist"
+            )
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(

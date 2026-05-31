@@ -1177,7 +1177,23 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Archives
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".apk", ".ipa",
     # Web / rendered output
-    ".html", ".htm",
+    ".html", ".htm", ".css",
+    # Source code (delivered as file attachments — non-credential code review,
+    # snippet sharing, log triage). Sensitive config (.env, .conf, .ini) is
+    # intentionally excluded; the credential-path denylist in
+    # ``_media_delivery_denied_paths`` is a defence-in-depth backstop, but
+    # keeping these out of the extension allowlist also prevents accidental
+    # delivery from non-denied locations.
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs",
+    ".go", ".rs", ".sh", ".bash", ".zsh", ".fish",
+    ".sol", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp",
+    ".java", ".kt", ".scala",
+    ".rb", ".php", ".swift",
+    ".lua", ".pl", ".r",
+    # Build / project metadata (non-credential)
+    ".toml",
+    # Logs
+    ".log",
 )
 
 # Regex alternation fragment of bare extensions (no leading dot), e.g.

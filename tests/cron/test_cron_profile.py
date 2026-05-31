@@ -222,13 +222,18 @@ class TestRunJobProfileContext:
         monkeypatch.setattr(sched, "_hermes_home", None)
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
 
-        import dotenv
+        # The scheduler reloads env via hermes_cli.env_loader.load_hermes_dotenv
+        # (not bare dotenv.load_dotenv) so BSM secrets re-resolve per run.
+        import hermes_cli.env_loader as env_loader
+        from pathlib import Path
 
-        def fake_load_dotenv(path, *_a, **_kw):
-            observed.setdefault("dotenv_paths", []).append(str(path))
-            return True
+        def fake_load_hermes_dotenv(*, hermes_home=None, project_env=None):
+            env_path = Path(hermes_home) / ".env"
+            observed.setdefault("dotenv_paths", []).append(str(env_path))
+            return [env_path]
 
-        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+        monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
+        monkeypatch.setattr(env_loader, "reset_secret_source_cache", lambda: None)
 
     def test_run_job_sets_and_restores_profile_home(
         self, isolated_cron_profile_home, monkeypatch
@@ -263,8 +268,9 @@ class TestRunJobProfileContext:
     def test_profile_dotenv_environment_is_restored(
         self, isolated_cron_profile_home, monkeypatch
     ):
-        import dotenv
         import cron.scheduler as sched
+        import hermes_cli.env_loader as env_loader
+        from pathlib import Path
 
         root, profile_home = isolated_cron_profile_home
         observed: dict = {}
@@ -272,14 +278,15 @@ class TestRunJobProfileContext:
         monkeypatch.setenv("HERMES_PROFILE_TEST_SHARED", "outer")
         monkeypatch.delenv("HERMES_PROFILE_TEST_ONLY", raising=False)
 
-        def fake_load_dotenv(path, *_a, **_kw):
-            observed.setdefault("dotenv_paths", []).append(str(path))
+        def fake_load_hermes_dotenv(*, hermes_home=None, project_env=None):
+            env_path = Path(hermes_home) / ".env"
+            observed.setdefault("dotenv_paths", []).append(str(env_path))
             os.environ["HERMES_PROFILE_TEST_SHARED"] = "profile-value"
             os.environ["HERMES_PROFILE_TEST_ONLY"] = "profile-only"
             os.environ["HERMES_CRON_TIMEOUT"] = "123"
-            return True
+            return [env_path]
 
-        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+        monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
 
         job = {
             "id": "env-profile",

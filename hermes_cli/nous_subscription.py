@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.config import get_env_value, load_config
-from hermes_cli.nous_account import NousPortalAccountInfo, get_nous_portal_account_info
+from hermes_cli.nous_account import (
+    NousPortalAccountInfo,
+    format_nous_portal_entitlement_message,
+    get_nous_portal_account_info,
+)
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
@@ -882,3 +886,136 @@ def prompt_enable_tool_gateway(
         if already_managed and not newly_switched:
             print("  (all tools already using Tool Gateway)")
     return changed
+
+
+# ---------------------------------------------------------------------------
+# Inline Nous Portal login for the Tool Gateway picker (`hermes tools`)
+# ---------------------------------------------------------------------------
+
+
+def ensure_nous_portal_access(*, capability: str = "the Nous Tool Gateway") -> bool:
+    """Make sure the user has paid Nous Portal access, logging in if needed.
+
+    Used by ``hermes tools`` when a user selects a Nous-managed Tool Gateway
+    backend (e.g. "Firecrawl (Nous Portal)").  Unlike ``hermes model``'s Nous
+    login, this:
+
+    - does NOT change the inference provider (``model.provider`` is untouched),
+    - does NOT run model selection, and
+    - does NOT offer the bulk "enable for all tools" Tool Gateway prompt.
+
+    It only performs the Nous Portal device-code OAuth (when the user isn't
+    already logged in) and refreshes entitlement, so the caller can enable the
+    single tool the user picked.
+
+    Returns ``True`` when the account has paid service access after the flow,
+    ``False`` otherwise (declined login, login failed, or no paid entitlement).
+    """
+    # Fast path: already entitled.
+    try:
+        info = get_nous_portal_account_info(force_fresh=True)
+    except Exception:
+        info = None
+    if info is not None and info.paid_service_access is True:
+        return True
+
+    # If not logged in at all, run the device-code login (auth only).
+    if info is None or not info.logged_in:
+        if not _run_nous_portal_login_only(capability=capability):
+            return False
+        try:
+            info = get_nous_portal_account_info(force_fresh=True)
+        except Exception:
+            info = None
+
+    if info is not None and info.paid_service_access is True:
+        return True
+
+    # Logged in but no paid access — surface billing guidance, do not enable.
+    message = format_nous_portal_entitlement_message(info, capability=capability)
+    if message:
+        for line in message.splitlines():
+            print(f"  {line}")
+    return False
+
+
+def _run_nous_portal_login_only(*, capability: str) -> bool:
+    """Run the Nous Portal device-code OAuth and persist credentials only.
+
+    No model selection, no provider switch, no Tool Gateway bulk prompt.
+    Returns ``True`` on a successful login, ``False`` if the user declined or
+    the flow failed.
+    """
+    try:
+        from hermes_cli.auth import (
+            _auth_store_lock,
+            _load_auth_store,
+            _nous_device_code_login,
+            _read_shared_nous_state,
+            _save_auth_store,
+            _save_provider_state,
+            _sync_nous_pool_from_auth_store,
+            _try_import_shared_nous_state,
+            _write_shared_nous_state,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"  Could not start Nous Portal login: {exc}")
+        return False
+
+    print()
+    print(f"  {capability} requires a Nous Portal login.")
+    try:
+        proceed = input("  Log in to Nous Portal now? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if proceed not in {"", "y", "yes"}:
+        print("  Skipped Nous Portal login.")
+        return False
+
+    try:
+        # Snapshot the active_provider so a tool-config login never silently
+        # switches the user's inference provider to Nous.
+        with _auth_store_lock():
+            prior_active_provider = _load_auth_store().get("active_provider")
+
+        auth_state = None
+        shared = _read_shared_nous_state()
+        if shared:
+            try:
+                do_import = input(
+                    "  Found existing Nous OAuth credentials. Import them? [Y/n]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "y"
+            if do_import in {"", "y", "yes"}:
+                auth_state = _try_import_shared_nous_state(timeout_seconds=15.0)
+
+        if auth_state is None:
+            auth_state = _nous_device_code_login()
+
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            _save_provider_state(auth_store, "nous", auth_state)
+            # Preserve the user's existing inference provider — this login is
+            # for tool entitlement only, not a provider switch.
+            if prior_active_provider:
+                auth_store["active_provider"] = prior_active_provider
+            else:
+                auth_store.pop("active_provider", None)
+            _save_auth_store(auth_store)
+
+        _write_shared_nous_state(auth_state)
+        _sync_nous_pool_from_auth_store()
+        print("  Nous Portal login successful.")
+        return True
+    except KeyboardInterrupt:
+        print("\n  Login cancelled.")
+        return False
+    except SystemExit:
+        # _nous_device_code_login raises SystemExit on subscription_required;
+        # it already printed billing guidance.
+        return False
+    except Exception as exc:
+        print(f"  Nous Portal login failed: {exc}")
+        return False

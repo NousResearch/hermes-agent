@@ -1574,15 +1574,31 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_reaction_added(self, event: dict) -> None:
         """
-        Handle a Slack reaction_added event (Plan 004-A feedback capture).
+        Handle a Slack reaction_added event.
 
-        Extracts (channel, item_ts, emoji, user) from the event and delegates
-        to feedback_capture.handle_reaction_added(). Only 👍/👎 are tracked.
-        Non-Hermes messages are silently dropped in the capture layer.
+        Two pipelines fan out from this single event:
 
-        Failure is logged but never raised — this is a telemetry path and must
-        not interrupt the Slack gateway's event loop.
+        * **Plan 004-A — skill feedback capture.** Extracts (channel,
+          item_ts, emoji, user) and delegates to
+          ``feedback_capture.handle_reaction_added`` for 👍/👎 tracking.
+          Non-Hermes messages are dropped in the capture layer.
+        * **Plan 026-C — manual 📌 pin → Atlas.** When the reaction is
+          ``pushpin`` and the reactor is in ``SLACK_ALLOWED_USERS``, the
+          surrounding thread is chunked and POSTed to Atlas
+          ``/v1/ingest``. Runs independently of the 004-A path — an
+          Atlas outage must not block feedback capture and vice versa.
+
+        Failure in either pipeline is logged but never raised — this is a
+        telemetry path and must not interrupt the Slack gateway's event
+        loop.
         """
+        # Plan 026-C — 📌 pin → Atlas /v1/ingest. Fire-and-log; isolated
+        # from the 004-A feedback-capture path below.
+        try:
+            await self._handle_pin_reaction(event)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[Slack] Plan 026-C pin handler error: %s", exc)
+
         pool = self._get_neon_pool()
         if pool is None:
             return  # Not in saas mode or pool unavailable; silently skip.
@@ -1657,6 +1673,63 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.warning("[Slack] Plan 004-A reaction_removed handler error: %s", exc)
+
+    # ----- Plan 026-C: 📌 manual pin → Atlas /v1/ingest -----
+
+    async def _handle_pin_reaction(self, event: dict) -> None:
+        """Dispatch a 📌 reaction to the Plan 026-C pin handler.
+
+        Delegates filtering (emoji match, ``SLACK_ALLOWED_USERS`` gate),
+        thread fetch, and Atlas ``/v1/ingest`` POST to
+        ``plugins.slash.pin``. The plugin posts a confirmation (or error
+        reply) back into the thread via the ``reply_in_thread`` callback
+        we provide here.
+
+        Returns silently when Atlas is not configured — the pin path is
+        opt-in and we don't want a missing ``ATLAS_BASE_URL`` to log
+        spam on every reaction.
+        """
+        try:
+            # Late import — keeps the slack gateway import-time graph
+            # free of the pin plugin (lazy load on first reaction).
+            from plugins.slash.pin import (
+                PinHandlerConfig,
+                handle_pin_reaction,
+                is_pin_reaction,
+            )
+        except Exception as exc:  # pragma: no cover - import failure is fatal
+            logger.warning("[Slack] pin plugin import failed: %s", exc)
+            return
+
+        # Cheap pre-filter so we don't even resolve the Slack client for
+        # the 99% of reactions that aren't 📌.
+        if not is_pin_reaction(event.get("reaction", "")):
+            return
+
+        atlas_base = (os.getenv("ATLAS_BASE_URL") or "").strip()
+        if not atlas_base:
+            logger.debug("[Slack] 📌 reaction received but ATLAS_BASE_URL unset; skipping pin")
+            return
+        atlas_token = (os.getenv("ATLAS_BEARER_TOKEN") or "").strip()
+
+        item = event.get("item") or {}
+        channel = item.get("channel", "")
+        slack_client = self._get_client(channel)
+
+        async def _reply_in_thread(ch: str, thread_ts: str, text: str) -> None:
+            await slack_client.chat_postMessage(
+                channel=ch, thread_ts=thread_ts, text=text,
+            )
+
+        await handle_pin_reaction(
+            event=event,
+            slack_client=slack_client,
+            reply_in_thread=_reply_in_thread,
+            config=PinHandlerConfig(
+                atlas_base_url=atlas_base,
+                atlas_bearer=atlas_token,
+            ),
+        )
 
     # ----- Reactions -----
 

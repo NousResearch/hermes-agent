@@ -1604,6 +1604,12 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,
     # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
+    if normalized == "copilot":
+        # GH_TOKEN and GITHUB_TOKEN are commonly present for git, the GitHub
+        # CLI, or CI. Treat only COPILOT_GITHUB_TOKEN as a provider-specific
+        # env opt-in; explicit config/auth-store selections are still handled
+        # above before this env-var scan.
+        _IMPLICIT_ENV_VARS = _IMPLICIT_ENV_VARS | {"GH_TOKEN", "GITHUB_TOKEN"}
     pconfig = PROVIDER_REGISTRY.get(normalized)
     # Fallback to ProviderDef from models.dev catalog when the provider
     # isn't in the manually-maintained PROVIDER_REGISTRY (e.g. openrouter).

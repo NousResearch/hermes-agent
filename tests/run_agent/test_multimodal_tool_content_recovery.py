@@ -73,16 +73,17 @@ class TestStripImagePartsHelper:
         assert agent._try_strip_image_parts_from_tool_messages(msgs) is False
         assert msgs[0]["content"] == "plain string result"
 
-    def test_tool_message_list_without_image_unchanged(self):
-        """List content with only text parts is left alone — caller surfaces
-        the original error if this turns out to also be rejected."""
+    def test_tool_message_list_without_image_flattened(self):
+        """List content with only text parts is flattened to a plain string —
+        providers like Xiaomi MiMo reject ANY list-type tool content."""
         agent = _make_agent()
         msgs = [
             {"role": "tool", "tool_call_id": "x", "content": [
                 {"type": "text", "text": "hello"},
             ]},
         ]
-        assert agent._try_strip_image_parts_from_tool_messages(msgs) is False
+        assert agent._try_strip_image_parts_from_tool_messages(msgs) is True
+        assert msgs[0]["content"] == "hello"
 
     def test_tool_message_list_with_image_downgrades(self):
         agent = _make_agent()

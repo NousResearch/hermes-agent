@@ -3970,11 +3970,13 @@ class AIAgent:
                         text_parts.append(text)
 
             if not had_image:
-                # List-type content but no image parts — leave alone (some
-                # providers reject ANY list content, but stripping a
-                # text-only list doesn't reduce ambiguity; let the caller
-                # surface the original error if this turns out to be the
-                # case).
+                # List-type content but no image parts.  Some providers
+                # (Xiaomi MiMo, some Alibaba endpoints) reject ANY list
+                # content in tool messages — not just images.  Flatten
+                # text-only lists to a plain string so the retry succeeds.
+                if text_parts:
+                    msg["content"] = "\n\n".join(text_parts)
+                    changed = True
                 continue
 
             if text_parts:

@@ -48,6 +48,11 @@ const GOOD_VIBES_RE = /\b(good bot|thanks|thank you|thx|ty|ily|love you)\b/i
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
+// Crash-recovery budget: cap respawn+resume attempts so a gateway that
+// crash-loops on startup can't spawn-storm. Past the budget we fall back to
+// the inert "gateway exited" state.
+const GATEWAY_RECOVERY_LIMIT = 3
+const GATEWAY_RECOVERY_WINDOW_MS = 60_000
 
 const capHistory = (items: Msg[]): Msg[] => {
   if (items.length <= MAX_HISTORY) {
@@ -200,6 +205,8 @@ export function useMainApp(gw: GatewayClient) {
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
+  const recoverSidRef = useRef<null | string>(null)
+  const recoveryAtRef = useRef<number[]>([])
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
   const msgIdSeqRef = useRef(0)
   const heightCachesRef = useRef(new Map<string, Map<string, number>>())
@@ -694,6 +701,7 @@ export function useMainApp(gw: GatewayClient) {
           STARTUP_RESUME_ID,
           colsRef,
           newSession: session.newSession,
+          recoverSidRef,
           resetSession: session.resetSession,
           resumeById: session.resumeById,
           setCatalog
@@ -734,7 +742,32 @@ export function useMainApp(gw: GatewayClient) {
 
     const exitHandler = () => {
       turnController.reset()
-      patchUiState({ busy: false, sid: null, status: 'gateway exited' })
+      const deadSid = getUiState().sid
+      patchUiState({ busy: false, status: 'gateway exited' })
+
+      // A still-owned child dying while the TUI is alive is an *unexpected*
+      // death — a user /quit exits Node before this fires, and a replaced child
+      // is identity-skipped in GatewayClient. Rather than stranding a long
+      // session (the user's complaint), respawn the gateway and resume the
+      // persisted session via the next gateway.ready, so a single crash / OOM /
+      // signal doesn't lose their work. Bounded so a gateway that crash-loops
+      // on startup can't spawn-storm.
+      const now = Date.now()
+      const recent = recoveryAtRef.current.filter(t => now - t < GATEWAY_RECOVERY_WINDOW_MS)
+
+      if (deadSid && recent.length < GATEWAY_RECOVERY_LIMIT) {
+        recoveryAtRef.current = [...recent, now]
+        recoverSidRef.current = deadSid
+        turnController.pushActivity('gateway exited · recovering session…', 'warn')
+        sys('gateway exited — recovering your session (the in-flight reply was lost)')
+        gw.start()
+
+        return
+      }
+
+      recoveryAtRef.current = recent
+      recoverSidRef.current = null
+      patchUiState({ sid: null })
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
       sys('error: gateway exited')
     }

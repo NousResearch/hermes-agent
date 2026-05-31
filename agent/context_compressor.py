@@ -68,7 +68,23 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # embedded in the body and keeps hijacking replies. Keep newest-first; entries
 # are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
 _HISTORICAL_SUMMARY_PREFIXES = (
-    # Pre-#35344: contained the self-contradicting "resume exactly" directive.
+    # Pre-#35344 intermediate version: contained the "resume exactly" directive
+    # and the "IMPORTANT: Your persistent memory" clause from aa88dcc57.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Your current task is identified in the '## Active Task' section of the "
+    "summary — resume exactly from there. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "Respond ONLY to the latest user message "
+    "that appears AFTER this summary. The current session state (files, "
+    "config, etc.) may reflect work described here — avoid repeating it:",
+
+    # Pre-#35344 older version: contained the "resume exactly" directive.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
@@ -79,6 +95,10 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "Respond ONLY to the latest user message "
     "that appears AFTER this summary. The current session state (files, "
     "config, etc.) may reflect work described here — avoid repeating it:",
+
+    # Custom edited summary from manual transcript repair (must be after longer matches)
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below.",
 )
 
 # Minimum tokens for the summary output

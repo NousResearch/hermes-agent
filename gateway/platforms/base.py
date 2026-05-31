@@ -484,7 +484,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -827,6 +827,7 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
 _HERMES_HOME = get_hermes_home()
+_HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 MEDIA_DELIVERY_TRUST_RECENT_ENV = "HERMES_MEDIA_TRUST_RECENT_FILES"
 MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
@@ -954,13 +955,14 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The Hermes home itself contains credentials (auth.json, .env) and
-    # configuration (config.yaml) — only the cache subdirectories under it
-    # are explicitly allowlisted above.
-    denied.append(_HERMES_HOME / ".env")
-    denied.append(_HERMES_HOME / "auth.json")
-    denied.append(_HERMES_HOME / "credentials")
-    denied.append(_HERMES_HOME / "config.yaml")
+    # The active Hermes profile and shared Hermes root both contain control
+    # files and credentials. Only cache subdirectories under them are
+    # explicitly allowlisted above.
+    for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
+        denied.append(hermes_root / ".env")
+        denied.append(hermes_root / "auth.json")
+        denied.append(hermes_root / "credentials")
+        denied.append(hermes_root / "config.yaml")
     return denied
 
 

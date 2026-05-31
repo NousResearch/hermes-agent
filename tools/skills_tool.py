@@ -963,18 +963,7 @@ def skill_view(
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             for found_md in search_dir.rglob(f"{name}.md"):
                 if found_md.name != "SKILL.md":
-                    # Skip if this .md is an asset inside another skill's directory
-                    # (e.g., templates/foo.md inside a skill named "bar" should not
-                    #  be treated as a standalone "foo" skill)
-                    parent = found_md.parent
-                    is_asset = False
-                    while parent != search_dir and parent.exists():
-                        if (parent / "SKILL.md").exists():
-                            is_asset = True
-                            break
-                        parent = parent.parent
-                    if not is_asset:
-                        _record(None, found_md)
+                    _record(None, found_md)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
@@ -1036,6 +1025,14 @@ def skill_view(
         except Exception:
             pass
         for _td in _trusted_dirs:
+            try:
+                # Check unresolved path first — a symlink inside the trusted dir is trusted
+                # even if its target is elsewhere (e.g., external skill repos symlinked in)
+                skill_md.relative_to(_td)
+                _outside_skills_dir = False
+                break
+            except ValueError:
+                pass
             try:
                 skill_md.resolve().relative_to(_td)
                 _outside_skills_dir = False

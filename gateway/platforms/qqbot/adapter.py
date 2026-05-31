@@ -151,6 +151,15 @@ def _coerce_list(value: Any) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_voice(filename: str) -> bool:
+    """Return True if *filename* has a known voice/audio extension."""
+    fn = filename.strip().lower()
+    return any(
+        fn.endswith(ext)
+        for ext in (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
+    )
+
+
 class QQAdapter(BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
@@ -1794,15 +1803,25 @@ class QQAdapter(BasePlatformAdapter):
     def _is_voice_content_type(content_type: str, filename: str) -> bool:
         """Check if an attachment is a voice/audio message.
 
-        Only trust ``content_type`` — the QQ Bot API explicitly distinguishes
-        voice messages (``content_type="voice"``) from file uploads
-        (``content_type="file"``).  Filename-extension sniffing is intentionally
-        omitted: files sent via QQ's file-transfer feature can have audio
-        extensions (e.g. ``.wav``, ``.mp3``) but must **not** be routed through
+        The QQ Bot API explicitly sets ``content_type="voice"`` for voice
+        messages and ``content_type="file"`` for file uploads.  When
+        ``content_type`` is a known non-voice type (``"file"``, ``"image/*"``,
+        ``"video/*"``), we trust it unconditionally and **skip** extension
+        sniffing — files sent via QQ's file-transfer feature can have audio
+        extensions (e.g. ``.wav``, ``.mp3``) but must not be routed through
         the STT pipeline.
+
+        When ``content_type`` is empty or unrecognised we fall back to
+        filename-extension matching as a defensive measure.
         """
         ct = content_type.strip().lower()
-        return ct == "voice" or ct.startswith("audio/")
+        if ct == "voice" or ct.startswith("audio/"):
+            return True
+        # Explicit non-voice types — never treat as voice regardless of extension.
+        if ct in ("file", "") or ct.startswith("image/") or ct.startswith("video/"):
+            return ct == "" and _looks_like_voice(filename)
+        # Unknown content_type — defensive extension fallback.
+        return _looks_like_voice(filename)
 
     def _qq_media_headers(self) -> Dict[str, str]:
         """Return Authorization headers for QQ multimedia CDN downloads.

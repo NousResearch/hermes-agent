@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -222,6 +223,59 @@ def _record_event(
     )
 
 
+def _customer_actor_ref(workspace: dict[str, Any]) -> str | None:
+    return workspace.get("customer_email") or workspace.get("customer_name")
+
+
+def _customer_signature(workspace: dict[str, Any], signature: str | None = None) -> str | None:
+    return signature or workspace.get("customer_name") or workspace.get("customer_email")
+
+
+def _notify_agent_workspace_interaction(
+    workspace: dict[str, Any],
+    event_type: str,
+    *,
+    comment: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Record a pending owner follow-up and optionally email the owner/agent."""
+    labels = {"commented": "comentó", "approved": "aprobó", "rejected": "rechazó", "signed": "firmó"}
+    action = labels.get(event_type, event_type)
+    customer = workspace.get("customer_name") or workspace.get("customer_email") or "Cliente"
+    document_type = workspace.get("document_type") or "documento"
+    document_id = workspace.get("document_id") or ""
+    summary = f"{customer} {action} {document_type} {document_id}".strip()
+    if comment:
+        summary = f"{summary}: {comment}"
+    follow_up = sql.statement_one(
+        f"""
+        INSERT INTO crm.follow_ups (organization_id, contact_id, opportunity_id, due_at, summary, status, priority, assignee, metadata, created_at, updated_at)
+        VALUES (NULL, NULL, NULL, now(), {_q(summary)}, 'open', {_q('high' if event_type in {'approved', 'rejected'} else 'normal')}, {_q('agent')}, {_j({'workspace_id': workspace.get('workspace_id'), 'document_type': document_type, 'document_id': document_id, 'event_type': event_type, **(metadata or {})})}, now(), now())
+        RETURNING *
+        """,
+        user=os.getenv("CRM_DB_RUNTIME_USER") or sql.runtime_env().get("CRM_DB_RUNTIME_USER", "crm_runtime"),
+    )
+    email = None
+    owner_email = (
+        sql.runtime_env().get("WORKSPACE_OWNER_EMAIL")
+        or sql.runtime_env().get("AGENT_NOTIFICATION_EMAIL")
+        or os.getenv("WORKSPACE_OWNER_EMAIL")
+        or os.getenv("AGENT_NOTIFICATION_EMAIL")
+    )
+    if owner_email:
+        from tools import notification_tool
+
+        email = notification_tool._email_adapter_send({
+            "to_email": owner_email,
+            "to_name": "Agente",
+            "subject": f"Interacción en workspace: {summary[:90]}",
+            "text": f"{summary}\n\nWorkspace: {workspace.get('public_url') or workspace.get('workspace_id')}",
+            "html": f"<p>{_e(summary)}</p><p><strong>Workspace:</strong> {_e(workspace.get('public_url') or workspace.get('workspace_id'))}</p>",
+            "metadata": {"workspace_id": workspace.get("workspace_id"), "event_type": event_type},
+        })
+    return {"ok": True, "follow_up": follow_up, "email": email}
+
+
 def _set_workspace_status(workspace_id: str, status: str) -> dict[str, Any] | None:
     return sql.statement_one(
         f"""
@@ -317,18 +371,22 @@ def render_workspace_html(public_token: str, banner: str | None = None) -> str:
     title = document.get("title") or workspace.get("document_id")
     currency = document.get("currency") or "USD"
     total = document.get("total")
+    customer_identity = workspace.get("customer_email") or workspace.get("customer_name") or "este enlace seguro"
     action_buttons = ""
     if workspace.get("status") not in {"approved", "rejected", "paid", "cancelled"}:
         action_buttons = f"""
-          <form method="post" action="/w/{_e(public_token)}/approve" class="inline-form">
-            <input name="signature" placeholder="Nombre para aceptar / firmar" />
-            <input name="actor_ref" placeholder="Email o teléfono" />
-            <button class="primary" type="submit">Aprobar</button>
-          </form>
-          <form method="post" action="/w/{_e(public_token)}/reject" class="inline-form">
-            <input name="comment" placeholder="Motivo opcional" />
-            <button class="danger" type="submit">Rechazar</button>
-          </form>
+          <div class="decision-grid" aria-label="Opciones de respuesta">
+            <form method="post" action="/w/{_e(public_token)}/approve" class="decision-card approve-card">
+              <p class="decision-label">Aceptar propuesta</p>
+              <p class="decision-copy">Confirmo esta cotización y autorizo al agente a continuar con la orden y la factura.</p>
+              <button class="button approve" type="submit">Aprobar cotización</button>
+            </form>
+            <form method="post" action="/w/{_e(public_token)}/reject" class="decision-card reject-card">
+              <label for="reject-comment">Motivo del rechazo</label>
+              <textarea id="reject-comment" name="comment" placeholder="Cuéntanos qué debemos ajustar"></textarea>
+              <button class="button reject" type="submit">Rechazar</button>
+            </form>
+          </div>
         """
 
     return f"""<!doctype html>
@@ -338,55 +396,120 @@ def render_workspace_html(public_token: str, banner: str | None = None) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{_e(document_type_label)} - {_e(title)}</title>
   <style>
-    :root {{ color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }}
-    body {{ margin: 0; background: #f7f4ee; color: #161411; }}
-    main {{ max-width: 980px; margin: 0 auto; padding: 40px 18px; }}
-    .card {{ background: #fffdf8; border: 1px solid #e9dfce; border-radius: 24px; box-shadow: 0 24px 80px rgba(34, 25, 9, .10); padding: 28px; }}
-    .eyebrow {{ color: #866b3f; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-size: 12px; }}
-    h1 {{ font-size: clamp(32px, 7vw, 64px); line-height: .94; margin: 12px 0; letter-spacing: -.05em; }}
-    .summary {{ display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin: 24px 0; }}
-    .pill {{ border: 1px solid #eadfce; border-radius: 18px; padding: 16px; background: #fbf6ed; }}
-    table {{ width: 100%; border-collapse: collapse; margin: 22px 0; }}
-    th, td {{ padding: 14px 10px; border-bottom: 1px solid #eee1cf; text-align: left; }}
-    th {{ color: #70562e; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
-    .actions, .comment-box {{ display: grid; gap: 12px; margin-top: 22px; }}
-    .inline-form {{ display: flex; flex-wrap: wrap; gap: 10px; }}
-    input, textarea {{ border: 1px solid #d9c9ae; border-radius: 14px; padding: 12px 14px; font: inherit; background: white; min-width: 220px; }}
-    textarea {{ min-height: 100px; width: min(100%, 640px); }}
-    button {{ border: 0; border-radius: 999px; padding: 12px 18px; font-weight: 800; cursor: pointer; }}
-    .primary {{ background: #111; color: white; }}
-    .danger {{ background: #7b1d1d; color: white; }}
-    .secondary {{ background: #efe5d5; color: #18130b; }}
-    .banner {{ background: #e7f7df; border: 1px solid #b8dfaa; border-radius: 16px; padding: 14px 16px; margin-bottom: 18px; }}
-    .muted {{ color: #72665a; }}
-    .event {{ border-left: 3px solid #d6bd8c; padding-left: 12px; margin: 12px 0; }}
+    :root {{
+      color-scheme: light dark;
+      --bg: #f4f7f3;
+      --surface: rgba(255,255,255,.86);
+      --surface-strong: #ffffff;
+      --ink: #101510;
+      --muted: #5c675f;
+      --line: rgba(16,21,16,.13);
+      --soft: #e8efe8;
+      --green: #15803d;
+      --green-ink: #ffffff;
+      --red: #b42318;
+      --red-ink: #ffffff;
+      --shadow: rgba(21, 64, 37, .14);
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #0c110d;
+        --surface: rgba(18, 27, 20, .86);
+        --surface-strong: #121b14;
+        --ink: #f0f7f0;
+        --muted: #a8b5aa;
+        --line: rgba(240,247,240,.15);
+        --soft: #17231a;
+        --green: #72d991;
+        --green-ink: #061108;
+        --red: #ff8b82;
+        --red-ink: #210403;
+        --shadow: rgba(0,0,0,.42);
+      }}
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; min-height: 100dvh; background: var(--bg); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body::before {{ content: ""; position: fixed; inset: 0; pointer-events: none; background: radial-gradient(circle at 12% 0%, rgba(21,128,61,.20), transparent 34%), radial-gradient(circle at 92% 12%, rgba(114,217,145,.14), transparent 30%); }}
+    main {{ position: relative; width: min(1120px, calc(100% - 28px)); margin: 0 auto; padding: 34px 0 44px; }}
+    .card {{ background: var(--surface); border: 1px solid var(--line); border-radius: 32px; box-shadow: 0 30px 90px var(--shadow); overflow: hidden; backdrop-filter: blur(16px); }}
+    .quote-header {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .34fr); gap: 24px; padding: clamp(26px, 5vw, 52px); border-bottom: 1px solid var(--line); background: linear-gradient(135deg, var(--surface-strong), transparent); }}
+    .eyebrow {{ color: var(--green); font-weight: 900; letter-spacing: .12em; text-transform: uppercase; font-size: 12px; }}
+    h1 {{ font-size: clamp(34px, 6vw, 68px); line-height: .95; margin: 12px 0 16px; letter-spacing: -.055em; max-width: 13ch; }}
+    .muted {{ color: var(--muted); line-height: 1.55; }}
+    .summary {{ display: grid; gap: 12px; align-content: start; }}
+    .pill {{ border: 1px solid var(--line); border-radius: 20px; padding: 16px; background: var(--soft); }}
+    .pill strong {{ display: block; font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .08em; }}
+    .body-grid {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .45fr); gap: 24px; padding: clamp(22px, 4vw, 42px); }}
+    .section-title {{ margin: 0 0 14px; font-size: 20px; }}
+    .table-wrap {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 22px; background: var(--surface-strong); }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ padding: 16px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }}
+    th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .actions, .comment-box {{ display: grid; gap: 14px; }}
+    .decision-grid {{ display: grid; gap: 14px; }}
+    .decision-card {{ border: 1px solid var(--line); border-radius: 24px; padding: 18px; background: var(--surface-strong); display: grid; gap: 12px; }}
+    .approve-card {{ border-color: color-mix(in srgb, var(--green), transparent 58%); }}
+    .reject-card {{ border-color: color-mix(in srgb, var(--red), transparent 62%); }}
+    .decision-label {{ margin: 0; font-weight: 900; }}
+    .decision-copy {{ margin: 0; color: var(--muted); line-height: 1.45; }}
+    label {{ font-weight: 800; }}
+    textarea {{ width: 100%; min-height: 96px; border: 1px solid var(--line); border-radius: 18px; padding: 13px 14px; font: inherit; color: var(--ink); background: var(--surface); resize: vertical; }}
+    textarea::placeholder {{ color: color-mix(in srgb, var(--muted), transparent 10%); }}
+    .button {{ border: 0; border-radius: 999px; min-height: 46px; padding: 0 18px; font-weight: 900; cursor: pointer; transition: transform .18s ease, filter .18s ease; }}
+    .button:active {{ transform: translateY(1px) scale(.99); }}
+    .approve {{ background: var(--green); color: var(--green-ink); }}
+    .reject {{ background: var(--red); color: var(--red-ink); }}
+    .secondary {{ background: var(--ink); color: var(--bg); width: fit-content; }}
+    .banner {{ background: color-mix(in srgb, var(--green), transparent 84%); border: 1px solid color-mix(in srgb, var(--green), transparent 52%); border-radius: 18px; padding: 14px 16px; margin-bottom: 18px; }}
+    .event {{ border-left: 3px solid var(--green); padding-left: 12px; margin: 12px 0; color: var(--muted); }}
+    .identity {{ display: inline-flex; width: fit-content; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 14px; }}
+    @media (max-width: 840px) {{
+      main {{ width: min(100% - 20px, 680px); padding-top: 18px; }}
+      .quote-header, .body-grid {{ grid-template-columns: 1fr; }}
+      h1 {{ max-width: 12ch; }}
+    }}
   </style>
 </head>
 <body>
   <main>
     {f'<div class="banner">{_e(banner)}</div>' if banner else ''}
     <section class="card">
-      <div class="eyebrow">{_e(document_type_label)} para {_e(workspace.get('customer_name') or 'cliente')}</div>
-      <h1>{_e(title)}</h1>
-      <p class="muted">Revisa los detalles, deja comentarios o aprueba para que el agente continúe con la orden, factura y pago.</p>
-      <div class="summary">
-        <div class="pill"><strong>Estado</strong><br>{_e(workspace.get('status'))}</div>
-        <div class="pill"><strong>Documento</strong><br>{_e(workspace.get('document_id'))}</div>
-        <div class="pill"><strong>Total</strong><br>{_money(total, currency) if total is not None else 'Según selección'}</div>
+      <div class="quote-header">
+        <div>
+          <div class="eyebrow">{_e(document_type_label)} para {_e(workspace.get('customer_name') or 'cliente')}</div>
+          <h1>{_e(title)}</h1>
+          <p class="muted">Revisa los detalles, responde con una decisión y el agente se encargará del seguimiento.</p>
+          <span class="identity">Acceso enviado a {_e(customer_identity)}</span>
+        </div>
+        <div class="summary">
+          <div class="pill"><strong>Estado</strong>{_e(workspace.get('status'))}</div>
+          <div class="pill"><strong>Documento</strong>{_e(workspace.get('document_id'))}</div>
+          <div class="pill"><strong>Total</strong>{_money(total, currency) if total is not None else 'Según selección'}</div>
+        </div>
       </div>
-      <table>
-        <thead><tr><th>Concepto</th><th>Cant.</th><th>Precio</th><th>Total</th></tr></thead>
-        <tbody>{_items_html(items, currency)}</tbody>
-      </table>
-      <div class="actions">{action_buttons}</div>
-      <div class="comment-box">
-        <h2>Comentarios</h2>
-        {_events_html(events)}
-        <form method="post" action="/w/{_e(public_token)}/comment">
-          <textarea name="comment" placeholder="Escribe una pregunta o comentario para el agente"></textarea><br><br>
-          <input name="actor_ref" placeholder="Tu email o teléfono" />
-          <button class="secondary" type="submit">Enviar comentario</button>
-        </form>
+      <div class="body-grid">
+        <div>
+          <h2 class="section-title">Detalle</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Concepto</th><th>Cant.</th><th>Precio</th><th>Total</th></tr></thead>
+              <tbody>{_items_html(items, currency)}</tbody>
+            </table>
+          </div>
+        </div>
+        <aside class="actions">
+          {action_buttons}
+          <div class="comment-box">
+            <h2 class="section-title">Comentarios</h2>
+            {_events_html(events)}
+            <form method="post" action="/w/{_e(public_token)}/comment" class="decision-card">
+              <label for="comment">Mensaje para el agente</label>
+              <textarea id="comment" name="comment" placeholder="Escribe una pregunta o ajuste solicitado"></textarea>
+              <button class="button secondary" type="submit">Enviar comentario</button>
+            </form>
+          </div>
+        </aside>
       </div>
     </section>
   </main>
@@ -399,21 +522,27 @@ def comment_workspace(public_token: str, comment: str, actor_ref: str | None = N
     clean_comment = (comment or "").strip()
     if not clean_comment:
         raise HTTPException(status_code=400, detail="Comment is required")
+    actor = _customer_actor_ref(workspace) or actor_ref
     _set_workspace_status(workspace["workspace_id"], "commented")
-    event = _record_event(workspace["workspace_id"], "commented", actor_ref=actor_ref, comment=clean_comment)
-    return {"ok": True, "event": event}
+    event = _record_event(workspace["workspace_id"], "commented", actor_ref=actor, comment=clean_comment)
+    notification = _notify_agent_workspace_interaction(workspace, "commented", comment=clean_comment)
+    return {"ok": True, "event": event, "notification": notification}
 
 
 def reject_workspace(public_token: str, comment: str | None = None, actor_ref: str | None = None) -> dict[str, Any]:
     workspace = _get_workspace(public_token)
+    actor = _customer_actor_ref(workspace) or actor_ref
     _set_workspace_status(workspace["workspace_id"], "rejected")
-    event = _record_event(workspace["workspace_id"], "rejected", actor_ref=actor_ref, comment=comment)
-    return {"ok": True, "event": event}
+    event = _record_event(workspace["workspace_id"], "rejected", actor_ref=actor, comment=comment)
+    notification = _notify_agent_workspace_interaction(workspace, "rejected", comment=comment)
+    return {"ok": True, "event": event, "notification": notification}
 
 
 def approve_workspace(public_token: str, actor_ref: str | None = None, signature: str | None = None) -> dict[str, Any]:
     workspace = _get_workspace(public_token)
-    metadata: dict[str, Any] = {"signature": signature} if signature else {}
+    actor = _customer_actor_ref(workspace) or actor_ref
+    signature_value = _customer_signature(workspace, signature)
+    metadata: dict[str, Any] = {"signature": signature_value} if signature_value else {}
     result: dict[str, Any] = {"ok": True}
 
     if workspace.get("document_type") == "quote":
@@ -439,13 +568,15 @@ def approve_workspace(public_token: str, actor_ref: str | None = None, signature
         metadata.update({"document_id": workspace["document_id"]})
 
     _set_workspace_status(workspace["workspace_id"], "approved")
-    _record_event(
+    event = _record_event(
         workspace["workspace_id"],
         "approved",
-        actor_ref=actor_ref,
-        comment=signature,
+        actor_ref=actor,
+        comment=signature_value,
         metadata=metadata,
     )
+    notification = _notify_agent_workspace_interaction(workspace, "approved", metadata=metadata)
+    result.update({"event": event, "notification": notification})
     return result
 
 

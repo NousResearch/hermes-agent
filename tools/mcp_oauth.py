@@ -44,6 +44,7 @@ import sys
 import threading
 import time
 import webbrowser
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,7 @@ class OAuthNonInteractiveError(RuntimeError):
 # Port used by the most recent build_oauth_auth() call.  Exposed so that
 # tests can verify the callback server and the redirect_uri share a port.
 _oauth_port: int | None = None
+_oauth_interactivity = threading.local()
 
 
 # Skip tokens accepted at the paste prompt — exit OAuth without auth.
@@ -137,10 +139,23 @@ def _find_free_port() -> int:
 
 def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
+    if not getattr(_oauth_interactivity, "enabled", True):
+        return False
     try:
         return sys.stdin.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+@contextmanager
+def suppress_interactive_oauth():
+    """Temporarily disable stdin-based OAuth prompts on the current thread."""
+    previous = getattr(_oauth_interactivity, "enabled", True)
+    _oauth_interactivity.enabled = False
+    try:
+        yield
+    finally:
+        _oauth_interactivity.enabled = previous
 
 
 def _can_open_browser() -> bool:

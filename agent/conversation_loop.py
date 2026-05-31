@@ -451,6 +451,9 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    if hasattr(agent, "_progress_outcome_canary"):
+        agent._progress_outcome_canary.reset_for_turn()
+    agent._progress_outcome_events = []
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send
@@ -3997,6 +4000,7 @@ def run_conversation(
                     except Exception:
                         pass
 
+                _tool_results_start = len(messages)
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                 if agent._tool_guardrail_halt_decision is not None:
@@ -4021,6 +4025,18 @@ def run_conversation(
                             except Exception:
                                 pass
                     break
+
+                _progress_decision = agent._observe_progress_outcome(
+                    assistant_message.tool_calls,
+                    messages[_tool_results_start:],
+                )
+                if _progress_decision is not None:
+                    agent._emit_status("Progress canary nudged the model to pick a concrete outcome")
+                    messages.append({
+                        "role": "user",
+                        "content": _progress_decision.message,
+                        "_progress_outcome_canary": True,
+                    })
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
@@ -4791,6 +4807,9 @@ def run_conversation(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    _progress_events = getattr(agent, "_progress_outcome_events", None) or []
+    if _progress_events:
+        result["progress_outcome_canary"] = list(_progress_events)
     try:
         from agent.stall_retry import stall_retry_summary
 

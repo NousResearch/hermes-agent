@@ -4416,6 +4416,28 @@ class AIAgent:
             metadata = str(decision.to_metadata())
         logger.info("tool_guardrail_decision %s", metadata)
 
+    def _observe_progress_outcome(self, tool_calls, tool_results):
+        tracker = getattr(self, "_progress_outcome_canary", None)
+        if tracker is None:
+            return None
+        decision = tracker.after_tool_round(tool_calls, tool_results)
+        if decision.action == "warn":
+            events = getattr(self, "_progress_outcome_events", None)
+            if events is None:
+                events = []
+                self._progress_outcome_events = events
+            metadata = decision.to_metadata()
+            events.append(metadata)
+            try:
+                logger.info(
+                    "progress_outcome_canary_decision %s",
+                    json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                )
+            except Exception:
+                logger.info("progress_outcome_canary_decision %s", metadata)
+            return decision
+        return None
+
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
         return (

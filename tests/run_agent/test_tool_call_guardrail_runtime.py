@@ -538,6 +538,131 @@ def test_low_information_terminal_redirects_without_controlled_halt_by_default()
     assert not any("low_information_tool_halt" in content for content in tool_contents)
 
 
+def test_progress_outcome_canary_nudges_after_tool_rounds_without_work_outcome():
+    agent = _make_agent(
+        "terminal",
+        max_iterations=10,
+        config={"progress_outcome_canary": {"warn_after_tool_rounds": 2}},
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "pwd && ls -la"}),
+                    "c-probe-1",
+                )
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "git status --short"}),
+                    "c-probe-2",
+                )
+            ],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+    executed = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        executed.append(kwargs.get("tool_call_id"))
+        return json.dumps({"exit_code": 0, "stdout": "some diagnostic output"})
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=fake_handle),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("make progress")
+
+    assert result["final_response"] == "done"
+    assert executed == ["c-probe-1", "c-probe-2"]
+    assert result["progress_outcome_canary"][0]["code"] == "progress_outcome_warning"
+    synthetic_users = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "user" and msg.get("_progress_outcome_canary")
+    ]
+    assert len(synthetic_users) == 1
+    assert "without an observable work outcome" in synthetic_users[0]["content"]
+    assert "make the edit" in synthetic_users[0]["content"]
+
+
+def test_progress_outcome_canary_stays_quiet_after_landed_file_mutation():
+    agent = _make_agent(
+        "terminal",
+        "write_file",
+        max_iterations=10,
+        config={"progress_outcome_canary": {"warn_after_tool_rounds": 2}},
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "pwd && ls -la"}),
+                    "c-probe",
+                )
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "write_file",
+                    json.dumps({"path": "/tmp/canary.txt", "content": "ok"}),
+                    "c-write",
+                )
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "git status --short"}),
+                    "c-status",
+                )
+            ],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    def fake_handle(name, args, task_id, **kwargs):
+        if name == "write_file":
+            return json.dumps({"bytes_written": 2})
+        return json.dumps({"exit_code": 0, "stdout": "some diagnostic output"})
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=fake_handle),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("make progress")
+
+    assert result["final_response"] == "done"
+    assert "progress_outcome_canary" not in result
+    assert not any(
+        msg.get("_progress_outcome_canary")
+        for msg in result["messages"]
+        if msg.get("role") == "user"
+    )
+
+
 def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
     agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}

@@ -646,9 +646,12 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         clear_current_board()
 
     # A concurrent connect(board=normed) after the rename/delete recreates
-    # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
-    # dropped first so the schema init pass re-runs on that fresh file.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    # an empty sqlite file via mkdir(exist_ok=True); the cache entries must be
+    # dropped first so the schema init pass re-runs on that fresh file and the
+    # fresh (DELETE-mode) file is put back into WAL via _ensure_wal_once.
+    _gone = str((d / "kanban.db").resolve())
+    _INITIALIZED_PATHS.discard(_gone)
+    _WAL_DONE.discard(_gone)
 
     if archive:
         archive_root = boards_root() / "_archived"
@@ -1087,6 +1090,12 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
+# journal_mode=WAL is a persistent, file-level property — no need to re-apply
+# it on every connection. Tracks paths already confirmed in WAL so
+# _ensure_wal_once() skips apply_wal_with_fallback on steady-state connects.
+# See _ensure_wal_once (incident 2026-05-27: per-connection re-toggling
+# desynced -wal/-shm coordination and corrupted the kanban DB).
+_WAL_DONE: set[str] = set()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
@@ -1355,6 +1364,33 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+def _ensure_wal_once(
+    conn: sqlite3.Connection, resolved: str, *, db_label: str
+) -> None:
+    """Put the DB in WAL mode at most once per process per path.
+
+    WAL is persistent at the file level, so once a DB is in WAL every later
+    connection inherits it. Re-issuing ``PRAGMA journal_mode=WAL`` on every
+    connection is dangerous: each call takes an exclusive lock, and the DELETE
+    fallback in :func:`hermes_state.apply_wal_with_fallback` can flip the
+    persisted mode out from under other live connections. Combined with a
+    connection leak, that re-toggling is what desynced the ``-wal``/``-shm``
+    coordination and corrupted the kanban DB on 2026-05-27.
+
+    We read the current mode first and only invoke the fallback helper when
+    the DB is not already WAL; ``_WAL_DONE`` then skips even that read on
+    subsequent connects. Must be called inside ``_INIT_LOCK``.
+    """
+    if resolved in _WAL_DONE:
+        return
+    row = conn.execute("PRAGMA journal_mode").fetchone()
+    current = (row[0] if row else "").lower()
+    if current != "wal":
+        from hermes_state import apply_wal_with_fallback
+        apply_wal_with_fallback(conn, db_label=db_label)
+    _WAL_DONE.add(resolved)
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1403,8 +1439,9 @@ def connect(
                 # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
                 # falls back to DELETE with one WARNING so kanban stays usable there.
                 # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                # _ensure_wal_once skips re-applying WAL if already confirmed this
+                # process — avoids per-connection exclusive lock (incident 2026-05-27).
+                _ensure_wal_once(conn, resolved, db_label=f"kanban.db ({path.name})")
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")
@@ -1488,10 +1525,12 @@ def init_db(
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
-    # Clear the cache entry so the underlying connect() re-runs the
-    # schema + migration pass unconditionally.
+    # Clear the cache entries so the underlying connect() re-runs the schema +
+    # migration pass unconditionally, and _ensure_wal_once re-applies WAL on
+    # the rebuilt DB.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
+        _WAL_DONE.discard(resolved)
     with contextlib.closing(connect(path)):
         pass
     return path

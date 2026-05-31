@@ -133,7 +133,7 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **11**
+Current schema version: **14**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 

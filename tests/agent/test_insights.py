@@ -336,6 +336,18 @@ class TestInsightsPopulated:
         # Claude-sonnet has 2 sessions (s1 + s4)
         claude = next(m for m in models if "claude-sonnet" in m["model"])
         assert claude["sessions"] == 2
+        expected_prompt = 50000 + 10000 + 100000 + 10000
+        assert claude["prompt_tokens"] == expected_prompt
+        assert claude["cache_hit_rate"] == pytest.approx(100000 / expected_prompt * 100)
+        assert claude["uncached_input_rate"] == pytest.approx(60000 / expected_prompt * 100)
+
+        gpt = next(m for m in models if m["model"] == "gpt-4o")
+        assert gpt["prompt_tokens"] == 40000
+        assert gpt["cache_hit_rate"] == pytest.approx(50.0)
+
+        deepseek = next(m for m in models if m["model"] == "deepseek-chat")
+        assert deepseek["prompt_tokens"] == 100000
+        assert deepseek["cache_hit_rate"] == 0.0
 
     def test_platform_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -551,6 +563,8 @@ class TestGatewayFormatting:
 
         assert "Models" in text
         assert "sessions" in text
+        assert "cache" in text
+        assert "50.0%" in text
 
 
 # =========================================================================

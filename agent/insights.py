@@ -525,10 +525,25 @@ class InsightsEngine:
             d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
             d["cost_status"] = status
 
-        result = [
-            {"model": model, **data}
-            for model, data in model_data.items()
-        ]
+        result = []
+        for model, data in model_data.items():
+            prompt_tokens = (
+                data["input_tokens"]
+                + data["cache_read_tokens"]
+                + data["cache_write_tokens"]
+            )
+            data["prompt_tokens"] = prompt_tokens
+            data["cache_hit_rate"] = (
+                data["cache_read_tokens"] / prompt_tokens * 100
+                if prompt_tokens
+                else 0.0
+            )
+            data["uncached_input_rate"] = (
+                data["input_tokens"] / prompt_tokens * 100
+                if prompt_tokens
+                else 0.0
+            )
+            result.append({"model": model, **data})
         # Sort by tokens first, fall back to session count when tokens are 0
         result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
         return result
@@ -802,10 +817,13 @@ class InsightsEngine:
         if report["models"]:
             lines.append("  🤖 Models Used")
             lines.append("  " + "─" * 56)
-            lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}")
+            lines.append(f"  {'Model':<24} {'Sessions':>8} {'Tokens':>12} {'Cache':>8}")
             for m in report["models"]:
-                model_name = m["model"][:28]
-                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,}")
+                model_name = m["model"][:22]
+                cache = f"{m['cache_hit_rate']:.1f}%" if m.get("prompt_tokens") else "—"
+                lines.append(
+                    f"  {model_name:<24} {m['sessions']:>8} {m['total_tokens']:>12,} {cache:>8}"
+                )
             lines.append("")
 
         # Platform breakdown
@@ -921,7 +939,11 @@ class InsightsEngine:
         if report["models"]:
             lines.append("**🤖 Models:**")
             for m in report["models"][:5]:
-                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
+                cache = f", cache {m['cache_hit_rate']:.1f}%" if m.get("prompt_tokens") else ""
+                lines.append(
+                    f"  {m['model'][:25]} — {m['sessions']} sessions, "
+                    f"{m['total_tokens']:,} tokens{cache}"
+                )
             lines.append("")
 
         # Platforms (if multi-platform)

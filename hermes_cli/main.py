@@ -1705,6 +1705,33 @@ def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
 
+    # Fail closed on explicitly-requested toolsets that all resolve to nothing,
+    # BEFORE any session resolution or the first-run provider guard below: this
+    # is a CLI usage error (notably the `hermes -tui` -> argparse `-t ui`
+    # misparse, #32660) and must be reported ahead of "you're not configured
+    # yet" -- otherwise a typo on an unconfigured machine yields a misleading
+    # `hermes setup` prompt instead of the --tui hint. Covers the CLI-chat and
+    # TUI-launch branches alike. Interactive surface -> exit(2); the shared
+    # validator never calls sys.exit itself (that would escape daemon
+    # `except Exception` guards).
+    #
+    # warn=no-op: this is purely the all-unknown exit gate. The partial-invalid
+    # notice is emitted downstream by cli.py / tui_gateway. This gate is
+    # LOAD-BEARING for the CLI-chat surface: cli.py only *warns* on all-unknown
+    # and then runs tool-less (it does not fail closed), so removing it would
+    # reintroduce #32660. The TUI branch is separately protected by
+    # tui_gateway's own validator.
+    from hermes_cli.toolset_validation import normalize_toolsets, validate_explicit_toolsets
+
+    requested = normalize_toolsets(getattr(args, "toolsets", None))
+    _, toolset_error = validate_explicit_toolsets(requested, source="hermes", warn=lambda _: None)
+    if toolset_error:
+        if requested == ["ui"] and not use_tui:
+            sys.stderr.write("hermes: unknown toolset 'ui'. Did you mean --tui (launch the terminal UI)?\n")
+        else:
+            sys.stderr.write(toolset_error + "\n")
+        sys.exit(2)
+
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -1834,28 +1861,6 @@ def cmd_chat(args):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
     _pin_kanban_board_env()
-
-    # Fail closed on explicitly-requested toolsets that all resolve to nothing:
-    # catches the `hermes -tui` -> argparse `-t ui` misparse (#32660) before the
-    # agent launches silently tool-less. Covers both the CLI-chat and TUI-launch
-    # branches below. Interactive surface -> exit(2); the shared validator never
-    # calls sys.exit itself (it would escape daemon `except Exception` guards).
-    from hermes_cli.toolset_validation import normalize_toolsets, validate_explicit_toolsets
-
-    # warn=no-op: this is purely the all-unknown exit gate. Don't warn on the
-    # partial-invalid case here -- cli.py / tui_gateway emit that notice. Note
-    # this gate is LOAD-BEARING for the CLI-chat surface: cli.py only *warns* on
-    # all-unknown and then runs tool-less (it does not fail closed), so removing
-    # this gate would reintroduce #32660. The TUI branch is separately protected
-    # by tui_gateway's own validator.
-    requested = normalize_toolsets(getattr(args, "toolsets", None))
-    _, toolset_error = validate_explicit_toolsets(requested, source="hermes", warn=lambda _: None)
-    if toolset_error:
-        if requested == ["ui"] and not use_tui:
-            sys.stderr.write("hermes: unknown toolset 'ui'. Did you mean --tui (launch the terminal UI)?\n")
-        else:
-            sys.stderr.write(toolset_error + "\n")
-        sys.exit(2)
 
     if use_tui:
         _launch_tui(

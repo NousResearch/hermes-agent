@@ -375,6 +375,50 @@ class TestWsRequestIsAllowedGated:
         assert web_server._ws_request_is_allowed(ws) is False
 
 
+class TestWsHostOriginGuardOrigins:
+    """The WS Origin guard must let the packaged desktop shell connect.
+
+    Electron loads the packaged renderer over ``file://``, so its WebSocket
+    handshake carries ``Origin: file://`` (or the opaque ``null``). The
+    DNS-rebinding guard only needs to block cross-site http(s) origins. On a
+    loopback bind these non-web origins are trusted because the session token
+    is the real gate. Public/gated binds keep rejecting them.
+    """
+
+    def _ws(self, *, origin, host):
+        ws = _fake_ws(query={}, path="/api/ws")
+        ws.headers = {"host": host, "origin": origin}
+        return ws
+
+    def test_loopback_file_origin_allowed(self, loopback_app):
+        ws = self._ws(origin="file://", host="127.0.0.1:8080")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_null_origin_allowed(self, loopback_app):
+        ws = self._ws(origin="null", host="127.0.0.1:8080")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_app_scheme_origin_allowed(self, loopback_app):
+        ws = self._ws(origin="app://hermes", host="127.0.0.1:8080")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_matching_http_origin_allowed(self, loopback_app):
+        # The dev renderer (vite) loads over http://127.0.0.1:<port>.
+        ws = self._ws(origin="http://127.0.0.1:5174", host="127.0.0.1:8080")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_cross_site_http_origin_rejected(self, loopback_app):
+        # DNS-rebinding / cross-site: a real web attacker can only present an
+        # http(s) origin, and that must still be rejected.
+        ws = self._ws(origin="http://evil.test", host="127.0.0.1:8080")
+        assert web_server._ws_host_origin_is_allowed(ws) is False
+
+    def test_gated_file_origin_rejected(self, gated_app):
+        # A public/gated bind has no legitimate file:// client.
+        ws = self._ws(origin="file://", host="fly-app.fly.dev")
+        assert web_server._ws_host_origin_is_allowed(ws) is False
+
+
 class TestSidecarUrl:
     def test_loopback_uses_session_token(self, loopback_app):
         url = web_server._build_sidecar_url("ch-1")

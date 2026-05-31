@@ -185,7 +185,10 @@ def test_foreground_session_snapshot_replaces_stale_same_session_metadata(tmp_pa
         "platform",
         "chat_id",
         "thread_id",
+        "command",
         "task_summary",
+        "pid",
+        "process_session_id",
         "latest_log_path",
         "latest_summary_path",
         "resume_reason",
@@ -196,9 +199,6 @@ def test_foreground_session_snapshot_replaces_stale_same_session_metadata(tmp_pa
         "branch",
         "head",
         "mode",
-        "command",
-        "pid",
-        "process_session_id",
         "status",
         "updated_at",
     }
@@ -206,9 +206,6 @@ def test_foreground_session_snapshot_replaces_stale_same_session_metadata(tmp_pa
     assert raw["session_key"] == session_key
     assert raw["repo_path"] == str(repo_path)
     assert raw["mode"] == "foreground_session"
-    assert raw["command"] is None
-    assert raw["pid"] is None
-    assert raw["process_session_id"] is None
     assert raw["status"] == "active"
     assert "old user task text" not in json.dumps(raw)
 

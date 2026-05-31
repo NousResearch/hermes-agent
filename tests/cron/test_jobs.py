@@ -465,6 +465,18 @@ class TestMarkJobRun:
         mark_job_run(job["id"], success=True)
         assert get_job(job["id"]) is not None
 
+    def test_legacy_scalar_repeat_is_normalized_on_run(self, tmp_cron_dir):
+        job = create_job(prompt="Legacy repeat", schedule="every 1h")
+        job["repeat"] = -1
+        save_jobs([job])
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated["repeat"]["times"] is None
+        assert updated["repeat"]["completed"] == 1
+        assert updated["last_status"] == "ok"
+
     def test_error_status(self, tmp_cron_dir):
         job = create_job(prompt="Fail", schedule="every 1h")
         mark_job_run(job["id"], success=False, error="timeout")
@@ -810,6 +822,42 @@ class TestGetDueJobs:
         recovered = get_job("cron-recover")["next_run_at"]
         assert recovered is not None
         recovered_dt = datetime.fromisoformat(recovered)
+        if recovered_dt.tzinfo is None:
+            recovered_dt = recovered_dt.replace(tzinfo=timezone.utc)
+        assert recovered_dt > now
+
+    def test_legacy_string_schedule_is_normalized_and_recovered(self, tmp_cron_dir, monkeypatch):
+        pytest.importorskip("croniter")
+        now = datetime(2026, 5, 31, 11, 45, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "legacy-string-schedule",
+                "name": "Legacy string schedule",
+                "prompt": "...",
+                "schedule": "0 11 * * *",
+                "schedule_display": "0 11 * * *",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-29T09:00:00+00:00",
+                "next_run_at": "2026-05-30T11:00:00+00:00",
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        recovered = get_job("legacy-string-schedule")
+        assert recovered["schedule"]["kind"] == "cron"
+        assert recovered["schedule"]["expr"] == "0 11 * * *"
+        recovered_dt = datetime.fromisoformat(recovered["next_run_at"])
         if recovered_dt.tzinfo is None:
             recovered_dt = recovered_dt.replace(tzinfo=timezone.utc)
         assert recovered_dt > now

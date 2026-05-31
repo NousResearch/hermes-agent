@@ -1973,16 +1973,7 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
-            elif self._slack_strict_mention() and not is_mentioned:
-                return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
-                reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
-                )
-                in_mentioned_thread = (
-                    event_thread_ts is not None
-                    and event_thread_ts in self._mentioned_threads
-                )
                 has_session = (
                     is_thread_reply
                     and self._has_active_session_for_thread(
@@ -1990,6 +1981,15 @@ class SlackAdapter(BasePlatformAdapter):
                         thread_ts=event_thread_ts,
                         user_id=user_id,
                     )
+                )
+                if self._slack_strict_mention() and not has_session:
+                    return  # Strict mode still accepts active thread follow-ups.
+                reply_to_bot_thread = (
+                    is_thread_reply and event_thread_ts in self._bot_message_ts
+                )
+                in_mentioned_thread = (
+                    event_thread_ts is not None
+                    and event_thread_ts in self._mentioned_threads
                 )
                 if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
                     return

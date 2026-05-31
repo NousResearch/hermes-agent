@@ -9311,8 +9311,15 @@ class GatewayRunner:
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
+            history_len = agent_result.get("history_offset", len(history))
+            if not isinstance(history_len, int) or history_len < 0:
+                history_len = len(history)
             try:
-                await self._auto_subscribe_kanban_create_tool_results(source, agent_messages)
+                await self._auto_subscribe_kanban_create_tool_results(
+                    source,
+                    agent_messages,
+                    history_offset=history_len,
+                )
             except Exception as _kanban_sub_exc:
                 logger.debug("kanban_create tool auto-subscribe failed: %s", _kanban_sub_exc)
             _response_time = time.time() - _msg_start_time
@@ -10100,6 +10107,7 @@ class GatewayRunner:
         self,
         source: Any,
         messages: list[dict],
+        history_offset: Optional[int] = None,
     ) -> list[str]:
         """Subscribe the current gateway chat to cards created by the tool path.
 
@@ -10124,8 +10132,12 @@ class GatewayRunner:
             or self._active_profile_name()
         )
 
+        iter_messages: list[dict] = messages or []
+        if history_offset is not None and isinstance(history_offset, int):
+            iter_messages = iter_messages[max(history_offset, 0):]
+
         kanban_calls: dict[str, Optional[str]] = {}
-        for msg in messages or []:
+        for msg in iter_messages:
             if msg.get("role") != "assistant":
                 continue
             for call in msg.get("tool_calls") or []:
@@ -10154,7 +10166,7 @@ class GatewayRunner:
             return []
 
         subscriptions: list[tuple[str, Optional[str]]] = []
-        for msg in messages or []:
+        for msg in iter_messages:
             if msg.get("role") != "tool":
                 continue
             call_id = msg.get("tool_call_id")

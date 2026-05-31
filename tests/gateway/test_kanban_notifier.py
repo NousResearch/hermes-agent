@@ -302,6 +302,75 @@ def test_gateway_auto_subscribes_chat_for_kanban_create_tool_result(tmp_path, mo
     assert subs[0]["notifier_profile"] == "main"
 
 
+def test_gateway_auto_subscribe_ignores_historical_kanban_create_before_history_offset(
+    tmp_path,
+    monkeypatch,
+):
+    """Do not auto-subscribe historical successful tool calls outside current turn."""
+    db_path = tmp_path / "tool-create-history-offset.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        old_tid = kb.create_task(conn, title="historical", assignee="worker")
+    finally:
+        conn.close()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "main"
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="discord-chat",
+        thread_id="discord-thread",
+        user_id="user-1",
+    )
+    historical_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "kanban_create",
+                        "arguments": json.dumps({"title": "historical", "assignee": "worker"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({"ok": True, "task_id": old_tid}),
+        },
+    ]
+    current_turn_messages = [
+        {
+            "role": "assistant",
+            "content": "I can help with your current request. No Kanban call was made.",
+        }
+    ]
+
+    # The helper should only inspect current-turn messages, so the historical
+    # successful kanban_create must not create a subscription when offset points
+    # to the start of the current turn.
+    subscribed = asyncio.run(
+        runner._auto_subscribe_kanban_create_tool_results(
+            source,
+            historical_messages + current_turn_messages,
+            history_offset=len(historical_messages),
+        )
+    )
+
+    assert subscribed == []
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, old_tid) == []
+    finally:
+        conn.close()
+
+
 def test_gateway_does_not_subscribe_failed_kanban_create_tool_result(tmp_path, monkeypatch):
     db_path = tmp_path / "tool-create-failed.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

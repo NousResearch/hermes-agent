@@ -176,6 +176,39 @@ CONTACT_SCHEMA = {
     },
 }
 
+OPEN_CONTRADICTIONS_SCHEMA = {
+    "name": "atlas_open_contradictions",
+    "description": (
+        "List currently-open contradictions in Blake's Atlas — facts the "
+        "scanner has flagged as conflicting but Blake has NOT yet "
+        "annotated. Each row carries the LLM adjudicator's advisory "
+        "verdict + confidence so you can decide whether to surface it. "
+        "Use when Blake asks 'what's contradictory in my memory?', "
+        "'anything I need to reconcile?', before stating something "
+        "potentially-stale, or when an answer hinges on a fact you "
+        "suspect Blake has revised. Routes through GET "
+        "/v1/contradictions?status=open with a confidence floor (default "
+        "0.6) so low-signal rows stay out of the conversation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "confidence_min": {
+                "type": "number",
+                "description": (
+                    "Minimum LLM-adjudication confidence (0.0–1.0) "
+                    "required for a row to surface. Default 0.6."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max rows to return (default 25, max 500).",
+            },
+        },
+        "required": [],
+    },
+}
+
 REMEMBER_SCHEMA = {
     "name": "atlas_remember",
     "description": (
@@ -374,7 +407,13 @@ class AtlasMemoryProvider(MemoryProvider):
         return
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [RECALL_SCHEMA, REMEMBER_SCHEMA, ASK_SCHEMA, CONTACT_SCHEMA]
+        return [
+            RECALL_SCHEMA,
+            REMEMBER_SCHEMA,
+            ASK_SCHEMA,
+            CONTACT_SCHEMA,
+            OPEN_CONTRADICTIONS_SCHEMA,
+        ]
 
     def _ask(self, *, question: str, life_context: str | None = None,
              intent_hint: str | None = None, max_chunks: int | None = None) -> dict:
@@ -432,6 +471,43 @@ class AtlasMemoryProvider(MemoryProvider):
         resp.raise_for_status()
         return resp.json()
 
+    def _open_contradictions(
+        self, *, confidence_min: float = 0.6, limit: int = 25
+    ) -> list[dict]:
+        """GET /v1/contradictions?status=open — Plan 025-E.
+
+        Returns the list verbatim (each row is the Atlas ContradictionItem
+        shape), client-side filtered by `llm_confidence >= confidence_min`
+        so rows the Haiku adjudicator was uncertain about don't bubble up.
+        [cite:...] markers (when present in rationale) are preserved.
+        """
+        import httpx
+        url = f"{self._base_url.rstrip('/')}/v1/contradictions"
+        capped_limit = max(1, min(int(limit), 500))
+        resp = httpx.get(
+            url,
+            params={"status": "open", "limit": capped_limit},
+            headers=self._headers(),
+            timeout=_READ_TIMEOUT_SECS + 3.0,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not isinstance(rows, list):
+            return []
+        floor = float(confidence_min)
+        filtered: list[dict] = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            conf = r.get("llm_confidence")
+            try:
+                conf_f = float(conf) if conf is not None else 0.0
+            except (TypeError, ValueError):
+                conf_f = 0.0
+            if conf_f >= floor:
+                filtered.append(r)
+        return filtered
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
             return json.dumps({
@@ -483,6 +559,25 @@ class AtlasMemoryProvider(MemoryProvider):
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Atlas contact lookup failed: {e}")
+
+        elif tool_name == "atlas_open_contradictions":
+            try:
+                conf_min = args.get("confidence_min")
+                conf_min_f = float(conf_min) if conf_min is not None else 0.6
+                limit = args.get("limit")
+                limit_i = int(limit) if limit is not None else 25
+                rows = self._open_contradictions(
+                    confidence_min=conf_min_f, limit=limit_i,
+                )
+                self._record_success()
+                return json.dumps({
+                    "result": rows,
+                    "count": len(rows),
+                    "confidence_min": conf_min_f,
+                })
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Atlas open-contradictions lookup failed: {e}")
 
         elif tool_name == "atlas_remember":
             content = args.get("content", "")

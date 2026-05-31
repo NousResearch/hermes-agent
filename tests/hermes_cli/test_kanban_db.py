@@ -2380,8 +2380,12 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Clear module cache so a fresh connect() is attempted
+    # Clear module caches so a fresh connect() is attempted.  _WAL_DONE must
+    # also be cleared: the fixture leaves the path absent from _WAL_DONE so
+    # _ensure_wal_once() still runs the PRAGMA check, which lets the blocking
+    # connection below trigger the NFS fallback.
     kb._INITIALIZED_PATHS.clear()
+    kb._WAL_DONE.clear()
 
     real_connect = _sqlite3.connect
 
@@ -4086,3 +4090,126 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# _ensure_wal_once: WAL PRAGMA issued at most once per process per path
+# ---------------------------------------------------------------------------
+
+
+def test_wal_pragma_not_reissued_on_reconnect(tmp_path, monkeypatch):
+    """apply_wal_with_fallback must not be called on every connect().
+
+    Re-issuing PRAGMA journal_mode=WAL on every connection takes an exclusive
+    lock each time and risks the DELETE fallback flipping the persisted mode
+    out from under other live connections (incident 2026-05-27).  After the
+    first successful connect _WAL_DONE caches the path and _ensure_wal_once()
+    becomes a no-op for all subsequent connects — apply_wal_with_fallback is
+    never called again for that path.
+    """
+    from unittest.mock import patch as _patch, call as _call
+
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._WAL_DONE.discard(resolved)
+
+    import hermes_state as _hs
+    real_wal = _hs.apply_wal_with_fallback
+    calls: list[str] = []
+
+    def tracking_wal(conn, *, db_label=""):
+        calls.append(db_label)
+        return real_wal(conn, db_label=db_label)
+
+    with _patch.object(_hs, "apply_wal_with_fallback", side_effect=tracking_wal):
+        # First connect — apply_wal_with_fallback must be called.
+        conn1 = kb.connect(db_path=db_path)
+        calls_after_first = len(calls)
+        conn1.close()
+
+        # Second connect — _WAL_DONE is populated; apply_wal_with_fallback
+        # must NOT be called again.
+        conn2 = kb.connect(db_path=db_path)
+        calls_after_second = len(calls)
+        conn2.close()
+
+    assert calls_after_first >= 1, "apply_wal_with_fallback should run on first connect"
+    assert calls_after_second == calls_after_first, (
+        f"apply_wal_with_fallback called again on reconnect "
+        f"(calls: first={calls_after_first}, second={calls_after_second})"
+    )
+
+
+def test_wal_done_cleared_by_init_db(tmp_path):
+    """init_db() must evict _WAL_DONE so a fresh DB is re-entered into WAL.
+
+    Scenario: DB is connected (WAL mode, _WAL_DONE populated).  The file is
+    then deleted and recreated empty — simulating a DB reset or corruption
+    recovery.  Without clearing _WAL_DONE, the subsequent init_db() would see
+    the stale cache entry and skip _ensure_wal_once(), leaving the fresh DB in
+    DELETE mode.  With the fix, init_db() discards the stale _WAL_DONE entry
+    first, so _ensure_wal_once() reads "delete" and calls apply_wal_with_fallback.
+    """
+    import hermes_state as _hs
+    from unittest.mock import patch as _patch
+
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._WAL_DONE.discard(resolved)
+
+    real_wal = _hs.apply_wal_with_fallback
+    calls: list[str] = []
+
+    def tracking_wal(conn, *, db_label=""):
+        calls.append(db_label)
+        return real_wal(conn, db_label=db_label)
+
+    with _patch.object(_hs, "apply_wal_with_fallback", side_effect=tracking_wal):
+        # First connect — WAL applied, _WAL_DONE populated.
+        conn = kb.connect(db_path=db_path)
+        conn.close()
+        calls_after_first = len(calls)
+        assert calls_after_first >= 1
+
+        # Delete and recreate an empty DB file — simulates a reset/recovery.
+        # The new file starts in SQLite's default DELETE journal mode.
+        db_path.unlink()
+        db_path.touch()
+
+        # init_db() must clear _WAL_DONE before reconnecting so
+        # _ensure_wal_once() re-reads the journal_mode of the fresh file.
+        kb.init_db(db_path=db_path)
+        assert len(calls) > calls_after_first, (
+            "init_db() must trigger apply_wal_with_fallback on the rebuilt DB; "
+            "stale _WAL_DONE entry would have caused it to skip WAL setup entirely"
+        )
+
+    # Confirm the DB is now actually in WAL mode.
+    import sqlite3 as _sqlite3
+    c = _sqlite3.connect(str(db_path))
+    mode = c.execute("PRAGMA journal_mode").fetchone()[0]
+    c.close()
+    assert mode == "wal", f"Expected WAL after init_db rebuild, got: {mode}"
+
+
+def test_wal_done_cleared_by_remove_board(tmp_path, monkeypatch):
+    """remove_board() must evict the path from _WAL_DONE so a fresh board re-enters WAL."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    slug = "test-wal-evict"
+    kb.init_db(board=slug)
+    board_db = kb.kanban_db_path(board=slug)
+    resolved = str(board_db.resolve())
+
+    # Populate _WAL_DONE.
+    conn = kb.connect(board=slug)
+    conn.close()
+    assert resolved in kb._WAL_DONE
+
+    kb.remove_board(slug, archive=False)
+    assert resolved not in kb._WAL_DONE, "remove_board() must clear _WAL_DONE"

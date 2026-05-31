@@ -407,6 +407,12 @@ export function StatusRule({
             {usage.cost_usd.toFixed(4)}
           </Text>
         ) : null}
+        {usage.native_quota ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {usage.native_quota}
+          </Text>
+        ) : null}
       </Box>
 
       {rightWidth > 0 ? (

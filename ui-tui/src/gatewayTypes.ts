@@ -209,6 +209,7 @@ export interface SessionUsageResponse {
   cost_usd?: number
   input?: number
   model?: string
+  native_quota?: string
   output?: number
   total?: number
 }

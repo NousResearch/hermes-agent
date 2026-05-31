@@ -194,6 +194,7 @@ export interface Usage {
   cost_status?: string
   cost_usd?: number
   input: number
+  native_quota?: string
   output: number
   reasoning?: number
   total: number

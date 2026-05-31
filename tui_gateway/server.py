@@ -1367,6 +1367,19 @@ def _get_usage(agent) -> dict:
             usage["cost_usd"] = float(cost.amount_usd)
     except Exception:
         pass
+
+    try:
+        from agent.native_quota import get_native_quota_statusbar_for_model
+        usage["native_quota"] = get_native_quota_statusbar_for_model(
+            getattr(agent, "provider", None),
+            getattr(agent, "model", ""),
+            getattr(agent, "base_url", None),
+            runtime_api_key=getattr(agent, "api_key", None),
+            runtime_account_id=getattr(agent, "account_id", None),
+        ) or ""
+    except Exception:
+        usage["native_quota"] = ""
+
     return usage
 
 

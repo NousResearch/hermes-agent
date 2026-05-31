@@ -81,4 +81,50 @@ describe('StatusRule session count click target', () => {
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
     expect(openSwitcher).toHaveBeenCalledOnce()
   })
+
+  it('renders native quota when present in usage', () => {
+    const quotaLabel = 'cdx 5h 12%\u21bb2h 7d 4%\u21bb5d'
+    const element = StatusRule({
+      bgCount: 0,
+      busy: false,
+      cols: 120,
+      cwdLabel: '~/repo',
+      liveSessionCount: 0,
+      model: 'gpt-5.5',
+      sessionStartedAt: null,
+      showCost: false,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { calls: 0, input: 0, output: 0, total: 0, native_quota: quotaLabel },
+      voiceLabel: ''
+    })
+
+    const allText = textContent(element)
+    expect(allText).toContain(quotaLabel)
+  })
+
+  it('omits native quota when absent from usage', () => {
+    const element = StatusRule({
+      bgCount: 0,
+      busy: false,
+      cols: 120,
+      cwdLabel: '~/repo',
+      liveSessionCount: 0,
+      model: 'gpt-5.5',
+      sessionStartedAt: null,
+      showCost: false,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { calls: 0, input: 0, output: 0, total: 0 },
+      voiceLabel: ''
+    })
+
+    const allText = textContent(element)
+    expect(allText).not.toContain('cdx')
+    expect(allText).not.toContain('\u21bb')
+  })
 })

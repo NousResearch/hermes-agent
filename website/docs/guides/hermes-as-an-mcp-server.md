@@ -62,7 +62,7 @@ This repository includes `server.json` for MCP registry discovery. The package i
 hermes mcp serve
 ```
 
-The MCP Registry validates PyPI packages by their base project name, so `server.json` uses `"identifier": "hermes-agent"`. If you install Hermes from PyPI yourself, include the MCP extra before configuring a client:
+`server.json` uses `"identifier": "hermes-agent[mcp]"` so Python package runners that understand PyPI extras install the optional MCP SDK before launching Hermes. If you install Hermes from PyPI yourself, include the MCP extra before configuring a client:
 
 ```bash
 pip install "hermes-agent[mcp]"

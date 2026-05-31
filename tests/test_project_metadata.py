@@ -255,3 +255,36 @@ def test_mcp_serve_module_is_packaged_for_registry_launch():
     py_modules = _load_setuptools_config()["py-modules"]
 
     assert "mcp_serve" in py_modules
+
+
+def test_mcp_registry_package_launches_cli_with_mcp_extra():
+    """Registry installs should include the MCP SDK and invoke `hermes mcp serve`.
+
+    The package identifier includes the `[mcp]` extra so clients using a
+    Python package runner (for example `uvx`) install the optional MCP SDK.
+    The package runner commonly infers the executable from the package name,
+    so the `hermes-agent` console script must dispatch through the main CLI
+    instead of the legacy direct-agent entry point.
+    """
+    root = Path(__file__).resolve().parents[1]
+    server_json = json.loads((root / "server.json").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    package = server_json["packages"][0]
+    project = pyproject["project"]
+
+    assert server_json["version"] == project["version"]
+    assert package["version"] == project["version"]
+    assert package["registryType"] == "pypi"
+    assert package["registryBaseUrl"] == "https://pypi.org"
+    assert package["identifier"] == "hermes-agent[mcp]"
+    assert package["runtimeHint"] == "uvx"
+    assert [arg["value"] for arg in package["packageArguments"]] == ["mcp", "serve"]
+    assert project["scripts"]["hermes-agent"] == "hermes_cli.main:main"
+
+
+def test_mcp_server_docs_match_registry_identifier():
+    root = Path(__file__).resolve().parents[1]
+    server_json = json.loads((root / "server.json").read_text(encoding="utf-8"))
+    docs = (root / "website/docs/guides/hermes-as-an-mcp-server.md").read_text(encoding="utf-8")
+
+    assert f'`"identifier": "{server_json["packages"][0]["identifier"]}"`' in docs

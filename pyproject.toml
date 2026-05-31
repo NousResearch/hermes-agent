@@ -307,7 +307,7 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
-hermes-agent = "run_agent:main"
+hermes-agent = "hermes_cli.main:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]

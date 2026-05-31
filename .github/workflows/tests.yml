@@ -117,16 +117,32 @@ jobs:
         with:
           pattern: test-durations-slice-*
           path: durations
-          merge-multiple: true
 
       - name: Merge into single durations file
         run: |
           python3 -c "
-          import json, glob, os
+          import json, glob, os, pathlib
           merged = {}
-          for f in glob.glob('durations/*test_durations.json'):
-            with open(f) as fh:
-              merged.update(json.load(fh))
+          for f in glob.glob('durations/**/test_durations.json', recursive=True):
+            try:
+              with open(f) as fh:
+                merged.update(json.load(fh))
+            except json.JSONDecodeError:
+              # Handle concatenated JSON from extraction edge cases
+              text = pathlib.Path(f).read_text()
+              decoder = json.JSONDecoder()
+              pos = 0
+              while pos < len(text):
+                while pos < len(text) and text[pos] in ' \t\n\r':
+                  pos += 1
+                if pos >= len(text):
+                  break
+                try:
+                  obj, end = decoder.raw_decode(text, pos)
+                  merged.update(obj)
+                  pos = end
+                except json.JSONDecodeError:
+                  break
           with open('test_durations.json', 'w') as fh:
             json.dump(merged, fh, indent=2, sort_keys=True)
           print(f'Merged {len(merged)} file durations')

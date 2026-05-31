@@ -171,6 +171,9 @@ class ActiveTaskStore:
             "branch": _clean_optional_str(branch),
             "head": _clean_optional_str(head),
             "mode": "foreground_session",
+            "command": None,
+            "pid": None,
+            "process_session_id": None,
             "status": "active",
             "updated_at": _utc_now_iso(),
         }

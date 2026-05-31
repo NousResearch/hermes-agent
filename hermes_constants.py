@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import re
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -327,6 +328,88 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
     return None
+
+
+# Inline reasoning-boost keywords, à la Claude Code's "ultrathink". A user can
+# drop one of these into any message to bump the reasoning effort for that
+# single turn; the keyword is stripped before the message reaches the model and
+# the effort reverts to the session default afterward. Ordered most-specific
+# first so multi-word forms are tried before bare ones.
+REASONING_KEYWORD_EFFORTS = (
+    ("ultrathink", "xhigh"),
+    ("think harder", "high"),
+    ("think really hard", "high"),
+    ("megathink", "high"),
+    ("think hard", "high"),
+)
+
+_REASONING_EFFORT_RANK = {
+    "minimal": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "xhigh": 4,
+}
+
+
+def reasoning_effort_rank(effort: str) -> int:
+    """Return a sortable rank for a reasoning effort level (higher = more effort).
+
+    Unknown/empty inputs fall back to ``medium``'s rank so a keyword boost is
+    compared against a sane baseline rather than always winning or losing.
+    """
+    return _REASONING_EFFORT_RANK.get((effort or "").strip().lower(), 2)
+
+
+def extract_reasoning_keyword(text: str):
+    """Detect an inline reasoning-boost keyword, strip it, and report the effort.
+
+    Scans ``text`` for keywords like ``ultrathink`` (case-insensitive,
+    whole-word). When one is present, the keyword token(s) are removed and the
+    matching effort level is returned so the caller can apply it for a single
+    turn. When several keywords appear, the highest effort wins.
+
+    Returns a ``(cleaned_text, effort)`` tuple:
+      * ``effort`` is one of ``VALID_REASONING_EFFORTS`` when a keyword matched,
+        else ``None``.
+      * ``cleaned_text`` is ``text`` with the keyword(s) removed and leftover
+        whitespace collapsed. If stripping the keyword would leave nothing but
+        whitespace (e.g. the message was just ``"ultrathink"``), the keyword is
+        treated as a no-op: the original text is returned with ``effort=None``.
+    """
+    if not text or not isinstance(text, str):
+        return text, None
+
+    best_effort = None
+    cleaned = text
+    for keyword, effort in REASONING_KEYWORD_EFFORTS:
+        pattern = re.compile(
+            r"\b" + r"\s+".join(re.escape(w) for w in keyword.split()) + r"\b",
+            re.IGNORECASE,
+        )
+        if pattern.search(cleaned):
+            cleaned = pattern.sub(" ", cleaned)
+            if (
+                best_effort is None
+                or _REASONING_EFFORT_RANK[effort] > _REASONING_EFFORT_RANK[best_effort]
+            ):
+                best_effort = effort
+
+    if best_effort is None:
+        return text, None
+
+    # Collapse whitespace left behind by the removed keyword(s).
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n[ \t]+", "\n", cleaned)
+    cleaned = cleaned.strip()
+
+    # A lone keyword with no actual request is a no-op — don't send an empty
+    # turn or silently bump effort on nothing.
+    if not cleaned:
+        return text, None
+
+    return cleaned, best_effort
 
 
 def is_termux() -> bool:

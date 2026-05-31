@@ -8,10 +8,12 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    extract_reasoning_keyword,
     get_default_hermes_root,
     get_hermes_home,
     is_container,
     parse_reasoning_effort,
+    reasoning_effort_rank,
     secure_parent_dir,
 )
 
@@ -297,4 +299,122 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
+
+
+class TestReasoningEffortRank:
+    """Tests for reasoning_effort_rank() — sortable effort levels."""
+
+    def test_ordering_is_monotonic(self):
+        """Ranks increase strictly from minimal up to xhigh."""
+        order = ["minimal", "low", "medium", "high", "xhigh"]
+        ranks = [reasoning_effort_rank(e) for e in order]
+        assert ranks == sorted(ranks)
+        assert len(set(ranks)) == len(ranks)  # all distinct
+
+    def test_xhigh_beats_high_beats_medium(self):
+        assert reasoning_effort_rank("xhigh") > reasoning_effort_rank("high")
+        assert reasoning_effort_rank("high") > reasoning_effort_rank("medium")
+
+    @pytest.mark.parametrize("value", ["", "   ", "bogus", "max", None])
+    def test_unknown_falls_back_to_medium_rank(self, value):
+        """Unknown/empty inputs rank as medium so a boost compares sanely."""
+        assert reasoning_effort_rank(value) == reasoning_effort_rank("medium")
+
+    @pytest.mark.parametrize("raw", ["XHIGH", "  High  ", "\tlow\n"])
+    def test_case_and_whitespace_normalized(self, raw):
+        assert reasoning_effort_rank(raw) == reasoning_effort_rank(raw.strip().lower())
+
+
+class TestExtractReasoningKeyword:
+    """Tests for extract_reasoning_keyword() — inline ultrathink-style boosts."""
+
+    def test_ultrathink_prefix_strips_and_boosts_xhigh(self):
+        cleaned, effort = extract_reasoning_keyword("ultrathink fix the auth bug")
+        assert effort == "xhigh"
+        assert cleaned == "fix the auth bug"
+        assert "ultrathink" not in cleaned.lower()
+
+    def test_keyword_anywhere_in_message(self):
+        cleaned, effort = extract_reasoning_keyword(
+            "fix the auth bug, ultrathink please"
+        )
+        assert effort == "xhigh"
+        assert "ultrathink" not in cleaned.lower()
+        assert "fix the auth bug" in cleaned
+
+    def test_think_harder_boosts_high(self):
+        cleaned, effort = extract_reasoning_keyword(
+            "can you think harder about this race condition"
+        )
+        assert effort == "high"
+        assert "think harder" not in cleaned.lower()
+        assert "race condition" in cleaned
+
+    @pytest.mark.parametrize("kw", ["ULTRATHINK", "UltraThink", "ultrathink"])
+    def test_case_insensitive(self, kw):
+        cleaned, effort = extract_reasoning_keyword(f"{kw} why is this flaky")
+        assert effort == "xhigh"
+        assert cleaned == "why is this flaky"
+
+    def test_multiple_keywords_highest_effort_wins(self):
+        # ultrathink (xhigh) + think hard (high) -> xhigh
+        cleaned, effort = extract_reasoning_keyword("ultrathink and think hard")
+        assert effort == "xhigh"
+
+    def test_multiple_high_keywords_resolve_high(self):
+        # megathink (high) + think hard (high) -> high, both stripped
+        cleaned, effort = extract_reasoning_keyword(
+            "megathink and think hard about the schema"
+        )
+        assert effort == "high"
+        assert "megathink" not in cleaned.lower()
+        assert "think hard" not in cleaned.lower()
+        assert "schema" in cleaned
+
+    @pytest.mark.parametrize("text", ["ultrathink", "   ultrathink   ", "think harder"])
+    def test_lone_keyword_is_noop(self, text):
+        """A message that is only a keyword must not bump effort or empty out."""
+        cleaned, effort = extract_reasoning_keyword(text)
+        assert effort is None
+        assert cleaned == text  # original returned untouched
+
+    def test_no_keyword_returns_unchanged(self):
+        cleaned, effort = extract_reasoning_keyword("just a normal message")
+        assert effort is None
+        assert cleaned == "just a normal message"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "rethinking the design",     # 'think' is a substring, not a word
+            "ultrathinking about it",    # ultrathink + suffix, not whole word
+            "I love megathinking",       # megathink + suffix
+        ],
+    )
+    def test_substring_does_not_match(self, text):
+        """Whole-word boundaries — keywords embedded in longer words don't fire."""
+        cleaned, effort = extract_reasoning_keyword(text)
+        assert effort is None
+        assert cleaned == text
+
+    @pytest.mark.parametrize("bad", [None, "", 123, [], {}])
+    def test_non_string_or_empty_is_safe(self, bad):
+        cleaned, effort = extract_reasoning_keyword(bad)
+        assert effort is None
+        assert cleaned == bad
+
+    def test_boost_effort_is_a_valid_level(self):
+        """Every keyword maps to a level the rest of the system accepts."""
+        for keyword, effort in hermes_constants.REASONING_KEYWORD_EFFORTS:
+            assert effort in VALID_REASONING_EFFORTS
+
+    def test_whitespace_collapsed_after_strip(self):
+        """Removing a mid-sentence keyword shouldn't leave double spaces."""
+        cleaned, effort = extract_reasoning_keyword(
+            "please ultrathink and refactor this"
+        )
+        assert effort == "xhigh"
+        assert "  " not in cleaned
+        assert cleaned == "please and refactor this"
+
 

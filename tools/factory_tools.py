@@ -7,6 +7,17 @@ from typing import Any
 from tools.registry import registry, tool_error
 
 
+def _factory_db():
+    try:
+        from hermes_cli import factory_pg
+        if factory_pg.available():
+            return factory_pg
+    except Exception:
+        pass
+    from hermes_cli import factory_db
+    return factory_db
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields}, ensure_ascii=False, sort_keys=True)
 
@@ -19,7 +30,7 @@ def _check_factory_mode() -> bool:
 
 def _handle_factory_project_create(args: dict, **_kwargs) -> str:
     try:
-        from hermes_cli import factory_db as db
+        db = _factory_db()
         result = db.create_project(
             str(args.get("name") or "").strip(),
             project_id=args.get("project_id") or None,
@@ -40,7 +51,7 @@ def _handle_factory_project_create(args: dict, **_kwargs) -> str:
 
 def _handle_factory_lane_create(args: dict, **_kwargs) -> str:
     try:
-        from hermes_cli import factory_db as db
+        db = _factory_db()
         result = db.create_lane(
             str(args.get("project_id") or "").strip(),
             str(args.get("name") or "").strip(),
@@ -57,7 +68,7 @@ def _handle_factory_lane_create(args: dict, **_kwargs) -> str:
 
 def _handle_factory_task_create(args: dict, **_kwargs) -> str:
     try:
-        from hermes_cli import factory_db as db
+        db = _factory_db()
         result = db.create_task(
             str(args.get("project_id") or "").strip(),
             str(args.get("title") or "").strip(),
@@ -78,7 +89,7 @@ def _handle_factory_task_create(args: dict, **_kwargs) -> str:
 
 def _handle_factory_gate_record(args: dict, **_kwargs) -> str:
     try:
-        from hermes_cli import factory_db as db
+        db = _factory_db()
         result = db.record_gate(
             str(args.get("project_id") or "").strip(),
             str(args.get("gate_type") or "").strip(),
@@ -96,7 +107,7 @@ def _handle_factory_gate_record(args: dict, **_kwargs) -> str:
 
 def _handle_factory_status(args: dict, **_kwargs) -> str:
     try:
-        from hermes_cli import factory_db as db
+        db = _factory_db()
         return _ok(**db.status(args.get("project_id") or None))
     except Exception as exc:
         return tool_error(str(exc))

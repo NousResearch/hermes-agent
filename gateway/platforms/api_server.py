@@ -867,6 +867,135 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
+    # Artifact workspace helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _artifact_roots() -> Dict[str, Path]:
+        roots: Dict[str, Path] = {}
+        raw = os.environ.get("API_SERVER_ARTIFACT_ROOTS", "")
+        for item in raw.split(","):
+            item = item.strip()
+            if not item or "=" not in item:
+                continue
+            name, path = item.split("=", 1)
+            name = re.sub(r"[^A-Za-z0-9_.-]", "", name.strip())
+            if not name:
+                continue
+            roots[name] = Path(path.strip()).expanduser().resolve()
+        return roots
+
+    @staticmethod
+    def _artifact_type(path: Path) -> str:
+        suffix = path.suffix.lower()
+        if path.is_dir():
+            return "directory"
+        if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+            return "image"
+        if suffix in {".mp4", ".mov", ".webm", ".mkv"}:
+            return "video"
+        if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac"}:
+            return "audio"
+        if suffix in {".txt", ".md", ".json", ".yaml", ".yml", ".csv", ".log", ".html"}:
+            return "document"
+        return "file"
+
+    @staticmethod
+    def _artifact_preview(path: Path) -> str:
+        if path.is_dir() or path.stat().st_size > 64_000:
+            return ""
+        if APIServerAdapter._artifact_type(path) != "document":
+            return ""
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:1_000]
+        except OSError:
+            return ""
+
+    def _resolve_artifact_path(self, virtual_path: str) -> tuple[Optional[str], Optional[Path], Optional["web.Response"]]:
+        roots = self._artifact_roots()
+        clean = (virtual_path or "").strip().strip("/")
+        if not clean:
+            return None, None, None
+        root_name, _, rel = clean.partition("/")
+        root = roots.get(root_name)
+        if root is None:
+            return None, None, web.json_response({"error": "Unknown artifact root"}, status=404)
+        try:
+            target = (root / rel).resolve() if rel else root
+            target.relative_to(root)
+        except (OSError, ValueError):
+            return None, None, web.json_response({"error": "Invalid artifact path"}, status=400)
+        return root_name, target, None
+
+    @staticmethod
+    def _artifact_item(root_name: str, root: Path, path: Path) -> Dict[str, Any]:
+        rel = path.relative_to(root).as_posix()
+        virtual = root_name if rel == "." else f"{root_name}/{rel}"
+        stat = path.stat()
+        return {
+            "name": path.name or root_name,
+            "path": virtual,
+            "kind": "directory" if path.is_dir() else "file",
+            "size": 0 if path.is_dir() else stat.st_size,
+            "mtime": stat.st_mtime,
+            "artifactType": APIServerAdapter._artifact_type(path),
+            "preview": APIServerAdapter._artifact_preview(path),
+        }
+
+    async def _handle_list_artifacts(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        roots = self._artifact_roots()
+        requested = request.query.get("path", "")
+        if not requested:
+            items = [
+                self._artifact_item(name, root, root)
+                for name, root in sorted(roots.items())
+                if root.exists() and root.is_dir()
+            ]
+            return web.json_response({"object": "hermes.artifacts.list", "items": items})
+
+        root_name, target, err = self._resolve_artifact_path(requested)
+        if err:
+            return err
+        assert root_name is not None and target is not None
+        roots_map = self._artifact_roots()
+        root = roots_map[root_name]
+        if not target.exists():
+            return web.json_response({"error": "Artifact path not found"}, status=404)
+        if target.is_file():
+            return web.json_response({"object": "hermes.artifacts.list", "items": [self._artifact_item(root_name, root, target)]})
+        items = []
+        for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if child.name.startswith("."):
+                continue
+            try:
+                items.append(self._artifact_item(root_name, root, child))
+            except OSError:
+                continue
+        return web.json_response({"object": "hermes.artifacts.list", "items": items})
+
+    async def _handle_get_artifact(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        artifact_path = request.match_info.get("artifact_path", "")
+        root_name, target, err = self._resolve_artifact_path(artifact_path)
+        if err:
+            return err
+        assert root_name is not None and target is not None
+        roots = self._artifact_roots()
+        root = roots[root_name]
+        if not target.exists():
+            return web.json_response({"error": "Artifact path not found"}, status=404)
+        if request.query.get("metadata"):
+            return web.json_response(self._artifact_item(root_name, root, target))
+        if target.is_dir():
+            return web.json_response({"error": "Artifact path is a directory"}, status=400)
+        return web.FileResponse(path=target)
+
+    # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
 
@@ -4097,6 +4226,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
+            self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
+            self._app.router.add_get("/api/artifacts/{artifact_path:.+}", self._handle_get_artifact)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
             self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)

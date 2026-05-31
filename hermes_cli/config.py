@@ -675,6 +675,14 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "agent_core": {
+        "db_enabled": False,
+        "db_container": "agent-postgres",
+        "db_name": "zeus_agent",
+        "calendar_db_name": "nettu_calendar",
+        "crm_db_name": "zeus_agent",
+        "modules_enabled": ["factory", "calendar", "crm"],
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

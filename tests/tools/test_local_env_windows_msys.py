@@ -26,6 +26,7 @@ from tools.environments.local import (
     LocalEnvironment,
     _msys_to_windows_path,
     _resolve_safe_cwd,
+    _windows_to_msys_path,
 )
 
 
@@ -68,6 +69,35 @@ class TestMsysToWindowsPath:
     def test_empty_string(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _windows_to_msys_path — reverse translation for bash builtin cd
+# ---------------------------------------------------------------------------
+
+class TestWindowsToMsysPath:
+    def test_noop_on_non_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert _windows_to_msys_path(r"C:\Users\NVIDIA") == r"C:\Users\NVIDIA"
+
+    def test_translates_backslash_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path(r"C:\Users\NVIDIA") == "/c/Users/NVIDIA"
+        assert _windows_to_msys_path(r"D:\Projects\foo bar") == "/d/Projects/foo bar"
+
+    def test_translates_forward_slash_native_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path("C:/Users/NVIDIA") == "/c/Users/NVIDIA"
+
+    def test_translates_drive_root(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path(r"C:\\") == "/c/"
+        assert _windows_to_msys_path("D:/") == "/d/"
+
+    def test_does_not_translate_non_drive_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path("/tmp/foo") == "/tmp/foo"
+        assert _windows_to_msys_path(r"\\server\share") == r"\\server\share"
 
 
 # ---------------------------------------------------------------------------
@@ -196,3 +226,23 @@ class TestExtractCwdFromOutputWindowsMsys:
             env._extract_cwd_from_output(result)
 
         assert env.cwd == str(new_dir)
+
+
+# ---------------------------------------------------------------------------
+# Command wrapping — native Windows cwd must be Git Bash-friendly for cd
+# ---------------------------------------------------------------------------
+
+class TestWrapCommandWindowsNativeCwd:
+    def test_wrap_command_converts_native_cwd_for_builtin_cd(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=r"C:\Users\liush", timeout=10)
+
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("pwd", r"C:\Users\liush")
+
+        assert "builtin cd -- /c/Users/liush || exit 126" in wrapped
+        assert r"builtin cd -- C:\Users\liush || exit 126" not in wrapped

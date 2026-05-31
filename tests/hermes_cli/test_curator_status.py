@@ -32,7 +32,8 @@ def test_status_uses_last_activity_not_only_last_used(monkeypatch, capsys):
     monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
     monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
     monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [
+    monkeypatch.setattr(curator_state, "get_scope", lambda: "agent_created")
+    monkeypatch.setattr(skill_usage, "curator_report", lambda scope: [
         {
             "name": "recently-viewed",
             "state": "active",
@@ -194,7 +195,8 @@ def test_status_marks_missing_last_report_path(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
     monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
     monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [])
+    monkeypatch.setattr(curator_state, "get_scope", lambda: "agent_created")
+    monkeypatch.setattr(skill_usage, "curator_report", lambda scope: [])
 
     assert curator_cli._cmd_status(SimpleNamespace()) == 0
 

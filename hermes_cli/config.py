@@ -1557,16 +1557,22 @@ DEFAULT_CONFIG = {
 
     # Curator — background skill maintenance.
     #
-    # Periodically reviews AGENT-CREATED skills (never bundled or
-    # hub-installed) and keeps the collection tidy: marks long-unused skills
-    # as stale, archives genuinely obsolete ones (archive only, never
-    # deletes), and spawns a forked aux-model agent to consolidate overlaps
-    # and patch drift. Runs inactivity-triggered from session start — no
-    # cron daemon.
+    # Periodically reviews curator-scope skills and keeps the collection tidy:
+    # marks long-unused skills as stale, archives genuinely obsolete ones
+    # (archive only, never deletes), and spawns a forked aux-model agent to
+    # consolidate overlaps and patch drift. Scope defaults to agent-created
+    # skills; set curator.scope=non_manual to include agent-created plus
+    # bundled/hub profile-local skill copies while excluding manual local
+    # skills, or curator.scope=all to include manual skills too. Runs inactivity-triggered from session
+    # start — no cron daemon.
     #
     # See `hermes curator status` for the last run summary.
     "curator": {
         "enabled": True,
+        # Scope: "agent_created" (safe default), "non_manual" (agent-created
+        # plus bundled/hub copies, excluding manual local skills), or "all"
+        # (all installed profile-local skills, including manual skills).
+        "scope": "agent_created",
         # How long to wait between curator runs (hours).  Default: 7 days.
         "interval_hours": 24 * 7,
         # Only run when the agent has been idle at least this long (hours).

@@ -1,6 +1,6 @@
 """Curator — background skill maintenance orchestrator.
 
-The curator is an auxiliary-model task that periodically reviews agent-created
+The curator is an auxiliary-model task that periodically reviews curator-scope
 skills and maintains the collection. It runs inactivity-triggered (no cron
 daemon): when the agent is idle and the last curator run was longer than
 ``interval_hours`` ago, ``maybe_run_curator()`` spawns a forked AIAgent to do
@@ -13,7 +13,10 @@ Responsibilities:
   - Persist curator state (last_run_at, paused, etc.) in .curator_state
 
 Strict invariants:
-  - Only touches agent-created skills (see tools/skill_usage.is_agent_created)
+  - Scope defaults to agent-created skills (see tools/skill_usage.list_agent_created_skill_names);
+    curator.scope=non_manual opts in agent-created, bundled, and hub skills while
+    excluding manual local skills; curator.scope=all opts in every installed
+    profile-local skill copy
   - Never auto-deletes — only archives. Archive is recoverable.
   - Pinned skills bypass all auto-transitions
   - Uses the auxiliary client; never touches the main session's prompt cache
@@ -183,6 +186,21 @@ def get_archive_after_days() -> int:
         return DEFAULT_ARCHIVE_AFTER_DAYS
 
 
+def get_scope() -> str:
+    """Return curator scope: ``agent_created`` (default), ``non_manual``, or ``all``."""
+    cfg = _load_config()
+    raw = str(cfg.get("scope", "agent_created") or "agent_created").strip().lower().replace("-", "_")
+    if raw in {"non_manual", "not_manual", "non_user", "not_user", "not_made_by_me", "managed"}:
+        return "non_manual"
+    if raw in {"all", "installed", "all_installed"}:
+        return "all"
+    return "agent_created"
+
+
+def _scope_allows_upstream() -> bool:
+    return get_scope() in {"non_manual", "all"}
+
+
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
@@ -266,7 +284,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
 
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
 
-    for row in _u.agent_created_report():
+    for row in _u.curator_report(get_scope(), persist_missing=True):
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
@@ -282,7 +300,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         current = row.get("state", _u.STATE_ACTIVE)
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            ok, _msg = _u.archive_skill(name)
+            ok, _msg = _u.archive_skill(name, allow_upstream=_scope_allows_upstream())
             if ok:
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
@@ -342,8 +360,13 @@ CURATOR_REVIEW_PROMPT = (
     "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
     "session-specific detail — not one-session-one-skill micro-entries.\n\n"
     "Hard rules — do not violate:\n"
-    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
-    "below is already filtered to agent-created skills only.\n"
+    "1. Only touch skills in the candidate list below. By default the "
+    "candidate list is agent-created only. If the list explicitly contains "
+    "provenance=bundled or provenance=hub, curator.scope=non_manual or "
+    "curator.scope=all is enabled and you may clean up those installed "
+    "profile-local copies too; never edit the upstream bundled repo or hub "
+    "source. If the list contains provenance=manual, curator.scope=all is "
+    "enabled; treat those as user-authored and be extra conservative.\n"
     "2. DO NOT delete any skill. Archiving (moving the skill's directory "
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
@@ -1366,14 +1389,21 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of agent-created skills with usage stats."""
-    rows = skill_usage.agent_created_report()
+    """Human/agent-readable list of curator-scope skills with usage stats."""
+    scope = get_scope()
+    rows = skill_usage.curator_report(scope)
     if not rows:
-        return "No agent-created skills to review."
-    lines = [f"Agent-created skills ({len(rows)}):\n"]
+        return f"No {scope} skills to review."
+    title = (
+        "All installed skills" if scope == "all" else
+        "Non-manual skills" if scope == "non_manual" else
+        "Agent-created skills"
+    )
+    lines = [f"{title} ({len(rows)}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
+            f"provenance={r.get('provenance', 'unknown')}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
             f"activity={r.get('activity_count', 0)}  "
@@ -1394,7 +1424,7 @@ def run_curator_review(
 
     Steps:
       1. Apply automatic state transitions (pure, no LLM).
-      2. If there are agent-created skills, spawn a forked AIAgent that runs
+      2. If there are curator-scope skills, spawn a forked AIAgent that runs
          the LLM review prompt against the current candidate list.
       3. Update .curator_state with last_run_at and a one-line summary.
       4. Invoke *on_summary* with a user-visible description.
@@ -1412,7 +1442,7 @@ def run_curator_review(
     if dry_run:
         # Count candidates without mutating state.
         try:
-            report = skill_usage.agent_created_report()
+            report = skill_usage.curator_report(get_scope())
             counts = {
                 "checked": len(report),
                 "marked_stale": 0,
@@ -1465,7 +1495,7 @@ def run_curator_review(
         nonlocal auto_summary
         # Snapshot skill state BEFORE the LLM pass so the report can diff.
         try:
-            before_report = skill_usage.agent_created_report()
+            before_report = skill_usage.curator_report(get_scope())
         except Exception:
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
@@ -1473,7 +1503,7 @@ def run_curator_review(
         llm_meta: Dict[str, Any] = {}
         try:
             candidate_list = _render_candidate_list()
-            if "No agent-created skills" in candidate_list:
+            if candidate_list.startswith("No "):
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {
                     "final": "",
@@ -1515,7 +1545,7 @@ def run_curator_review(
         try:
             rename_lines = _build_rename_summary(
                 before_names=before_names,
-                after_report=skill_usage.agent_created_report(),
+                after_report=skill_usage.curator_report(get_scope()),
                 tool_calls=llm_meta.get("tool_calls", []) or [],
                 model_final=llm_meta.get("final", "") or "",
             )
@@ -1533,7 +1563,7 @@ def run_curator_review(
         # reporting bug never breaks the curator itself. Report path is
         # recorded in state so `hermes curator status` can point at it.
         try:
-            after_report = skill_usage.agent_created_report()
+            after_report = skill_usage.curator_report(get_scope())
         except Exception:
             after_report = []
         try:

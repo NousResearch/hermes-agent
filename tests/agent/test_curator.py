@@ -65,6 +65,21 @@ def test_curator_defaults(curator_env):
     assert c.get_min_idle_hours() == 2
     assert c.get_stale_after_days() == 30
     assert c.get_archive_after_days() == 90
+    assert c.get_scope() == "agent_created"
+
+
+def test_curator_scope_all_config(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"scope": "all"})
+    assert c.get_scope() == "all"
+
+
+def test_curator_scope_non_manual_config(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"scope": "not_made_by_me"})
+    assert c.get_scope() == "non_manual"
+    monkeypatch.setattr(c, "_load_config", lambda: {"scope": "non_manual"})
+    assert c.get_scope() == "non_manual"
 
 
 def test_curator_config_overrides(curator_env, monkeypatch):
@@ -280,9 +295,59 @@ def test_bundled_skill_not_touched_by_transitions(curator_env):
     u.save_usage(data)
 
     counts = c.apply_automatic_transitions()
-    # bundled skills are excluded from the agent-created list entirely
+    # bundled skills are excluded from the default agent-created scope entirely
     assert counts["checked"] == 0
     assert (skills_dir / "bundled").exists()  # never moved
+
+
+def test_scope_all_allows_bundled_transitions(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"scope": "all"})
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled:abc\n", encoding="utf-8",
+    )
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    data["bundled"] = u._empty_record()
+    data["bundled"]["last_used_at"] = super_old
+    data["bundled"]["created_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 1
+    assert counts["archived"] == 1
+    assert not skill_dir.exists()
+    assert (skills_dir / ".archive" / "bundled" / "SKILL.md").exists()
+
+
+def test_scope_non_manual_allows_bundled_but_excludes_manual(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"scope": "non_manual"})
+    skills_dir = curator_env["home"] / "skills"
+    bundled_dir = _write_skill(skills_dir, "bundled")
+    manual_dir = _write_skill(skills_dir, "manual")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled:abc\n", encoding="utf-8",
+    )
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    for name in ("bundled", "manual"):
+        data[name] = u._empty_record()
+        data[name]["last_used_at"] = super_old
+        data[name]["created_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 1
+    assert counts["archived"] == 1
+    assert not bundled_dir.exists()
+    assert manual_dir.exists()
 
 
 # ---------------------------------------------------------------------------

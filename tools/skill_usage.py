@@ -7,13 +7,14 @@ decide lifecycle transitions.
 
 Design notes:
   - Sidecar, not frontmatter. Keeps operational telemetry out of user-authored
-    SKILL.md content and avoids conflict pressure for bundled/hub skills.
+    SKILL.md content and avoids conflict pressure with skill package files.
   - Atomic writes via tempfile + os.replace (same pattern as .bundled_manifest).
   - All counter bumps are best-effort: failures log at DEBUG and return silently.
     A broken sidecar never breaks the underlying tool call.
-  - Provenance filter: curator-managed skills are explicitly marked when
-    created through skill_manage. Bundled / hub-installed skills stay
-    off-limits, and manually authored skills are not inferred from location.
+  - Provenance filter: curator-managed skills default to those explicitly
+    marked when created through skill_manage. Installations can opt the curator
+    into all installed skills; provenance is then tracked in reports so policy
+    can stay explicit.
 
 Lifecycle states:
     active    -> default
@@ -217,6 +218,41 @@ def _read_hub_installed_names() -> Set[str]:
     return set()
 
 
+def _iter_installed_skill_names() -> List[str]:
+    """Enumerate visible skill names under the active skills directory."""
+    base = _skills_dir()
+    if not base.exists():
+        return []
+    names: List[str] = []
+    for skill_md in base.rglob("SKILL.md"):
+        if is_excluded_skill_path(skill_md):
+            continue
+        try:
+            skill_md.relative_to(base)
+        except ValueError:
+            continue
+        names.append(_read_skill_name(skill_md, fallback=skill_md.parent.name))
+    return sorted(set(names))
+
+
+def _provenance_for_name(
+    skill_name: str, *, bundled: Optional[Set[str]] = None, hub: Optional[Set[str]] = None
+) -> str:
+    """Return a coarse provenance label for a skill name."""
+    if bundled is None:
+        bundled = _read_bundled_manifest_names()
+    if hub is None:
+        hub = _read_hub_installed_names()
+    if skill_name in bundled:
+        return "bundled"
+    if skill_name in hub:
+        return "hub"
+    rec = load_usage().get(skill_name)
+    if _is_curator_managed_record(rec):
+        return "agent"
+    return "manual"
+
+
 def list_agent_created_skill_names() -> List[str]:
     """Enumerate skills explicitly authored by the agent.
 
@@ -251,6 +287,39 @@ def list_agent_created_skill_names() -> List[str]:
             continue
         names.append(name)
     return sorted(set(names))
+
+
+def list_non_manual_skill_names() -> List[str]:
+    """Enumerate skills not authored manually by the user.
+
+    This is the middle curator scope: include skills explicitly created by the
+    agent plus bundled and hub-installed profile-local copies, but exclude
+    local/manual skills with no curator-managed provenance marker.
+    """
+    bundled = _read_bundled_manifest_names()
+    hub = _read_hub_installed_names()
+    usage = load_usage()
+    names: List[str] = []
+    for name in _iter_installed_skill_names():
+        if name in bundled or name in hub or _is_curator_managed_record(usage.get(name)):
+            names.append(name)
+    return sorted(set(names))
+
+
+def list_curator_skill_names(scope: str = "agent_created") -> List[str]:
+    """Enumerate skills eligible for curator lifecycle/review.
+
+    ``agent_created`` is the safe default used historically. ``non_manual``
+    opts in every non-user-authored skill (agent-created, bundled, and hub),
+    while leaving manually-authored local skills alone. ``all`` opts in every
+    installed local skill copy. Archiving remains recoverable.
+    """
+    normalized = str(scope or "agent_created").strip().lower().replace("-", "_")
+    if normalized in {"non_manual", "not_manual", "non_user", "not_user", "not_made_by_me", "managed"}:
+        return list_non_manual_skill_names()
+    if normalized in {"all", "installed", "all_installed"}:
+        return _iter_installed_skill_names()
+    return list_agent_created_skill_names()
 
 
 def list_archived_skill_names() -> List[str]:
@@ -380,15 +449,13 @@ def get_record(skill_name: str) -> Dict[str, Any]:
 def _mutate(skill_name: str, mutator) -> None:
     """Load, apply *mutator(record)* in place, save. Best-effort.
 
-    Bundled and hub-installed skills are NEVER recorded in the sidecar.
-    Local manual skills may still accrue usage telemetry, but they only
-    become curator-managed when ``created_by`` is explicitly marked.
+    All installed skills may accrue usage telemetry. Only agent-created skills
+    are curator-managed by default; broader curator scopes consult provenance
+    explicitly rather than inferring it from telemetry existence.
     """
     if not skill_name:
         return
     try:
-        if not is_agent_created(skill_name):
-            return
         with _usage_file_lock():
             data = load_usage()
             rec = data.get(skill_name)
@@ -479,13 +546,14 @@ def forget(skill_name: str) -> None:
 # Archive / restore
 # ---------------------------------------------------------------------------
 
-def archive_skill(skill_name: str) -> Tuple[bool, str]:
-    """Move an agent-created skill directory to ~/.hermes/skills/.archive/.
+def archive_skill(skill_name: str, *, allow_upstream: bool = False) -> Tuple[bool, str]:
+    """Move a skill directory to ~/.hermes/skills/.archive/.
 
-    Returns (ok, message). Never archives bundled or hub skills — callers are
-    responsible for checking provenance, but we double-check here as a safety net.
+    Returns (ok, message). Bundled and hub skills require ``allow_upstream`` so
+    command paths keep the historical safety rail while the curator can opt in
+    when configured with ``curator.scope: non_manual`` or ``curator.scope: all``.
     """
-    if not is_agent_created(skill_name):
+    if not allow_upstream and not is_agent_created(skill_name):
         return False, f"skill '{skill_name}' is bundled or hub-installed; never archive"
 
     skill_dir = _find_skill_dir(skill_name)
@@ -588,21 +656,44 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 # Reporting — for the curator CLI / slash command
 # ---------------------------------------------------------------------------
 
+def curator_report(scope: str = "agent_created", *, persist_missing: bool = False) -> List[Dict[str, Any]]:
+    """Return report rows for skills eligible under *scope*.
+
+    When ``persist_missing`` is true, missing sidecar records are saved. The
+    automatic transition pass uses this to seed a stable ``created_at`` anchor
+    for never-used installed skills so they can eventually age out instead of
+    looking brand-new on every run.
+    """
+    data = load_usage()
+    changed = False
+    bundled = _read_bundled_manifest_names()
+    hub = _read_hub_installed_names()
+    rows: List[Dict[str, Any]] = []
+    for name in list_curator_skill_names(scope):
+        rec = data.get(name)
+        if not isinstance(rec, dict):
+            rec = _empty_record()
+            if persist_missing:
+                data[name] = rec
+                changed = True
+        base = _empty_record()
+        for k, v in base.items():
+            if k not in rec:
+                rec[k] = v
+                if persist_missing:
+                    changed = True
+        row = {"name": name, **rec}
+        row["provenance"] = _provenance_for_name(name, bundled=bundled, hub=hub)
+        row["last_activity_at"] = latest_activity_at(row)
+        row["activity_count"] = activity_count(row)
+        rows.append(row)
+    if changed:
+        save_usage(data)
+    return rows
+
+
 def agent_created_report() -> List[Dict[str, Any]]:
     """Return a list of {name, state, pinned, last_activity_at, ...}
     records for every agent-created skill. Missing usage records are backfilled
     with defaults so callers can always index fields."""
-    data = load_usage()
-    rows: List[Dict[str, Any]] = []
-    for name in list_agent_created_skill_names():
-        rec = data.get(name)
-        if not isinstance(rec, dict):
-            rec = _empty_record()
-        base = _empty_record()
-        for k, v in base.items():
-            rec.setdefault(k, v)
-        row = {"name": name, **rec}
-        row["last_activity_at"] = latest_activity_at(row)
-        row["activity_count"] = activity_count(row)
-        rows.append(row)
-    return rows
+    return curator_report("agent_created")

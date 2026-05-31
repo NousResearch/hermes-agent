@@ -78,9 +78,15 @@ def _cmd_status(args) -> int:
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
 
-    rows = skill_usage.agent_created_report()
+    scope = curator.get_scope()
+    rows = skill_usage.curator_report(scope)
+    label = (
+        "installed skills" if scope == "all" else
+        "non-manual skills" if scope == "non_manual" else
+        "agent-created skills"
+    )
     if not rows:
-        print("\nno agent-created skills")
+        print(f"\nno {label}")
         return 0
 
     by_state = {"active": [], "stale": [], "archived": []}
@@ -91,7 +97,7 @@ def _cmd_status(args) -> int:
         if r.get("pinned"):
             pinned.append(r["name"])
 
-    print(f"\nagent-created skills: {len(rows)} total")
+    print(f"\n{label}: {len(rows)} total")
     for state_name in ("active", "stale", "archived"):
         bucket = by_state.get(state_name, [])
         print(f"  {state_name:10s} {len(bucket)}")
@@ -232,11 +238,17 @@ def _cmd_resume(args) -> int:
 
 
 def _cmd_pin(args) -> int:
+    from agent import curator
     from tools import skill_usage
-    if not skill_usage.is_agent_created(args.skill):
+    scope = curator.get_scope()
+    if args.skill not in set(skill_usage.list_curator_skill_names(scope)):
+        extra = (
+            "; bundled/hub skills participate only when curator.scope is non_manual or all"
+            if not skill_usage.is_agent_created(args.skill) else ""
+        )
         print(
-            f"curator: '{args.skill}' is bundled or hub-installed — cannot pin "
-            "(only agent-created skills participate in curation)"
+            f"curator: '{args.skill}' is not in the current curator scope "
+            f"({scope}){extra}"
         )
         return 1
     skill_usage.set_pinned(args.skill, True)
@@ -245,11 +257,17 @@ def _cmd_pin(args) -> int:
 
 
 def _cmd_unpin(args) -> int:
+    from agent import curator
     from tools import skill_usage
-    if not skill_usage.is_agent_created(args.skill):
+    scope = curator.get_scope()
+    if args.skill not in set(skill_usage.list_curator_skill_names(scope)):
+        extra = (
+            "; bundled/hub skills participate only when curator.scope is non_manual or all"
+            if not skill_usage.is_agent_created(args.skill) else ""
+        )
         print(
-            f"curator: '{args.skill}' is bundled or hub-installed — "
-            "there's nothing to unpin (curator only tracks agent-created skills)"
+            f"curator: '{args.skill}' is not in the current curator scope "
+            f"({scope}){extra}"
         )
         return 1
     skill_usage.set_pinned(args.skill, False)
@@ -302,13 +320,14 @@ def _idle_days(record: dict) -> Optional[int]:
 
 
 def _cmd_prune(args) -> int:
-    """Bulk-archive agent-created skills idle for >= N days.
+    """Bulk-archive curator-scope skills idle for >= N days.
 
     Pinned skills are exempt. Already-archived skills are skipped. Default
     ``--days 90`` matches a conservative read of the curator's own archive
     threshold; adjust with ``--days``. Use ``--dry-run`` to preview.
     """
     from tools import skill_usage
+    from agent import curator
     days = getattr(args, "days", 90)
     if days < 1:
         print(f"curator: --days must be >= 1 (got {days})", file=sys.stderr)
@@ -318,7 +337,9 @@ def _cmd_prune(args) -> int:
     skip_confirm = bool(getattr(args, "yes", False))
 
     candidates = []
-    for r in skill_usage.agent_created_report():
+    scope = curator.get_scope()
+    report = skill_usage.curator_report(scope)
+    for r in report:
         if r.get("pinned"):
             continue
         if r.get("state") == skill_usage.STATE_ARCHIVED:
@@ -354,7 +375,10 @@ def _cmd_prune(args) -> int:
     archived = 0
     failures = []
     for name, _ in candidates:
-        ok, msg = skill_usage.archive_skill(name)
+        if scope in {"non_manual", "all"}:
+            ok, msg = skill_usage.archive_skill(name, allow_upstream=True)
+        else:
+            ok, msg = skill_usage.archive_skill(name)
         if ok:
             archived += 1
         else:

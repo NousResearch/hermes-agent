@@ -363,6 +363,18 @@ def test_archive_refuses_bundled_skill(skills_home):
     assert "bundled" in msg.lower() or "hub" in msg.lower()
 
 
+def test_archive_allows_bundled_when_explicitly_opted_in(skills_home):
+    from tools.skill_usage import archive_skill
+    skills_dir = skills_home / "skills"
+    skill_dir = _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+
+    ok, msg = archive_skill("bundled", allow_upstream=True)
+    assert ok, msg
+    assert not skill_dir.exists()
+    assert (skills_dir / ".archive" / "bundled" / "SKILL.md").exists()
+
+
 def test_archive_refuses_hub_skill(skills_home):
     from tools.skill_usage import archive_skill
     skills_dir = skills_home / "skills"
@@ -497,6 +509,60 @@ def test_agent_created_report_excludes_bundled_and_hub(skills_home):
     assert "hubbed" not in names
 
 
+def test_curator_report_all_includes_installed_provenance(skills_home):
+    from tools.skill_usage import curator_report, mark_agent_created
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "mine")
+    _write_skill(skills_dir, "manual")
+    _write_skill(skills_dir, "bundled")
+    _write_skill(skills_dir, "hubbed")
+    mark_agent_created("mine")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"hubbed": {}}}), encoding="utf-8",
+    )
+
+    by_name = {r["name"]: r for r in curator_report("all")}
+    assert by_name["mine"]["provenance"] == "agent"
+    assert by_name["manual"]["provenance"] == "manual"
+    assert by_name["bundled"]["provenance"] == "bundled"
+    assert by_name["hubbed"]["provenance"] == "hub"
+
+
+def test_curator_report_non_manual_excludes_manual(skills_home):
+    from tools.skill_usage import curator_report, mark_agent_created
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "mine")
+    _write_skill(skills_dir, "manual")
+    _write_skill(skills_dir, "bundled")
+    _write_skill(skills_dir, "hubbed")
+    mark_agent_created("mine")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"hubbed": {}}}), encoding="utf-8",
+    )
+
+    by_name = {r["name"]: r for r in curator_report("non_manual")}
+    assert set(by_name) == {"mine", "bundled", "hubbed"}
+    assert by_name["mine"]["provenance"] == "agent"
+    assert by_name["bundled"]["provenance"] == "bundled"
+    assert by_name["hubbed"]["provenance"] == "hub"
+
+
+def test_curator_report_can_seed_records_for_scope_all(skills_home):
+    from tools.skill_usage import curator_report, load_usage
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "never-used")
+
+    assert "never-used" not in load_usage()
+    curator_report("all", persist_missing=True)
+    assert load_usage()["never-used"]["created_at"]
+
+
 def test_agent_created_report_derives_activity_from_view_and_patch(skills_home, monkeypatch):
     import tools.skill_usage as skill_usage
 
@@ -520,12 +586,11 @@ def test_agent_created_report_derives_activity_from_view_and_patch(skills_home, 
 
 
 # ---------------------------------------------------------------------------
-# Provenance guard — telemetry must not leak records for bundled/hub skills
+# Provenance telemetry — bundled/hub usage can be tracked without default curation
 # ---------------------------------------------------------------------------
 
-def test_bump_view_no_op_for_bundled_skill(skills_home):
-    """Telemetry bumps on bundled skills are dropped — the sidecar must stay
-    focused on agent-created skills only."""
+def test_bump_view_records_bundled_skill_usage(skills_home):
+    """Bundled skills can accrue telemetry so scope=all has recency data."""
     from tools.skill_usage import bump_view, load_usage
     skills_dir = skills_home / "skills"
     (skills_dir / ".bundled_manifest").write_text(
@@ -533,12 +598,10 @@ def test_bump_view_no_op_for_bundled_skill(skills_home):
     )
 
     bump_view("ship-bundled")
-    assert "ship-bundled" not in load_usage(), (
-        "bundled skill leaked into .usage.json"
-    )
+    assert load_usage()["ship-bundled"]["view_count"] == 1
 
 
-def test_bump_patch_no_op_for_hub_skill(skills_home):
+def test_bump_patch_records_hub_skill_usage(skills_home):
     from tools.skill_usage import bump_patch, load_usage
     skills_dir = skills_home / "skills"
     hub = skills_dir / ".hub"
@@ -548,10 +611,10 @@ def test_bump_patch_no_op_for_hub_skill(skills_home):
     )
 
     bump_patch("from-hub")
-    assert "from-hub" not in load_usage()
+    assert load_usage()["from-hub"]["patch_count"] == 1
 
 
-def test_bump_use_no_op_for_hub_skill(skills_home):
+def test_bump_use_records_hub_skill_usage(skills_home):
     from tools.skill_usage import bump_use, load_usage
     skills_dir = skills_home / "skills"
     hub = skills_dir / ".hub"
@@ -561,18 +624,18 @@ def test_bump_use_no_op_for_hub_skill(skills_home):
     )
 
     bump_use("from-hub")
-    assert "from-hub" not in load_usage()
+    assert load_usage()["from-hub"]["use_count"] == 1
 
 
-def test_set_state_no_op_for_bundled_skill(skills_home):
-    """State transitions on bundled skills must not land in the sidecar."""
+def test_set_state_can_record_bundled_skill_when_explicit(skills_home):
+    """State sidecar updates are needed when curator.scope=all is enabled."""
     from tools.skill_usage import set_state, load_usage, STATE_ARCHIVED
     skills_dir = skills_home / "skills"
     (skills_dir / ".bundled_manifest").write_text(
         "locked:abc\n", encoding="utf-8",
     )
     set_state("locked", STATE_ARCHIVED)
-    assert "locked" not in load_usage()
+    assert load_usage()["locked"]["state"] == STATE_ARCHIVED
 
 
 def test_restore_refuses_to_shadow_bundled_skill(skills_home):
@@ -593,9 +656,8 @@ def test_restore_refuses_to_shadow_bundled_skill(skills_home):
     assert "bundled" in msg.lower() or "shadow" in msg.lower()
 
 
-def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
-    """The combined guarantee: no curator code path can archive, mark stale,
-    set-state, or persist telemetry for a bundled or hub-installed skill."""
+def test_end_to_end_default_paths_do_not_archive_bundled_skill(skills_home):
+    """Default archive path still refuses bundled/hub skills while telemetry is kept."""
     from tools.skill_usage import (
         bump_view, bump_use, bump_patch, set_state, set_pinned,
         archive_skill, load_usage, STATE_STALE, STATE_ARCHIVED,
@@ -625,10 +687,12 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
         ok, _msg = archive_skill(name)
         assert not ok, f"archive_skill(\"{name}\") should refuse"
 
-    # Sidecar must be clean of all three
+    # Sidecar keeps telemetry/state for scope=all recency decisions.
     data = load_usage()
-    assert "bundled-one" not in data
-    assert "hub-one" not in data
+    assert data["bundled-one"]["view_count"] == 1
+    assert data["bundled-one"]["state"] == STATE_ARCHIVED
+    assert data["hub-one"]["use_count"] == 1
+    assert data["hub-one"]["pinned"] is True
 
     # Directories must still be in place on disk
     assert (skills_dir / "bundled-one" / "SKILL.md").exists()

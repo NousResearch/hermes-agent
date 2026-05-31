@@ -17006,9 +17006,17 @@ class GatewayRunner:
                         # without edit support, the consumer sends a partial
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
+                        # Exception: adapters that provide native streaming
+                        # (e.g. WeCom aibot_respond_msg with msgtype "stream")
+                        # can stream without edit support.
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                         if not _adapter_supports_edit:
-                            raise RuntimeError("skip streaming for non-editable platform")
+                            _adapter_supports_native = getattr(_adapter, "supports_native_streaming", None)
+                            if _adapter_supports_native is None or not _adapter_supports_native(
+                                chat_type=getattr(source, "chat_type", "") or None,
+                                metadata=_status_thread_metadata,
+                            ):
+                                raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
@@ -17051,6 +17059,9 @@ class GatewayRunner:
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
+                            logger.info("[streaming] stream_delta_cb assigned")
+                        else:
+                            logger.info("[streaming] _want_stream_deltas=False, no stream_delta_cb")
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
@@ -17154,6 +17165,7 @@ class GatewayRunner:
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
+            logger.info("[streaming] agent.stream_delta_callback set, cb=%s", _stream_delta_cb is not None)
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config

@@ -1842,9 +1842,12 @@ def cmd_chat(args):
     # calls sys.exit itself (it would escape daemon `except Exception` guards).
     from hermes_cli.toolset_validation import normalize_toolsets, validate_explicit_toolsets
 
-    # warn=no-op: this is purely the all-unknown exit gate; the valid/partial
-    # request is re-validated (and any partial-invalid notice emitted) by the
-    # downstream surface (cli.py / tui_gateway), so warning here would double up.
+    # warn=no-op: this is purely the all-unknown exit gate. Don't warn on the
+    # partial-invalid case here -- cli.py / tui_gateway emit that notice. Note
+    # this gate is LOAD-BEARING for the CLI-chat surface: cli.py only *warns* on
+    # all-unknown and then runs tool-less (it does not fail closed), so removing
+    # this gate would reintroduce #32660. The TUI branch is separately protected
+    # by tui_gateway's own validator.
     requested = normalize_toolsets(getattr(args, "toolsets", None))
     _, toolset_error = validate_explicit_toolsets(requested, source="hermes", warn=lambda _: None)
     if toolset_error:

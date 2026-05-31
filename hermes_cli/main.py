@@ -2434,7 +2434,8 @@ def select_provider_and_model(args=None):
     for row in grouped_rows:
         if row["kind"] == "group":
             gid = row["group_id"]
-            label = f"{row['label']} ▸"
+            group_desc = row.get("description", "")
+            label = f"{row['label']} ▸ ({group_desc})" if group_desc else f"{row['label']} ▸"
             key = f"group:{gid}"
             is_active = bool(active_group) and gid == active_group
             members = row["members"]

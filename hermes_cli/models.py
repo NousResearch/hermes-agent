@@ -969,23 +969,26 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # display affordance; ``group_providers()`` is the single fold used by all
 # three picker surfaces so they stay consistent.
 #
-#   group_id -> (display_label, [member_slug, ...])
+#   group_id -> (display_label, group_description, [member_slug, ...])
 #
+# ``group_description`` is a short blurb shown on the collapsed top-level group
+# row in the interactive pickers (alongside the label). Member-specific detail
+# lives in each member's ``tui_desc`` and shows in the drill-down sub-picker.
 # Member order is the order shown inside the group submenu.
 # ---------------------------------------------------------------------------
-PROVIDER_GROUPS: dict[str, tuple[str, list[str]]] = {
-    "kimi":     ("Kimi / Moonshot", ["kimi-coding", "kimi-coding-cn"]),
-    "minimax":  ("MiniMax",         ["minimax", "minimax-oauth", "minimax-cn"]),
-    "xai":      ("xAI Grok",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   ["gemini", "google-gemini-cli"]),
-    "openai":   ("OpenAI",          ["openai-codex", "openai-api"]),
-    "opencode": ("OpenCode",        ["opencode-zen", "opencode-go"]),
-    "copilot":  ("GitHub Copilot",  ["copilot", "copilot-acp"]),
+PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
+    "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
+    "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
+    "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
+    "google":   ("Google Gemini",   "AI Studio API or OAuth + Code Assist",            ["gemini", "google-gemini-cli"]),
+    "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
+    "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
+    "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
 
 # Reverse index: member slug -> group_id. Built once at import.
 _SLUG_TO_GROUP: dict[str, str] = {
-    slug: gid for gid, (_label, members) in PROVIDER_GROUPS.items() for slug in members
+    slug: gid for gid, (_label, _desc, members) in PROVIDER_GROUPS.items() for slug in members
 }
 
 
@@ -1006,7 +1009,7 @@ def group_providers(slugs):
         {"kind": "single", "slug": <slug>}                       # ungrouped, or
                                                                   # 1-member group
         {"kind": "group", "group_id": <gid>, "label": <label>,
-         "members": [<slug>, ...]}                                # 2+ members
+         "description": <desc>, "members": [<slug>, ...]}        # 2+ members
 
     Rules:
       * A group row appears at the position of its FIRST present member, in
@@ -1023,7 +1026,7 @@ def group_providers(slugs):
     seen: set[str] = set()
     # Which present members each group has, in declaration order.
     group_members: dict[str, list[str]] = {}
-    for gid, (_label, members) in PROVIDER_GROUPS.items():
+    for gid, (_label, _desc, members) in PROVIDER_GROUPS.items():
         present = [m for m in members if m in set(slugs)]
         if present:
             group_members[gid] = present
@@ -1046,9 +1049,10 @@ def group_providers(slugs):
         if len(members) <= 1:
             rows.append({"kind": "single", "slug": members[0]})
         else:
-            label, _ = PROVIDER_GROUPS[gid]
+            label, desc, _ = PROVIDER_GROUPS[gid]
             rows.append(
-                {"kind": "group", "group_id": gid, "label": label, "members": list(members)}
+                {"kind": "group", "group_id": gid, "label": label,
+                 "description": desc, "members": list(members)}
             )
     return rows
 

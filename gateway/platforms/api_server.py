@@ -953,6 +953,26 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent creation helper
     # ------------------------------------------------------------------
 
+    def _embed_inbound_media(self, user_message: str, media_refs: list) -> str:
+        """Materialize claim-check refs into the cache and append local-path
+        references the vision pipeline already understands."""
+        from gateway.media_spool import MediaSpool, MediaRef, default_spool_root
+        from gateway.platforms.base import get_image_cache_dir, get_document_cache_dir
+
+        spool = MediaSpool(default_spool_root())
+        lines = []
+        for data in media_refs:
+            mref = MediaRef.from_wire(data)
+            dest = get_image_cache_dir() if mref.kind == "image" else get_document_cache_dir()
+            path = spool.materialize(mref.ref, dest, filename=mref.filename)
+            if mref.kind == "image":
+                lines.append(f"[User sent an image: {path}]")
+            elif mref.kind in ("voice", "video"):
+                lines.append(f"[User sent {mref.kind}: {path}]")
+            else:
+                lines.append(f"[User sent a file: {path}]")
+        return (user_message + "\n" + "\n".join(lines)).strip() if lines else user_message
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -3581,6 +3601,16 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
+
+        # Inbound media (Tier-2 claim-check): materialize each ref into the
+        # worker's cache and embed local paths, reusing the existing vision
+        # pipeline's "[User sent ...]" convention (zero downstream change).
+        media_refs = body.get("media_refs") or []
+        if media_refs:
+            try:
+                user_message = self._embed_inbound_media(user_message, media_refs)
+            except Exception:
+                logger.warning("[api_server] failed to materialize inbound media_refs", exc_info=True)
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")

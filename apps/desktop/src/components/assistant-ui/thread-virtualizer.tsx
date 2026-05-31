@@ -102,12 +102,14 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
       <div
         className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
         data-slot="aui_thread-viewport"
+        data-testid="thread-viewport"
         ref={scrollerRef}
       >
         {renderEmpty ? (
           <div
             className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
             data-slot="aui_thread-content"
+            data-testid="thread-content"
           >
             {emptyPlaceholder}
           </div>
@@ -117,6 +119,7 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
               'mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6 pt-[calc(var(--titlebar-height)+1.5rem)]'
             )}
             data-slot="aui_thread-content"
+            data-testid="thread-content"
           >
             {/* Natural-flow virtualization: mounted items render as normal
                 flex siblings so `position: sticky` on the human bubble

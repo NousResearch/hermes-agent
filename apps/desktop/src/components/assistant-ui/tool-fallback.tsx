@@ -281,6 +281,7 @@ function ToolEntry({ part }: ToolEntryProps) {
         open && 'rounded-[0.625rem] border border-(--ui-stroke-tertiary)'
       )}
       data-slot="tool-block"
+      data-testid="tool-block"
       ref={enterRef}
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
@@ -449,7 +450,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
 
   return (
     <ToolEmbedContext.Provider value={isGroup}>
-      <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" ref={enterRef}>
+      <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" data-testid="tool-block" ref={enterRef}>
         {isGroup && (
           <DisclosureRow
             key="header"

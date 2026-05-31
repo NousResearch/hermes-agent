@@ -140,6 +140,10 @@ export const Thread: FC<{
   sessionId = null,
   sessionKey
 }) => {
+  // Stable run-state signal for test automation / demo tooling: flips to "idle"
+  // once the agent has finished streaming (see data-thread-state on the root).
+  const threadRunning = useAuiState(s => s.thread.isRunning)
+
   const messageComponents = useMemo(
     () => ({
       AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
@@ -161,7 +165,11 @@ export const Thread: FC<{
 
   return (
     <GeneratedImageProvider>
-      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+      <div
+        className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]"
+        data-testid="chat-thread"
+        data-thread-state={threadRunning ? 'streaming' : 'idle'}
+      >
         <VirtualizedThread
           clampToComposer={clampToComposer}
           components={messageComponents}
@@ -236,6 +244,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
           interruptedOnly && 'text-[0.8rem] leading-5 text-muted-foreground/82'
         )}
         data-slot="aui_assistant-message-content"
+        data-status={messageStatus}
+        data-testid="assistant-message-content"
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
@@ -376,6 +386,7 @@ const ThinkingDisclosure: FC<{
     <div
       className="text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
       data-slot="aui_thinking-disclosure"
+      data-testid="thinking-disclosure"
       ref={enterRef}
     >
       <DisclosureRow onToggle={() => setUserOpen(!open)} open={open}>
@@ -639,6 +650,7 @@ function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
       className="group/user-message sticky top-0 z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
       data-role="user"
       data-slot="aui_user-message-root"
+      data-testid="user-message"
     >
       {children}
     </div>

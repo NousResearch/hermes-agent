@@ -4484,6 +4484,7 @@ class GatewayRunner:
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter._profile_routing = self.config.profile_routing
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -6201,6 +6202,7 @@ class GatewayRunner:
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    adapter._profile_routing = self.config.profile_routing
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8663,6 +8665,70 @@ class GatewayRunner:
                 pass
         return source
 
+    def _make_worker_client(self, worker):
+        from gateway.worker_client import WorkerClient
+
+        return WorkerClient(worker.base_url, worker.key)
+
+    async def _dispatch_to_worker(self, event, source, profile: str) -> dict:
+        """Dispatch one turn to *profile*'s isolated worker and deliver its reply.
+
+        Raises on any failure so the caller can fail closed — a routed turn must
+        never silently run on the host profile (design §8).
+        """
+        if getattr(self, "_worker_pool", None) is None:
+            from gateway.worker_pool import WorkerPool
+
+            self._worker_pool = WorkerPool()
+        worker = await self._worker_pool.acquire(profile)
+        client = self._make_worker_client(worker)
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=self.config.group_sessions_per_user,
+            thread_sessions_per_user=self.config.thread_sessions_per_user,
+            profile=profile,
+        )
+
+        class _FrontConsumer:
+            def on_delta(self, _text: str) -> None:
+                # Live streaming relay is a refinement; the final reply is sent below.
+                pass
+
+        result = await client.dispatch(
+            input=event.text,
+            instructions=getattr(event, "channel_prompt", None),
+            session_id=session_key,
+            consumer=_FrontConsumer(),
+        )
+        output = (result or {}).get("output", "")
+        adapter = self.adapters.get(source.platform)
+        if output and adapter:
+            await adapter.send(source.chat_id, output, reply_to=self._reply_anchor_for_event(event))
+        return result or {}
+
+    async def _maybe_dispatch_routed(self, event, source) -> bool:
+        """Route to a worker if the message matched a profile route.
+
+        Returns True when the message was handled here (routed) — the caller
+        must then NOT run the in-process host handler.  A dispatch failure posts
+        a visible error and still returns True: failing closed prevents a routed
+        message from leaking into the host profile.
+        """
+        profile = getattr(event, "routed_profile", None)
+        if not profile:
+            return False
+        try:
+            await self._dispatch_to_worker(event, source, profile)
+        except Exception as e:
+            logger.error("routed dispatch to profile %r failed: %s", profile, e, exc_info=True)
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                try:
+                    await adapter.send(source.chat_id, f"⚠️ Could not reach the '{profile}' profile: {e}")
+                except Exception:
+                    logger.error("failed to deliver routing error to user", exc_info=True)
+        return True
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -8673,6 +8739,10 @@ class GatewayRunner:
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview,
         )
+
+        # Tier-2: a routed message runs on an isolated worker, not the host.
+        if await self._maybe_dispatch_routed(event, source):
+            return
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's

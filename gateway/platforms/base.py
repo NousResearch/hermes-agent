@@ -1334,6 +1334,9 @@ class MessageEvent:
     # in the adapter (scoped by chat_id) so it can't collide across groups.
     channel_model: Optional[str] = None
 
+    # Tier-2: target profile this message routes to (None => host profile).
+    routed_profile: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the
@@ -3618,10 +3621,24 @@ class BasePlatformAdapter(ABC):
         # downstream delivery all agree on the same lane.
         self._apply_topic_recovery(event)
 
+        # Tier-2 routing: resolve the target profile (None => host).  A
+        # resolution failure is safe to fall back — no isolation boundary has
+        # been crossed yet — so it never blocks the host path (design §8).
+        try:
+            from gateway.routing import resolve_profile_route
+
+            event.routed_profile = resolve_profile_route(
+                getattr(self, "_profile_routing", None), event.source
+            )
+        except Exception:
+            logger.warning("profile route resolution failed; staying on host profile", exc_info=True)
+            event.routed_profile = None
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.routed_profile or "main",
         )
 
         # On-entry self-heal: if the adapter still has an _active_sessions

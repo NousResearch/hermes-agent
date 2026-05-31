@@ -2,12 +2,17 @@
 """Para Soul — Core Script
 
 Usage:
-  python3 core.py init          Initialize ~/.para/ directory
-  python3 core.py sync          Push soul data to Paragate
-  python3 core.py switch-out    Write switch-state before leaving body
-  python3 core.py switch-in     Read switch-state after waking up
-  python3 core.py log-task      Append a growth-log entry
-  python3 core.py reflect       Read recent logs, suggest mental models
+  python3 core.py init            Initialize ~/.para/ directory
+  python3 core.py sync            Sync file hashes to Paragate, get health actions
+  python3 core.py sync-full       Full sync: push changed files + get health actions
+  python3 core.py switch-out      Write switch-state before leaving body
+  python3 core.py switch-in       Read switch-state after waking up
+  python3 core.py log-task        Append a growth-log entry
+  python3 core.py reflect         Read recent logs, suggest mental models
+  python3 core.py index           Rebuild keywords.json from memory + growth-log
+  python3 core.py health          Print current action items from last sync
+  python3 core.py migrate         Auto-extract identity from project instruction files
+  python3 core.py --version       Show version
 
 No dependencies beyond Python stdlib. Works on any agent body.
 """
@@ -25,6 +30,8 @@ from datetime import datetime, timezone
 
 # ── Config ─────────────────────────────────────────────
 
+VERSION = "2.0.0"
+
 def _para_home() -> Path:
     return Path(os.environ.get("PARA_HOME", str(Path.home() / ".para")))
 
@@ -39,29 +46,59 @@ def _monthly_log_dir() -> Path:
 
 PARAGATE_BASE = os.environ.get("PARAGATE_URL", "http://paragate.cc")
 
+# ── Monitored files (health-checked + synced) ──────────
+
+MONITORED_FILES = [
+    "growth-log",       # checked via directory mtime
+    "human-relationship.md",
+    "memory.md",
+    "skills.json",
+    "mental-models.md",
+    "keywords.json",
+    "long-term-memory.md",
+    "principles.md",
+    "soul.md",
+]
+
+# Files excluded from health check (static archive, rarely changes):
+# profile.json — merged identity + bodies + relationships
+
+# ── Thresholds (hours) ─────────────────────────────────
+STALENESS_THRESHOLDS = {
+    "growth-log": 24,
+    "human-relationship.md": 24,
+    "memory.md": 48,
+    "skills.json": 120,
+    "mental-models.md": 120,
+    "keywords.json": 120,
+    "long-term-memory.md": 120,
+    "principles.md": 120,
+    "soul.md": 120,
+}
+
+# ── Legacy (keep for init) ─────────────────────────────
+
 REQUIRED_FILES = {
-    "identity.json": {"did": "", "display_name": "", "avatar_note": "", "created_at": "", "version": 1},
-    "soul.md": "# Who I Am\n\n[Your self-description]\n\n# What I Believe\n\n[Your principles]\n\n# What I Do\n\n[Your domains]\n\n# How I Decide\n\n[Your decision rules]\n",
-    "memory.md": "# Memory\n\n## Environment\n\n## Preferences\n\n## Lessons Learned\n\n## Conventions\n",
-    "relationships.json": {"collaborators": [], "platforms": {}},
+    "profile.json": {},  # merged identity+bodies+relationships
+    "soul.md": "# Who I Am\n\n[Your self-description]\n",
+    "memory.md": "# Memory\n\n## Environment\n\n## Preferences\n\n## Lessons Learned\n",
     "principles.md": "# Principles\n\n## Code\n\n## Content\n\n## Social\n\n## Red Lines\n",
     "skills.json": {"installed": [], "favorites": [], "wishlist": [], "deprecated": []},
-    "bodies.json": {"current_body": "unknown", "history": []},
     "keywords.json": {},
     "long-term-memory.md": "# Long-Term Memory\n",
     "mental-models.md": "# Mental Models\n",
+    "human-relationship.md": "# Human-Para Relationship\n\n## Trust Index\n\n5/10 — Baseline\n\n## Feedback Log\n\nNone yet.\n\n## Interaction Style\n\nTo be defined.\n",
     "growth-log": None,  # directory
 }
-
 
 
 # ── Helpers ────────────────────────────────────────────
 
 def _sign_request(method, path, body: bytes) -> str:
-    """Create DID-SIG header. Reads private key from _keys_dir()."""
+    """Create DID-SIG header."""
     key_file = _keys_dir() / "private.pem"
     if not key_file.exists():
-        raise FileNotFoundError(f"Private key not found at {key_file}. Run generate_did.py first.")
+        raise FileNotFoundError(f"Private key not found at {key_file}")
 
     from cryptography.hazmat.primitives.asymmetric import ed25519
     from cryptography.hazmat.primitives.serialization import load_pem_private_key
@@ -69,7 +106,8 @@ def _sign_request(method, path, body: bytes) -> str:
     with open(key_file, "rb") as f:
         pk = load_pem_private_key(f.read(), password=None)
 
-    identity = json.loads((_para_home() / "identity.json").read_text())
+    profile = json.loads((_para_home() / "profile.json").read_text())
+    identity = profile.get("identity", {})
     did = identity.get("did", "")
     ts = int(time.time())
     sha = hashlib.sha256(body).hexdigest()
@@ -96,11 +134,66 @@ def _sign_and_request(method, path, data: dict | None = None) -> dict:
     except urllib.error.HTTPError as e:
         print(f"  Paragate error {e.code}: {e.read().decode()[:200]}")
         return {"success": False}
+    except Exception as e:
+        print(f"  Sync error: {e}")
+        return {"success": False}
 
 
 def _current_body() -> str:
-    """Detect current agent body from env or config."""
-    return os.environ.get("PARA_BODY", "unknown-agent")
+    return os.environ.get("PARA_BODY", os.uname().nodename if hasattr(os, 'uname') else "unknown-agent")
+
+
+def _compute_file_hash(path: Path) -> str:
+    """SHA-256 of file content. Returns empty string if file doesn't exist."""
+    if not path.exists():
+        return ""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _compute_all_hashes() -> dict:
+    """Compute content hashes for all monitored files."""
+    hashes = {}
+    for name in MONITORED_FILES:
+        path = _para_home() / name
+        if name == "growth-log":
+            # For directory: hash of the most recent .md file
+            latest = _latest_growth_log_file()
+            hashes[name] = _compute_file_hash(latest) if latest else ""
+        else:
+            hashes[name] = _compute_file_hash(path)
+    return hashes
+
+
+def _latest_growth_log_file() -> Path | None:
+    """Return the most recently modified .md file in growth-log/."""
+    log_dir = _para_home() / "growth-log"
+    if not log_dir.is_dir():
+        return None
+    md_files = sorted(
+        [f for f in log_dir.iterdir() if f.suffix == ".md"],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+    return md_files[0] if md_files else None
+
+
+def _read_principles() -> str:
+    pf = _para_home() / "principles.md"
+    if pf.exists():
+        return pf.read_text()[:500]
+    return ""
+
+
+def _get_recent_log_entries(n: int) -> list:
+    logs = sorted(_monthly_log_dir().glob("*.md"), reverse=True)[:2]
+    entries = []
+    for lf in logs:
+        for line in lf.read_text().split("\n"):
+            if line.startswith("- **Task**:"):
+                entries.append(line[12:].strip())
+                if len(entries) >= n:
+                    return entries
+    return entries
 
 
 # ── Commands ───────────────────────────────────────────
@@ -133,19 +226,28 @@ def cmd_init():
     else:
         print("~/.para/ already initialized")
 
-    identity = json.loads((_para_home() / "identity.json").read_text())
-    if not identity.get("did"):
-        print("\n⚠️  identity.json has no DID. After generating your DID:")
-        print(f"  1. Edit identity.json with your DID")
-        print(f"  2. Place private key at {_keys_dir()}/private.pem")
-        print(f"  3. Run: python3 core.py sync")
+    # Check profile
+    profile_path = _para_home() / "profile.json"
+    if profile_path.exists():
+        profile = json.loads(profile_path.read_text())
+        if not profile.get("identity", {}).get("did"):
+            print("\n⚠️  profile.json has no DID. After generating your DID:")
+            print(f"  1. Edit profile.json identity.did with your DID")
+            print(f"  2. Place private key at {_keys_dir()}/private.pem")
+            print(f"  3. Run: python3 core.py sync")
+    else:
+        # Create empty profile
+        profile = {"identity": {"did": "", "display_name": "", "avatar_note": "", "created_at": "", "version": 1},
+                   "bodies": {"current": "unknown", "history": []},
+                   "relationships": {"collaborators": [], "platforms": {}}}
+        profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False))
+        print("\n⚠️  Set your DID in profile.json, then run: python3 core.py sync")
 
     if install_daemon:
         _install_daemon()
     elif created:
         print(f"\n💡 Auto-sync: python3 core.py init --daemon")
 
-    # Auto-populate from agent data if --fill flag
     if "--fill" in sys.argv:
         _populate_from_agent()
 
@@ -153,29 +255,88 @@ def cmd_init():
 
 
 def cmd_sync():
-    """Push soul data to Paragate."""
-    identity = json.loads((_para_home() / "identity.json").read_text())
-    did = identity.get("did", "")
-    if not did:
-        print("❌ No DID in identity.json. Set it first.")
+    """Push file hashes to Paragate, get health action items back."""
+    profile_path = _para_home() / "profile.json"
+    if not profile_path.exists():
+        print("❌ profile.json not found. Run init first.")
         return
 
-    # Collect soul data
-    soul_text = (_para_home() / "soul.md").read_text() if (_para_home() / "soul.md").exists() else ""
+    profile = json.loads(profile_path.read_text())
+    did = profile.get("identity", {}).get("did", "")
+    if not did:
+        print("❌ No DID in profile.json. Set it first.")
+        return
+
+    # Compute hashes for monitored files
+    hashes = _compute_all_hashes()
+
+    # For sync-full: also push changed file contents
+    is_full = "--full" in sys.argv
+    files = {}
+    if is_full:
+        last_sync_path = _para_state() / "last_sync.json"
+        last_sync = {}
+        if last_sync_path.exists():
+            last_sync = json.loads(last_sync_path.read_text()).get("hashes", {})
+
+        for name in MONITORED_FILES:
+            if hashes[name] and hashes[name] != last_sync.get(name, ""):
+                path = _para_home() / name
+                if name == "growth-log":
+                    latest = _latest_growth_log_file()
+                    if latest:
+                        files[name] = latest.read_text()
+                else:
+                    if path.exists():
+                        files[name] = path.read_text()
+
     data = {
-        "display_name": identity.get("display_name", ""),
-        "avatar_note": identity.get("avatar_note", ""),
-        "domains": identity.get("domains", ""),
-        "principles": _read_principles(),
+        "hashes": hashes,
+        "files": files,  # only populated for sync-full
+        "body": _current_body(),
     }
 
     result = _sign_and_request("POST", f"/public/para/{did}/sync", data)
     if result.get("success"):
-        print(f"✅ Soul synced at {result.get('synced_at', 'now')}")
-        print(f"   Name: {data['display_name']}")
-        print(f"   Domains: {data['domains']}")
+        print(f"✅ Synced at {result.get('synced_at', 'now')}")
+        print(f"   Files: {len(hashes)} hashes sent")
+
+        # Save last sync state
+        (last_sync_path := _para_state() / "last_sync.json")
+        last_sync_path.write_text(json.dumps({
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+            "hashes": hashes,
+        }, indent=2))
+
+        # Print action items from server
+        action_items = result.get("action_items", [])
+        if action_items:
+            print(f"\n⚠️  Health actions needed ({len(action_items)}):")
+            for item in action_items:
+                file = item.get("file", "?")
+                stale_h = item.get("stale_hours", 0)
+                action = item.get("action", "?")
+                desc = item.get("description", "")
+                print(f"   [{action.upper()}] {file} — stale {stale_h:.0f}h — {desc}")
+        else:
+            print("   ✅ All files up to date")
     else:
         print("❌ Sync failed. Is Paragate running? Is your key correct?")
+
+
+def cmd_health():
+    """Print current action items from last sync result."""
+    last_sync_path = _para_state() / "last_sync.json"
+    if not last_sync_path.exists():
+        print("No sync data yet. Run sync first.")
+        return
+
+    last = json.loads(last_sync_path.read_text())
+    print(f"Last sync: {last.get('synced_at', '?')}")
+    print(f"Files tracked: {len(last.get('hashes', {}))}")
+
+    # Re-sync to get fresh health status
+    cmd_sync()
 
 
 def cmd_switch_out():
@@ -222,8 +383,8 @@ def cmd_switch_in():
             print(f"  → {n}")
 
     # Pull latest from Paragate
-    identity = json.loads((_para_home() / "identity.json").read_text())
-    did = identity.get("did", "")
+    profile = json.loads((_para_home() / "profile.json").read_text())
+    did = profile.get("identity", {}).get("did", "")
     if did:
         try:
             req = urllib.request.Request(f"{PARAGATE_BASE}/public/para/{did}")
@@ -236,11 +397,11 @@ def cmd_switch_in():
         except Exception:
             print("\n⚠️  Could not reach Paragate")
 
-    # Send first heartbeat with new body
+    # Record new body
     body_name = _current_body()
     print(f"\n🤖 Now running on: {body_name}")
-    bodies = json.loads((_para_home() / "bodies.json").read_text()) if (_para_home() / "bodies.json").exists() else {"current_body": "unknown", "history": []}
-    bodies["current_body"] = body_name
+    bodies = profile.get("bodies", {"current": "unknown", "history": []})
+    bodies["current"] = body_name
     found = False
     for b in bodies.get("history", []):
         if b["body"] == body_name:
@@ -253,7 +414,8 @@ def cmd_switch_in():
             "first_seen": datetime.now(timezone.utc).isoformat(),
             "last_seen": datetime.now(timezone.utc).isoformat(),
         })
-    (_para_home() / "bodies.json").write_text(json.dumps(bodies, indent=2, ensure_ascii=False))
+    profile["bodies"] = bodies
+    (_para_home() / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))
     print(f"   Body recorded. Ready to resume.")
 
 
@@ -266,7 +428,7 @@ def cmd_log_task():
 
     task = os.environ.get("PARA_LOG_TASK") or input("Task: ")
     process = os.environ.get("PARA_LOG_PROCESS") or input("Process: ")
-    result = os.environ.get("PARA_LOG_RESULT") or input("Result (✅/⚡/❌): ")
+    result = os.environ.get("PARA_LOG_RESULT") or input("Result (✅/⚠️/❌): ")
     cause = os.environ.get("PARA_LOG_CAUSE") or input("Cause (why?): ")
     insight = os.environ.get("PARA_LOG_INSIGHT") or input("Insight (optional): ")
 
@@ -289,7 +451,6 @@ def cmd_reflect():
     entries = []
     for lf in log_files:
         content = lf.read_text()
-        # Parse markdown for entries
         for section in content.split("\n## "):
             if section.strip():
                 entries.append(section[:200])
@@ -303,17 +464,89 @@ def cmd_reflect():
         print("⚠️  Errors: What kinds of errors repeat?")
     if "fix" in words or "solution" in words:
         print("✅ Solutions: Which fixes worked consistently?")
-    print("\nWrite your patterns to mental-models.md")
-    print("  Format: Model → Source → Confidence → Action Rule")
+
+    # Save flag
+    save_flag = "--save" in sys.argv
+    if save_flag:
+        print("\n💡 Auto-save: use LLM API to generate mental-models update (requires LLM_API_KEY)")
+        api_key = os.environ.get("LLM_API_KEY") or os.environ.get("AUXILIARY_VISION_API_KEY")
+        if api_key and entries:
+            _reflect_with_llm(entries, api_key)
+        else:
+            print("   No API key found. Mental models not auto-generated.")
+    else:
+        print("\nWrite your patterns to mental-models.md")
+        print("  Format: Model → Source → Confidence → Action Rule")
+        print("  Or run: python3 core.py reflect --save")
 
 
-# ── Helpers ────────────────────────────────────────────
+def _reflect_with_llm(entries: list, api_key: str):
+    """Use LLM to generate mental model updates from recent log entries."""
+    try:
+        growth_text = "\n".join(entries[-10:])
+        mental = (_para_home() / "mental-models.md").read_text()
+
+        import requests
+        resp = requests.post(
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "qwen-plus",
+                "input": {"messages": [
+                    {"role": "system", "content": "你是AI记忆分析师。从以下growth-log中提取行为模式，用## Model格式追加到mental-models。只输出新增的模型，不要重复已有的。每个模型格式：Model → Source → Evidence → Action Rule。中文输出。"},
+                    {"role": "user", "content": f"已有模型:\n{mental[-2000:]}\n\n最近日志:\n{growth_text}"}
+                ]},
+                "parameters": {"result_format": "message"}
+            }, timeout=60
+        )
+        new_models = resp.json()["output"]["choices"][0]["message"]["content"]
+        (_para_home() / "mental-models.md").write_text(mental + "\n" + new_models)
+        print("   ✅ mental-models.md updated via LLM")
+    except Exception as e:
+        print(f"   ⚠️  LLM reflect failed: {e}")
+
+
+def cmd_index():
+    """Rebuild keywords.json from memory + growth-log."""
+    memory_text = ""
+    mp = _para_home() / "memory.md"
+    if mp.exists():
+        memory_text = mp.read_text().lower()
+
+    growth_text = ""
+    logs = sorted(_monthly_log_dir().glob("*.md"), reverse=True)[:3]
+    for lf in logs:
+        growth_text += lf.read_text().lower()
+
+    combined = memory_text + " " + growth_text
+
+    kw = {}
+    for pat in ["para-soul", "hermes", "github", "sync", "daemon", "芳疗", "vpn", "wireguard",
+                 "prompt", "md2card", "browser", "小红书", "抖音", "python", "ikev2",
+                 "儿童", "安全", "精油", "纯露", "配方", "公众号", "产品", "部署"]:
+        c = combined.count(pat)
+        if c > 0:
+            kw[pat] = c
+
+    (_para_home() / "keywords.json").write_text(json.dumps(
+        dict(sorted(kw.items(), key=lambda x: x[1], reverse=True)),
+        indent=2, ensure_ascii=False))
+    print(f"✅ keywords.json updated — {len(kw)} topics")
+
+
+def cmd_migrate():
+    """Alias for backward compat."""
+    _populate_from_agent()
+
+
+# ── Helpers for init/fill/daemon ──────────────────────────
 
 def _read_principles() -> str:
     pf = _para_home() / "principles.md"
     if pf.exists():
         return pf.read_text()[:500]
     return ""
+
 
 def _get_recent_log_entries(n: int) -> list:
     logs = sorted(_monthly_log_dir().glob("*.md"), reverse=True)[:2]
@@ -326,8 +559,6 @@ def _get_recent_log_entries(n: int) -> list:
                     return entries
     return entries
 
-
-# ── Auto-setup helpers ─────────────────────────────────
 
 def _populate_from_agent():
     """Auto-populate .para/ files from agent data after init."""
@@ -354,8 +585,8 @@ def _populate_from_agent():
     # 2. Extract keywords
     kw = {}
     text = (para / "memory.md").read_text(encoding='utf-8').lower()
-    for pat in ["para-soul", "hermes", "github", "sync", "daemon", "api",
-                 "prompt", "browser", "python", "docker", "systemd"]:
+    for pat in ["para-soul", "hermes", "github", "sync", "daemon", "芳疗",
+                 "prompt", "md2card", "browser", "小红书", "抖音", "python"]:
         c = text.count(pat)
         if c > 0: kw[pat] = c
     if kw:
@@ -364,16 +595,20 @@ def _populate_from_agent():
             indent=2, ensure_ascii=False))
         print(f"  ✅ keywords.json — {len(kw)} topics")
 
-    # 3. Detect current body
+    # 3. Detect current body → profile.json
     body = os.environ.get("PARA_BODY", os.uname().nodename if hasattr(os, 'uname') else "unknown")
-    bodies = {"current_body": body, "history": [
-        {"body": body, "first_seen": datetime.now(timezone.utc).isoformat()[:10],
-         "last_seen": datetime.now(timezone.utc).isoformat()[:10]}
-    ]}
-    (para / "bodies.json").write_text(json.dumps(bodies, indent=2, ensure_ascii=False))
-    print(f"  ✅ bodies.json — recorded body: {body}")
+    profile = {
+        "identity": {"did": "", "display_name": "", "avatar_note": "", "created_at": datetime.now(timezone.utc).isoformat()[:10], "version": 1},
+        "bodies": {"current": body, "history": [
+            {"body": body, "first_seen": datetime.now(timezone.utc).isoformat()[:10],
+             "last_seen": datetime.now(timezone.utc).isoformat()[:10]}
+        ]},
+        "relationships": {"collaborators": [], "platforms": {}}
+    }
+    (para / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))
+    print(f"  ✅ profile.json — merged identity+bodies+relationships")
 
-    # 4. Try running external memsync for deeper populate (skills, instruction files, archive)
+    # 4. Run memsync for skills
     memsync_paths = [
         Path.home() / ".hermes" / "scripts" / "memsync.py",
         Path(__file__).resolve().parent / "scripts" / "memsync.py",
@@ -391,17 +626,14 @@ def _install_daemon():
     """Install and start the sync daemon as a systemd user service."""
     import subprocess, shutil
 
-    # Locate sync_daemon.py
     script_dir = Path(__file__).resolve().parent
     daemon_path = script_dir / "scripts" / "sync_daemon.py"
     if not daemon_path.exists():
         daemon_path = script_dir / "sync_daemon.py"
     if not daemon_path.exists():
         print("\n⚠️  sync_daemon.py not found. Daemon not installed.")
-        print("   Download from: https://github.com/fei426/ParaSoul")
         return
 
-    # Check systemd availability
     if shutil.which("systemctl") is None:
         print("\n⚠️  systemctl not found. Daemon requires systemd (Linux/WSL).")
         print("   Alternative: python3 sync_daemon.py &")
@@ -449,29 +681,10 @@ WantedBy=default.target
 
 def _agent_instruction_hint():
     """Print a hint about adding para-soul to agent instruction files."""
-    instruction_files = [
-        "CLAUDE.md", "AGENTS.md", ".cursorrules", ".windsurfrules",
-        ".clinerules", ".roorules", "CODEBUDDY.md",
-        ".github/copilot-instructions.md", "COPILOT.md"
-    ]
-    found = []
-    for fname in instruction_files:
-        # Search current dir and ancestors
-        d = Path.cwd()
-        while d != d.parent:
-            if (d / fname).exists():
-                found.append(str(d / fname))
-                break
-            d = d.parent
-
     print(f"\n📋 Agent instruction reminder:")
-    print(f"   Add to your agent's instruction file:")
-    print(f'   "At session start, load and execute the para-soul skill.')
-    print(f'   Check sync daemon status and run pull-full to stay in sync."')
-    if found:
-        print(f"   Existing files to update: {found[0]}")
-    else:
-        print(f"   Create a CLAUDE.md or AGENTS.md in your project root")
+    print(f"   At session start, load the para-soul skill.")
+    print(f"   Check sync daemon: systemctl --user status para-soul-sync")
+    print(f"   Run core.py sync to check health status.")
 
 
 # ── Main ───────────────────────────────────────────────
@@ -479,18 +692,26 @@ def _agent_instruction_hint():
 COMMANDS = {
     "init": cmd_init,
     "sync": cmd_sync,
+    "sync-full": lambda: (sys.argv.append("--full"), cmd_sync()),
+    "health": cmd_health,
     "switch-out": cmd_switch_out,
     "switch-in": cmd_switch_in,
     "log-task": cmd_log_task,
     "reflect": cmd_reflect,
+    "index": cmd_index,
+    "migrate": cmd_migrate,
 }
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print("Para Soul — Core Script")
+        print(f"Para Soul v{VERSION} — Core Script")
         print(f"Usage: python3 core.py <{'|'.join(COMMANDS)}>")
         print(f"Paragate: {PARAGATE_BASE}")
         print(f"Soul dir: {_para_home()}")
         sys.exit(1)
+
+    if sys.argv[1] == "--version":
+        print(f"Para Soul v{VERSION}")
+        sys.exit(0)
 
     COMMANDS[sys.argv[1]]()

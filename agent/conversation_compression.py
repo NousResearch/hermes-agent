@@ -411,6 +411,11 @@ def compress_context(
                 model=agent.model,
                 model_config=agent._session_init_model_config,
                 user_id=getattr(agent, "_user_id", None),
+                user_id_alt=getattr(agent, "_user_id_alt", None),
+                chat_type=getattr(agent, "_chat_type", None),
+                chat_id=getattr(agent, "_chat_id", None),
+                thread_id=getattr(agent, "_thread_id", None),
+                session_key=getattr(agent, "_gateway_session_key", None),
                 parent_session_id=old_session_id,
             )
             agent._session_db_created = True

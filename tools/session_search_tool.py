@@ -37,6 +37,193 @@ from typing import Any, Dict, List, Optional, Union
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool
 # so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
+_GATEWAY_SCOPED_SOURCES = {
+    "qqbot",
+    "telegram",
+    "discord",
+    "slack",
+    "whatsapp",
+    "signal",
+    "matrix",
+    "mattermost",
+    "feishu",
+    "wecom",
+    "dingding",
+    "bluebubbles",
+    "yuanbao",
+    "api_server",
+    "webui",
+}
+
+
+def _clean(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _build_current_scope(
+    *,
+    current_source: str = None,
+    current_user_id: str = None,
+    current_user_id_alt: str = None,
+    current_chat_type: str = None,
+    current_chat_id: str = None,
+    current_thread_id: str = None,
+    current_session_key: str = None,
+) -> Dict[str, str]:
+    """Normalize hidden current-session scope passed by the agent runtime."""
+    return {
+        "source": _clean(current_source).lower(),
+        "user_id": _clean(current_user_id),
+        "user_id_alt": _clean(current_user_id_alt),
+        "chat_type": _clean(current_chat_type).lower(),
+        "chat_id": _clean(current_chat_id),
+        "thread_id": _clean(current_thread_id),
+        "session_key": _clean(current_session_key),
+    }
+
+
+def _should_scope_to_current(scope: str, current_scope: Dict[str, str]) -> bool:
+    scope_norm = _clean(scope).lower()
+    if scope_norm == "global":
+        return False
+    if scope_norm == "current":
+        return bool(current_scope.get("source") and current_scope.get("chat_id"))
+    source = current_scope.get("source") or ""
+    if source in {"cli", "local", "tool"}:
+        return False
+    return bool(source in _GATEWAY_SCOPED_SOURCES and current_scope.get("chat_id"))
+
+
+def _current_user_values(current_scope: Dict[str, str]) -> set[str]:
+    return {
+        value
+        for value in (
+            current_scope.get("user_id") or "",
+            current_scope.get("user_id_alt") or "",
+        )
+        if value
+    }
+
+
+def _row_user_values(session_meta: Dict[str, Any]) -> set[str]:
+    return {
+        value
+        for value in (
+            _clean(session_meta.get("user_id")),
+            _clean(session_meta.get("user_id_alt")),
+        )
+        if value
+    }
+
+
+def _requires_user_isolation(current_scope: Dict[str, str]) -> bool:
+    chat_type = (current_scope.get("chat_type") or "").lower()
+    return bool(chat_type and chat_type not in {"dm", "direct", "private"})
+
+
+def _session_matches_current_scope(session_meta: Dict[str, Any], current_scope: Dict[str, str]) -> bool:
+    """Strict current-scope match for new sessions with persisted scope fields."""
+    if not session_meta:
+        return False
+    if _clean(session_meta.get("source")).lower() != (current_scope.get("source") or ""):
+        return False
+    # Gateway chat scope is authoritative.  For QQ DM this is source+chat_type+chat_id.
+    if current_scope.get("chat_type"):
+        if _clean(session_meta.get("chat_type")).lower() != current_scope.get("chat_type"):
+            return False
+    if current_scope.get("chat_id"):
+        if _clean(session_meta.get("chat_id")) != current_scope.get("chat_id"):
+            return False
+    if current_scope.get("thread_id"):
+        if _clean(session_meta.get("thread_id")) != current_scope.get("thread_id"):
+            return False
+    else:
+        # A non-thread current chat should not see thread-specific sessions.
+        if _clean(session_meta.get("thread_id")):
+            return False
+
+    # Modern scoped rows also carry per-user / stable session identity. In
+    # group/channel chats the chat_id is shared, so these fields prevent one
+    # sender from seeing another sender's scoped recall just because they share
+    # a channel. If the row has both user IDs, either may match the current
+    # primary/alternate identity.
+    current_session_key = current_scope.get("session_key") or ""
+    row_session_key = _clean(session_meta.get("session_key"))
+    if current_session_key and row_session_key and row_session_key != current_session_key:
+        return False
+    current_users = _current_user_values(current_scope)
+    row_users = _row_user_values(session_meta)
+    if current_users and row_users and current_users.isdisjoint(row_users):
+        return False
+    if _requires_user_isolation(current_scope):
+        # Shared chats must have at least one positive per-user signal: either
+        # a matching stable session key or an intersecting user identity.
+        if current_session_key and row_session_key == current_session_key:
+            return True
+        if current_users and row_users and not current_users.isdisjoint(row_users):
+            return True
+        return False
+    return True
+
+
+def _session_allowed_for_current_scope(
+    session_meta: Dict[str, Any],
+    current_scope: Dict[str, str],
+    *,
+    include_legacy: bool = False,
+) -> bool:
+    if _session_matches_current_scope(session_meta, current_scope):
+        return True
+    return include_legacy and _session_is_legacy_scope_candidate(session_meta, current_scope)
+
+
+def _session_is_legacy_scope_candidate(session_meta: Dict[str, Any], current_scope: Dict[str, str]) -> bool:
+    """Narrow legacy fallback for rows that predate persisted chat scope fields."""
+    if not session_meta:
+        return False
+    if _clean(session_meta.get("source")).lower() != (current_scope.get("source") or ""):
+        return False
+    if _clean(session_meta.get("chat_id")) or _clean(session_meta.get("thread_id")) or _clean(session_meta.get("session_key")):
+        return False
+    row_user = _clean(session_meta.get("user_id"))
+    cur_users = _current_user_values(current_scope)
+    if _requires_user_isolation(current_scope) and cur_users:
+        return bool(row_user and row_user in cur_users)
+    return not row_user or not cur_users or row_user in cur_users
+
+
+def _filter_sessions_for_scope(
+    db,
+    sessions: List[Dict[str, Any]],
+    *,
+    current_scope: Dict[str, str],
+    apply_scope: bool,
+    current_session_id: str = None,
+    include_legacy: bool = False,
+) -> List[Dict[str, Any]]:
+    current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+    filtered: List[Dict[str, Any]] = []
+    for row in sessions:
+        sid = row.get("id") or row.get("session_id") or ""
+        lineage = _resolve_to_parent(db, sid) if sid else sid
+        if current_root and lineage == current_root:
+            continue
+        meta = row
+        if "chat_id" not in meta and sid:
+            try:
+                meta = db.get_session(sid) or row
+            except Exception:
+                meta = row
+        if apply_scope:
+            if _session_matches_current_scope(meta, current_scope):
+                filtered.append(row)
+            elif include_legacy and _session_is_legacy_scope_candidate(meta, current_scope):
+                legacy_row = dict(row)
+                legacy_row["legacy_scope_fallback"] = True
+                filtered.append(legacy_row)
+        else:
+            filtered.append(row)
+    return filtered
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -107,7 +294,14 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    *,
+    current_scope: Optional[Dict[str, str]] = None,
+    apply_scope: bool = False,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
@@ -115,6 +309,15 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
         )  # fetch extra so we can skip current
+
+        sessions = _filter_sessions_for_scope(
+            db,
+            sessions,
+            current_scope=current_scope or {},
+            apply_scope=apply_scope,
+            current_session_id=current_session_id,
+            include_legacy=True,
+        )
 
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
 
@@ -126,7 +329,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             # Skip child / delegation sessions
             if s.get("parent_session_id"):
                 continue
-            results.append({
+            entry = {
                 "session_id": sid,
                 "title": s.get("title") or None,
                 "source": s.get("source", ""),
@@ -134,7 +337,10 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
                 "preview": s.get("preview", ""),
-            })
+            }
+            if s.get("legacy_scope_fallback"):
+                entry["legacy_scope_fallback"] = True
+            results.append(entry)
             if len(results) >= limit:
                 break
 
@@ -156,6 +362,9 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    *,
+    current_scope: Optional[Dict[str, str]] = None,
+    apply_scope: bool = False,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -199,6 +408,13 @@ def _scroll(
         session_meta = {}
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    current_scope = current_scope or {}
+    if apply_scope and not _session_allowed_for_current_scope(
+        session_meta,
+        current_scope,
+        include_legacy=True,
+    ):
+        return tool_error("scroll rejected: session_id is outside the current scope", success=False)
 
     # Fetch the window
     try:
@@ -230,6 +446,19 @@ def _scroll(
             a_root = _resolve_to_parent(db, session_id)
             o_root = _resolve_to_parent(db, owning)
             if a_root and o_root and a_root == o_root:
+                try:
+                    owning_meta = db.get_session(owning) or {}
+                except Exception:
+                    owning_meta = {}
+                if apply_scope and not _session_allowed_for_current_scope(
+                    owning_meta,
+                    current_scope,
+                    include_legacy=True,
+                ):
+                    return tool_error(
+                        "scroll rejected: around_message_id is outside the current scope",
+                        success=False,
+                    )
                 try:
                     rebind_view = db.get_messages_around(owning, around_message_id, window=window)
                     messages = rebind_view.get("window") or []
@@ -281,6 +510,9 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    *,
+    current_scope: Optional[Dict[str, str]] = None,
+    apply_scope: bool = False,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -290,7 +522,7 @@ def _discover(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # widen so dedup-by-lineage can find distinct sessions
+            limit=200,  # widen so scoped filtering + dedup-by-lineage can find distinct sessions
             offset=0,
             sort=sort,
         )
@@ -309,6 +541,7 @@ def _discover(
         }, ensure_ascii=False)
 
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+    current_scope = current_scope or {}
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -322,8 +555,20 @@ def _discover(
             continue
         if current_session_id and raw_sid == current_session_id:
             continue
+        if apply_scope:
+            try:
+                meta = db.get_session(raw_sid) or {}
+            except Exception:
+                meta = {}
+            legacy_match = _session_is_legacy_scope_candidate(meta, current_scope)
+            if not _session_matches_current_scope(meta, current_scope) and not legacy_match:
+                continue
+        else:
+            legacy_match = False
         if resolved_sid not in seen_sessions:
             row = dict(r)
+            if legacy_match:
+                row["legacy_scope_fallback"] = True
             row["_lineage_root"] = resolved_sid
             seen_sessions[resolved_sid] = row
         if len(seen_sessions) >= limit:
@@ -363,6 +608,8 @@ def _discover(
         }
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
+        if match_info.get("legacy_scope_fallback"):
+            entry["legacy_scope_fallback"] = True
         results.append(entry)
 
     return json.dumps({
@@ -372,6 +619,124 @@ def _discover(
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
+    }, ensure_ascii=False)
+
+
+def _shape_handoff_session(db, session_meta: Dict[str, Any], *, legacy_scope_fallback: bool = False) -> Dict[str, Any]:
+    sid = session_meta.get("id") or session_meta.get("session_id")
+    messages = []
+    try:
+        messages = db.get_messages(sid) if sid else []
+    except Exception:
+        messages = []
+    visible = [m for m in messages if m.get("role") in ("user", "assistant")]
+    entry = {
+        "session_id": sid,
+        "title": session_meta.get("title") or None,
+        "source": session_meta.get("source", ""),
+        "started_at": session_meta.get("started_at"),
+        "ended_at": session_meta.get("ended_at"),
+        "end_reason": session_meta.get("end_reason"),
+        "last_active": session_meta.get("last_active"),
+        "message_count": session_meta.get("message_count", 0),
+        "preview": session_meta.get("preview", ""),
+        "bookend_start": [_shape_message(m) for m in visible[:3]],
+        "bookend_end": [_shape_message(m) for m in visible[-5:]],
+    }
+    if legacy_scope_fallback:
+        entry["legacy_scope_fallback"] = True
+    return entry
+
+
+def _previous_or_handoff(
+    db,
+    *,
+    mode: str,
+    limit: int,
+    current_session_id: str = None,
+    current_scope: Optional[Dict[str, str]] = None,
+    apply_scope: bool = True,
+) -> str:
+    """Return previous/handoff sessions for the current scope without keyword search."""
+    limit = 1  # previous/handoff is a single immediate predecessor by contract.
+    current_scope = current_scope or {}
+    if not apply_scope:
+        return json.dumps({
+            "success": True,
+            "mode": mode,
+            "scope": "current",
+            "results": [],
+            "count": 0,
+            "message": "No current chat scope available for previous/handoff lookup.",
+        }, ensure_ascii=False)
+
+    try:
+        sessions = db.list_sessions_rich(
+            limit=200,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            order_by_last_active=True,
+        )
+    except Exception as e:
+        logging.error("previous/handoff list failed: %s", e, exc_info=True)
+        return tool_error(f"Failed to list sessions: {e}", success=False)
+
+    # Primary scoped pass.
+    primary = _filter_sessions_for_scope(
+        db,
+        sessions,
+        current_scope=current_scope,
+        apply_scope=True,
+        current_session_id=current_session_id,
+        include_legacy=False,
+    )
+
+    def sort_key(row: Dict[str, Any]):
+        ended = row.get("ended_at") or 0
+        last_active = row.get("last_active") or row.get("started_at") or 0
+        started = row.get("started_at") or 0
+        return (1 if ended else 0, ended, last_active, started)
+
+    primary = sorted(primary, key=sort_key, reverse=True)
+    picked = primary[:limit]
+    legacy_used = False
+
+    if not picked:
+        legacy = _filter_sessions_for_scope(
+            db,
+            sessions,
+            current_scope=current_scope,
+            apply_scope=True,
+            current_session_id=current_session_id,
+            include_legacy=True,
+        )
+        legacy = [s for s in legacy if s.get("legacy_scope_fallback")]
+        legacy = sorted(legacy, key=sort_key, reverse=True)
+        picked = legacy[:limit]
+        legacy_used = bool(picked)
+        if legacy_used:
+            logging.debug(
+                "session_search %s using legacy source-bounded fallback for source=%s chat_type=%s chat_id=%s",
+                mode,
+                current_scope.get("source"),
+                current_scope.get("chat_type"),
+                current_scope.get("chat_id"),
+            )
+
+    results = [
+        _shape_handoff_session(db, s, legacy_scope_fallback=bool(s.get("legacy_scope_fallback")))
+        for s in picked
+    ]
+    return json.dumps({
+        "success": True,
+        "mode": mode,
+        "scope": "current",
+        "results": results,
+        "count": len(results),
+        "legacy_scope_fallback": legacy_used,
+        "message": (
+            f"Found {len(results)} previous session(s) in current scope."
+            if results else "No previous session found in current scope."
+        ),
     }, ensure_ascii=False)
 
 
@@ -387,6 +752,17 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
+    # Explicit previous/handoff shape and scope controls
+    mode: str = None,
+    scope: str = None,
+    # Hidden runtime scope, supplied by tool executor (not model-authored)
+    current_source: str = None,
+    current_user_id: str = None,
+    current_user_id_alt: str = None,
+    current_chat_type: str = None,
+    current_chat_id: str = None,
+    current_thread_id: str = None,
+    current_session_key: str = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -406,6 +782,20 @@ def session_search(
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
 
+    current_scope = _build_current_scope(
+        current_source=current_source,
+        current_user_id=current_user_id,
+        current_user_id_alt=current_user_id_alt,
+        current_chat_type=current_chat_type,
+        current_chat_id=current_chat_id,
+        current_thread_id=current_thread_id,
+        current_session_key=current_session_key,
+    )
+    apply_scope = _should_scope_to_current(scope, current_scope)
+    mode_norm = _clean(mode).lower()
+    if mode_norm not in {"previous", "handoff"}:
+        mode_norm = ""
+
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
         return _scroll(
@@ -414,6 +804,8 @@ def session_search(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            current_scope=current_scope,
+            apply_scope=apply_scope,
         )
 
     # Limit clamp [1, 10]
@@ -424,9 +816,25 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 10))
 
+    if mode_norm in {"previous", "handoff"}:
+        return _previous_or_handoff(
+            db,
+            mode=mode_norm,
+            limit=limit,
+            current_session_id=current_session_id,
+            current_scope=current_scope,
+            apply_scope=apply_scope,
+        )
+
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(
+            db,
+            limit,
+            current_session_id,
+            current_scope=current_scope,
+            apply_scope=apply_scope,
+        )
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -447,6 +855,8 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        current_scope=current_scope,
+        apply_scope=apply_scope,
     )
 
 
@@ -539,6 +949,24 @@ SESSION_SEARCH_SCHEMA = {
                     "and browse shapes."
                 ),
             },
+            "mode": {
+                "type": "string",
+                "enum": ["previous", "handoff"],
+                "description": (
+                    "Dedicated previous-session shape. Use 'previous' or 'handoff' "
+                    "when the user asks for the immediately previous/current-chat "
+                    "conversation, e.g. '刚才那个会话' or '交接信息'. This does not do "
+                    "keyword search or global fallback."
+                ),
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["current", "global"],
+                "description": (
+                    "Recall scope. Gateway sessions default to 'current' chat scope. "
+                    "Use 'global' only for explicit debug/admin cross-session search."
+                ),
+            },
             "session_id": {
                 "type": "string",
                 "description": (
@@ -594,8 +1022,17 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        mode=args.get("mode"),
+        scope=args.get("scope"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        current_source=kw.get("current_source"),
+        current_user_id=kw.get("current_user_id"),
+        current_user_id_alt=kw.get("current_user_id_alt"),
+        current_chat_type=kw.get("current_chat_type"),
+        current_chat_id=kw.get("current_chat_id"),
+        current_thread_id=kw.get("current_thread_id"),
+        current_session_key=kw.get("current_session_key"),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

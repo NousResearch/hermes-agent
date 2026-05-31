@@ -101,17 +101,29 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _stall_retry_config(agent: Any | None = None) -> Mapping[str, Any]:
-    cfg = getattr(agent, "_stall_retry_config", None)
-    if isinstance(cfg, Mapping):
-        return cfg
+    loaded_cfg: Mapping[str, Any] = {}
     try:
         from hermes_cli.config import load_config
 
         loaded = load_config()
     except Exception:
-        return {}
+        loaded = {}
     cfg = loaded.get("stall_retry") if isinstance(loaded, Mapping) else None
-    return cfg if isinstance(cfg, Mapping) else {}
+    if isinstance(cfg, Mapping):
+        loaded_cfg = cfg
+
+    agent_cfg = getattr(agent, "_stall_retry_config", None)
+    if not isinstance(agent_cfg, Mapping):
+        return loaded_cfg
+    if not agent_cfg:
+        return loaded_cfg
+
+    merged = dict(loaded_cfg)
+    for key, value in agent_cfg.items():
+        if value is None or value == "":
+            continue
+        merged[str(key)] = value
+    return merged
 
 
 def get_stall_retry_model(agent: Any | None = None) -> str:

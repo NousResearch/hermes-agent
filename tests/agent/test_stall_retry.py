@@ -319,6 +319,33 @@ def test_retry_on_stall_uses_agent_config_when_env_is_absent(monkeypatch) -> Non
     assert captured["kwargs"]["stream"] is False
 
 
+def test_stall_retry_empty_agent_config_falls_back_to_loaded_config(monkeypatch) -> None:
+    import hermes_cli.config as config_mod
+
+    monkeypatch.delenv("HERMES_STALL_RETRY_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_STALL_RETRY_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_STALL_RETRY_MAX_PER_TURN", raising=False)
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {
+            "stall_retry": {
+                "max_per_turn": 3,
+                "model": "qwen3.6-27b-256k",
+                "provider": "taro",
+            }
+        },
+    )
+
+    empty_agent = SimpleNamespace(_stall_retry_config={})
+    provider_only_agent = SimpleNamespace(_stall_retry_config={"provider": "ko-mac"})
+
+    assert get_stall_retry_model(empty_agent) == "qwen3.6-27b-256k"
+    assert get_stall_retry_max_per_turn(empty_agent) == 3
+    assert get_stall_retry_model(provider_only_agent) == "qwen3.6-27b-256k"
+    assert get_stall_retry_max_per_turn(provider_only_agent) == 3
+
+
 def test_retry_on_stall_uses_configured_retry_provider(monkeypatch) -> None:
     captured: dict[str, object] = {}
     tool_call = SimpleNamespace(

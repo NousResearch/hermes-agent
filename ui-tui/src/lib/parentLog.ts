@@ -13,10 +13,11 @@ import { join } from 'node:path'
 // exactly the point: #31051 left these breadcrumbs in an in-memory CircularBuffer
 // that dies with the process, so SIGTERM crash reports arrived with no parent
 // context. A `[tui-parent]` line immediately before the child's panic means a
-// parent kill; its ABSENCE means an external signal. Persisting the
-// death-explaining events here is what makes that distinction (and a
-// memory-critical `process.exit(137)`, which closes stdin → clean EOF, not
-// SIGTERM) diagnosable after the fact.
+// parent kill; its absence *suggests* an external signal — not definitive,
+// since this logger is best-effort (disabled under VITEST, and a failed append
+// is swallowed). Persisting the death-explaining events here is what makes that
+// distinction (and a memory-critical `process.exit(137)`, which closes stdin →
+// clean EOF, not SIGTERM) diagnosable after the fact.
 const logDir = join(process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes'), 'logs')
 const CRASH_LOG = join(logDir, 'tui_gateway_crash.log')
 

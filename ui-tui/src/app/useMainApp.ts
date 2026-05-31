@@ -759,7 +759,7 @@ export function useMainApp(gw: GatewayClient) {
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
         turnController.pushActivity('gateway exited · recovering session…', 'warn')
-        sys('gateway exited — recovering your session (the in-flight reply was lost)')
+        sys('gateway exited — recovering your session (any in-flight reply was lost)')
         gw.start()
 
         return

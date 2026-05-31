@@ -2199,14 +2199,27 @@ def _handle_session_expired_and_retry(
 
     # Trigger the same reconnect mechanism the OAuth recovery path
     # uses, then wait briefly for the new session to come back ready.
+    # The async helper runs on the MCP event loop via _run_on_mcp_loop
+    # so it does NOT block the event loop during the poll interval.
+    # Mirrors the identical pattern in _handle_auth_error_and_retry.
     loop.call_soon_threadsafe(srv._reconnect_event.set)
-    deadline = time.monotonic() + 15
+
+    async def _await_ready() -> bool:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if srv.session is not None and srv._ready.is_set():
+                return True
+            await asyncio.sleep(0.25)
+        return False
+
     ready = False
-    while time.monotonic() < deadline:
-        if srv.session is not None and srv._ready.is_set():
-            ready = True
-            break
-        time.sleep(0.25)
+    try:
+        ready = bool(_run_on_mcp_loop(_await_ready(), timeout=15))
+    except Exception as exc:
+        logger.warning(
+            "MCP session-expired '%s': ready poll failed: %s",
+            server_name, exc,
+        )
     if not ready:
         logger.warning(
             "MCP server '%s': reconnect did not ready within 15s after "

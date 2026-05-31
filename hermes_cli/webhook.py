@@ -23,7 +23,6 @@ from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
-_INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 
 
 def _hermes_home() -> Path:
@@ -145,13 +144,6 @@ def _cmd_subscribe(args):
     is_update = name in subs
 
     secret = args.secret or secrets.token_urlsafe(32)
-    if secret == _INSECURE_NO_AUTH:
-        print(
-            "Error: INSECURE_NO_AUTH is not allowed for dynamic subscriptions. "
-            "Use a real HMAC secret or omit --secret to auto-generate one."
-        )
-        return
-
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
     route = {

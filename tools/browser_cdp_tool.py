@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Restricted Chrome DevTools Protocol (CDP) passthrough tool.
+Raw Chrome DevTools Protocol (CDP) passthrough tool.
 
-Exposes a single opt-in tool, ``browser_cdp``, that sends non-sensitive CDP
-commands to the browser's DevTools WebSocket endpoint when a CDP URL is
+Exposes a single tool, ``browser_cdp``, that sends arbitrary CDP commands to
+the browser's DevTools WebSocket endpoint.  Works when a CDP URL is
 configured — either via ``/browser connect`` (sets ``BROWSER_CDP_URL``) or
-``browser.cdp_url`` in ``config.yaml``.
+``browser.cdp_url`` in ``config.yaml`` — or when a CDP-backed cloud provider
+session is active.
 
 This is the escape hatch for browser operations not covered by the main
 browser tool surface (``browser_navigate``, ``browser_click``,
 ``browser_console``, etc.) — handling native dialogs, iframe-scoped
-evaluation, low-level inspection, and similar workflows. Cookie access,
-cookie mutation, and CDP navigation methods are blocked so callers use the
-higher-level browser tools that enforce URL and website policy.
+evaluation, cookie/network control, low-level tab management, etc.
 
 Method reference: https://chromedevtools.github.io/devtools-protocol/
 """
@@ -42,40 +41,6 @@ except ImportError:
     WebSocketException = Exception  # type: ignore[assignment,misc]
     _WS_AVAILABLE = False
 
-
-# CDP methods that can bypass higher-level browser safety policy or expose
-# browser-wide secrets. Keep browser_cdp as a debugging escape hatch without
-# making it a cookie jar or alternate navigation primitive.
-_BLOCKED_CDP_METHODS: Dict[str, str] = {
-    "Network.getAllCookies": "can expose HttpOnly cookies for unrelated origins",
-    "Network.getCookies": "can expose browser cookies",
-    "Network.setCookie": "can mutate browser cookies",
-    "Network.setCookies": "can mutate browser cookies",
-    "Network.deleteCookies": "can mutate browser cookies",
-    "Storage.getCookies": "can expose browser cookies",
-    "Storage.setCookies": "can mutate browser cookies",
-    "Storage.clearCookies": "can mutate browser cookies",
-    "Page.navigate": (
-        "bypasses browser_navigate URL, redirect, and website policy checks"
-    ),
-    "Target.createTarget": (
-        "bypasses browser_navigate URL and website policy checks"
-    ),
-}
-
-
-def _validate_cdp_policy(method: str) -> Optional[str]:
-    """Return a policy error for blocked CDP methods, otherwise None."""
-    reason = _BLOCKED_CDP_METHODS.get(method)
-    if not reason:
-        return None
-    if method in {"Page.navigate", "Target.createTarget"}:
-        return (
-            f"Blocked CDP method {method}: {reason}. Use browser_navigate "
-            "for navigation so URL safety, redirect, and website policies "
-            "are enforced."
-        )
-    return f"Blocked CDP method {method}: {reason}."
 
 # ---------------------------------------------------------------------------
 # Async-from-sync bridge (matches the pattern in homeassistant_tool.py)
@@ -360,32 +325,22 @@ def browser_cdp(
         JSON string ``{"success": True, "method": ..., "result": {...}}`` on
         success, or ``{"error": "..."}`` on failure.
     """
-    if not method or not isinstance(method, str):
-        return tool_error(
-            "'method' is required (e.g. 'Target.getTargets')",
-            cdp_docs=CDP_DOCS_URL,
-        )
-
-    call_params: Dict[str, Any] = params or {}
-    if not isinstance(call_params, dict):
-        return tool_error(
-            f"'params' must be an object/dict, got {type(call_params).__name__}"
-        )
-
-    policy_error = _validate_cdp_policy(method)
-    if policy_error:
-        return tool_error(policy_error, method=method)
-
     # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
         return _browser_cdp_via_supervisor(
             task_id=task_id or "default",
             frame_id=frame_id,
             method=method,
-            params=call_params,
+            params=params,
             timeout=timeout,
         )
     del task_id  # stateless path below
+
+    if not method or not isinstance(method, str):
+        return tool_error(
+            "'method' is required (e.g. 'Target.getTargets')",
+            cdp_docs=CDP_DOCS_URL,
+        )
 
     if not _WS_AVAILABLE:
         return tool_error(
@@ -408,6 +363,12 @@ def browser_cdp(
             "Expected ws://... or wss://... — the /browser connect "
             "resolver should have rewritten this. Check that Chrome is "
             "actually listening on the debug port."
+        )
+
+    call_params: Dict[str, Any] = params or {}
+    if not isinstance(call_params, dict):
+        return tool_error(
+            f"'params' must be an object/dict, got {type(call_params).__name__}"
         )
 
     try:
@@ -460,17 +421,16 @@ def browser_cdp(
 BROWSER_CDP_SCHEMA: Dict[str, Any] = {
     "name": "browser_cdp",
     "description": (
-        "Send a restricted Chrome DevTools Protocol (CDP) command. Opt-in "
-        "escape hatch for browser operations not covered by browser_navigate, "
-        "browser_click, browser_console, etc. Cookie access/mutation and CDP "
-        "navigation methods are blocked.\n\n"
-        "**Requires the browser-cdp toolset and a reachable CDP endpoint.** "
-        "Available when the user has run '/browser connect' to attach to a "
-        "running Chrome, or when 'browser.cdp_url' is set in config.yaml. "
-        "Not currently wired up for cloud backends (Browserbase, Browser Use, "
-        "Firecrawl) — those expose CDP per session but live-session routing is "
-        "a follow-up. Camofox is REST-only and will never support CDP. If the "
-        "tool is in your toolset at all, a CDP endpoint is already reachable.\n\n"
+        "Send a raw Chrome DevTools Protocol (CDP) command. Escape hatch for "
+        "browser operations not covered by browser_navigate, browser_click, "
+        "browser_console, etc.\n\n"
+        "**Requires a reachable CDP endpoint.** Available when the user has "
+        "run '/browser connect' to attach to a running Chrome, or when "
+        "'browser.cdp_url' is set in config.yaml. Not currently wired up for "
+        "cloud backends (Browserbase, Browser Use, Firecrawl) — those expose "
+        "CDP per session but live-session routing is a follow-up. Camofox is "
+        "REST-only and will never support CDP. If the tool is in your toolset "
+        "at all, a CDP endpoint is already reachable.\n\n"
         f"**CDP method reference:** {CDP_DOCS_URL} — use web_extract on a "
         "method's URL (e.g. '/tot/Page/#method-handleJavaScriptDialog') "
         "to look up parameters and return shape.\n\n"
@@ -478,6 +438,7 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "- List tabs: method='Target.getTargets', params={}\n"
         "- Handle a native JS dialog: method='Page.handleJavaScriptDialog', "
         "params={'accept': true, 'promptText': ''}, target_id=<tabId>\n"
+        "- Get all cookies: method='Network.getAllCookies', params={}\n"
         "- Eval in a specific tab: method='Runtime.evaluate', "
         "params={'expression': '...', 'returnByValue': true}, "
         "target_id=<tabId>\n"
@@ -494,10 +455,6 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "browser_snapshot frame_tree output. This routes through the CDP "
         "supervisor's live connection — the only reliable way on "
         "Browserbase where stateless CDP calls hit signed-URL expiry.\n"
-        "- Cookie access/mutation methods and CDP navigation methods are "
-        "blocked. "
-        "Use browser_navigate for navigation so URL safety, redirect, and "
-        "website policies are enforced.\n"
         "- Each stateless call (without frame_id) is independent — sessions "
         "and event subscriptions do not persist between calls. For stateful "
         "workflows, prefer the dedicated browser tools or use frame_id "

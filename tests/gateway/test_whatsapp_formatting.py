@@ -32,7 +32,6 @@ def _make_adapter():
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
-    adapter._bridge_token = "test-bridge-token"
     adapter._reply_prefix = None
     adapter._running = True
     adapter._message_handler = None
@@ -286,32 +285,6 @@ class TestSendChunking:
         result = await adapter.send("chat1", "hello")
         assert not result.success
         assert "Not connected" in result.error
-
-# ---------------------------------------------------------------------------
-# edit_message chunking tests
-# ---------------------------------------------------------------------------
-
-class TestEditMessageChunking:
-    """WhatsApp edit_message() never asks the bridge to emit continuations."""
-
-    @pytest.mark.asyncio
-    async def test_long_edit_sends_only_first_chunk_to_bridge(self):
-        adapter = _make_adapter()
-        resp = MagicMock(status=200)
-        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
-
-        long_msg = "a " * 3000
-
-        result = await adapter.edit_message("chat1", "msg1", long_msg)
-
-        assert result.success
-        assert result.message_id == "msg1"
-        adapter._http_session.post.assert_called_once()
-        payload = adapter._http_session.post.call_args.kwargs["json"]
-        assert payload["chatId"] == "chat1"
-        assert payload["messageId"] == "msg1"
-        assert len(payload["message"]) <= adapter._outgoing_chunk_limit()
-        assert payload["message"] != adapter.format_message(long_msg)
 
 
 # ---------------------------------------------------------------------------

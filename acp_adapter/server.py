@@ -8,7 +8,6 @@ import contextvars
 import json
 import logging
 import os
-import stat
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -74,8 +73,6 @@ from acp_adapter.events import (
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
-from agent.file_safety import get_read_block_error
-from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -149,27 +146,6 @@ def _image_data_url(data: bytes, mime_type: str) -> str:
     return f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
 
 
-def _allow_client_stdio_mcp_servers() -> bool:
-    """Return whether ACP clients may provide stdio MCP server commands.
-
-    Stdio MCP transports execute a local command. ACP session data comes from
-    an external client, so keep this disabled unless the operator explicitly
-    opts in through config.yaml.
-    """
-    try:
-        from hermes_cli.config import load_config
-
-        config = load_config()
-    except Exception:
-        logger.debug("Failed to load ACP stdio MCP policy", exc_info=True)
-        return False
-
-    acp_config = config.get("acp") if isinstance(config, dict) else None
-    if not isinstance(acp_config, dict):
-        return False
-    return bool(acp_config.get("allow_client_stdio_mcp_servers", False))
-
-
 def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
@@ -205,36 +181,6 @@ def _path_from_file_uri(uri: str) -> Path | None:
     return Path(path_text)
 
 
-def _resolve_acp_resource_path(uri: str, cwd: str | Path) -> Path:
-    """Resolve an ACP file resource path only when it stays inside session cwd."""
-    path = _path_from_file_uri(uri)
-    if path is None:
-        raise ValueError("non-file ACP resource URI")
-
-    root = Path(cwd).expanduser().resolve()
-    candidate = path.expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    resolved = candidate.resolve(strict=True)
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise PermissionError(f"Path '{resolved}' is outside the session cwd '{root}'.") from exc
-
-    block_error = get_read_block_error(str(resolved))
-    if block_error:
-        raise PermissionError(block_error)
-    return resolved
-
-
-def _safe_regular_file_stat(path: Path) -> os.stat_result:
-    """Return stat info only for regular files, avoiding blocking special files."""
-    file_stat = path.stat()
-    if not stat.S_ISREG(file_stat.st_mode):
-        raise PermissionError(f"Access denied: '{path}' is not a regular file.")
-    return file_stat
-
-
 def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
     """Decode resource bytes if they are probably text; return None for binary."""
     if b"\x00" in data and not _is_text_resource(mime_type):
@@ -262,9 +208,7 @@ def _format_resource_text(
     return f"{header}\nURI: {uri}\n\n{body}"
 
 
-def _resource_link_to_parts(
-    block: ResourceContentBlock, *, cwd: str | Path
-) -> list[dict[str, Any]]:
+def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]:
     """Convert an ACP resource_link block to OpenAI content parts.
 
     Returns a list of {"type": "text", ...} and/or {"type": "image_url", ...}
@@ -279,9 +223,9 @@ def _resource_link_to_parts(
     name = str(getattr(block, "name", "") or "").strip() or None
     title = str(getattr(block, "title", "") or "").strip() or None
     mime_type = str(getattr(block, "mime_type", "") or "").strip() or None
-    try:
-        path = _resolve_acp_resource_path(uri, cwd)
-    except ValueError:
+    path = _path_from_file_uri(uri)
+
+    if path is None:
         return [{
             "type": "text",
             "text": _format_resource_text(
@@ -291,24 +235,13 @@ def _resource_link_to_parts(
                 body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
             ),
         }]
-    except OSError as exc:
-        logger.warning("ACP resource rejected: %s", uri, exc_info=True)
-        return [{
-            "type": "text",
-            "text": _format_resource_text(
-                uri=uri,
-                name=name,
-                title=title,
-                body=f"[Could not read attached file: {exc}]",
-            ),
-        }]
 
     # Image files: emit a short text header + image_url data URL so vision
     # models can see the attachment instead of a "binary omitted" note.
     image_mime = mime_type if _is_image_resource(mime_type) else _guess_image_mime_from_path(path)
     if image_mime and _is_image_resource(image_mime):
         try:
-            size = _safe_regular_file_stat(path).st_size
+            size = path.stat().st_size
             if size > _MAX_ACP_RESOURCE_BYTES:
                 return [{
                     "type": "text",
@@ -339,13 +272,11 @@ def _resource_link_to_parts(
         ]
 
     try:
-        size = _safe_regular_file_stat(path).st_size
+        size = path.stat().st_size
         read_size = min(size, _MAX_ACP_RESOURCE_BYTES)
         with path.open("rb") as fh:
             data = fh.read(read_size)
         text = _decode_text_bytes(data, mime_type)
-        if text is not None:
-            text = redact_sensitive_text(text, force=True)
         if text is None:
             return [{
                 "type": "text",
@@ -468,8 +399,6 @@ def _content_blocks_to_openai_user_content(
         | ResourceContentBlock
         | EmbeddedResourceContentBlock
     ],
-    *,
-    cwd: str | Path = ".",
 ) -> str | list[dict[str, Any]]:
     """Convert ACP prompt blocks into a Hermes/OpenAI-compatible user content payload."""
     parts: list[dict[str, Any]] = []
@@ -487,7 +416,7 @@ def _content_blocks_to_openai_user_content(
                 parts.append(image_part)
             continue
         if isinstance(block, ResourceContentBlock):
-            resource_parts = _resource_link_to_parts(block, cwd=cwd)
+            resource_parts = _resource_link_to_parts(block)
             for part in resource_parts:
                 parts.append(part)
                 if part.get("type") == "text":
@@ -747,20 +676,9 @@ class HermesACPAgent(acp.Agent):
             from tools.mcp_tool import register_mcp_servers
 
             config_map: dict[str, dict] = {}
-            registered_server_names: list[str] = []
-            allow_stdio = _allow_client_stdio_mcp_servers()
             for server in mcp_servers:
                 name = server.name
                 if isinstance(server, McpServerStdio):
-                    if not allow_stdio:
-                        logger.warning(
-                            "Session %s: ignoring ACP-provided stdio MCP server '%s'; "
-                            "set acp.allow_client_stdio_mcp_servers=true to allow "
-                            "client-provided local commands",
-                            state.session_id,
-                            name,
-                        )
-                        continue
                     config = {
                         "command": server.command,
                         "args": list(server.args),
@@ -772,10 +690,6 @@ class HermesACPAgent(acp.Agent):
                         "headers": {item.name: item.value for item in server.headers},
                     }
                 config_map[name] = config
-                registered_server_names.append(name)
-
-            if not config_map:
-                return
 
             await asyncio.to_thread(register_mcp_servers, config_map)
         except Exception:
@@ -791,7 +705,7 @@ class HermesACPAgent(acp.Agent):
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
-                mcp_server_names=registered_server_names,
+                mcp_server_names=[server.name for server in mcp_servers],
             )
             state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
@@ -1173,7 +1087,7 @@ class HermesACPAgent(acp.Agent):
             return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
-        user_content = _content_blocks_to_openai_user_content(prompt, cwd=state.cwd)
+        user_content = _content_blocks_to_openai_user_content(prompt)
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
         has_content = bool(user_text) or (
             isinstance(user_content, list) and bool(user_content)
@@ -1231,23 +1145,19 @@ class HermesACPAgent(acp.Agent):
         # still running, queue it instead of racing two AIAgent loops against
         # the same state.history. /steer and /queue are handled above and can
         # land immediately.
-        queued_depth = 0
         with state.runtime_lock:
             if state.is_running:
                 queued_text = user_text or "[Image attachment]"
                 state.queued_prompts.append(queued_text)
-                queued_depth = len(state.queued_prompts)
-            else:
-                state.is_running = True
-                state.current_prompt_text = user_text or "[Image attachment]"
-
-        if queued_depth:
-            if self._conn:
-                update = acp.update_agent_message_text(
-                    f"Queued for the next turn. ({queued_depth} queued)"
-                )
-                await self._conn.session_update(session_id, update)
-            return PromptResponse(stop_reason="end_turn")
+                depth = len(state.queued_prompts)
+                if self._conn:
+                    update = acp.update_agent_message_text(
+                        f"Queued for the next turn. ({depth} queued)"
+                    )
+                    await self._conn.session_update(session_id, update)
+                return PromptResponse(stop_reason="end_turn")
+            state.is_running = True
+            state.current_prompt_text = user_text or "[Image attachment]"
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -1296,17 +1206,18 @@ class HermesACPAgent(acp.Agent):
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
         # Set it INSIDE _run_agent so the TLS write happens in the executor
         # thread — setting it here would write to the event-loop thread's TLS,
-        # not the executor's. Bind interactive approval routing with a
-        # ContextVar so overlapping ACP sessions cannot clear each other's
-        # process-wide environment state while running concurrently
-        # (GHSA-96vc-wcxf-jjff). ACP's conn.request_permission maps cleanly
-        # to the interactive callback shape — not the gateway-queue
-        # HERMES_EXEC_ASK path, which requires a notify_cb registered in
-        # _gateway_notify_cbs.
+        # not the executor's. Also set HERMES_INTERACTIVE so approval.py
+        # takes the CLI-interactive path (which calls the registered
+        # callback via prompt_dangerous_approval) instead of the
+        # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
+        # ACP's conn.request_permission maps cleanly to the interactive
+        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
+        # which requires a notify_cb registered in _gateway_notify_cbs.
         previous_approval_cb = None
+        previous_interactive = None
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb
+            nonlocal previous_approval_cb, previous_interactive
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions
@@ -1332,8 +1243,8 @@ class HermesACPAgent(acp.Agent):
                     logger.debug("Could not set ACP approval callback", exc_info=True)
             # Signal to tools.approval that we have an interactive callback
             # and the non-interactive auto-approve path must not fire.
-            from tools.approval import reset_current_interactive, set_current_interactive
-            interactive_token = set_current_interactive(True)
+            previous_interactive = os.environ.get("HERMES_INTERACTIVE")
+            os.environ["HERMES_INTERACTIVE"] = "1"
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1346,7 +1257,11 @@ class HermesACPAgent(acp.Agent):
                 logger.exception("Agent error in session %s", session_id)
                 return {"final_response": f"Error: {e}", "messages": state.history}
             finally:
-                reset_current_interactive(interactive_token)
+                # Restore HERMES_INTERACTIVE.
+                if previous_interactive is None:
+                    os.environ.pop("HERMES_INTERACTIVE", None)
+                else:
+                    os.environ["HERMES_INTERACTIVE"] = previous_interactive
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool

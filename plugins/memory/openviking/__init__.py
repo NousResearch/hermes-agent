@@ -29,7 +29,10 @@ import json
 import logging
 import mimetypes
 import os
+import tempfile
 import threading
+import uuid
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -97,16 +100,19 @@ class _VikingClient:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
     def _headers(self) -> dict:
-        # Do not send legacy implicit tenant defaults with API-key auth.
-        # Remote OpenViking servers may derive tenancy from the Bearer key;
-        # an explicit "default" header can override that derived scope.
+        # Always send tenant headers when account/user are configured.
+        # OpenViking 0.3.x requires X-OpenViking-Account and X-OpenViking-User
+        # for ROOT API key requests to tenant-scoped APIs — omitting them
+        # causes INVALID_ARGUMENT errors even when account="default".
+        # User-level keys can omit them (server derives tenancy from the key),
+        # but ROOT keys must always include them explicitly.
         h = {
             "Content-Type": "application/json",
             "X-OpenViking-Agent": self._agent,
         }
-        if self._account and self._account != "default":
+        if self._account:
             h["X-OpenViking-Account"] = self._account
-        if self._user and self._user != "default":
+        if self._user:
             h["X-OpenViking-User"] = self._user
         if self._api_key:
             h["X-API-Key"] = self._api_key
@@ -289,15 +295,15 @@ REMEMBER_SCHEMA = {
 ADD_RESOURCE_SCHEMA = {
     "name": "viking_add_resource",
     "description": (
-        "Add a remote URL to the OpenViking knowledge base. "
-        "Resources must be public http(s), git, or ssh URLs reachable by OpenViking. "
-        "Local filesystem paths and file:// URIs are not allowed. "
+        "Add a remote URL or local file/directory to the OpenViking knowledge base. "
+        "Remote resources must be public http(s), git, or ssh URLs. "
+        "Local files are uploaded first using OpenViking temp_upload. "
         "The system automatically parses, indexes, and generates summaries."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "url": {"type": "string", "description": "Remote URL to add (http(s), git, or ssh)."},
+            "url": {"type": "string", "description": "Remote URL or local file/directory path to add."},
             "reason": {
                 "type": "string",
                 "description": "Why this resource is relevant (improves search).",
@@ -328,6 +334,16 @@ ADD_RESOURCE_SCHEMA = {
 }
 
 
+def _zip_directory(dir_path: Path) -> Path:
+    """Create a temporary zip file containing a directory tree."""
+    zip_path = Path(tempfile.gettempdir()) / f"openviking_upload_{uuid.uuid4().hex}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for file_path in dir_path.rglob("*"):
+            if file_path.is_file():
+                arcname = str(file_path.relative_to(dir_path)).replace("\\", "/")
+                zipf.write(file_path, arcname=arcname)
+    return zip_path
+
 
 def _is_windows_absolute_path(value: str) -> bool:
     return (
@@ -339,7 +355,7 @@ def _is_windows_absolute_path(value: str) -> bool:
 
 
 def _is_remote_resource_source(value: str) -> bool:
-    return value.lower().startswith(_REMOTE_RESOURCE_PREFIXES)
+    return value.startswith(_REMOTE_RESOURCE_PREFIXES)
 
 
 def _is_local_path_reference(value: str) -> bool:
@@ -361,7 +377,6 @@ def _path_from_file_uri(uri: str) -> Path | str:
     if parsed.netloc not in ("", "localhost"):
         return f"Unsupported non-local file URI: {uri}"
     return Path(url2pathname(parsed.path)).expanduser()
-
 
 
 # ---------------------------------------------------------------------------
@@ -859,10 +874,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
         url = args.get("url", "")
         if not url:
             return tool_error("url is required")
-        local_path_error = (
-            "Local filesystem paths are not allowed for viking_add_resource; "
-            "provide a remote URL instead."
-        )
 
         if args.get("to") and args.get("parent"):
             return tool_error("Cannot specify both 'to' and 'parent'")
@@ -873,15 +884,43 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 payload[key] = args[key]
 
         parsed_url = urlparse(url)
-        if parsed_url.scheme == "file":
-            return tool_error(local_path_error)
-        if parsed_url.scheme and not _is_windows_absolute_path(url) and not _is_remote_resource_source(url):
-            return tool_error(f"Unsupported resource URL scheme: {parsed_url.scheme}")
-        if _is_local_path_reference(url):
-            return tool_error(local_path_error)
-        payload["path"] = url
-        resp = self._client.post("/api/v1/resources", payload)
-        result = resp.get("result", {})
+        if _is_remote_resource_source(url):
+            source_path = None
+        elif parsed_url.scheme == "file":
+            source_path = _path_from_file_uri(url)
+            if isinstance(source_path, str):
+                return tool_error(source_path)
+        elif parsed_url.scheme and not _is_windows_absolute_path(url):
+            source_path = None
+        else:
+            source_path = Path(url).expanduser()
+
+        cleanup_path: Optional[Path] = None
+        try:
+            if source_path is not None:
+                if source_path.exists():
+                    if source_path.is_dir():
+                        payload["source_name"] = source_path.name
+                        cleanup_path = _zip_directory(source_path)
+                        upload_path = cleanup_path
+                    elif source_path.is_file():
+                        payload["source_name"] = source_path.name
+                        upload_path = source_path
+                    else:
+                        return tool_error(f"Unsupported local resource path: {url}")
+                    payload["temp_file_id"] = self._client.upload_temp_file(upload_path)
+                elif _is_local_path_reference(url):
+                    return tool_error(f"Local resource path does not exist: {url}")
+                else:
+                    payload["path"] = url
+            else:
+                payload["path"] = url
+
+            resp = self._client.post("/api/v1/resources", payload)
+            result = resp.get("result", {})
+        finally:
+            if cleanup_path:
+                cleanup_path.unlink(missing_ok=True)
 
         return json.dumps({
             "status": "added",

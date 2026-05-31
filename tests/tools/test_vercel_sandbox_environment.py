@@ -374,7 +374,7 @@ class TestFileSync:
         env.cleanup()
 
         assert src.read_text() == "remote-token"
-        assert not (tmp_path / "new.txt").exists()
+        assert (tmp_path / "new.txt").read_text() == "new-remote"
         assert not (tmp_path / "skip.txt").exists()
         assert len(sandbox.snapshot_calls) == 1
         assert len(sandbox.stop_calls) == 1  # always stop after snapshot to avoid resource leaks

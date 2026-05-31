@@ -210,25 +210,6 @@ class TestSendOrEditMediaStripping:
         assert "MEDIA:" not in edited_text
 
     @pytest.mark.asyncio
-    async def test_telegram_edits_forward_metadata_with_title_case_name(self):
-        """Telegram metadata passthrough should not depend on lowercase adapter names."""
-        adapter = MagicMock()
-        adapter.name = "Telegram"
-        send_result = SimpleNamespace(success=True, message_id="msg_1")
-        edit_result = SimpleNamespace(success=True)
-        adapter.send = AsyncMock(return_value=send_result)
-        adapter.edit_message = AsyncMock(return_value=edit_result)
-        adapter.MAX_MESSAGE_LENGTH = 4096
-
-        metadata = {"thread_id": "789"}
-        consumer = GatewayStreamConsumer(adapter, "chat_123", metadata=metadata)
-        await consumer._send_or_edit("Starting response...")
-        await consumer._send_or_edit("Updated response...")
-
-        adapter.edit_message.assert_called_once()
-        assert adapter.edit_message.call_args[1]["metadata"] == metadata
-
-    @pytest.mark.asyncio
     async def test_media_only_skips_send(self):
         """If text is entirely MEDIA: tags, the send is skipped."""
         adapter = MagicMock()

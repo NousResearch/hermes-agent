@@ -457,7 +457,7 @@ def _capture_log_snapshot(
                     chunk_size = min(chunk_size * 2, 65536)
 
                 raw = b"".join(chunks)
-                truncated = size > max_bytes
+                truncated = pos > 0
 
         full_raw = raw
         if truncated and len(full_raw) > max_bytes:

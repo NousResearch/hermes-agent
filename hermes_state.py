@@ -333,8 +333,6 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150  # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
-    # Keep CJK LIKE fallback SQL below SQLite expression/variable limits.
-    _CJK_LIKE_MAX_TOKENS = 250
 
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -1070,62 +1068,34 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
-    def get_session_by_title(
-        self,
-        title: str,
-        source: str = None,
-        user_id: str = None,
-    ) -> Optional[Dict[str, Any]]:
+    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
-        where_clauses = ["title = ?"]
-        params = [title]
-        if source is not None:
-            where_clauses.append("source = ?")
-            params.append(source)
-        if user_id is not None:
-            where_clauses.append("user_id = ?")
-            params.append(user_id)
-        where_sql = " AND ".join(where_clauses)
         with self._lock:
             cursor = self._conn.execute(
-                f"SELECT * FROM sessions WHERE {where_sql}", params
+                "SELECT * FROM sessions WHERE title = ?", (title,)
             )
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def resolve_session_by_title(
-        self,
-        title: str,
-        source: str = None,
-        user_id: str = None,
-    ) -> Optional[str]:
+    def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
         If not, searches for "title #N" variants and returns the latest one.
         If the exact title exists AND numbered variants exist, returns the
-        latest numbered variant (the most recent continuation). Optional
-        source/user_id filters constrain lookup to the session owner.
+        latest numbered variant (the most recent continuation).
         """
-        exact = self.get_session_by_title(title, source=source, user_id=user_id)
+        # First try exact match
+        exact = self.get_session_by_title(title)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where_clauses = ["title LIKE ? ESCAPE '\\'"]
-        params = [f"{escaped} #%"]
-        if source is not None:
-            where_clauses.append("source = ?")
-            params.append(source)
-        if user_id is not None:
-            where_clauses.append("user_id = ?")
-            params.append(user_id)
-        where_sql = " AND ".join(where_clauses)
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, title, started_at FROM sessions "
-                f"WHERE {where_sql} ORDER BY started_at DESC",
-                params,
+                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+                (f"{escaped} #%",),
             )
             numbered = cursor.fetchall()
 
@@ -1216,7 +1186,6 @@ class SessionDB:
         include_children: bool = False,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
-        user_id: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1236,9 +1205,6 @@ class SessionDB:
         compressed continuations from being invisible to users while keeping
         delegate subagents and branches hidden. Pass ``False`` to return the
         raw root rows (useful for admin/debug UIs).
-
-        Pass ``user_id`` to scope results to sessions owned by a specific
-        gateway user.
 
         Pass ``order_by_last_active=True`` to sort by most-recent activity
         instead of original conversation start time. For compression chains,
@@ -1268,9 +1234,6 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
-        if user_id is not None:
-            where_clauses.append("s.user_id = ?")
-            params.append(user_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -1452,14 +1415,13 @@ class SessionDB:
 
     # Sentinel prefix used to distinguish JSON-encoded structured content
     # (multimodal messages: lists of parts like text + image_url) from plain
-    # string content. User-controlled strings can contain NUL bytes via JSON
-    # escapes, so strings beginning with the reserved prefix are escaped on
-    # write to keep the encoding injective.
+    # string content. The NUL byte is not legal in normal text, so this
+    # cannot collide with real user content.
     _CONTENT_JSON_PREFIX = "\x00json:"
 
     @classmethod
     def _encode_content(cls, content: Any) -> Any:
-        """Serialize message content for sqlite.
+        """Serialize structured (list/dict) message content for sqlite.
 
         sqlite3 can only bind ``str``, ``bytes``, ``int``, ``float``, and ``None``
         to query parameters. Multimodal messages have ``content`` as a list of
@@ -1467,16 +1429,11 @@ class SessionDB:
         raises ``ProgrammingError: Error binding parameter N: type 'list' is
         not supported`` when bound directly.
 
-        Returns the value unchanged when it's already a safe scalar, except for
-        strings that begin with the reserved sentinel. Sentinel-prefixed strings
-        are JSON-wrapped so they round-trip as strings instead of being
-        reinterpreted as structured multimodal content on replay. Lists/dicts
-        are stored as sentinel-prefixed JSON. Paired with :meth:`_decode_content`
-        on read.
+        Returns the value unchanged when it's already a safe scalar, or a
+        sentinel-prefixed JSON string for lists/dicts. Paired with
+        :meth:`_decode_content` on read.
         """
-        if content is None or isinstance(content, (bytes, int, float)):
-            return content
-        if isinstance(content, str) and not content.startswith(cls._CONTENT_JSON_PREFIX):
+        if content is None or isinstance(content, (str, bytes, int, float)):
             return content
         try:
             return cls._CONTENT_JSON_PREFIX + json.dumps(content)
@@ -2138,16 +2095,11 @@ class SessionDB:
                 # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
                 # build one LIKE condition per non-operator token so each term
                 # is matched independently (#20494).
-                raw_tokens = [
+                non_op_tokens = [
                     t
                     for t in raw_query.split()
                     if t.upper() not in {"AND", "OR", "NOT"}
                 ] or [raw_query]
-                # Deduplicate and cap attacker-controlled tokens so the
-                # fallback cannot exceed SQLite expression/variable limits.
-                non_op_tokens = list(dict.fromkeys(raw_tokens))[
-                    : self._CJK_LIKE_MAX_TOKENS
-                ]
                 token_clauses = []
                 like_params: list = []
                 for tok in non_op_tokens:
@@ -2194,13 +2146,8 @@ class SessionDB:
                 # instr() for snippet uses first search token
                 like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
-                    try:
-                        like_cursor = self._conn.execute(like_sql, like_params)
-                        like_rows = like_cursor.fetchall()
-                    except sqlite3.OperationalError:
-                        matches = []
-                    else:
-                        matches = [dict(row) for row in like_rows]
+                    like_cursor = self._conn.execute(like_sql, like_params)
+                    matches = [dict(row) for row in like_cursor.fetchall()]
         else:
             with self._lock:
                 try:
@@ -2380,19 +2327,6 @@ class SessionDB:
         self._execute_write(_do)
 
     @staticmethod
-    def _safe_session_file_path(sessions_dir: Path, filename: str) -> Optional[Path]:
-        """Return a cleanup target only when it remains below sessions_dir."""
-        root = sessions_dir.resolve(strict=False)
-        if Path(filename).is_absolute():
-            return None
-        candidate = root / filename
-        try:
-            candidate.parent.resolve(strict=False).relative_to(root)
-        except (OSError, ValueError):
-            return None
-        return candidate
-
-    @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.
 
@@ -2403,24 +2337,15 @@ class SessionDB:
         """
         if sessions_dir is None:
             return
-        sessions_dir = Path(sessions_dir)
         for suffix in (".json", ".jsonl"):
-            p = SessionDB._safe_session_file_path(sessions_dir, f"{session_id}{suffix}")
-            if p is None:
-                continue
+            p = sessions_dir / f"{session_id}{suffix}"
             try:
                 p.unlink(missing_ok=True)
             except OSError:
                 pass
-        # request_dump files use session_id as a prefix component. Iterate direct
-        # children instead of globbing untrusted text so metacharacters stay literal.
-        request_dump_prefix = f"request_dump_{session_id}_"
+        # request_dump files use session_id as a prefix component
         try:
-            for p in sessions_dir.iterdir():
-                if not (
-                    p.name.startswith(request_dump_prefix) and p.name.endswith(".json")
-                ):
-                    continue
+            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
                 try:
                     p.unlink(missing_ok=True)
                 except OSError:

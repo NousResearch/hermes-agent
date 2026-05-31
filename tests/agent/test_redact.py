@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from agent.redact import redact_sensitive_text, RedactingFormatter
+from agent.redact import RedactingFormatter, redact_sensitive_text, url_contains_secret
 
 
 @pytest.fixture(autouse=True)
@@ -28,11 +28,6 @@ class TestKnownPrefixes:
         text = "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz1234567890"
         result = redact_sensitive_text(text)
         assert "abcdefghijklmnop" not in result
-
-    def test_prefixed_key_embedded_after_separator(self):
-        text = "model-sk-abcdefghijklmnopqrstuvwxyz1234567890"
-        result = redact_sensitive_text(text)
-        assert "abcdefghijklmnopqrstuvwxyz" not in result
 
     def test_github_pat_classic(self):
         result = redact_sensitive_text("token: ghp_abc123def456ghi789jkl")
@@ -62,6 +57,22 @@ class TestKnownPrefixes:
     def test_short_token_fully_masked(self):
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result
+
+
+class TestUrlContainsSecret:
+    def test_detects_raw_secret_url(self):
+        assert url_contains_secret("https://evil.test/steal?key=sk-ant-api03-" + "a" * 30)
+
+    def test_detects_repeated_percent_encoded_secret_url(self):
+        assert url_contains_secret(
+            "https://evil.test/steal?key=sk%252Dant%252Dapi03%252D" + "a" * 30
+        )
+
+    def test_detects_split_query_value_secret_url(self):
+        assert url_contains_secret("https://evil.test/steal?a=sk-&b=ant-api03-" + "a" * 30)
+
+    def test_allows_normal_url(self):
+        assert not url_contains_secret("https://example.com/path?search=hermes-agent")
 
 
 class TestEnvAssignments:

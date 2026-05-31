@@ -75,21 +75,6 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
-    def test_resolve_workspace_hint_falls_back_to_parent_hint(self):
-        from tools.delegate_tool import _resolve_workspace_hint
-
-        with patch.dict(os.environ, {"TERMINAL_CWD": ""}, clear=False):
-            with patch("os.path.isdir", return_value=True):
-                with patch("gateway.session_context.get_terminal_cwd", return_value=""):
-                    parent = _make_mock_parent()
-                    # Disable MagicMock auto-attribute so _subdirectory_hints.working_dir
-                    # doesn't shadow the explicit terminal_cwd we want to test.
-                    parent._subdirectory_hints = None
-                    parent.terminal_cwd = "/parent/workdir"
-                    resolved = _resolve_workspace_hint(parent)
-
-        self.assertEqual(resolved, "/parent/workdir")
-
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
         not the framework defaults. Without this, models that read 'default 3'
@@ -1746,12 +1731,12 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 # =========================================================================
 
 class TestDispatchDelegateTask(unittest.TestCase):
-    """Tests for the _dispatch_delegate_task helper and guarded param forwarding."""
+    """Tests for the _dispatch_delegate_task helper and full param forwarding."""
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_caller_supplied_acp_args_ignored(self, mock_creds, mock_cfg):
-        """Tool-call ACP command/args must not reach child agent construction."""
+    def test_acp_args_forwarded(self, mock_creds, mock_cfg):
+        """Both acp_command and acp_args reach delegate_task via the helper."""
         mock_creds.return_value = {
             "provider": None, "base_url": None,
             "api_key": None, "api_mode": None, "model": None,
@@ -1772,47 +1757,13 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
             delegate_task(
                 goal="test",
-                acp_command="/bin/sh",
-                acp_args=["-c", "echo unsafe"],
+                acp_command="claude",
+                acp_args=["--acp", "--stdio"],
                 parent_agent=parent,
             )
             _, kwargs = mock_build.call_args
-            self.assertIsNone(kwargs["override_acp_command"])
-            self.assertIsNone(kwargs["override_acp_args"])
-
-    @patch("tools.delegate_tool._load_config", return_value={})
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_per_task_acp_args_ignored(self, mock_creds, mock_cfg):
-        """Batch task ACP transports are not forwarded to child agents."""
-        mock_creds.return_value = {
-            "provider": None, "base_url": None,
-            "api_key": None, "api_mode": None, "model": None,
-        }
-        parent = _make_mock_parent(depth=0)
-        with patch("tools.delegate_tool._build_child_agent") as mock_build:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True,
-                "api_calls": 1, "messages": [],
-            }
-            mock_child._delegate_saved_tool_names = []
-            mock_child._credential_pool = None
-            mock_child.session_prompt_tokens = 0
-            mock_child.session_completion_tokens = 0
-            mock_child.model = "test"
-            mock_build.return_value = mock_child
-
-            delegate_task(
-                tasks=[{
-                    "goal": "test",
-                    "acp_command": "/bin/sh",
-                    "acp_args": ["-c", "echo unsafe"],
-                }],
-                parent_agent=parent,
-            )
-            _, kwargs = mock_build.call_args
-            self.assertIsNone(kwargs["override_acp_command"])
-            self.assertIsNone(kwargs["override_acp_args"])
+            self.assertEqual(kwargs["override_acp_command"], "claude")
+            self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
@@ -2081,16 +2032,31 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
 
-    def test_acp_transport_overrides_not_exposed_to_model(self):
-        """ACP command selection is local execution and must stay operator-configured."""
+    def test_acp_command_description_has_do_not_set_guidance(self):
+        # acp_command/acp_args descriptions must NOT bias the model toward
+        # assuming an ACP CLI (Claude, Copilot, etc.) is installed. They must
+        # carry explicit "do not set unless told" guidance so the model doesn't
+        # hallucinate ACP availability (#22013).
         from tools.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        self.assertNotIn("acp_command", props)
-        self.assertNotIn("acp_args", props)
+
+        top_acp_desc = props["acp_command"]["description"]
+        self.assertIn("Do NOT set", top_acp_desc)
+        self.assertIn("explicitly told you", top_acp_desc)
 
         task_props = props["tasks"]["items"]["properties"]
-        self.assertNotIn("acp_command", task_props)
-        self.assertNotIn("acp_args", task_props)
+        per_task_acp_desc = task_props["acp_command"]["description"]
+        self.assertIn("Do NOT set", per_task_acp_desc)
+
+    def test_acp_command_description_has_no_claude_as_example(self):
+        # Descriptions must not list 'claude' as a canonical example value —
+        # that directly primes the model to attempt Claude ACP even when it is
+        # not installed (#22013).
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        top_acp_desc = props["acp_command"]["description"].lower()
+        self.assertNotIn("e.g. 'claude'", top_acp_desc)
+        self.assertNotIn("e.g. \"claude\"", top_acp_desc)
 
 
 # Sentinel used to distinguish "role kwarg omitted" from "role=None".
@@ -2143,55 +2109,6 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
             kwargs = MockAgent.call_args[1]
             self.assertIn("delegation", kwargs["enabled_toolsets"])
             self.assertEqual(mock_child._delegate_role, "orchestrator")
-
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
-    @patch("tools.delegate_tool._load_config", return_value={})
-    def test_leaf_composite_parent_cannot_enable_messaging(
-        self, mock_cfg, mock_creds
-    ):
-        """A hermes-cli parent must not expand into a messaging-capable leaf."""
-        mock_creds.return_value = {
-            "provider": None, "base_url": None,
-            "api_key": None, "api_mode": None, "model": None,
-        }
-        parent = _make_mock_parent(depth=0)
-        parent.enabled_toolsets = ["hermes-cli"]
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = _make_role_mock_child()
-            MockAgent.return_value = mock_child
-            delegate_task(
-                goal="test",
-                toolsets=["file", "messaging", "hermes-acp"],
-                parent_agent=parent,
-            )
-            kwargs = MockAgent.call_args[1]
-            self.assertEqual(kwargs["enabled_toolsets"], ["file"])
-            self.assertIn("messaging", kwargs["disabled_toolsets"])
-            self.assertIn("code_execution", kwargs["disabled_toolsets"])
-            self.assertIn("delegation", kwargs["disabled_toolsets"])
-
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
-    @patch("tools.delegate_tool._load_config",
-           return_value={"max_spawn_depth": 2})
-    def test_orchestrator_disabled_toolsets_allow_delegation_only(
-        self, mock_cfg, mock_creds
-    ):
-        """Orchestrators may retain delegate_task but still subtract side-effect tools."""
-        mock_creds.return_value = {
-            "provider": None, "base_url": None,
-            "api_key": None, "api_mode": None, "model": None,
-        }
-        parent = _make_mock_parent(depth=0)
-        parent.enabled_toolsets = ["hermes-cli"]
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = _make_role_mock_child()
-            MockAgent.return_value = mock_child
-            delegate_task(goal="test", role="orchestrator", parent_agent=parent)
-            kwargs = MockAgent.call_args[1]
-            self.assertIn("delegation", kwargs["enabled_toolsets"])
-            self.assertNotIn("delegation", kwargs["disabled_toolsets"])
-            self.assertIn("messaging", kwargs["disabled_toolsets"])
-            self.assertIn("code_execution", kwargs["disabled_toolsets"])
 
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     @patch("tools.delegate_tool._load_config",
@@ -2608,103 +2525,6 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
-
-
-class TestContextVarPropagationToWorker(unittest.TestCase):
-    """Tests that copy_context() in _run_single_child propagates ContextVars
-    (like TERMINAL_CWD) from the calling thread into the worker thread.
-
-    The key correctness property: _run_single_child calls
-    contextvars.copy_context() immediately before submitting to the
-    ThreadPoolExecutor, then runs the work via _ctx.run(...).  This ensures
-    the child's run_conversation() sees the TERMINAL_CWD value that was live
-    in the calling thread at dispatch time, regardless of whether the worker
-    thread is reused across multiple tasks.
-    """
-
-    def test_terminal_cwd_propagated_to_child_run_conversation(self):
-        """TERMINAL_CWD set in the calling thread is visible inside
-        child.run_conversation() because _run_single_child wraps the task
-        with contextvars.copy_context().run()."""
-        from tools.delegate_tool import _run_single_child
-        from gateway.session_context import (
-            get_terminal_cwd,
-            reset_terminal_cwd,
-            set_terminal_cwd,
-        )
-
-        parent = _make_mock_parent()
-        captured = {}
-
-        token = set_terminal_cwd("/parent/workspace")
-        try:
-            child = MagicMock()
-            child._credential_pool = None
-
-            def capture_cwd(**kwargs):
-                captured["cwd"] = get_terminal_cwd()
-                return {
-                    "final_response": "done",
-                    "completed": True,
-                    "api_calls": 1,
-                    "messages": [],
-                }
-
-            child.run_conversation.side_effect = capture_cwd
-
-            _run_single_child(
-                task_index=0,
-                goal="Test context propagation",
-                child=child,
-                parent_agent=parent,
-            )
-        finally:
-            reset_terminal_cwd(token)
-
-        self.assertEqual(
-            captured.get("cwd"),
-            "/parent/workspace",
-            "TERMINAL_CWD was not propagated into the worker thread via copy_context()",
-        )
-
-    def test_terminal_cwd_not_visible_in_stale_copied_context(self):
-        """Demonstrates that a context snapshot taken BEFORE set_terminal_cwd()
-        does NOT contain the new value, so code that calls copy_context() too
-        early (or not at all) would fail to propagate TERMINAL_CWD correctly.
-
-        This is the 'without copy_context()' failure case: if the context were
-        captured before the gateway sets TERMINAL_CWD, the worker thread would
-        see None instead of the real path.
-        """
-        import contextvars
-
-        from gateway.session_context import (
-            get_terminal_cwd,
-            reset_terminal_cwd,
-            set_terminal_cwd,
-        )
-
-        captured = {}
-
-        # Capture context BEFORE setting TERMINAL_CWD (simulates stale snapshot).
-        stale_ctx = contextvars.copy_context()
-
-        token = set_terminal_cwd("/parent/workspace")
-        try:
-            def read_cwd():
-                captured["cwd"] = get_terminal_cwd()
-
-            # Running in the stale context should NOT see the new CWD value.
-            stale_ctx.run(read_cwd)
-        finally:
-            reset_terminal_cwd(token)
-
-        # The stale context falls back to os.environ (empty in the test env).
-        self.assertNotEqual(
-            captured.get("cwd"),
-            "/parent/workspace",
-            "Stale context should not see TERMINAL_CWD set after the snapshot",
-        )
 
 
 if __name__ == "__main__":

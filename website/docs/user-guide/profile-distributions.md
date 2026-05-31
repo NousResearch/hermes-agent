@@ -118,31 +118,10 @@ That's the whole manifest. Every field except `name` has a sensible default.
 
 ### Step 3 — Push to a git repo
 
-Before staging files, add a `.gitignore` that protects user-owned data and
-secrets. Git does not know about Hermes installer exclusions, so do this before
-any `git add`:
-
 ```bash
 cd ~/.hermes/profiles/research-bot
-cat > .gitignore <<'EOF'
-auth.json
-.env
-memories/
-sessions/
-state.db
-state.db-shm
-state.db-wal
-logs/
-workspace/
-plans/
-home/
-*_cache/
-local/
-EOF
-
 git init
-git add distribution.yaml SOUL.md skills/ .gitignore
-git status --short                  # verify no secrets or state are staged
+git add .
 git commit -m "v1.0.0"
 git remote add origin git@github.com:you/research-bot.git
 git tag v1.0.0
@@ -151,12 +130,8 @@ git push -u origin main --tags
 
 The repo is now a distribution. Anyone with access can install it.
 
-:::warning
-Never run `git add .` in a live profile unless you have first reviewed the
-ignore rules and `git status --short`. Hermes excludes `auth.json`, `.env`,
-`memories/`, `sessions/`, `state.db*`, `logs/`, `workspace/`, `*_cache/`, and
-`local/` when installing or updating a distribution, but Git will still commit
-those files to the upstream repository if you stage them.
+:::note
+The git repo contains **everything in the profile directory except things already excluded from distributions**: `auth.json`, `.env`, `memories/`, `sessions/`, `state.db*`, `logs/`, `workspace/`, `*_cache/`, `local/`. Those stay on your machine. You can also add a `.gitignore` if you want to exclude additional paths.
 :::
 
 ### Step 4 — Tag versioned releases
@@ -378,7 +353,7 @@ You built a research assistant on your laptop. You want the same agent on your w
 ```bash
 # Laptop
 cd ~/.hermes/profiles/research-bot
-git init && git add distribution.yaml SOUL.md skills/ .gitignore && git commit -m "initial"
+git init && git add . && git commit -m "initial"
 git remote add origin git@github.com:you/research-bot.git
 git push -u origin main
 
@@ -397,7 +372,7 @@ Your engineering team wants a shared PR-review bot with a specific SOUL, specifi
 # Engineering lead
 cd ~/.hermes/profiles/pr-reviewer
 # ... build and tune ...
-git init && git add distribution.yaml SOUL.md skills/ .gitignore && git commit -m "v1.0 PR reviewer"
+git init && git add . && git commit -m "v1.0 PR reviewer"
 git tag v1.0.0
 git push -u origin main --tags    # push to your company's internal Git host
 
@@ -417,7 +392,7 @@ You built something novel — maybe a "Polymarket trader" or an "academic paper 
 # You
 cd ~/.hermes/profiles/polymarket-trader
 # Write a solid README.md at the repo root — GitHub shows it on the repo page
-git init && git add distribution.yaml SOUL.md skills/ README.md .gitignore && git commit -m "v1.0"
+git init && git add . && git commit -m "v1.0"
 git tag v1.0.0
 # Publish to a public GitHub repo
 git remote add origin https://github.com/you/hermes-polymarket-trader.git
@@ -545,12 +520,9 @@ hermes profile install ~/.hermes/profiles/research-bot --name research-bot-test
 
 ---
 
-## What's NOT installed from a distribution (ever)
+## What's NOT in a distribution (ever)
 
-The Hermes installer hard-excludes these paths when copying a distribution into a
-profile, even if an author accidentally committed them. No config option lets
-you override this — the installer-side safety guard is a regression-tested
-invariant:
+The installer hard-excludes these paths even if an author accidentally ships them. No config option lets you override this — the safety guard is a regression-tested invariant:
 
 - `auth.json` — OAuth tokens, platform credentials
 - `.env` — API keys, secrets
@@ -564,11 +536,7 @@ invariant:
 - `*_cache/` — image / audio / document caches
 - `local/` — user-reserved customization namespace
 
-These exclusions protect the installed target profile during install and update.
-They do **not** remove files from the author's Git repository or its history, so
-authors must keep these paths ignored before publishing. If you installed the
-same distribution on five machines, you have five isolated sets of this data —
-one per machine.
+When you clone a distribution, these simply aren't there. When you update, they stay put. If you installed the same distribution on five machines, you have five isolated sets of this data — one per machine.
 
 ## Security and trust
 

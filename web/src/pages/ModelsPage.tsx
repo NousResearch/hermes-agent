@@ -572,9 +572,8 @@ function ModelSettingsPanel({
 
             {AUX_TASKS.map((t) => {
               const cur = aux?.tasks.find((a) => a.task === t.key);
-              const hasCustomEndpoint = Boolean(cur?.base_url);
               const isAuto =
-                !hasCustomEndpoint && (!cur || cur.provider === "auto" || !cur.provider);
+                !cur || cur.provider === "auto" || !cur.provider;
               return (
                 <div
                   key={t.key}
@@ -590,9 +589,7 @@ function ModelSettingsPanel({
                     <div className="text-[10px] font-mono text-muted-foreground truncate">
                       {isAuto
                         ? "auto (use main model)"
-                        : hasCustomEndpoint
-                          ? `custom endpoint · ${cur?.model || "(provider default)"}`
-                          : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
                     </div>
                   </div>
                   <Button

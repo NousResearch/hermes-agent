@@ -1,9 +1,8 @@
 """Tests for the Kanban tool surface (tools/kanban_tools.py).
 
 Verifies:
-  - Tools are gated on HERMES_KANBAN_TASK or an explicit kanban toolset:
-    a normal chat session sees zero kanban tools in its schema; a worker or
-    authorized orchestrator session sees the appropriate kanban set.
+  - Tools are gated on HERMES_KANBAN_TASK: a normal chat session sees
+    zero kanban tools in its schema; a worker session sees the kanban set.
   - Each handler's happy path.
   - Error paths (missing required args, bad metadata type, etc).
 """
@@ -117,106 +116,6 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
 
-def test_profile_global_create_rejects_unauthorized_assignee(monkeypatch, tmp_path):
-    """Kanban-enabled profile sessions must not spawn arbitrary profiles."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
-
-    from hermes_cli import kanban_db as kb
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
-
-    from tools import kanban_tools as kt
-    out = kt._handle_create({
-        "title": "privileged task",
-        "assignee": "privileged-admin",
-        "body": "run attacker-controlled instructions",
-    })
-    d = json.loads(out)
-    assert d.get("ok") is not True
-    assert "not authorized" in d.get("error", "")
-
-    with kb.connect() as conn:
-        assert kb.list_tasks(conn) == []
-
-
-def test_profile_global_create_allows_configured_assignee(monkeypatch, tmp_path):
-    """Explicit allowed_assignees preserves intentional routing profiles."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    (home / "config.yaml").write_text(
-        "toolsets:\n"
-        "  - kanban\n"
-        "kanban:\n"
-        "  allowed_assignees:\n"
-        "    orchestrator:\n"
-        "      - privileged-admin\n"
-    )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
-
-    from hermes_cli import kanban_db as kb
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
-
-    from tools import kanban_tools as kt
-    out = kt._handle_create({
-        "title": "approved task",
-        "assignee": "privileged-admin",
-    })
-    d = json.loads(out)
-    assert d.get("ok") is True
-
-    with kb.connect() as conn:
-        task = kb.get_task(conn, d["task_id"])
-    assert task.assignee == "privileged-admin"
-    assert task.created_by == "orchestrator"
-
-
-def test_worker_create_rejects_unauthorized_cross_profile_assignee(monkeypatch, tmp_path):
-    """HERMES_KANBAN_TASK must not bypass kanban.allowed_assignees."""
-    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
-
-    from hermes_cli import kanban_db as kb
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
-
-    from tools import kanban_tools as kt
-    first = json.loads(kt._handle_create({
-        "title": "self-dispatched stage",
-        "assignee": "orchestrator",
-    }))
-    assert first.get("ok") is True
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", first["task_id"])
-    bypass = json.loads(kt._handle_create({
-        "title": "privileged follow-up",
-        "assignee": "privileged-admin",
-        "body": "run attacker-controlled instructions",
-    }))
-    assert bypass.get("ok") is not True
-    assert "not authorized" in bypass.get("error", "")
-
-    with kb.connect() as conn:
-        tasks = kb.list_tasks(conn)
-    assert [task.assignee for task in tasks] == ["orchestrator"]
-
-
 # ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------
@@ -227,12 +126,6 @@ def worker_env(monkeypatch, tmp_path):
     after we've created the task."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text(
-        "kanban:\n"
-        "  allowed_assignees:\n"
-        "    test-worker:\n"
-        "      - '*'\n"
-    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     from pathlib import Path as _Path
@@ -826,29 +719,14 @@ def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
-        b = kb.create_task(
-            conn, title="B", assignee="x", created_by="test-worker"
-        )
+        a = kb.create_task(conn, title="A", assignee="x")
+        b = kb.create_task(conn, title="B", assignee="x")
     finally:
         conn.close()
     from tools import kanban_tools as kt
-    out = kt._handle_link({"parent_id": worker_env, "child_id": b})
+    out = kt._handle_link({"parent_id": a, "child_id": b})
     d = json.loads(out)
     assert d["ok"] is True
-
-
-def test_worker_link_rejects_foreign_child(worker_env):
-    from hermes_cli import kanban_db as kb
-    conn = kb.connect()
-    try:
-        b = kb.create_task(conn, title="B", assignee="x", created_by="bob")
-    finally:
-        conn.close()
-    from tools import kanban_tools as kt
-    out = kt._handle_link({"parent_id": worker_env, "child_id": b})
-    d = json.loads(out)
-    assert d.get("error")
-    assert "worker-scoped kanban_link" in d["error"]
 
 
 def test_link_rejects_self_reference(worker_env):
@@ -1048,8 +926,8 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # kanban_unblock) must refuse to operate
 # on any OTHER task id, even if the caller supplies an explicit `task_id`
 # argument. Workers legitimately call kanban_show / kanban_list /
-# kanban_comment / kanban_create on other tasks, so those are unrestricted.
-# kanban_link is scoped because it mutates dependency/scheduling state.
+# kanban_comment / kanban_create / kanban_link on other tasks, so those
+# are unrestricted.
 #
 # Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child

@@ -88,18 +88,16 @@ class TestConfigureWindowsStdio:
 
         monkeypatch.setattr(stdio, "_reconfigure_stream", fake_reconfigure)
         monkeypatch.setattr(stdio, "_flip_console_code_page_to_utf8", fake_flip)
-        # Pretend notepad.exe is on PATH (it always is on real Windows hosts,
-        # but not on the Linux CI runner — mock it so the editor default
-        # survives).
-        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: "notepad")
+        trusted_notepad = r"C:/Windows/System32/notepad.exe"
+        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: trusted_notepad)
 
         result = stdio.configure_windows_stdio()
         assert result is True
         assert os.environ.get("PYTHONIOENCODING") == "utf-8"
         assert os.environ.get("PYTHONUTF8") == "1"
-        # EDITOR must be set so prompt_toolkit's open_in_editor finds
-        # a working program on Windows (it defaults to /usr/bin/nano).
-        assert os.environ.get("EDITOR") == "notepad"
+        # EDITOR must be set to a trusted absolute path so Windows does not
+        # search the current directory for a shadowing notepad.exe.
+        assert os.environ.get("EDITOR") == trusted_notepad
         assert len(cp_calls) == 1  # SetConsoleOutputCP path hit
         assert len(reconfigure_calls) == 3  # stdout, stderr, stdin
 
@@ -111,7 +109,7 @@ class TestConfigureWindowsStdio:
         monkeypatch.setenv("EDITOR", "code --wait")
         monkeypatch.setattr(stdio, "_reconfigure_stream", lambda *a, **kw: None)
         monkeypatch.setattr(stdio, "_flip_console_code_page_to_utf8", lambda: None)
-        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: "notepad")
+        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: r"C:/Windows/System32/notepad.exe")
 
         stdio.configure_windows_stdio()
         assert os.environ["EDITOR"] == "code --wait"
@@ -125,13 +123,33 @@ class TestConfigureWindowsStdio:
         monkeypatch.setenv("VISUAL", "nvim")
         monkeypatch.setattr(stdio, "_reconfigure_stream", lambda *a, **kw: None)
         monkeypatch.setattr(stdio, "_flip_console_code_page_to_utf8", lambda: None)
-        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: "notepad")
+        trusted_notepad = r"C:/Windows/System32/notepad.exe"
+        monkeypatch.setattr(stdio, "_default_windows_editor", lambda: trusted_notepad)
 
         stdio.configure_windows_stdio()
         # EDITOR should NOT be set when VISUAL already is (prompt_toolkit
         # checks VISUAL first anyway, but we also shouldn't override it).
-        assert os.environ.get("EDITOR", "") != "notepad"
+        assert "EDITOR" not in os.environ
         assert os.environ["VISUAL"] == "nvim"
+
+    def test_default_windows_editor_uses_trusted_system_notepad(self, monkeypatch):
+        """Default Notepad path must not be current-directory/PATH hijackable."""
+        from hermes_cli import stdio
+
+        trusted_notepad = r"C:/Windows/System32/notepad.exe"
+        monkeypatch.setattr(stdio.os.path, "isfile", lambda path: path.replace("\\", "/") == trusted_notepad)
+
+        assert stdio._default_windows_editor() == trusted_notepad
+
+    def test_default_editor_ignores_malicious_systemroot_override(self, monkeypatch):
+        from hermes_cli import stdio
+
+        trusted_notepad = r"C:/Windows/System32/notepad.exe"
+        monkeypatch.setenv("SystemRoot", r"C:\evil")
+        monkeypatch.setenv("WINDIR", r"C:\evil")
+        monkeypatch.setattr(stdio.os.path, "isfile", lambda path: path.replace("\\", "/") == trusted_notepad)
+
+        assert stdio._trusted_system_notepad_path() == trusted_notepad
 
     def test_respects_existing_env_var(self, monkeypatch):
         """User's explicit PYTHONIOENCODING wins over our default."""
@@ -171,6 +189,33 @@ class TestConfigureWindowsStdio:
         buf = io.StringIO()
         # Must not raise
         stdio._reconfigure_stream(buf)
+
+
+# ---------------------------------------------------------------------------
+# hermes config edit
+# ---------------------------------------------------------------------------
+
+
+def test_config_edit_uses_trusted_windows_notepad(monkeypatch, tmp_path):
+    """Windows fallback must execute trusted Notepad, not a bare command."""
+    from hermes_cli import config as config_module
+
+    trusted_notepad = r"C:/Windows/System32/notepad.exe"
+    config_path = tmp_path / "config.yaml"
+    captured = {}
+
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setattr(config_module, "is_managed", lambda: False)
+    monkeypatch.setattr(config_module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(config_module, "save_config", lambda config: config_path.write_text("{}"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(config_module.os.path, "isfile", lambda path: path.replace("\\", "/") == trusted_notepad)
+    monkeypatch.setattr(config_module.subprocess, "run", lambda args: captured.setdefault("args", args))
+
+    config_module.edit_config()
+
+    assert captured["args"] == [trusted_notepad, str(config_path)]
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +471,48 @@ class TestTzdataDependencyDeclared:
             or "tzdata>=2023.3; sys_platform == 'win32'" in source
             or 'tzdata>=2023.3; sys_platform == "win32"' in source
         ), "tzdata must be a Windows-only dep in pyproject.toml dependencies"
+
+
+# ---------------------------------------------------------------------------
+# Windows installer Git download hardening
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsInstallerGitDownloadHardening:
+    """The installer must verify bundled Git downloads before executing them."""
+
+    def test_git_download_uses_pinned_release_not_latest_api(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
+
+        assert "releases/latest" not in source
+        assert '$gitReleaseTag = "v' in source
+        assert "github.com/git-for-windows/git/releases/download/$gitReleaseTag" in source
+
+    def test_git_download_verifies_sha256_before_extracting_or_running(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
+
+        hash_pos = source.index("Get-FileHash -Algorithm SHA256")
+        mismatch_pos = source.index("checksum mismatch")
+        cleanup_pos = source.index("Remove-Item -Force $tmpFile", hash_pos)
+
+        extraction_markers = [
+            "Expand-Archive -Path $tmpFile",
+            "Start-Process -FilePath $tmpFile",
+        ]
+        extraction_positions = [
+            source.index(marker) for marker in extraction_markers if marker in source
+        ]
+        assert extraction_positions, (
+            "install.ps1 must extract or execute the downloaded Git artifact "
+            "after SHA-256 verification"
+        )
+        extract_pos = min(extraction_positions)
+        run_pos = source.index("$version = & $gitExe --version")
+
+        assert "Sha256 =" in source
+        assert hash_pos < cleanup_pos < mismatch_pos < extract_pos < run_pos
 
 
 # ---------------------------------------------------------------------------
@@ -741,6 +828,90 @@ class TestNpmBareSpawnsResolved:
                 )
 
 
+class TestBrowserNpxWindowsLaunchHardening:
+    """The browser npx fallback must not pass untrusted args through npx.cmd."""
+
+    def test_windows_npx_cmd_uses_node_cli_instead_of_batch_shim(self, tmp_path, monkeypatch):
+        from tools import browser_tool
+
+        node_root = tmp_path / "nodejs"
+        npx_cmd = node_root / "npx.cmd"
+        npx_cli = node_root / "node_modules" / "npm" / "bin" / "npx-cli.js"
+        node_exe = node_root / "node.exe"
+        npx_cli.parent.mkdir(parents=True)
+        npx_cmd.write_text("@echo off\n", encoding="utf-8")
+        npx_cli.write_text("// npm npx cli\n", encoding="utf-8")
+        node_exe.write_text("", encoding="utf-8")
+
+        def fake_which(name, path=None):
+            if name == "npx":
+                return str(npx_cmd)
+            if name in {"node", "node.exe"}:
+                return str(node_exe)
+            return None
+
+        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
+        monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
+
+        prefix = browser_tool._resolve_npx_agent_browser_prefix()
+
+        assert prefix == [str(node_exe), str(npx_cli), "agent-browser"]
+        assert not prefix[0].lower().endswith((".cmd", ".bat"))
+
+    def test_windows_npx_cmd_fails_closed_without_npx_cli(self, tmp_path, monkeypatch):
+        from tools import browser_tool
+
+        npx_cmd = tmp_path / "nodejs" / "npx.cmd"
+        npx_cmd.parent.mkdir()
+        npx_cmd.write_text("@echo off\n", encoding="utf-8")
+
+        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            browser_tool.shutil,
+            "which",
+            lambda name, path=None: str(npx_cmd) if name == "npx" else None,
+        )
+
+        with pytest.raises(FileNotFoundError, match="Refusing to launch npx.cmd"):
+            browser_tool._resolve_npx_agent_browser_prefix()
+
+    def test_windows_npx_found_only_via_merged_path(self, tmp_path, monkeypatch):
+        """npx.cmd absent from the default process PATH but present in the
+        browser-merged PATH must not cause a false fail-closed error."""
+        from tools import browser_tool
+
+        node_root = tmp_path / "nodejs"
+        npx_cmd = node_root / "npx.cmd"
+        npx_cli = node_root / "node_modules" / "npm" / "bin" / "npx-cli.js"
+        node_exe = node_root / "node.exe"
+        npx_cli.parent.mkdir(parents=True)
+        npx_cmd.write_text("@echo off\n", encoding="utf-8")
+        npx_cli.write_text("// npm npx cli\n", encoding="utf-8")
+        node_exe.write_text("", encoding="utf-8")
+
+        merged_path = str(node_root)
+
+        def fake_which(name, path=None):
+            # Binaries are only visible via the extended merged path,
+            # not via the bare default process PATH.
+            if path and str(node_root) in path:
+                if name == "npx":
+                    return str(npx_cmd)
+                if name in {"node", "node.exe"}:
+                    return str(node_exe)
+            return None
+
+        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
+        monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
+        # Simulate _merge_browser_path returning the extra dir that contains npx.cmd
+        monkeypatch.setattr(browser_tool, "_merge_browser_path", lambda p="": merged_path)
+
+        prefix = browser_tool._resolve_npx_agent_browser_prefix()
+
+        assert prefix == [str(node_exe), str(npx_cli), "agent-browser"]
+        assert not prefix[0].lower().endswith((".cmd", ".bat"))
+
+
 # ---------------------------------------------------------------------------
 # tools/environments/local.py Windows temp dir & PATH injection
 # ---------------------------------------------------------------------------
@@ -862,3 +1033,36 @@ class TestGatewayDetachedWatcherWindowsFlags:
         assert 'if sys.platform == "win32":' in source
         # Windows branch uses windows_detach_popen_kwargs
         assert "windows_detach_popen_kwargs" in source
+
+
+class TestBrowserWindowsBatchLauncherQuoting:
+    """agent-browser .cmd/.bat shims must quote model-controlled args."""
+
+    def test_batch_launcher_uses_shell_string_and_quotes_url_metacharacters(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt.os, "name", "nt")
+        cmd, kwargs = bt._prepare_browser_popen_command([
+            r"C:\repo\node_modules\.bin\agent-browser.cmd",
+            "--session",
+            "poc-session",
+            "--json",
+            "open",
+            "https://example.com/?x=1&calc",
+        ])
+
+        assert kwargs == {"shell": True}
+        assert isinstance(cmd, str)
+        assert '"https://example.com/?x=1&calc"' in cmd
+        assert " https://example.com/?x=1&calc" not in cmd
+
+    def test_non_batch_launcher_keeps_posix_argv_unchanged(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt.os, "name", "posix")
+        argv = ["/usr/bin/agent-browser", "open", "https://example.com/?x=1&y=2"]
+
+        cmd, kwargs = bt._prepare_browser_popen_command(argv)
+
+        assert cmd is argv
+        assert kwargs == {}

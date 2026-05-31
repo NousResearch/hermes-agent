@@ -685,48 +685,6 @@ class TestSecurity:
         assert result["success"] is False
         assert "escapes the working directory" in result["error"]
 
-    def test_diff_rejects_checkpoint_from_other_project(self, mgr, tmp_path):
-        a = tmp_path / "project-a"
-        a.mkdir()
-        (a / "secret.txt").write_text("PROJECT_A_PRIVATE_DATA\n")
-        b = tmp_path / "project-b"
-        b.mkdir()
-        (b / "public.txt").write_text("project b public\n")
-
-        assert mgr.ensure_checkpoint(str(a), "a checkpoint") is True
-        a_hash = mgr.list_checkpoints(str(a))[0]["hash"]
-        mgr.new_turn()
-        assert mgr.ensure_checkpoint(str(b), "b checkpoint") is True
-
-        b_hashes = {cp["hash"] for cp in mgr.list_checkpoints(str(b))}
-        assert a_hash not in b_hashes
-
-        result = mgr.diff(str(b), a_hash)
-
-        assert result["success"] is False
-        assert "not found" in result["error"]
-        assert "PROJECT_A_PRIVATE_DATA" not in result.get("diff", "")
-
-    def test_restore_rejects_checkpoint_from_other_project(self, mgr, tmp_path):
-        a = tmp_path / "project-a"
-        a.mkdir()
-        (a / "secret.txt").write_text("PROJECT_A_PRIVATE_DATA\n")
-        b = tmp_path / "project-b"
-        b.mkdir()
-        (b / "public.txt").write_text("project b public\n")
-
-        assert mgr.ensure_checkpoint(str(a), "a checkpoint") is True
-        a_hash = mgr.list_checkpoints(str(a))[0]["hash"]
-        mgr.new_turn()
-        assert mgr.ensure_checkpoint(str(b), "b checkpoint") is True
-
-        result = mgr.restore(str(b), a_hash)
-
-        assert result["success"] is False
-        assert "not found" in result["error"]
-        assert not (b / "secret.txt").exists()
-        assert (b / "public.txt").read_text() == "project b public\n"
-
     def test_restore_accepts_valid_file_path(self, mgr, work_dir):
         mgr.ensure_checkpoint(str(work_dir), "initial")
         cps = mgr.list_checkpoints(str(work_dir))

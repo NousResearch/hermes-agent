@@ -20,8 +20,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
-import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -61,7 +59,6 @@ INDEX_CACHE_TTL = 3600  # 1 hour
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
-_INSTALL_LOCK = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
@@ -1215,28 +1212,20 @@ class SkillsShSource(SkillSource):
         for candidate in self._candidate_identifiers(canonical):
             bundle = self.github.fetch(candidate)
             if bundle:
-                self._finalize_fetched_bundle(bundle, canonical, detail, candidate)
+                bundle.source = "skills.sh"
+                bundle.identifier = self._wrap_identifier(canonical)
+                bundle.metadata.update(self._detail_to_metadata(canonical, detail))
                 return bundle
 
         resolved = self._discover_identifier(canonical, detail=detail)
         if resolved:
             bundle = self.github.fetch(resolved)
             if bundle:
-                self._finalize_fetched_bundle(bundle, canonical, detail, resolved)
+                bundle.source = "skills.sh"
+                bundle.identifier = self._wrap_identifier(canonical)
+                bundle.metadata.update(self._detail_to_metadata(canonical, detail))
                 return bundle
         return None
-
-    def _finalize_fetched_bundle(
-        self,
-        bundle: SkillBundle,
-        canonical: str,
-        detail: Optional[dict],
-        fetched_identifier: str,
-    ) -> None:
-        bundle.source = "skills.sh"
-        bundle.metadata.update(self._detail_to_metadata(canonical, detail))
-        bundle.metadata["resolved_github_identifier"] = fetched_identifier
-        bundle.identifier = self._wrap_identifier(canonical)
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         canonical = self._normalize_identifier(identifier)
@@ -2742,19 +2731,18 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         safe_rel_path = _validate_bundle_rel_path(rel_path)
         validated_files.append((safe_rel_path, file_content))
 
-    dest = Path(tempfile.mkdtemp(prefix=f"{skill_name}-", dir=QUARANTINE_DIR))
+    dest = QUARANTINE_DIR / skill_name
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
 
-    try:
-        for rel_path, file_content in validated_files:
-            file_dest = dest.joinpath(*rel_path.split("/"))
-            file_dest.parent.mkdir(parents=True, exist_ok=True)
-            if isinstance(file_content, bytes):
-                file_dest.write_bytes(file_content)
-            else:
-                file_dest.write_text(file_content, encoding="utf-8")
-    except Exception:
-        shutil.rmtree(dest, ignore_errors=True)
-        raise
+    for rel_path, file_content in validated_files:
+        file_dest = dest.joinpath(*rel_path.split("/"))
+        file_dest.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(file_content, bytes):
+            file_dest.write_bytes(file_content)
+        else:
+            file_dest.write_text(file_content, encoding="utf-8")
 
     return dest
 
@@ -2779,6 +2767,9 @@ def install_from_quarantine(
     else:
         install_dir = SKILLS_DIR / safe_skill_name
 
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"
     if skill_md.exists():
@@ -2795,33 +2786,28 @@ def install_from_quarantine(
         except OSError:
             pass
 
-    with _INSTALL_LOCK:
-        if install_dir.exists():
-            shutil.rmtree(install_dir)
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(quarantine_path), str(install_dir))
 
-        install_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(quarantine_path), str(install_dir))
-        installed_hash = content_hash(install_dir)
+    # Record in lock file
+    lock = HubLockFile()
+    lock.record_install(
+        name=safe_skill_name,
+        source=bundle.source,
+        identifier=bundle.identifier,
+        trust_level=bundle.trust_level,
+        scan_verdict=scan_result.verdict,
+        skill_hash=content_hash(install_dir),
+        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        files=list(bundle.files.keys()),
+        metadata=bundle.metadata,
+    )
 
-        # Record in lock file
-        lock = HubLockFile()
-        lock.record_install(
-            name=safe_skill_name,
-            source=bundle.source,
-            identifier=bundle.identifier,
-            trust_level=bundle.trust_level,
-            scan_verdict=scan_result.verdict,
-            skill_hash=installed_hash,
-            install_path=str(install_dir.relative_to(SKILLS_DIR)),
-            files=list(bundle.files.keys()),
-            metadata=bundle.metadata,
-        )
-
-        append_audit_log(
-            "INSTALL", safe_skill_name, bundle.source,
-            bundle.trust_level, scan_result.verdict,
-            installed_hash,
-        )
+    append_audit_log(
+        "INSTALL", safe_skill_name, bundle.source,
+        bundle.trust_level, scan_result.verdict,
+        content_hash(install_dir),
+    )
 
     return install_dir
 
@@ -3021,10 +3007,9 @@ class HermesIndexSource(SkillSource):
 
     def trust_level_for(self, identifier: str) -> str:
         index = self._ensure_loaded()
-        entry = self._find_entry(identifier, index)
-        github_id = self._github_identifier_from_entry(entry) if entry else ""
-        if github_id:
-            return self._github_trust_level(github_id)
+        for skill in index.get("skills", []):
+            if skill.get("identifier") == identifier:
+                return skill.get("trust_level", "community")
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
@@ -3061,17 +3046,27 @@ class HermesIndexSource(SkillSource):
         if not entry:
             return None
 
-        github_id = self._github_identifier_from_entry(entry)
-        if not github_id:
-            return None
+        # Use resolved path if available
+        resolved = entry.get("resolved_github_id")
+        if resolved:
+            bundle = self._get_github().fetch(resolved)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
 
-        bundle = self._get_github().fetch(github_id)
-        if not bundle:
-            return None
+        # Fall back to identifier-based fetch via repo/path
+        repo = entry.get("repo", "")
+        path = entry.get("path", "")
+        if repo and path:
+            github_id = f"{repo}/{path}"
+            bundle = self._get_github().fetch(github_id)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
 
-        bundle.metadata.setdefault("hermes_index_identifier", entry.get("identifier", ""))
-        bundle.metadata.setdefault("hermes_index_source", entry.get("source", "hermes-index"))
-        return bundle
+        return None
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Return metadata from the index.  Zero API calls."""
@@ -3112,63 +3107,17 @@ class HermesIndexSource(SkillSource):
         return None
 
     @staticmethod
-    def _is_github_identifier(identifier: str) -> bool:
-        return isinstance(identifier, str) and len(identifier.split("/", 2)) >= 3
-
-    @classmethod
-    def _github_identifier_from_entry(cls, entry: dict) -> str:
-        """Return the GitHub path that install policy should trust.
-
-        The centralized index is only a discovery cache.  Source, trust, and
-        install-policy identity must come from the concrete GitHub path that is
-        actually downloaded, not from index-controlled display metadata.
-        """
-        if not isinstance(entry, dict):
-            return ""
-
-        repo = entry.get("repo") or ""
-        path = entry.get("path") or ""
-        resolved = entry.get("resolved_github_id") or ""
-
-        if cls._is_github_identifier(resolved):
-            if not repo or resolved == repo or resolved.startswith(f"{repo}/"):
-                return resolved
-            logger.warning(
-                "Ignoring Hermes index resolved_github_id %r that does not match repo %r",
-                resolved,
-                repo,
-            )
-
-        fallback = f"{repo}/{path}" if repo and path else ""
-        return fallback if cls._is_github_identifier(fallback) else ""
-
-    @staticmethod
-    def _github_trust_level(identifier: str) -> str:
-        parts = identifier.split("/", 2)
-        if len(parts) >= 2 and f"{parts[0]}/{parts[1]}" in TRUSTED_REPOS:
-            return "trusted"
-        return "community"
-
-    @classmethod
-    def _to_meta(cls, entry: dict) -> SkillMeta:
-        github_id = cls._github_identifier_from_entry(entry)
-        trust_level = cls._github_trust_level(github_id) if github_id else "community"
-        extra = dict(entry.get("extra", {}) or {})
-        if entry.get("identifier"):
-            extra.setdefault("hermes_index_identifier", entry.get("identifier"))
-        if entry.get("source"):
-            extra.setdefault("hermes_index_source", entry.get("source"))
-
+    def _to_meta(entry: dict) -> SkillMeta:
         return SkillMeta(
             name=entry.get("name", ""),
             description=entry.get("description", ""),
-            source="github" if github_id else "hermes-index",
+            source=entry.get("source", "hermes-index"),
             identifier=entry.get("identifier", ""),
-            trust_level=trust_level,
+            trust_level=entry.get("trust_level", "community"),
             repo=entry.get("repo"),
             path=entry.get("path"),
             tags=entry.get("tags", []),
-            extra=extra,
+            extra=entry.get("extra", {}),
         )
 
 

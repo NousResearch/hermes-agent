@@ -4401,9 +4401,16 @@ def run_conversation(
                 )
 
     # Determine if conversation completed successfully
+    # When max_iterations is reached but _handle_max_iterations successfully
+    # returns a summary, the conversation should still be considered completed
+    # so the summary is properly displayed to the user instead of appearing
+    # as if the agent "paused" or got stuck.
     completed = (
         final_response is not None
-        and api_call_count < agent.max_iterations
+        and (
+            api_call_count < agent.max_iterations
+            or _turn_exit_reason.startswith("max_iterations_reached")
+        )
         and not failed
     )
 

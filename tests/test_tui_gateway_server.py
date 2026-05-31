@@ -3572,6 +3572,33 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     server._sessions.pop(sid, None)
 
 
+def test_session_create_lazy_info_reports_desktop_contract(monkeypatch):
+    """The lazy session.create info payload must carry desktop_contract, else
+    the desktop GUI reads it as undefined and falsely warns "Backend out of
+    date" on every launch even against a current backend."""
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **kw: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    info = resp["result"]["info"]
+
+    assert info["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+
+    server._sessions.pop(resp["result"]["session_id"], None)
+
+
 def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_db_error", "locking protocol")

@@ -8547,6 +8547,7 @@ class GatewayRunner:
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
                 _msg_config_ctx = None
+                _msg_custom_providers = None
                 try:
                     _msg_cfg = _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
@@ -8554,6 +8555,9 @@ class GatewayRunner:
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
                         if _msg_raw_ctx is not None:
                             _msg_config_ctx = int(_msg_raw_ctx)
+                    if _msg_cfg:
+                        from hermes_cli.config import get_compatible_custom_providers
+                        _msg_custom_providers = get_compatible_custom_providers(_msg_cfg)
                 except Exception:
                     pass
                 _msg_ctx_len = get_model_context_length(
@@ -8561,6 +8565,7 @@ class GatewayRunner:
                     base_url=self._base_url or _msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
+                    custom_providers=_msg_custom_providers,
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,

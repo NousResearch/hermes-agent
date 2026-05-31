@@ -266,6 +266,24 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+const COMPACT_STATUS_COLS = 92
+
+const contextStatusLabel = (usage: Usage) => {
+  const ctxLabel = usage.context_max
+    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+    : usage.total > 0
+      ? `${fmtK(usage.total)} tok`
+      : ''
+
+  if (!ctxLabel) {
+    return ''
+  }
+
+  const pct = usage.context_percent
+
+  return usage.context_max && pct != null ? `ctx ${ctxLabel} ${pct}%` : `ctx ${ctxLabel}`
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -282,7 +300,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -320,8 +338,11 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
+  const compact = cols > 0 && cols < COMPACT_STATUS_COLS
+  const compactBarWidth = cols < 70 ? 0 : cols < 82 ? 5 : 7
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
     onSessionCountClick?.()
@@ -336,6 +357,98 @@ export function StatusRule({
       <Text color={t.color.muted}> │ {sessionCountText}</Text>
     )
   ) : null
+
+  if (compact) {
+    const width = Math.max(1, cols || 1)
+    const compactModelLabel = modelLabel(model, modelReasoningEffort, modelFast)
+    const compactCtxLabel = contextStatusLabel(usage)
+    const compactBar = usage.context_max && compactBarWidth > 0 ? ctxBar(pct, compactBarWidth) : ''
+
+    return (
+      <Box flexDirection="column" height={2} width={width}>
+        <Box flexDirection="row" overflow="hidden" width={width}>
+          <Text color={t.color.border} wrap="truncate-end">
+            {'─ '}
+          </Text>
+          {busy ? (
+            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+          ) : (
+            <Text color={statusColor} wrap="truncate-end">
+              {status}
+            </Text>
+          )}
+          {compactModelLabel ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ model '}
+              {compactModelLabel}
+            </Text>
+          ) : null}
+          {compactCtxLabel ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {compactCtxLabel}
+            </Text>
+          ) : null}
+          {compactBar ? (
+            <Text color={barColor} wrap="truncate-end">
+              {' '}
+              [{compactBar}]
+            </Text>
+          ) : null}
+        </Box>
+
+        <Box flexDirection="row" overflow="hidden" width={width}>
+          <Text color={t.color.border}>  </Text>
+          {sessionStartedAt ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              dur <SessionDuration startedAt={sessionStartedAt} />
+            </Text>
+          ) : (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {cwdLabel ? 'cwd ' : ''}
+            </Text>
+          )}
+          {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
+            <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
+              {' │ cmp '}
+              {usage.compressions}
+            </Text>
+          ) : null}
+          <SpawnHud t={t} />
+          {voiceLabel ? (
+            <Text
+              color={
+                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
+              }
+              wrap="truncate-end"
+            >
+              {' │ '}
+              {voiceLabel}
+            </Text>
+          ) : null}
+          {sessionCountNode}
+          {bgCount > 0 ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {bgCount} bg
+            </Text>
+          ) : null}
+          {showCost && typeof usage.cost_usd === 'number' ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ $'}
+              {usage.cost_usd.toFixed(4)}
+            </Text>
+          ) : null}
+          {cwdLabel ? (
+            <Text color={t.color.label} wrap="truncate-end">
+              {' │ '}
+              {cwdLabel}
+            </Text>
+          ) : null}
+        </Box>
+      </Box>
+    )
+  }
 
   return (
     <Box height={1}>

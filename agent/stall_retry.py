@@ -46,6 +46,12 @@ _COMPLETION_RE = re.compile(
 )
 _NATURAL_END_CHARS = '.!?:)"\']}。！？：）】」』》^'
 _MIN_INCOMPLETE_FINAL_CHARS = 80
+EMPTY_AFTER_TOOL_RETRY_NUDGE = (
+    "Your previous assistant response after the tool results was empty. "
+    "Continue the same task using the tool results above. If the next step "
+    "requires another tool, call it immediately; otherwise provide the next "
+    "concise response. Do not summarize or apologize."
+)
 
 
 def _has_natural_response_ending(content: str) -> bool:
@@ -93,7 +99,25 @@ def looks_like_stall(content: str, finish_reason: str, has_tool_calls: bool,
     return False
 
 
-def retry_on_stall(agent, api_messages, finish_reason):
+def _retry_messages_with_nudge(api_messages, stalled_content="", retry_nudge=None):
+    retry_messages = list(api_messages)
+    visible = (stalled_content or "").strip()
+    if visible:
+        retry_messages.append({"role": "assistant", "content": visible})
+    if retry_nudge:
+        retry_messages.append({"role": "user", "content": retry_nudge})
+    return retry_messages
+
+
+def retry_on_stall(
+    agent,
+    api_messages,
+    finish_reason,
+    stalled_content="",
+    *,
+    accept_content=False,
+    retry_nudge=None,
+):
     """If the just-finished no-tool-call turn looks like a stall and a retry
     lane is configured, re-issue the SAME turn against that lane (same provider
     / client / endpoint — only the model name changes) ONCE.
@@ -116,7 +140,12 @@ def retry_on_stall(agent, api_messages, finish_reason):
         # model name. Safe when the retry lane is served by the SAME provider/
         # endpoint as agent.model (e.g. taro serves both dflash and the Q6 lane),
         # so no client rebuild is needed.
-        api_kwargs = agent._build_api_kwargs(api_messages)
+        retry_messages = _retry_messages_with_nudge(
+            api_messages,
+            stalled_content=stalled_content,
+            retry_nudge=retry_nudge,
+        )
+        api_kwargs = agent._build_api_kwargs(retry_messages)
         orig_model = api_kwargs.get("model")
         if retry_model == orig_model:
             return None  # nothing to gain retrying the same model
@@ -143,7 +172,9 @@ def retry_on_stall(agent, api_messages, finish_reason):
         if getattr(agent, "api_mode", None) == "anthropic_messages":
             normalize_kwargs["strip_tool_prefix"] = getattr(agent, "_is_anthropic_oauth", False)
         normalized = transport.normalize_response(response, **normalize_kwargs)
-        if getattr(normalized, "tool_calls", None):
+        tool_calls = getattr(normalized, "tool_calls", None)
+        content = getattr(normalized, "content", "") or ""
+        if tool_calls or (accept_content and content.strip()):
             return normalized
         return None
     except Exception:

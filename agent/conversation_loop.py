@@ -3640,9 +3640,57 @@ def run_conversation(
                 except ValueError:
                     max_chars = 400
                 try:
-                    from agent.stall_retry import looks_like_stall, retry_on_stall
+                    from agent.stall_retry import (
+                        EMPTY_AFTER_TOOL_RETRY_NUDGE,
+                        looks_like_stall,
+                        retry_on_stall,
+                    )
 
-                    if looks_like_stall(
+                    _empty_after_tool_result = (
+                        getattr(agent, "tools", None)
+                        and not getattr(assistant_message, "tool_calls", None)
+                        and not agent._strip_think_blocks(
+                            assistant_message.content or ""
+                        ).strip()
+                        and any(
+                            isinstance(m, dict) and m.get("role") == "tool"
+                            for m in messages[-5:]
+                        )
+                    )
+                    if (
+                        _empty_after_tool_result
+                        and _stall_retry_count < _stall_retry_max_per_turn
+                    ):
+                        _stall_retry_count += 1
+                        retried = retry_on_stall(
+                            agent,
+                            api_messages,
+                            finish_reason,
+                            accept_content=True,
+                            retry_nudge=EMPTY_AFTER_TOOL_RETRY_NUDGE,
+                        )
+                        if retried is not None:
+                            assistant_message = retried
+                            finish_reason = (
+                                getattr(retried, "finish_reason", None)
+                                or (
+                                    "tool_calls"
+                                    if getattr(retried, "tool_calls", None)
+                                    else "stop"
+                                )
+                            )
+                            agent._empty_content_retries = 0
+                            agent._post_tool_empty_retried = False
+                        else:
+                            logging.warning(
+                                "Stall retry lane did not recover empty "
+                                "post-tool response; continuing "
+                                "empty-response recovery (model=%s provider=%s)",
+                                agent.model,
+                                agent.provider,
+                            )
+
+                    if not _empty_after_tool_result and looks_like_stall(
                         assistant_message.content or "",
                         finish_reason,
                         False,

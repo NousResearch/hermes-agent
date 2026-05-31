@@ -185,6 +185,17 @@ export interface ModelInfoResponse {
   provider: string
 }
 
+export interface ModelPricing {
+  /** Formatted $/Mtok input price, e.g. "$3.00", or "free", or "" if unknown. */
+  input: string
+  /** Formatted $/Mtok output price. */
+  output: string
+  /** Formatted $/Mtok cached-input price, or null when the model has none. */
+  cache: string | null
+  /** True when the model costs nothing (free tier eligible). */
+  free: boolean
+}
+
 export interface ModelOptionProvider {
   is_current?: boolean
   models?: string[]
@@ -192,6 +203,13 @@ export interface ModelOptionProvider {
   slug: string
   total_models?: number
   warning?: string
+  /** Per-model pricing keyed by model id (present when the picker requested
+   *  pricing and the provider supports live pricing). */
+  pricing?: Record<string, ModelPricing>
+  /** Nous only: whether the current account is on the free tier. */
+  free_tier?: boolean
+  /** Nous only: paid models a free-tier user cannot select (shown disabled). */
+  unavailable_models?: string[]
 }
 
 export interface ModelOptionsResponse {

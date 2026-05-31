@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { getGlobalModelOptions } from '@/hermes'
 import {
   Check,
   ChevronDown,
@@ -660,6 +662,18 @@ function ConfirmingModelPanel({
   // a familiar UI for users who'll see this picker again later.
   const [pickerOpen, setPickerOpen] = useState(false)
 
+  // Pull pricing + tier for the just-picked default so the confirm card
+  // shows the same $/Mtok + Free/Pro info the picker and CLI do.
+  const options = useQuery({
+    queryKey: ['onboarding-model-options', flow.providerSlug],
+    queryFn: () => getGlobalModelOptions()
+  })
+  const providerRow = options.data?.providers?.find(
+    p => String(p.slug).toLowerCase() === flow.providerSlug.toLowerCase()
+  )
+  const price = providerRow?.pricing?.[flow.currentModel]
+  const freeTier = providerRow?.free_tier
+
   return (
     <div className="grid gap-4">
       <div className="flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
@@ -670,8 +684,25 @@ function ConfirmingModelPanel({
       <div className="grid gap-3 rounded-2xl border border-border bg-background/60 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Default model</p>
+            <div className="flex items-center gap-2">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Default model</p>
+              {freeTier === true && (
+                <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+                  Free tier
+                </span>
+              )}
+              {freeTier === false && (
+                <span className="rounded-sm bg-primary/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-primary">
+                  Pro
+                </span>
+              )}
+            </div>
             <p className="mt-1 truncate font-mono text-sm">{flow.currentModel}</p>
+            {price && (price.input || price.output) && (
+              <p className="mt-1 font-mono text-xs text-muted-foreground">
+                {price.free ? 'Free' : `${price.input || '?'} in / ${price.output || '?'} out per Mtok`}
+              </p>
+            )}
           </div>
           <Button disabled={flow.saving} onClick={() => setPickerOpen(true)} size="sm" variant="outline">
             Change

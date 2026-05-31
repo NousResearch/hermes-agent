@@ -6425,6 +6425,7 @@ def _(rid, params: dict) -> dict:
             include_unconfigured=True,
             picker_hints=True,
             canonical_order=True,
+            pricing=True,
             max_models=50,
         )
         return _ok(rid, payload)

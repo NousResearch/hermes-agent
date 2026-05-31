@@ -37,7 +37,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 # Action-preamble signature: the turn announced an action but produced no tool
 # call. These English phrases match the observed dflash stall corpus; broader
@@ -106,6 +106,28 @@ def _as_bool(value: Any, default: bool) -> bool:
         if lowered in {"0", "false", "no", "off", "disabled"}:
             return False
     return default
+
+
+def has_recent_tool_result(messages: Sequence[Any], *, lookback: int = 24) -> bool:
+    """Return whether the current turn has a recent tool result.
+
+    Stop at the current turn's user message so a tool-heavy previous turn does
+    not make an unrelated empty first response look like post-tool fallout.
+    """
+
+    checked = 0
+    for msg in reversed(messages):
+        if checked >= lookback:
+            return False
+        if not isinstance(msg, Mapping):
+            continue
+        role = msg.get("role")
+        if role == "tool":
+            return True
+        if role == "user":
+            return False
+        checked += 1
+    return False
 
 
 def _stall_retry_config(agent: Any | None = None) -> Mapping[str, Any]:

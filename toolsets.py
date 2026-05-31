@@ -193,6 +193,20 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "calendar": {
+        "description": "Agent-native calendar and booking tools backed by a self-hosted scheduler",
+        "tools": [
+            "calendar_status", "calendar_create_actor", "calendar_find_actor_by_metadata",
+            "calendar_create_calendar", "calendar_find_calendar_by_metadata",
+            "calendar_create_service", "calendar_find_service_by_metadata",
+            "calendar_add_actor_to_service", "calendar_add_busy_calendar",
+            "calendar_find_availability", "calendar_create_event", "calendar_block_time",
+            "calendar_list_events", "calendar_update_event", "calendar_cancel_event",
+            "calendar_raw_request",
+        ],
+        "includes": []
+    },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",

@@ -267,10 +267,22 @@ def _handle_opportunity_upsert(args: dict, **_kwargs) -> str:
         """, user=_user())
         sync = None
         if args.get("sync_twenty"):
+            local_stage = str(args.get("stage") or "lead").strip().lower()
+            twenty_stage = {
+                "lead": "NEW",
+                "new": "NEW",
+                "qualified": "SCREENING",
+                "screening": "SCREENING",
+                "meeting": "MEETING",
+                "proposal": "PROPOSAL",
+                "negotiation": "PROPOSAL",
+                "won": "CUSTOMER",
+                "customer": "CUSTOMER",
+            }.get(local_stage, local_stage.upper())
             sync = _sync_twenty("opportunity", oid, "opportunities", {
                 "name": title,
                 "amount": {"amountMicros": int(float(args.get("value_amount") or 0) * 1_000_000), "currencyCode": args.get("currency") or "USD"},
-                "stage": args.get("stage") or "lead",
+                "stage": twenty_stage,
             })
         return _ok(opportunity=row, twenty=sync)
     except Exception as exc:

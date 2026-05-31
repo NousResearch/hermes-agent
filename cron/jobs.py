@@ -94,6 +94,41 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_schedule_field(schedule: Any) -> Dict[str, Any]:
+    """Normalize legacy cron schedule storage into the structured schedule shape."""
+    if isinstance(schedule, dict):
+        return schedule
+    if isinstance(schedule, str):
+        text = schedule.strip()
+        if text:
+            try:
+                return parse_schedule(text)
+            except ValueError:
+                logger.warning("Ignoring invalid legacy cron schedule string: %r", schedule)
+    return {}
+
+
+def _normalize_repeat_field(repeat: Any) -> Dict[str, Any]:
+    """Normalize legacy repeat storage into {times, completed}."""
+    if isinstance(repeat, dict):
+        raw_times = repeat.get("times")
+        raw_completed = repeat.get("completed", 0)
+    else:
+        raw_times = repeat
+        raw_completed = 0
+    try:
+        times = int(raw_times) if raw_times is not None else None
+    except (TypeError, ValueError):
+        times = None
+    if times is not None and times <= 0:
+        times = None
+    try:
+        completed = int(raw_completed or 0)
+    except (TypeError, ValueError):
+        completed = 0
+    return {"times": times, "completed": max(0, completed)}
+
+
 def _coerce_job_text(value: Any, fallback: str = "") -> str:
     """Coerce legacy/hand-edited nullable cron fields to strings for readers."""
     if value is None:
@@ -126,6 +161,8 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     ensure consumers never crash while formatting or running those records.
     """
     normalized = _apply_skill_fields(job)
+    normalized["schedule"] = _normalize_schedule_field(normalized.get("schedule"))
+    normalized["repeat"] = _normalize_repeat_field(normalized.get("repeat"))
     job_id = _coerce_job_text(normalized.get("id"), "unknown")
     prompt = _coerce_job_text(normalized.get("prompt"))
     normalized["id"] = job_id
@@ -379,6 +416,10 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
     Returns ISO timestamp string, or None if no more runs.
     """
+    schedule = _normalize_schedule_field(schedule)
+    if not schedule:
+        return None
+
     now = _hermes_now()
 
     if schedule["kind"] == "once":
@@ -911,6 +952,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_delivery_error"] = delivery_error
                 
                 # Increment completed count
+                job["repeat"] = _normalize_repeat_field(job.get("repeat"))
                 if job.get("repeat"):
                     job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
                     
@@ -1006,9 +1048,17 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+    jobs = []
     due = []
     needs_save = False
+
+    for raw_job in raw_jobs:
+        job = _normalize_job_record(copy.deepcopy(raw_job))
+        jobs.append(job)
+        if raw_job.get("schedule") != job.get("schedule"):
+            raw_job["schedule"] = copy.deepcopy(job.get("schedule", {}))
+            raw_job["schedule_display"] = job.get("schedule_display", raw_job.get("schedule_display"))
+            needs_save = True
 
     for job in jobs:
         if not job.get("enabled", True):

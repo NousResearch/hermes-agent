@@ -6406,7 +6406,9 @@ class GatewayRunner:
             if not check_ha_requirements():
                 logger.warning("HomeAssistant: aiohttp not installed or HASS_TOKEN not set")
                 return None
-            return HomeAssistantAdapter(config)
+            adapter = HomeAssistantAdapter(config)
+            adapter.gateway_runner = self  # For cross-platform delivery
+            return adapter
 
         elif platform == Platform.EMAIL:
             from gateway.platforms.email import EmailAdapter, check_email_requirements

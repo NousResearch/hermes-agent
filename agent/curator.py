@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_curator_state_path
 from tools import skill_usage
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ DEFAULT_ARCHIVE_AFTER_DAYS = 90
 # ---------------------------------------------------------------------------
 
 def _state_file() -> Path:
-    return get_hermes_home() / "skills" / ".curator_state"
+    return get_curator_state_path()
 
 
 def _default_state() -> Dict[str, Any]:

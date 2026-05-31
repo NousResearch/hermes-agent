@@ -104,8 +104,8 @@ def _load_catalog_config() -> dict[str, Any]:
 
 def _cache_path() -> Path:
     """Return the disk cache path. Import lazily so tests can monkeypatch home."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "cache" / "model_catalog.json"
+    from hermes_constants import get_hermes_dir
+    return get_hermes_dir("cache", "cache") / "model_catalog.json"
 
 
 # ---------------------------------------------------------------------------

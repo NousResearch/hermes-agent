@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from hermes_constants import get_channel_directory_path, get_sessions_dir, get_sessions_index_path
+
 logger = logging.getLogger("hermes.mcp_serve")
 
 # ---------------------------------------------------------------------------
@@ -60,12 +62,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def _get_sessions_dir() -> Path:
-    """Return the sessions directory using HERMES_HOME."""
-    try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home() / "sessions"
-    except ImportError:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "sessions"
+    """Return the sessions directory using the profile runtime path."""
+    return get_sessions_dir()
 
 
 def _get_session_db():
@@ -84,7 +82,7 @@ def _load_sessions_index() -> dict:
     Returns a dict of session_key -> entry_dict with platform routing info.
     This avoids importing the full SessionStore which needs GatewayConfig.
     """
-    sessions_file = _get_sessions_dir() / "sessions.json"
+    sessions_file = get_sessions_index_path()
     if not sessions_file.exists():
         return {}
     try:
@@ -97,13 +95,7 @@ def _load_sessions_index() -> dict:
 
 def _load_channel_directory() -> dict:
     """Load the cached channel directory for available targets."""
-    try:
-        from hermes_constants import get_hermes_home
-        directory_file = get_hermes_home() / "channel_directory.json"
-    except ImportError:
-        directory_file = Path(
-            os.environ.get("HERMES_HOME", Path.home() / ".hermes")
-        ) / "channel_directory.json"
+    directory_file = get_channel_directory_path()
 
     if not directory_file.exists():
         return {}
@@ -350,7 +342,7 @@ class EventBridge:
         when nothing has changed — makes 200ms polling essentially free.
         """
         # Check if sessions.json has changed (mtime check is ~1μs)
-        sessions_file = _get_sessions_dir() / "sessions.json"
+        sessions_file = get_sessions_index_path()
         try:
             sj_mtime = sessions_file.stat().st_mtime if sessions_file.exists() else 0.0
         except OSError:

@@ -202,10 +202,10 @@ class VideoGenProvider(abc.ABC):
 
 
 def _videos_cache_dir() -> Path:
-    """Return ``$HERMES_HOME/cache/videos/``, creating parents as needed."""
-    from hermes_constants import get_hermes_home
+    """Return the profile-aware Hermes video cache directory, creating parents as needed."""
+    from hermes_constants import get_hermes_dir
 
-    path = get_hermes_home() / "cache" / "videos"
+    path = get_hermes_dir("cache/videos", "video_cache")
     path.mkdir(parents=True, exist_ok=True)
     return path
 

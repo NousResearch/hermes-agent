@@ -11,12 +11,12 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_channel_directory_path, get_sessions_index_path
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+DIRECTORY_PATH = get_channel_directory_path()
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -210,7 +210,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
     """Pull known channels/contacts from sessions.json origin data."""
-    sessions_path = get_hermes_home() / "sessions" / "sessions.json"
+    sessions_path = get_sessions_index_path()
     if not sessions_path.exists():
         return []
 

@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_curator_backups_dir, get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 
 
 def _backups_dir() -> Path:
-    return get_hermes_home() / "skills" / ".curator_backups"
+    return get_curator_backups_dir()
 
 
 def _skills_dir() -> Path:

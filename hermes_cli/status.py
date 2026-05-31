@@ -21,7 +21,7 @@ from hermes_cli.nous_account import (
 )
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, get_sessions_dir
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -531,7 +531,7 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
 
-    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    sessions_file = get_sessions_dir() / "sessions.json"
     if sessions_file.exists():
         import json
         try:

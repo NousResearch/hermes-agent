@@ -140,6 +140,121 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
+def get_active_profile_name() -> str:
+    """Return the active profile name inferred from HERMES_HOME.
+
+    Supports both standard profile layouts (``<root>/profiles/<name>``) and the
+    Hermes.Memory workspace layout (``.../.hermes/workspace/profiles/<name>``).
+    Returns ``"default"`` when HERMES_HOME is not profile-scoped.
+    """
+    try:
+        home = get_hermes_home().resolve()
+    except OSError:
+        home = get_hermes_home()
+
+    parts = home.parts
+    for idx in range(len(parts) - 1):
+        if parts[idx] == "profiles" and idx + 1 < len(parts):
+            return parts[idx + 1]
+    return "default"
+
+
+def _repo_root_from_home(home: Path) -> Path | None:
+    """Best-effort repo root discovery for workspace-profile HERMES_HOME paths."""
+    home_str = home.as_posix()
+    marker = "/.hermes/workspace/profiles/"
+    if marker not in home_str:
+        return None
+    prefix = home_str.split(marker, 1)[0]
+    return Path(prefix) if prefix else None
+
+
+def _runtime_root_candidates() -> list[Path]:
+    """Return preferred runtime roots for per-profile ephemeral state."""
+    candidates: list[Path] = []
+
+    def _add(path_value: str | Path | None) -> None:
+        if not path_value:
+            return
+        path = Path(path_value).expanduser()
+        if path not in candidates:
+            candidates.append(path)
+
+    runtime_override = os.environ.get("HERMES_RUNTIME_ROOT", "").strip()
+    if runtime_override:
+        _add(runtime_override)
+
+    _add("/mnt/c/Projects/Hermes/Hermes.Memory.Runtime")
+
+    repo_root_env = os.environ.get("HERMES_REPO_ROOT", "").strip()
+    if repo_root_env:
+        repo_root = Path(repo_root_env).expanduser()
+        if repo_root.name == "hermes.memory":
+            _add(repo_root.parent / "hermes.memory.runtime")
+
+    repo_root = _repo_root_from_home(get_hermes_home())
+    if repo_root is not None and repo_root.name == "hermes.memory":
+        _add(repo_root.parent / "hermes.memory.runtime")
+
+    _add("/home/hunta/projects/hermes.memory.runtime")
+    _add("/home/hunta/.hermes-runtime")
+    return candidates
+
+
+def get_profile_runtime_root() -> Path | None:
+    """Return the runtime root for ephemeral per-profile state, if any."""
+    if get_active_profile_name() == "default":
+        return None
+    for candidate in _runtime_root_candidates():
+        try:
+            if candidate.exists() and candidate.is_dir():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def get_profile_runtime_home() -> Path:
+    """Return the runtime home for the active profile, falling back to HERMES_HOME."""
+    profile = get_active_profile_name()
+    if profile == "default":
+        return get_hermes_home()
+    runtime_root = get_profile_runtime_root()
+    if runtime_root is None:
+        return get_hermes_home()
+    return runtime_root / "profiles" / profile
+
+
+def get_sessions_dir() -> Path:
+    """Return the active profile's sessions directory."""
+    return get_profile_runtime_home() / "sessions"
+
+
+def get_sessions_index_path() -> Path:
+    """Return the active profile's sessions index file path."""
+    return get_sessions_dir() / "sessions.json"
+
+
+def get_channel_directory_path() -> Path:
+    """Return the active profile's channel-directory cache path."""
+    return get_profile_runtime_home() / "channel_directory.json"
+
+
+def get_curator_state_path() -> Path:
+    """Return the active profile's curator state file path."""
+    return get_profile_runtime_home() / "skills" / ".curator_state"
+
+
+def get_curator_backups_dir() -> Path:
+    """Return the active profile's curator backup directory."""
+    return get_profile_runtime_home() / "skills" / ".curator_backups"
+
+
+def get_profile_cache_dir() -> Path:
+    """Return the active profile's cache directory."""
+    return get_profile_runtime_home() / "cache"
+
+
 def _get_packaged_data_dir(name: str) -> Path | None:
     """Return an installed data-files directory if one exists.
 
@@ -220,18 +335,25 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     Existing installs that already have the old path (e.g. ``image_cache``)
     keep using it — no migration required.
 
+    Cache directories are profile-runtime data, so ``cache/...`` paths resolve
+    under the active profile runtime home when available.
+
     Args:
-        new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
-        old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
+        new_subpath: Preferred path relative to the effective Hermes root.
+        old_name: Legacy path relative to the effective Hermes root.
 
     Returns:
         Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
     """
-    home = get_hermes_home()
-    old_path = home / old_name
+    effective_home = (
+        get_profile_runtime_home()
+        if new_subpath == "cache" or new_subpath.startswith("cache/")
+        else get_hermes_home()
+    )
+    old_path = effective_home / old_name
     if old_path.exists():
         return old_path
-    return home / new_subpath
+    return effective_home / new_subpath
 
 
 def display_hermes_home() -> str:

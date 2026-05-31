@@ -103,3 +103,32 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_dotenv_load_is_resolved_at_call_time_not_frozen_at_import(tmp_path, monkeypatch):
+    """env_loader must call ``dotenv.load_dotenv`` through the module so a patch
+    applied after import is honored — guarding against the import-order freeze
+    that a ``from dotenv import load_dotenv`` binding would reintroduce (a stale
+    binding silently no-ops real .env loads; see the cron run_job regression)."""
+    import dotenv
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("REGRESSION_SEAM_CHECK=1\n", encoding="utf-8")
+
+    seen_paths = []
+
+    def fake_load_dotenv(*_a, **kw):
+        seen_paths.append(str(kw.get("dotenv_path")))
+        return True
+
+    # Patch AFTER env_loader is already imported. Only call-time resolution
+    # (import dotenv; dotenv.load_dotenv(...)) picks this up.
+    monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert seen_paths == [str(home / ".env")], (
+        "env_loader did not resolve dotenv.load_dotenv at call time — the "
+        "from-import binding is frozen and ignores the active patch"
+    )

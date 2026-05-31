@@ -1545,6 +1545,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             format_runtime_provider_error,
         )
         from hermes_cli.auth import AuthError
+        from hermes_cli.fallback_config import get_fallback_chain
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -1560,8 +1561,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
-            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
-            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            fb_list = get_fallback_chain(_cfg if isinstance(_cfg, dict) else {})
             runtime = None
             for entry in fb_list:
                 if not isinstance(entry, dict):
@@ -1583,7 +1583,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        fallback_model = get_fallback_chain(_cfg if isinstance(_cfg, dict) else {}) or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:

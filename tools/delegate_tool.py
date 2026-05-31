@@ -31,6 +31,12 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from hermes_cli.fallback_config import (
+    role_fallback_chain,
+    role_has_route,
+    role_primary_route,
+    sanitize_fallback_chain,
+)
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -981,55 +987,116 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
-
-    # Build progress callback to relay tool calls to parent display.
-    # Identity kwargs thread the subagent_id through every emitted event so the
-    # TUI can reconstruct the spawn tree and route per-branch controls.
-    child_progress_cb = _build_child_progress_callback(
-        task_index,
-        goal,
-        parent_agent,
-        task_count,
-        subagent_id=subagent_id,
-        parent_id=parent_subagent_id,
-        depth=tui_depth,
-        model=effective_model_for_cb,
-        toolsets=child_toolsets,
+    # Resolve routing role. For nested /goal-style orchestrators, route the child
+    # as an orchestrator (Opus primary). Otherwise delegated children are builders
+    # unless delegation.fallback_role/routing_role says otherwise.
+    routing_role = (
+        "orchestrator"
+        if effective_role == "orchestrator"
+        else str(
+            delegation_cfg.get("routing_role")
+            or delegation_cfg.get("fallback_role")
+            or "builder"
+        ).strip().lower()
     )
+    primary_route = role_primary_route(routing_role, delegation_cfg)
 
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
     # total iterations across parent + subagents can exceed the parent's
     # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
-    child_thinking_cb = None
-    if child_progress_cb:
+    # Resolve effective credentials: role route > delegation config override > parent inherit.
+    # This enforces John's approved matrix: builder children start on MiniMax,
+    # orchestrator children start on Opus 4.8, and each role carries its own
+    # reasoning effort independent of the parent's current model.
+    primary_provider = str(primary_route.get("provider") or "").strip() or None
+    primary_model = str(primary_route.get("model") or "").strip() or None
+    route_provider = primary_provider or override_provider
+    route_model = primary_model or model
 
-        def _child_thinking(text: str) -> None:
-            if not text:
-                return
-            try:
-                child_progress_cb("_thinking", text)
-            except Exception as e:
-                logger.debug("Child thinking callback relay failed: %s", e)
+    # Delegated workers use role-specific primary/fallback ladders. Preserve an
+    # explicitly empty role ladder (for example adversarial_review has no
+    # fallback); inherit the parent chain only when no role route exists.
+    child_fallback = role_fallback_chain(routing_role, delegation_cfg)
+    parent_fallback = sanitize_fallback_chain(getattr(parent_agent, "_fallback_chain", None))
+    role_route_exists = role_has_route(routing_role, delegation_cfg)
+    effective_fallback = child_fallback if role_route_exists else (parent_fallback or None)
 
-        child_thinking_cb = _child_thinking
+    role_runtime = None
+    active_route = primary_route
 
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
-    effective_api_key = override_api_key or parent_api_key
+    def _resolve_role_runtime(provider: str | None, target_model: str | None, label: str) -> dict[str, Any] | None:
+        if not provider:
+            return None
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(requested=provider, target_model=target_model)
+            if not runtime or not (
+                runtime.get("provider")
+                and runtime.get("base_url")
+                and runtime.get("api_key")
+                and runtime.get("api_mode")
+            ):
+                logger.warning(
+                    "Resolved %s route %s/%s for delegation role %s returned incomplete runtime",
+                    label,
+                    provider,
+                    target_model,
+                    routing_role,
+                )
+                return None
+            return runtime
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve %s route %s/%s for delegation role %s: %s",
+                label,
+                provider,
+                target_model,
+                routing_role,
+                exc,
+            )
+            return None
+
+    role_runtime = _resolve_role_runtime(route_provider, route_model, "primary")
+    if role_runtime is None and role_route_exists:
+        for i, fallback_route in enumerate(child_fallback or []):
+            fallback_provider = str(fallback_route.get("provider") or "").strip() or None
+            fallback_model = str(fallback_route.get("model") or "").strip() or None
+            role_runtime = _resolve_role_runtime(fallback_provider, fallback_model, f"fallback[{i}]")
+            if role_runtime is not None:
+                active_route = fallback_route
+                if role_route_exists:
+                    effective_fallback = child_fallback[i + 1 :] or None
+                break
+        if role_runtime is None:
+            raise RuntimeError(
+                f"Could not resolve any approved runtime for delegation role {routing_role!r}; refusing to use delegation/parent credentials"
+            )
+
+    if role_runtime is not None:
+        effective_model = role_runtime.get("model") or route_model or model or parent_agent.model
+        effective_provider = role_runtime.get("provider") or route_provider or getattr(parent_agent, "provider", None)
+        effective_base_url = str(role_runtime.get("base_url"))
+        effective_api_key = str(role_runtime.get("api_key"))
+    else:
+        # Only non-role-routed legacy delegation may inherit explicit
+        # delegation/parent credentials. Approved role routes fail closed above.
+        effective_model = model or parent_agent.model
+        effective_provider = override_provider or getattr(parent_agent, "provider", None)
+        effective_base_url = override_base_url or parent_agent.base_url
+        effective_api_key = override_api_key or parent_api_key
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
     # Inheriting the parent's mode causes 404 errors when the child routes to the
     # wrong endpoint.  Derive the mode from the target provider when it differs.
     _parent_provider = getattr(parent_agent, "provider", None) or ""
-    if override_api_mode is not None:
+    if override_api_mode is not None and role_runtime is None:
         effective_api_mode = override_api_mode
+    elif role_runtime is not None:
+        effective_api_mode = role_runtime.get("api_mode")
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
@@ -1057,14 +1124,20 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: role route > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
+        from hermes_constants import parse_reasoning_effort
 
+        route_effort = str(active_route.get("reasoning_effort") or "").strip()
+        if route_effort:
+            parsed = parse_reasoning_effort(route_effort)
+            if parsed is not None:
+                child_reasoning = parsed
+
+        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        if delegation_effort and not route_effort:
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
                 child_reasoning = parsed
@@ -1074,13 +1147,33 @@ def _build_child_agent(
                     delegation_effort,
                 )
     except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+        logger.debug("Could not load child reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Build progress callback after final model/provider resolution so trace
+    # metadata matches the runtime that the child will actually use.
+    child_progress_cb = _build_child_progress_callback(
+        task_index,
+        goal,
+        parent_agent,
+        task_count,
+        subagent_id=subagent_id,
+        parent_id=parent_subagent_id,
+        depth=tui_depth,
+        model=effective_model,
+        toolsets=child_toolsets,
+    )
+    child_thinking_cb = None
+    if child_progress_cb:
+
+        def _child_thinking(text: str) -> None:
+            if not text:
+                return
+            try:
+                child_progress_cb("_thinking", text)
+            except Exception as e:
+                logger.debug("Child thinking callback relay failed: %s", e)
+
+        child_thinking_cb = _child_thinking
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1104,10 +1197,10 @@ def _build_child_agent(
         # provider is overridden — it's a no-op on any other model.
 
     child = AIAgent(
-        base_url=effective_base_url,
-        api_key=effective_api_key,
-        model=effective_model,
-        provider=effective_provider,
+        base_url=str(effective_base_url or ""),
+        api_key=str(effective_api_key or ""),
+        model=str(effective_model or ""),
+        provider=str(effective_provider or ""),
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
@@ -1115,7 +1208,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=effective_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,

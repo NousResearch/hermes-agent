@@ -286,6 +286,79 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_send_timeout_does_not_block():
+    """A wedged platform send must not consume the gateway drain budget."""
+    runner, adapter = make_restart_runner()
+    runner._shutdown_notification_send_timeout = 0.01
+    runner._shutdown_notification_overall_timeout = 0.05
+    send_started = asyncio.Event()
+
+    async def never_returns(*_args, **_kwargs):
+        send_started.set()
+        await asyncio.Event().wait()
+
+    adapter.send = never_returns
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    await asyncio.wait_for(runner._notify_active_sessions_of_shutdown(), timeout=0.5)
+
+    assert send_started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stop_marks_resume_pending_before_shutdown_notifications(monkeypatch):
+    """Resume state is durable before any best-effort network notification."""
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.0
+    runner._cleanup_agent_resources = MagicMock()
+    runner._increment_restart_failure_counts = MagicMock()
+
+    session_key = "agent:main:telegram:dm:999"
+    running_agent = MagicMock()
+    running_agent.interrupt.side_effect = (
+        lambda _reason: runner._running_agents.clear()
+    )
+    runner._running_agents[session_key] = running_agent
+    order = []
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+
+    def mark_resume_pending(key, reason):
+        order.append(("mark", key, reason))
+
+    async def delayed_send(*_args, **_kwargs):
+        order.append(("send",))
+        send_started.set()
+        await release_send.wait()
+
+    runner.session_store.mark_resume_pending.side_effect = mark_resume_pending
+    adapter.send = delayed_send
+
+    import gateway.status as gateway_status
+    import tools.browser_tool as browser_tool
+    import tools.process_registry as process_registry_mod
+    import tools.terminal_tool as terminal_tool
+    import agent.auxiliary_client as auxiliary_client
+
+    monkeypatch.setattr(gateway_status, "remove_pid_file", lambda: None)
+    monkeypatch.setattr(gateway_status, "release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr(gateway_status, "write_runtime_status", lambda *_a, **_k: None)
+    monkeypatch.setattr(process_registry_mod.process_registry, "kill_all", lambda: 0)
+    monkeypatch.setattr(terminal_tool, "cleanup_all_environments", lambda: None)
+    monkeypatch.setattr(browser_tool, "cleanup_all_browsers", lambda: None)
+    monkeypatch.setattr(auxiliary_client, "shutdown_cached_clients", lambda: None)
+
+    task = asyncio.create_task(runner.stop())
+    await asyncio.wait_for(send_started.wait(), timeout=0.5)
+
+    assert order[0] == ("mark", session_key, "shutdown_timeout")
+    assert order[1] == ("send",)
+
+    release_send.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_suppressed_when_flag_disabled():
     """Active-session ping is muted when gateway_restart_notification=False on the platform."""
     from gateway.config import Platform

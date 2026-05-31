@@ -25,6 +25,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
+from hermes_cli.fallback_config import is_opus_48_model
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
@@ -1030,6 +1031,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
+    if is_opus_48_model(fb_model):
+        logger.warning(
+            "Fallback skip: disallowed Opus 4.8 chain entry %s/%s",
+            fb_provider, fb_model,
+        )
+        return agent._try_activate_fallback()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
 
@@ -1204,6 +1211,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # timeout takes effect on the very next fallback request,
                 # not only after a later credential-rotation rebuild.
                 agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            fb_effort = str(fb.get("reasoning_effort") or "").strip()
+            parsed_reasoning = None
+            if fb_effort:
+                parsed_reasoning = parse_reasoning_effort(fb_effort)
+            agent.reasoning_config = parsed_reasoning
+        except Exception as _reasoning_err:
+            agent.reasoning_config = None
+            logger.debug(
+                "Could not apply fallback reasoning_effort for %s/%s: %s",
+                fb_provider,
+                fb_model,
+                _reasoning_err,
+            )
 
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (

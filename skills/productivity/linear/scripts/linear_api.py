@@ -48,12 +48,92 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+_ATTR_RE = re.compile(r"^attr:\s.*$", re.MULTILINE)
+
+
+def _runtime_attr(args: argparse.Namespace, role: str = "builder") -> str:
+    model = (getattr(args, "model", None) or os.getenv("HERMES_MODEL") or "unknown").strip()
+    provider = (getattr(args, "provider", None) or os.getenv("HERMES_PROVIDER") or os.getenv("HERMES_INFERENCE_PROVIDER") or "unknown").strip()
+    effort = (getattr(args, "reasoning_effort", None) or os.getenv("HERMES_REASONING_EFFORT") or "unknown").strip()
+    session_id = (getattr(args, "session_id", None) or os.getenv("HERMES_SESSION_ID") or "unknown").strip()
+    source = "runtime" if model != "unknown" and provider != "unknown" else "manual-unverified"
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return f"attr: a=Alfred; r={role}; m={model}; e={effort}; p={provider}; s={session_id}; t={timestamp}; fb=none; src={source}"
+
+
+def _with_attribution(text: str | None, args: argparse.Namespace, role: str = "builder") -> str:
+    body = text or ""
+    body = _ATTR_RE.sub("", body).rstrip()
+    if body:
+        body += "\n"
+    return body + _runtime_attr(args, role=role)
+
 API_URL = "https://api.linear.app/graphql"
+
+
+def _offline_receipt_dir() -> Path:
+    base = os.getenv("LINEAR_OFFLINE_RECEIPT_DIR")
+    if base:
+        return Path(base).expanduser()
+    hermes_home = Path(os.getenv("HERMES_HOME") or Path.home() / ".hermes")
+    return hermes_home / "linear-offline-receipts"
+
+
+def _write_offline_receipt(operation: str, payload: dict[str, Any]) -> Path:
+    directory = _offline_receipt_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "id": uuid.uuid4().hex,
+        "operation": operation,
+        "createdAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "payload": payload,
+    }
+    path = directory / f"{receipt['createdAt'].replace(':', '').replace('-', '')}-{receipt['id']}.json"
+    path.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _mutation_with_receipt(operation: str, query: str, variables: dict[str, Any], *, queue_on_failure: bool) -> dict[str, Any]:
+    try:
+        return gql(query, variables)
+    except SystemExit:
+        if not queue_on_failure:
+            raise
+        path = _write_offline_receipt(operation, {"query": query, "variables": variables})
+        return {"offlineReceiptQueued": {"path": str(path), "operation": operation}}
+
+
+def replay_offline_receipts(directory: Path | None = None) -> dict[str, Any]:
+    directory = directory or _offline_receipt_dir()
+    if not directory.exists():
+        return {"replayed": 0, "failed": 0, "remaining": 0, "receipts": []}
+
+    results: list[dict[str, Any]] = []
+    replayed = 0
+    failed = 0
+    for path in sorted(directory.glob("*.json")):
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        payload = receipt.get("payload") or {}
+        try:
+            data = gql(payload["query"], payload.get("variables") or {})
+        except SystemExit as exc:
+            failed += 1
+            results.append({"path": str(path), "ok": False, "exit_code": exc.code})
+            continue
+        path.unlink()
+        replayed += 1
+        results.append({"path": str(path), "ok": True, "data": data})
+    remaining = len(list(directory.glob("*.json"))) if directory.exists() else 0
+    return {"replayed": replayed, "failed": failed, "remaining": remaining, "receipts": results}
 
 
 def _get_key() -> str:
@@ -224,7 +304,7 @@ def cmd_create_issue(args: argparse.Namespace) -> None:
         sys.exit(1)
     inp: dict[str, Any] = {"title": args.title, "teamId": tid}
     if args.description:
-        inp["description"] = args.description
+        inp["description"] = _with_attribution(args.description, args, role=args.role)
     if args.priority is not None:
         inp["priority"] = args.priority
     if args.parent:
@@ -236,7 +316,8 @@ def cmd_create_issue(args: argparse.Namespace) -> None:
         success issue { id identifier title url }
       }
     }"""
-    emit(gql(q, {"input": inp}).get("issueCreate"))
+    data = _mutation_with_receipt("create-issue", q, {"input": inp}, queue_on_failure=args.queue_offline)
+    emit(data.get("issueCreate") or data.get("offlineReceiptQueued"))
 
 
 def cmd_update_issue(args: argparse.Namespace) -> None:
@@ -244,7 +325,7 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
     if args.title:
         inp["title"] = args.title
     if args.description:
-        inp["description"] = args.description
+        inp["description"] = _with_attribution(args.description, args, role=args.role)
     if args.priority is not None:
         inp["priority"] = args.priority
     if not inp:
@@ -255,7 +336,8 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
         success issue { identifier title url }
       }
     }"""
-    emit(gql(q, {"id": args.identifier, "input": inp}).get("issueUpdate"))
+    data = _mutation_with_receipt("update-issue", q, {"id": args.identifier, "input": inp}, queue_on_failure=args.queue_offline)
+    emit(data.get("issueUpdate") or data.get("offlineReceiptQueued"))
 
 
 def cmd_update_status(args: argparse.Namespace) -> None:
@@ -290,7 +372,9 @@ def cmd_add_comment(args: argparse.Namespace) -> None:
         success comment { id body createdAt }
       }
     }"""
-    emit(gql(q, {"input": {"issueId": args.identifier, "body": args.body}}).get("commentCreate"))
+    body = _with_attribution(args.body, args, role=args.role)
+    data = _mutation_with_receipt("add-comment", q, {"input": {"issueId": args.identifier, "body": body}}, queue_on_failure=args.queue_offline)
+    emit(data.get("commentCreate") or data.get("offlineReceiptQueued"))
 
 
 # ---- Documents ----
@@ -355,6 +439,23 @@ def cmd_raw(args: argparse.Namespace) -> None:
 
 # ---------- Arg parsing ----------
 
+def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model", help="Runtime model for compact attr footer")
+    parser.add_argument("--provider", help="Runtime provider for compact attr footer")
+    parser.add_argument("--reasoning-effort", dest="reasoning_effort", help="Runtime reasoning effort for compact attr footer")
+    parser.add_argument("--session-id", dest="session_id", help="Runtime/session id for compact attr footer")
+    parser.add_argument("--role", default="builder", help="Attribution role, e.g. builder/reviewer/verifier")
+
+
+def _add_offline_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--queue-offline", action="store_true", help="Queue mutation receipt instead of failing when Linear is unreachable")
+
+
+def cmd_replay_offline_receipts(args: argparse.Namespace) -> None:
+    directory = Path(args.dir).expanduser() if args.dir else None
+    emit(replay_offline_receipts(directory))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="linear_api.py", description="Linear GraphQL CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -395,6 +496,8 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("--label")
     ci.add_argument("--assignee")
     ci.add_argument("--parent")
+    _add_attribution_args(ci)
+    _add_offline_args(ci)
     ci.set_defaults(func=cmd_create_issue)
 
     ui = sub.add_parser("update-issue")
@@ -402,6 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--title")
     ui.add_argument("--description")
     ui.add_argument("--priority", type=int, choices=[0, 1, 2, 3, 4])
+    _add_attribution_args(ui)
+    _add_offline_args(ui)
     ui.set_defaults(func=cmd_update_issue)
 
     us = sub.add_parser("update-status")
@@ -412,7 +517,13 @@ def build_parser() -> argparse.ArgumentParser:
     ac = sub.add_parser("add-comment")
     ac.add_argument("identifier")
     ac.add_argument("body")
+    _add_attribution_args(ac)
+    _add_offline_args(ac)
     ac.set_defaults(func=cmd_add_comment)
+
+    rr = sub.add_parser("replay-offline-receipts")
+    rr.add_argument("--dir", help="Receipt directory (defaults to $LINEAR_OFFLINE_RECEIPT_DIR or ~/.hermes/linear-offline-receipts)")
+    rr.set_defaults(func=cmd_replay_offline_receipts)
 
     ld = sub.add_parser("list-documents")
     ld.add_argument("--limit", type=int, default=50)

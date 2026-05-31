@@ -18,6 +18,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_SECRET_PATTERNS = (
+    (re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=:-]+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(HONCHO_API_KEY=)[^\s]+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(api[_-]?key[=:])[^\s]+", re.IGNORECASE), r"\1[REDACTED]"),
+)
+
+
+def _safe_error_message(error: BaseException | str) -> str:
+    """Format an actionable Honcho error without leaking auth material."""
+    text = str(error) if not isinstance(error, str) else error
+    if not text:
+        text = type(error).__name__ if not isinstance(error, str) else "Unknown Honcho error"
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    if not isinstance(error, str):
+        exc_name = type(error).__name__
+        if exc_name and exc_name not in text:
+            text = f"{exc_name}: {text}"
+    return text[:500]
+
+
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 _PEER_ID_HASH_LEN = 8
@@ -104,6 +125,7 @@ class HonchoSessionManager:
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
+        self._last_error: str | None = None
 
         # Write frequency state
         write_frequency = (config.write_frequency if config else "async")
@@ -158,6 +180,32 @@ class HonchoSessionManager:
         if self._honcho is None:
             self._honcho = get_honcho_client()
         return self._honcho
+
+    @property
+    def last_error(self) -> str | None:
+        return getattr(self, "_last_error", None)
+
+    def _clear_last_error(self) -> None:
+        self._last_error = None
+
+    def _record_last_error(self, message: BaseException | str) -> str:
+        self._last_error = _safe_error_message(message)
+        return self._last_error
+
+    @staticmethod
+    def _merge_card(existing: list[str], updates: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for item in [*existing, *updates]:
+            fact = str(item).strip()
+            if not fact:
+                continue
+            key = fact.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(fact)
+        return merged
 
     def _get_or_create_peer(self, peer_id: str) -> Any:
         """
@@ -1160,18 +1208,22 @@ class HonchoSessionManager:
         Returns:
             True on success, False on failure.
         """
+        self._clear_last_error()
         if not content or not content.strip():
+            self._record_last_error("Conclusion content is empty.")
             return False
 
         session = self._cache.get(session_key)
         if not session:
             logger.warning("No session cached for '%s', skipping conclusion", session_key)
+            self._record_last_error(f"No Honcho session cached for '{session_key}'.")
             return False
 
         try:
             target_peer_id = self._resolve_peer_id(session, peer)
             if target_peer_id is None:
                 logger.warning("Could not resolve conclusion peer '%s' for session '%s'", peer, session_key)
+                self._record_last_error(f"Could not resolve conclusion peer '{peer}'.")
                 return False
 
             if target_peer_id == session.assistant_peer_id:
@@ -1191,7 +1243,8 @@ class HonchoSessionManager:
             logger.info("Created conclusion about %s for %s: %s", target_peer_id, session_key, content[:80])
             return True
         except Exception as e:
-            logger.error("Failed to create conclusion: %s", e)
+            reason = self._record_last_error(e)
+            logger.error("Failed to create conclusion: %s", reason)
             return False
 
     def delete_conclusion(self, session_key: str, conclusion_id: str, peer: str = "user") -> bool:
@@ -1237,29 +1290,41 @@ class HonchoSessionManager:
         Returns:
             Updated card on success, None on failure.
         """
+        self._clear_last_error()
         session = self._cache.get(session_key)
         if not session:
+            self._record_last_error(f"No Honcho session cached for '{session_key}'.")
+            return None
+        clean_card = [str(item).strip() for item in card if str(item).strip()]
+        if not clean_card:
+            self._record_last_error("Peer card update must include at least one fact.")
             return None
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
             if observer_peer_id is None:
                 logger.warning("Could not resolve peer '%s' for set_peer_card in session '%s'", peer, session_key)
+                self._record_last_error(f"Could not resolve peer '{peer}'.")
                 return None
+            existing_card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            if not existing_card and target_peer_id is not None:
+                existing_card = self._fetch_peer_card(target_peer_id)
+            merged_card = self._merge_card(existing_card, clean_card)
             peer_obj = self._get_or_create_peer(observer_peer_id)
             result = (
-                peer_obj.set_card(card, target=target_peer_id)
+                peer_obj.set_card(merged_card, target=target_peer_id)
                 if target_peer_id is not None
-                else peer_obj.set_card(card)
+                else peer_obj.set_card(merged_card)
             )
             logger.info(
                 "Updated peer card observer=%s target=%s (%d facts)",
                 observer_peer_id,
                 target_peer_id or observer_peer_id,
-                len(card),
+                len(merged_card),
             )
             return result
         except Exception as e:
-            logger.error("Failed to set peer card: %s", e)
+            reason = self._record_last_error(e)
+            logger.error("Failed to set peer card: %s", reason)
             return None
 
     def seed_ai_identity(self, session_key: str, content: str, source: str = "manual") -> bool:

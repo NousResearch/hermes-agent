@@ -53,7 +53,7 @@ PROFILE_SCHEMA = {
             "card": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "New peer card as a list of fact strings. Omit to read the current card.",
+                "description": "Fact strings to merge into the current peer card. Existing facts are preserved. Omit to read the current card.",
             },
         },
         "required": [],
@@ -449,7 +449,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         if self._cron_skipped:
             return False
-        if not self._config or not self._lazy_init_kwargs:
+        if not self._config or self._lazy_init_kwargs is None:
             return False
 
         try:
@@ -1118,6 +1118,16 @@ class HonchoMemoryProvider(MemoryProvider):
             ),
         }
 
+    def _tool_error_with_manager_reason(self, base: str) -> str:
+        reason = None
+        if self._manager is not None:
+            candidate = getattr(self._manager, "last_error", None)
+            if isinstance(candidate, str) and candidate.strip():
+                reason = candidate.strip()
+        if reason:
+            return tool_error(f"{base.rstrip('.')}: {reason}")
+        return tool_error(base)
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
@@ -1223,10 +1233,12 @@ class HonchoMemoryProvider(MemoryProvider):
             if tool_name == "honcho_profile":
                 peer = args.get("peer", "user")
                 card_update = args.get("card")
-                if card_update:
+                if "card" in args:
+                    if not isinstance(card_update, list):
+                        return tool_error("Parameter card must be a list of fact strings.")
                     result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
                     if result is None:
-                        return tool_error("Failed to update peer card.")
+                        return self._tool_error_with_manager_reason("Failed to update peer card.")
                     return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
                 card = self._manager.get_peer_card(self._session_key, peer=peer)
                 if not card:
@@ -1300,7 +1312,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
-                return tool_error("Failed to save conclusion.")
+                return self._tool_error_with_manager_reason("Failed to save conclusion.")
 
             return tool_error(f"Unknown tool: {tool_name}")
 

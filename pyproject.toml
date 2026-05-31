@@ -66,6 +66,12 @@ dependencies = [
   "psutil==7.2.2",
 ]
 
+[project.urls]
+Homepage = "https://hermes-agent.nousresearch.com/docs/"
+Documentation = "https://hermes-agent.nousresearch.com/docs/"
+Repository = "https://github.com/NousResearch/hermes-agent"
+Issues = "https://github.com/NousResearch/hermes-agent/issues"
+
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).

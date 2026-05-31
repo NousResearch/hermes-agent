@@ -4,11 +4,14 @@ from pathlib import Path
 import tomllib
 
 
-def _load_optional_dependencies():
+def _load_project_metadata():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
-        project = tomllib.load(handle)["project"]
-    return project["optional-dependencies"]
+        return tomllib.load(handle)["project"]
+
+
+def _load_optional_dependencies():
+    return _load_project_metadata()["optional-dependencies"]
 
 
 def _load_package_data():
@@ -123,3 +126,14 @@ def test_dashboard_plugin_manifests_and_assets_are_packaged():
     assert "*/dashboard/manifest.json" in plugin_data
     assert "*/dashboard/dist/*" in plugin_data
     assert "*/dashboard/dist/**/*" in plugin_data
+
+
+def test_project_urls_publish_user_support_links():
+    project = _load_project_metadata()
+
+    assert project["urls"] == {
+        "Homepage": "https://hermes-agent.nousresearch.com/docs/",
+        "Documentation": "https://hermes-agent.nousresearch.com/docs/",
+        "Repository": "https://github.com/NousResearch/hermes-agent",
+        "Issues": "https://github.com/NousResearch/hermes-agent/issues",
+    }

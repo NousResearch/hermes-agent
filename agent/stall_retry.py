@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Any, Mapping
 
 # Action-preamble signature: the turn announced an action but produced no tool
 # call. These end mid-thought, typically with a colon, or open with intent.
@@ -46,6 +47,58 @@ _COMPLETION_RE = re.compile(
 )
 _NATURAL_END_CHARS = '.!?:)"\']}。！？：）】」』》^'
 _MIN_INCOMPLETE_FINAL_CHARS = 80
+
+
+def _as_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _stall_retry_config(agent: Any | None = None) -> Mapping[str, Any]:
+    cfg = getattr(agent, "_stall_retry_config", None)
+    if isinstance(cfg, Mapping):
+        return cfg
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config()
+    except Exception:
+        return {}
+    cfg = loaded.get("stall_retry") if isinstance(loaded, Mapping) else None
+    return cfg if isinstance(cfg, Mapping) else {}
+
+
+def get_stall_retry_model(agent: Any | None = None) -> str:
+    """Return the configured retry model, with env taking precedence."""
+    env_model = os.environ.get("HERMES_STALL_RETRY_MODEL", "").strip()
+    if env_model:
+        return env_model
+    cfg_model = _stall_retry_config(agent).get("model")
+    return str(cfg_model or "").strip()
+
+
+def get_stall_retry_max_chars(agent: Any | None = None) -> int:
+    env_value = os.environ.get("HERMES_STALL_RETRY_MAX_CHARS")
+    if env_value is not None:
+        return _as_positive_int(env_value, 400)
+    return _as_positive_int(_stall_retry_config(agent).get("max_chars"), 400)
+
+
+def get_stall_retry_max_per_turn(agent: Any | None = None) -> int:
+    env_value = os.environ.get("HERMES_STALL_RETRY_MAX_PER_TURN")
+    if env_value is not None:
+        try:
+            return max(0, int(env_value))
+        except ValueError:
+            return 5
+    cfg_value = _stall_retry_config(agent).get("max_per_turn")
+    try:
+        return max(0, int(cfg_value))
+    except (TypeError, ValueError):
+        return 5
 
 
 def _has_natural_response_ending(content: str) -> bool:
@@ -103,13 +156,9 @@ def retry_on_stall(agent, api_messages, finish_reason):
     Never raises into the caller — any failure returns None so the caller can
     fail closed without storing the stalled assistant message.
     """
-    retry_model = os.environ.get("HERMES_STALL_RETRY_MODEL", "").strip()
+    retry_model = get_stall_retry_model(agent)
     if not retry_model:
         return None
-    try:
-        max_chars = int(os.environ.get("HERMES_STALL_RETRY_MAX_CHARS", "400"))
-    except ValueError:
-        max_chars = 400
 
     try:
         # Build kwargs exactly as the normal turn would, then override only the

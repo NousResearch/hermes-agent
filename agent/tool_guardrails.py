@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -257,9 +258,13 @@ class ToolCallGuardrailController:
         return self._halt_decision
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
-        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        args = _coerce_args(args)
+        signature = ToolCallSignature.from_call(tool_name, args)
         redirect = self._tool_redirects.get(tool_name)
         if redirect is not None:
+            if tool_name == "terminal" and _terminal_probe_family(args) != "filter_probe":
+                self._clear_low_information_state(tool_name)
+                return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
             redirected_count = redirect.count + 1
             action = "halt" if redirected_count >= self.config.low_information_halt_after else "redirect"
             code = (
@@ -300,7 +305,7 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
+        if self._is_idempotent_call(tool_name, args):
             record = self._no_progress.get(signature)
             if record is not None:
                 _result_hash, repeat_count = record
@@ -406,12 +411,12 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
+        if not self._is_idempotent_call(tool_name, args):
             self._no_progress.pop(signature, None)
             self._clear_low_information_state()
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        low_info_kind = _low_information_result(tool_name, result)
+        low_info_kind = _low_information_result(tool_name, args, result)
         if low_info_kind is not None:
             key = (tool_name, low_info_kind)
             low_info_count = self._low_information_counts.get(key, 0) + 1
@@ -473,6 +478,11 @@ class ToolCallGuardrailController:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def _is_idempotent_call(self, tool_name: str, args: Mapping[str, Any]) -> bool:
+        if tool_name == "terminal" and _terminal_probe_family(args) is not None:
+            return True
+        return self._is_idempotent(tool_name)
 
     def _clear_low_information_state(self, tool_name: str | None = None) -> None:
         if tool_name is None:
@@ -554,10 +564,18 @@ def _low_information_recovery_hint(tool_name: str, count: int) -> str:
             "to edit/respond, read a different range only if you need new lines, or "
             "switch to search_files/terminal to locate a different file."
         )
+    if tool_name == "terminal":
+        return common + (
+            "Stop stacking filtered shell probes that return blank output. Run one "
+            "broad diagnostic such as `pwd && ls -la`, inspect a concrete file, "
+            "create a clean worktree from current main, or report the stale-state "
+            "blocker instead of repeating `grep | head` / `git diff --name-only` "
+            "variants."
+        )
     return common + "Use a different tool path, make an edit, ask for clarification, or report the blocker."
 
 
-def _low_information_result(tool_name: str, result: str | None) -> str | None:
+def _low_information_result(tool_name: str, args: Mapping[str, Any], result: str | None) -> str | None:
     """Classify successful but non-progressing read-only results.
 
     Exact-repeat detection catches identical calls. This catches the systemic
@@ -586,7 +604,108 @@ def _low_information_result(tool_name: str, result: str | None) -> str | None:
         ):
             return "unchanged_read_stub"
 
+    if tool_name == "terminal":
+        family = _terminal_probe_family(args)
+        if family is None:
+            return None
+        exit_code = parsed.get("exit_code")
+        if exit_code not in (None, 0):
+            return None
+        if not _terminal_result_text(parsed).strip():
+            return f"empty_terminal_{family}"
+        return None
+
     return None
+
+
+def _terminal_result_text(parsed: Mapping[str, Any]) -> str:
+    parts = []
+    for key in ("stdout", "stderr", "output", "content"):
+        value = parsed.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    return "\n".join(parts)
+
+
+def _terminal_probe_family(args: Mapping[str, Any]) -> str | None:
+    command = args.get("command", args.get("cmd", ""))
+    if not isinstance(command, str):
+        return None
+    command = _normalize_terminal_command(command)
+    if not command or _has_mutating_shell_signal(command):
+        return None
+    if _is_filtered_terminal_probe(command):
+        return "filter_probe"
+    if _is_read_only_terminal_probe(command):
+        return "read_probe"
+    return None
+
+
+def _normalize_terminal_command(command: str) -> str:
+    command = command.strip()
+    # Common harmless stderr redirections should not make a read probe look
+    # mutating. Keep this conservative so arbitrary file writes still opt out.
+    command = re.sub(r"\s+\d?>\s*/dev/null\b", "", command)
+    command = command.replace(" 2>&1", "")
+    command = re.sub(r"\bcd\s+[^;&|]+&&\s*", "", command)
+    return command.strip()
+
+
+def _has_mutating_shell_signal(command: str) -> bool:
+    lowered = command.lower()
+    mutating_command_re = (
+        r"(^|[;&|]\s*)"
+        r"(rm|mv|cp|mkdir|touch|chmod|chown|"
+        r"git\s+(add|commit|push|checkout|switch|reset|clean|worktree\s+add)|"
+        r"python\d?|python3|node|npm|pnpm|yarn|uv|pip|sed\s+-i|perl\s+-i)\b"
+    )
+    if re.search(mutating_command_re, lowered):
+        return True
+    if re.search(r"(^|[^0-9])>>?", command) and "/dev/null" not in command:
+        return True
+    if re.search(r"\btee\s+", lowered):
+        return True
+    return False
+
+
+def _is_filtered_terminal_probe(command: str) -> bool:
+    lowered = command.lower()
+    if re.search(r"\|\s*(grep|head|tail|wc|sort|uniq)\b", lowered):
+        return True
+    if re.search(r"\bgrep\s+-r\b|\brg\s+.*\|\s*head\b", lowered):
+        return True
+    if "git diff" in lowered and ("--name-only" in lowered or "--stat" in lowered):
+        return True
+    return False
+
+
+def _is_read_only_terminal_probe(command: str) -> bool:
+    readonly_prefixes = (
+        "pwd",
+        "ls",
+        "find",
+        "rg",
+        "grep",
+        "cat",
+        "sed -n",
+        "head",
+        "tail",
+        "wc",
+        "git log",
+        "git show",
+        "git diff",
+        "git status",
+        "git branch",
+        "git remote",
+        "git rev-parse",
+        "git merge-base",
+        "git worktree list",
+        "meshctl task list",
+        "meshctl task show",
+        "meshctl worktree list",
+    )
+    lowered = command.lower().lstrip()
+    return lowered.startswith(readonly_prefixes)
 
 
 def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:

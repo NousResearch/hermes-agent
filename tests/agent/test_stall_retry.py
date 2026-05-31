@@ -4,7 +4,13 @@ import inspect
 from types import SimpleNamespace
 
 from agent import conversation_loop
-from agent.stall_retry import looks_like_stall, retry_on_stall
+from agent.stall_retry import (
+    get_stall_retry_max_chars,
+    get_stall_retry_max_per_turn,
+    get_stall_retry_model,
+    looks_like_stall,
+    retry_on_stall,
+)
 
 
 def test_action_preamble_without_tool_call_is_a_stall() -> None:
@@ -105,6 +111,57 @@ def test_retry_on_stall_switches_model_and_returns_tool_calls(monkeypatch) -> No
     assert kwargs["stream"] is False
 
 
+def test_retry_on_stall_uses_agent_config_when_env_is_absent(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    tool_call = SimpleNamespace(
+        function=SimpleNamespace(name="terminal", arguments='{"cmd":"pwd"}')
+    )
+    normalized = SimpleNamespace(
+        content="",
+        tool_calls=[tool_call],
+        finish_reason="tool_calls",
+    )
+
+    def interruptible_api_call(kwargs: dict[str, object]) -> object:
+        captured["kwargs"] = dict(kwargs)
+        return normalized
+
+    agent = SimpleNamespace(
+        api_mode="openai",
+        _is_anthropic_oauth=False,
+        log_prefix="",
+        _stall_retry_config={
+            "model": "qwen3.6-27b-256k",
+            "max_chars": 240,
+            "max_per_turn": 7,
+        },
+        _build_api_kwargs=lambda messages: {
+            "model": "dflash",
+            "messages": messages,
+            "stream": True,
+        },
+        _interruptible_api_call=interruptible_api_call,
+        _get_transport=lambda: SimpleNamespace(
+            normalize_response=lambda response, **_kwargs: response
+        ),
+        _vprint=lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.delenv("HERMES_STALL_RETRY_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_STALL_RETRY_MAX_CHARS", raising=False)
+    monkeypatch.delenv("HERMES_STALL_RETRY_MAX_PER_TURN", raising=False)
+
+    assert get_stall_retry_model(agent) == "qwen3.6-27b-256k"
+    assert get_stall_retry_max_chars(agent) == 240
+    assert get_stall_retry_max_per_turn(agent) == 7
+
+    result = retry_on_stall(agent, [{"role": "user", "content": "go"}], "stop")
+
+    assert result is normalized
+    assert captured["kwargs"]["model"] == "qwen3.6-27b-256k"
+    assert captured["kwargs"]["stream"] is False
+
+
 def test_conversation_loop_adopts_retry_before_tool_call_branch() -> None:
     source = inspect.getsource(conversation_loop.run_conversation)
     retry_idx = source.index("retried = retry_on_stall")
@@ -120,5 +177,5 @@ def test_conversation_loop_allows_bounded_multiple_stall_retries() -> None:
 
     assert "_stall_retry_used" not in source
     assert "_stall_retry_count += 1" in source
-    assert "HERMES_STALL_RETRY_MAX_PER_TURN" in source
+    assert "get_stall_retry_max_per_turn" in source
     assert "stall_retry_limit_exhausted" in source

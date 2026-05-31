@@ -797,14 +797,10 @@ def run_conversation(
     # tool loop, so allow a bounded number of successful rescues per user turn.
     # If the cap is exhausted, fail partial rather than accept another
     # planning-only text response as final. See agent/stall_retry.py.
+    from agent.stall_retry import get_stall_retry_max_per_turn
+
     _stall_retry_count = 0
-    try:
-        _stall_retry_max_per_turn = int(
-            os.environ.get("HERMES_STALL_RETRY_MAX_PER_TURN", "5") or 5
-        )
-    except ValueError:
-        _stall_retry_max_per_turn = 5
-    _stall_retry_max_per_turn = max(0, _stall_retry_max_per_turn)
+    _stall_retry_max_per_turn = get_stall_retry_max_per_turn(agent)
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -3627,21 +3623,21 @@ def run_conversation(
             # turn as partial instead of persisting the planning-only text as
             # a completed assistant message that poisons future "continue"
             # turns.
-            retry_model = os.environ.get("HERMES_STALL_RETRY_MODEL", "").strip()
+            from agent.stall_retry import (
+                get_stall_retry_max_chars,
+                get_stall_retry_model,
+                looks_like_stall,
+                retry_on_stall,
+            )
+
+            retry_model = get_stall_retry_model(agent)
             if (
                 retry_model
                 and getattr(agent, "tools", None)
                 and not getattr(assistant_message, "tool_calls", None)
             ):
+                max_chars = get_stall_retry_max_chars(agent)
                 try:
-                    max_chars = int(
-                        os.environ.get("HERMES_STALL_RETRY_MAX_CHARS", "400") or 400
-                    )
-                except ValueError:
-                    max_chars = 400
-                try:
-                    from agent.stall_retry import looks_like_stall, retry_on_stall
-
                     if looks_like_stall(
                         assistant_message.content or "",
                         finish_reason,

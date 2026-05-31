@@ -304,6 +304,66 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert blocked.code == "idempotent_no_progress_block"
 
 
+def test_terminal_filtered_empty_probe_streak_redirects_more_filter_churn():
+    controller = ToolCallGuardrailController()
+    empty_success = json.dumps({"exit_code": 0, "stdout": "", "stderr": ""})
+    commands = [
+        'cd ~/Workspaces/Projects/meshboard && git diff main --name-only 2>/dev/null | head -30',
+        'cd ~/Workspaces/Projects/meshboard && git diff main --name-only 2>/dev/null | grep -v "^tests/" | head -20',
+        'cd ~/Workspaces/Projects/meshboard && grep -r "dispatch.*history" tools/ --include="*.py" -l 2>/dev/null | head -10',
+        'cd ~/Workspaces/Projects/meshboard && rg -n "dispatch history" tools | head -20',
+    ]
+
+    decisions = []
+    for command in commands:
+        assert controller.before_call("terminal", {"command": command}).action == "allow"
+        decisions.append(
+            controller.after_call(
+                "terminal",
+                {"command": command},
+                empty_success,
+                failed=False,
+            )
+        )
+
+    assert decisions[2].code == "low_information_strategy_warning"
+    assert decisions[3].code == "low_information_strategy_warning"
+
+    redirected = controller.before_call(
+        "terminal",
+        {
+            "command": (
+                'cd ~/Workspaces/Projects/meshboard && git diff main --name-only '
+                '2>/dev/null | grep -v "^docs/" | head -20'
+            )
+        },
+    )
+
+    assert redirected.action == "redirect"
+    assert redirected.code == "low_information_tool_redirect"
+    assert "filtered shell probes" in redirected.message
+
+
+def test_terminal_filter_redirect_allows_broad_diagnostic_to_reset():
+    controller = ToolCallGuardrailController()
+    empty_success = json.dumps({"exit_code": 0, "output": ""})
+    for i in range(4):
+        controller.after_call(
+            "terminal",
+            {"command": f'git diff main --name-only | grep -v "path-{i}" | head -20'},
+            empty_success,
+            failed=False,
+        )
+
+    broad = controller.before_call("terminal", {"command": "pwd && ls -la"})
+
+    assert broad.action == "allow"
+    assert controller.before_call(
+        "terminal",
+        {"command": 'git diff main --name-only | grep -v "docs" | head -20'},
+    ).action == "allow"
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

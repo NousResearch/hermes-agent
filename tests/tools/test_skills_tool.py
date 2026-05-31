@@ -1267,3 +1267,104 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: symlinked skills trigger false "outside trusted skills directory"
+# security warning (#35674)
+# ---------------------------------------------------------------------------
+
+
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.write_text("x")
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            return True
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
+class TestSymlinkSkillSecurityWarning:
+    """Regression test for #35674.
+
+    Skills that are symlinks under the trusted skills directory should NOT
+    trigger the 'outside trusted skills directory' security warning. The
+    check should use the unresolved symlink path, not resolve() which
+    follows the symlink to its target.
+    """
+
+    def test_symlink_inside_trusted_dir_no_warning(self, tmp_path, caplog):
+        """A symlink whose path is inside the trusted directory should not warn."""
+        import logging
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Create a real skill directory outside the trusted area
+        external_dir = tmp_path / "external-skills" / "my-skill"
+        external_dir.mkdir(parents=True)
+        (external_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Test\n---\n# Test Skill\n"
+        )
+
+        # Symlink it INTO the trusted directory
+        symlink_dir = skills_dir / "my-skill"
+        symlink_dir.symlink_to(external_dir, target_is_directory=True)
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            with caplog.at_level(logging.WARNING, logger="tools.skills_tool"):
+                raw = skill_view("my-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+
+        # The security warning should NOT appear
+        outside_warnings = [
+            r.message for r in caplog.records
+            if "outside the trusted skills directory" in r.message
+        ]
+        assert outside_warnings == [], (
+            f"False positive security warning for symlinked skill: {outside_warnings}"
+        )
+
+    def test_symlink_category_dir_no_warning(self, tmp_path, caplog):
+        """A symlinked category directory should not trigger the security warning."""
+        import logging
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Create an external skill with a category
+        external_root = tmp_path / "external-repo"
+        external_root.mkdir()
+        external_skill = external_root / "platforms" / "my-platform-skill"
+        external_skill.mkdir(parents=True)
+        (external_skill / "SKILL.md").write_text(
+            "---\nname: my-platform-skill\ndescription: Platform\n---\n# Platform Skill\n"
+        )
+
+        # Symlink the category dir into skills_dir
+        symlink_cat = skills_dir / "platforms"
+        symlink_cat.symlink_to(external_root / "platforms", target_is_directory=True)
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            with caplog.at_level(logging.WARNING, logger="tools.skills_tool"):
+                raw = skill_view("my-platform-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+
+        outside_warnings = [
+            r.message for r in caplog.records
+            if "outside the trusted skills directory" in r.message
+        ]
+        assert outside_warnings == [], (
+            f"False positive for symlinked category: {outside_warnings}"
+        )
+

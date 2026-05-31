@@ -1026,11 +1026,21 @@ def skill_view(
             pass
         for _td in _trusted_dirs:
             try:
-                skill_md.resolve().relative_to(_td)
+                # Check the unresolved path first — symlinks inside the
+                # trusted directory should be trusted even when their target
+                # lives elsewhere on the filesystem (e.g. /opt/my-skills/).
+                # Fall back to the resolved path for non-symlink access via
+                # relative paths.
+                (skill_md if skill_md.is_absolute() else skill_md.resolve()).relative_to(_td)
                 _outside_skills_dir = False
                 break
             except ValueError:
-                continue
+                try:
+                    skill_md.resolve().relative_to(_td)
+                    _outside_skills_dir = False
+                    break
+                except ValueError:
+                    continue
 
         # Security: detect common prompt injection patterns
         # (pattern list at module level as _INJECTION_PATTERNS)

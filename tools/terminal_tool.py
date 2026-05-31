@@ -1718,6 +1718,31 @@ def _resolve_notification_flag_conflict(
     return watch_patterns, ""
 
 
+def _macos_chrome_keychain_guard(command: str) -> str | None:
+    """Reject agent-launched macOS Chrome commands that would touch Keychain.
+
+    Headless/screenshot/CDP Chrome launches on macOS can surface foreground
+    "Keychain Not Found" dialogs if they omit Chrome's non-Keychain flags. That
+    is disruptive for gateway/profile agents running in the background, so fail
+    fast with an actionable error instead of letting the dialog appear.
+    """
+    if platform.system() != "Darwin":
+        return None
+    if "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" not in command:
+        return None
+    if not any(flag in command for flag in ("--headless", "--screenshot", "--remote-debugging-port")):
+        return None
+    if "--use-mock-keychain" in command and "--password-store=basic" in command:
+        return None
+    return (
+        "Blocked macOS Chrome launch without non-Keychain flags. Relaunch Chrome "
+        "with both --password-store=basic and --use-mock-keychain, or use the "
+        "browser/computer_use tools. Hermes agents must not trigger macOS "
+        "Keychain prompts or store secrets in Chrome/Keychain; use Bitwarden "
+        "Secrets Manager for credentials."
+    )
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1769,6 +1794,16 @@ def terminal_tool(
                 "output": "",
                 "exit_code": -1,
                 "error": f"Invalid command: expected string, got {type(command).__name__}",
+                "status": "error",
+            }, ensure_ascii=False)
+
+        chrome_guard_error = _macos_chrome_keychain_guard(command)
+        if chrome_guard_error:
+            logger.warning("Rejected macOS Chrome command that could trigger Keychain prompt")
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": chrome_guard_error,
                 "status": "error",
             }, ensure_ascii=False)
 

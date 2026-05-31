@@ -2969,6 +2969,73 @@ class TestUnifiedCapabilityMedia:
         ))
         assert res["error"]  # non-empty, explains nothing was delivered
 
+    def test_media_attaches_only_to_last_chunk(self, tmp_path, monkeypatch):
+        from gateway.platform_registry import platform_registry
+        from gateway.platforms.base import BasePlatformAdapter, MediaKind, SendResult
+
+        # Force a deterministic two-chunk split (give qqbot a tiny length limit
+        # via the registry, then stub the splitter) so we can prove the image
+        # is dispatched once, AFTER the final text chunk — never glued to an
+        # earlier chunk.
+        monkeypatch.setattr(platform_registry, "get",
+                            lambda name: SimpleNamespace(max_message_length=5))
+        monkeypatch.setattr(BasePlatformAdapter, "truncate_message",
+                            staticmethod(lambda *a, **k: ["c1", "c2"]))
+        events = []
+
+        class FakeQQ:
+            MEDIA_KINDS = frozenset(MediaKind)
+
+            async def send(self, chat_id, content, metadata=None):
+                events.append(("text", content))
+                return SendResult(success=True, message_id="m0")
+
+            async def send_image_file(self, chat_id, image_path, **kw):
+                events.append(("image", image_path))
+                return SendResult(success=True, message_id="m1")
+
+        self._install_runner(monkeypatch, FakeQQ())
+        path = self._good_path(tmp_path)
+        res = asyncio.run(_send_to_platform(
+            Platform.QQBOT, SimpleNamespace(extra={}), "c", "long message",
+            media_files=[(path, False)],
+        ))
+        assert events == [("text", "c1"), ("text", "c2"), ("image", path)]
+        assert res["success"]
+
+    def test_partial_delivery_returns_success_with_skip_warning(self, tmp_path, monkeypatch):
+        from gateway.platforms.base import MediaKind, SendResult
+
+        # IMAGE declared, DOCUMENT not: the image delivers, the pdf is skipped,
+        # and the successful result still carries the skip warning.
+        delivered = []
+
+        class FakeImageOnly:
+            MEDIA_KINDS = frozenset({MediaKind.IMAGE})
+
+            async def send(self, chat_id, content, metadata=None):
+                return SendResult(success=True, message_id="m0")
+
+            async def send_image_file(self, chat_id, image_path, **kw):
+                delivered.append(image_path)
+                return SendResult(success=True, message_id="img-1")
+
+            async def send_document(self, chat_id, file_path, **kw):
+                raise AssertionError("document must not be dispatched")
+
+        self._install_runner(monkeypatch, FakeImageOnly())
+        png = self._good_path(tmp_path, "shot.png")
+        pdf = tmp_path / "report.pdf"
+        pdf.write_text("x", encoding="utf-8")
+        res = asyncio.run(_send_to_platform(
+            Platform.QQBOT, SimpleNamespace(extra={}), "c", "hi",
+            media_files=[(png, False), (str(pdf), False)],
+        ))
+        assert delivered == [png]
+        assert res["success"]
+        assert res["message_id"] == "img-1"  # last successful delivery wins
+        assert any("report.pdf" in w for w in res["warnings"])
+
 
 class TestSevenBranchMediaRegression:
     """The seven hand-tuned media branches keep handling media themselves and

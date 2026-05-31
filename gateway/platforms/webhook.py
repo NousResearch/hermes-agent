@@ -33,9 +33,11 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -51,6 +53,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -111,6 +114,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
 
+        # Fizzy/card-scoped memory state keyed by synthetic webhook chat_id.
+        self._card_memory_info: Dict[str, dict] = {}
+
         # Delivery info keyed by session chat_id.
         #
         # Read by every send() invocation for the chat_id (status messages
@@ -130,6 +136,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # Prevents duplicate agent runs when webhook providers retry.
         self._seen_deliveries: Dict[str, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
+        self._queue_record_by_chat_id: Dict[str, str] = {}
+        self._queue_retry_delay_seconds: float = float(
+            config.extra.get("queue_retry_delay_seconds", 60.0)
+        )
 
         # Rate limiting: per-route timestamps in a fixed window.
         self._rate_counts: Dict[str, List[float]] = {}
@@ -219,6 +229,107 @@ class WebhookAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[webhook] Disconnected")
 
+    def _classify_protocol_failure(
+        self, content: Optional[str]
+    ) -> tuple[bool, Optional[str], str]:
+        """Classify agent-produced protocol/API errors for webhook retry handling."""
+        text = str(content or "").strip()
+        if not text:
+            return False, None, "success"
+        lowered = text.lower()
+        failure_markers = (
+            "notion comment handling failed",
+            "webhook handling failed",
+            "webhook protocol failure",
+            "validation_error",
+            "permission_denied",
+            "unauthorized",
+            "forbidden",
+            "invalid_request",
+            "apiresponseerror",
+            "http 4",
+            "http 5",
+            "service_unavailable",
+            "timeout",
+            "timed out",
+            "connection error",
+        )
+        if not any(marker in lowered for marker in failure_markers):
+            return False, None, "success"
+        retryable_markers = (
+            "408",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "service_unavailable",
+            "timeout",
+            "timed out",
+            "temporar",
+            "rate_limited",
+            "rate limit",
+            "connection error",
+        )
+        classification = (
+            "retryable"
+            if any(marker in lowered for marker in retryable_markers)
+            else "terminal"
+        )
+        return True, text[:4000], classification
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Update durable webhook queue state after gateway processing finishes."""
+        chat_id = getattr(getattr(event, "source", None), "chat_id", "") or ""
+        record_id = self._queue_record_by_chat_id.get(chat_id)
+        if not record_id:
+            return
+
+        from gateway import webhook_queue
+
+        delivery_error = getattr(event, "_hermes_delivery_error", None)
+        if not delivery_error:
+            delivery_error = self._delivery_info.get(chat_id, {}).get("last_protocol_error")
+        classification = "retryable"
+        if delivery_error and ":" in str(delivery_error):
+            maybe_classification, _, rest = str(delivery_error).partition(":")
+            if maybe_classification in {"terminal", "retryable"}:
+                classification = maybe_classification
+                delivery_error = rest.strip()
+        failed, protocol_error, detected_classification = self._classify_protocol_failure(
+            delivery_error
+        )
+        if failed:
+            classification = detected_classification
+
+        if outcome == ProcessingOutcome.SUCCESS and not failed:
+            webhook_queue.mark_done(record_id)
+            self._queue_record_by_chat_id.pop(chat_id, None)
+            return
+
+        error = (
+            protocol_error
+            or str(delivery_error or "")
+            or f"webhook processing {outcome.value}"
+        )
+        if classification == "terminal":
+            webhook_queue.mark_dead_letter(
+                record_id,
+                error,
+                classification=classification,
+                details={"chat_id": chat_id, "outcome": outcome.value},
+            )
+            self._queue_record_by_chat_id.pop(chat_id, None)
+            return
+
+        webhook_queue.mark_retry(
+            record_id,
+            error,
+            retry_delay_seconds=self._queue_retry_delay_seconds,
+        )
+
     async def send(
         self,
         chat_id: str,
@@ -235,12 +346,17 @@ class WebhookAdapter(BasePlatformAdapter):
         do not consume the entry and silently downgrade the final response
         to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
+        self._persist_card_memory_update(chat_id, content)
+
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
-            return SendResult(success=True)
+            failed, error, _classification = self._classify_protocol_failure(content)
+            if failed:
+                delivery["last_protocol_error"] = error or content[:4000]
+            return SendResult(success=not failed, error=error if failed else None)
 
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -291,6 +407,102 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
+
+    def _handle_notion_route_event(
+        self,
+        *,
+        route_name: str,
+        route_config: dict,
+        payload: dict,
+        event_type: str,
+        delivery_id: str,
+        prompt: str,
+    ) -> Optional["web.Response"]:
+        """Apply Notion-specific webhook routing before generic agent dispatch."""
+        if event_type in {"comment.created", "comment.updated"}:
+            return None
+        if event_type == "comment.deleted":
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "route": route_name,
+                    "event": event_type,
+                    "delivery_id": delivery_id,
+                },
+                status=200,
+            )
+
+        record = self._make_notion_sync_record(
+            route_name=route_name,
+            payload=payload,
+            event_type=event_type,
+            delivery_id=delivery_id,
+            prompt=prompt,
+            deliver_config={
+                "deliver": route_config.get("deliver", "log"),
+                "deliver_extra": self._render_delivery_extra(
+                    route_config.get("deliver_extra", {}), payload
+                ),
+                "payload": payload,
+            },
+        )
+        queue_path = self._notion_sync_queue_path()
+        queue_path.parent.mkdir(parents=True, exist_ok=True)
+        with queue_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        return web.json_response(
+            {
+                "status": "queued",
+                "route": route_name,
+                "event": event_type,
+                "delivery_id": delivery_id,
+            },
+            status=202,
+        )
+
+    def _notion_sync_queue_path(self) -> Path:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "data" / "notion-sync" / "notion-sync-queue.jsonl"
+
+    def _make_notion_sync_record(
+        self,
+        *,
+        route_name: str,
+        payload: dict,
+        event_type: str,
+        delivery_id: str,
+        prompt: str,
+        deliver_config: dict,
+    ) -> Dict[str, Any]:
+        entity = payload.get("entity") if isinstance(payload.get("entity"), dict) else {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        parent = data.get("parent") if isinstance(data.get("parent"), dict) else {}
+        entity_id = entity.get("id") or payload.get("entity_id") or payload.get("page_id") or payload.get("id")
+        entity_type = entity.get("type") or payload.get("entity_type")
+        page_id = entity_id if entity_type == "page" else payload.get("page_id")
+        return {
+            "route_name": route_name,
+            "delivery_id": delivery_id,
+            "webhook_id": payload.get("id") or delivery_id,
+            "type": event_type,
+            "timestamp": payload.get("timestamp"),
+            "workspace_id": payload.get("workspace_id"),
+            "subscription_id": payload.get("subscription_id"),
+            "attempt_number": payload.get("attempt_number"),
+            "entity_id": entity_id,
+            "entity_type": entity_type,
+            "page_id": page_id,
+            "parent_id": parent.get("id"),
+            "parent_type": parent.get("type"),
+            "data_source_id": parent.get("data_source_id"),
+            "updated_blocks": data.get("updated_blocks"),
+            "payload": payload,
+            "prompt": prompt,
+            "deliver_config": deliver_config,
+            "queued_at": time.time(),
+            "reason": "non_comment_event_context_sync_only",
+        }
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
@@ -511,6 +723,23 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         self._seen_deliveries[delivery_id] = now
 
+        # ── Notion route policy ───────────────────────────────────
+        # Our notion-sync route is intentionally asymmetric:
+        # comment.created/comment.updated wake the agent immediately;
+        # comment.deleted is ignored; non-comment Notion events are queued for
+        # hourly context sync so page/database churn does not spawn agents.
+        if route_config.get("notion_routing"):
+            notion_result = self._handle_notion_route_event(
+                route_name=route_name,
+                route_config=route_config,
+                payload=payload,
+                event_type=event_type,
+                delivery_id=delivery_id,
+                prompt=prompt,
+            )
+            if notion_result is not None:
+                return notion_result
+
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
         # deliver.  Use case: external services (Supabase, monitoring,
@@ -583,9 +812,34 @@ class WebhookAdapter(BasePlatformAdapter):
             ),
             "payload": payload,
         }
+
+        from gateway import webhook_queue
+
+        queue_record = webhook_queue.make_record(
+            route_name=route_name,
+            delivery_id=delivery_id,
+            event_type=event_type,
+            payload=payload,
+            prompt=prompt,
+            deliver_config=deliver_config,
+            message_id=delivery_id,
+        )
+        queue_id = webhook_queue.enqueue(queue_record)
+        webhook_queue.mark_inflight(queue_id, now=now)
+        self._queue_record_by_chat_id[session_chat_id] = queue_id
+
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._prune_delivery_info(now)
+
+        card_memory_context = self._load_card_memory_context(route_config, payload, route_name)
+        if card_memory_context:
+            prompt = f"{card_memory_context}\n\n{prompt}"
+            self._card_memory_info[session_chat_id] = {
+                "route": route_name,
+                "payload": payload,
+                "card_memory": route_config.get("card_memory"),
+            }
 
         # Build source and event
         source = self.build_source(
@@ -672,6 +926,14 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Notion: X-Notion-Signature = sha256=<hex HMAC-SHA256(secret, raw_body)>
+        notion_sig = _header("X-Notion-Signature")
+        if notion_sig:
+            expected = "sha256=" + hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(notion_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")
@@ -780,6 +1042,119 @@ class WebhookAdapter(BasePlatformAdapter):
             return str(value)
 
         return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+
+
+    # ------------------------------------------------------------------
+    # Card-scoped memory for Fizzy-style board/card webhooks
+    # ------------------------------------------------------------------
+
+    def _card_memory_config(self, route_config: dict) -> dict:
+        cfg = route_config.get("card_memory")
+        if isinstance(cfg, dict):
+            enabled = cfg.get("enabled", True)
+            if enabled is False:
+                return {}
+            return cfg
+        if cfg is True:
+            return {"enabled": True, "dir": "~/.hermes/data/card-memory"}
+        # Fizzy routes should have durable card memory by default.  This makes
+        # future Fizzy boards safe even if the route creator forgets to add the
+        # explicit card_memory stanza.
+        if route_config.get("fizzy") or str(route_config.get("source", "")).lower() == "fizzy":
+            return {"enabled": True, "dir": "~/.hermes/data/card-memory"}
+        return {}
+
+    def _extract_card_memory_key(self, payload: dict, route_name: str) -> str:
+        def _get(obj: Any, path: tuple[str, ...]) -> Any:
+            cur = obj
+            for part in path:
+                if not isinstance(cur, dict):
+                    return None
+                cur = cur.get(part)
+            return cur
+
+        board_id = (
+            _get(payload, ("board", "id"))
+            or _get(payload, ("data", "board", "id"))
+            or payload.get("board_id")
+            or payload.get("boardId")
+            or route_name
+        )
+        card_id = (
+            _get(payload, ("card", "id"))
+            or _get(payload, ("data", "card", "id"))
+            or payload.get("card_id")
+            or payload.get("cardId")
+            or payload.get("id")
+        )
+        if not card_id:
+            return ""
+
+        def _safe(value: Any) -> str:
+            return re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value)).strip(".-")[:120]
+
+        return f"{_safe(board_id)}__{_safe(card_id)}"
+
+    def _card_memory_dir(self, cfg: dict) -> Path:
+        raw = cfg.get("dir") or "~/.hermes/data/card-memory"
+        return Path(os.path.expanduser(str(raw))).resolve()
+
+    def _load_card_memory_context(self, route_config: dict, payload: dict, route_name: str) -> str:
+        cfg = self._card_memory_config(route_config)
+        if not cfg:
+            return ""
+        key = self._extract_card_memory_key(payload, route_name)
+        if not key:
+            return ""
+        path = self._card_memory_dir(cfg) / f"{key}.md"
+        content = ""
+        try:
+            if path.exists():
+                content = path.read_text(encoding="utf-8")[-12000:]
+        except Exception:
+            logger.exception("[webhook] failed to read card memory %s", path)
+            content = ""
+        return (
+            "Persistent card memory is enabled for this board/card. "
+            "Use it as the continuity log for prior work on this card. "
+            "At the end of your final response, include an HTML comment exactly like "
+            "<!-- CARD_MEMORY_UPDATE: ... --> with concise durable progress/state for future instances.\n\n"
+            f"Card memory file: {path}\n"
+            f"Existing memory:\n{content if content else '(none yet)'}"
+        )
+
+    def _persist_card_memory_update(self, chat_id: str, content: str) -> None:
+        info = self._card_memory_info.get(chat_id)
+        if not info or not content:
+            return
+        match = re.search(r"<!--\s*CARD_MEMORY_UPDATE:\s*(.*?)\s*-->", content, re.DOTALL | re.IGNORECASE)
+        if not match:
+            return
+        update = match.group(1).strip()
+        if not update:
+            return
+        raw_cfg = info.get("card_memory")
+        if raw_cfg is True:
+            cfg = {"enabled": True, "dir": "~/.hermes/data/card-memory"}
+        elif isinstance(raw_cfg, dict):
+            cfg = raw_cfg if raw_cfg.get("enabled", True) is not False else {}
+        else:
+            cfg = {"enabled": True, "dir": "~/.hermes/data/card-memory"}
+        if not cfg:
+            return
+        key = self._extract_card_memory_key(info.get("payload") or {}, info.get("route") or "webhook")
+        if not key:
+            return
+        path = self._card_memory_dir(cfg) / f"{key}.md"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            prior = path.read_text(encoding="utf-8") if path.exists() else ""
+            entry = f"\n\n## {ts}\n{update}\n"
+            path.write_text((prior + entry).strip() + "\n", encoding="utf-8")
+            logger.info("[webhook] persisted card memory update %s", path)
+        except Exception:
+            logger.exception("[webhook] failed to persist card memory %s", path)
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict

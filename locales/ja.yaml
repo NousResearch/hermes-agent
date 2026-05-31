@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "アクティブな目標はありません。"
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
   config_save_failed: "⚠️ 設定を保存できませんでした: {error}"
+  line_quick_reply:
+    allow_once: "今回のみ許可"
+    this_session: "このセッション"
+    always_allow: "常に許可"
+    deny: "拒否"
+    cancel: "キャンセル"
 
   model:
     error_prefix:           "エラー: {error}"

@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "Geen aktiewe doelwit nie."
   config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
   config_save_failed: "⚠️ Kon nie konfigurasie stoor nie: {error}"
+  line_quick_reply:
+    allow_once: "Eenmalig toelaat"
+    this_session: "Hierdie sessie"
+    always_allow: "Altyd toelaat"
+    deny: "Weier"
+    cancel: "Kanselleer"
 
   model:
     error_prefix:           "Fout: {error}"

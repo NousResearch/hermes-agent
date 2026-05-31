@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "当前没有活跃的目标。"
   config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
   config_save_failed: "⚠️ 无法保存配置：{error}"
+  line_quick_reply:
+    allow_once: "批准一次"
+    this_session: "本次会话"
+    always_allow: "始终批准"
+    deny: "拒绝"
+    cancel: "取消"
 
   model:
     error_prefix:           "错误：{error}"

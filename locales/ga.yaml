@@ -26,6 +26,12 @@ gateway:
   no_active_goal:   "Níl aon sprioc ghníomhach ann."
   config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
   config_save_failed: "⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}"
+  line_quick_reply:
+    allow_once: "Ceadaigh uair amháin"
+    this_session: "An seisiún seo"
+    always_allow: "Ceadaigh i gcónaí"
+    deny: "Diúltaigh"
+    cancel: "Cealaigh"
 
   model:
     error_prefix:           "Earráid: {error}"

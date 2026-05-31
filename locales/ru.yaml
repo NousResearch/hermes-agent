@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "Нет активной цели."
   config_read_failed: "⚠️ Не удалось прочитать config.yaml: {error}"
   config_save_failed: "⚠️ Не удалось сохранить конфигурацию: {error}"
+  line_quick_reply:
+    allow_once: "Разрешить раз"
+    this_session: "Этот сеанс"
+    always_allow: "Всегда разрешать"
+    deny: "Отклонить"
+    cancel: "Отмена"
 
   model:
     error_prefix:           "Ошибка: {error}"

@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "활성 목표가 없습니다."
   config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
   config_save_failed: "⚠️ 설정을 저장할 수 없습니다: {error}"
+  line_quick_reply:
+    allow_once: "한 번 허용"
+    this_session: "이 세션"
+    always_allow: "항상 허용"
+    deny: "거부"
+    cancel: "취소"
 
   model:
     error_prefix:           "오류: {error}"

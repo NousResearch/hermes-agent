@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "No hay objetivo activo."
   config_read_failed: "⚠️ No se pudo leer config.yaml: {error}"
   config_save_failed: "⚠️ No se pudo guardar la configuración: {error}"
+  line_quick_reply:
+    allow_once: "Permitir una vez"
+    this_session: "Esta sesión"
+    always_allow: "Permitir siempre"
+    deny: "Denegar"
+    cancel: "Cancelar"
 
   model:
     error_prefix:           "Error: {error}"

@@ -33,6 +33,12 @@ gateway:
   no_active_goal:   "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
   config_save_failed: "⚠️ Could not save config: {error}"
+  line_quick_reply:
+    allow_once: "Allow Once"
+    this_session: "This Session"
+    always_allow: "Always Allow"
+    deny: "Deny"
+    cancel: "Cancel"
 
   # /model command output -- shown after a model switch or when listing models.
   # Provider names, model IDs, capability strings, and cost figures are NOT

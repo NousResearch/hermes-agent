@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "Aktif hedef yok."
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
   config_save_failed: "⚠️ Yapılandırma kaydedilemedi: {error}"
+  line_quick_reply:
+    allow_once: "Bir kez izin ver"
+    this_session: "Bu oturum"
+    always_allow: "Her zaman izin ver"
+    deny: "Reddet"
+    cancel: "İptal"
 
   model:
     error_prefix:           "Hata: {error}"

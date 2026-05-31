@@ -95,6 +95,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +582,27 @@ def build_postback_button_message(
     }
 
 
+def _attach_quick_reply(
+    message: Dict[str, Any],
+    actions: List[Tuple[str, str]],
+) -> Dict[str, Any]:
+    """Attach LINE quick-reply message actions to an outbound message."""
+    message["quickReply"] = {
+        "items": [
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": label[:20],
+                    "text": text[:300],
+                },
+            }
+            for label, text in actions
+        ]
+    }
+    return message
+
+
 # Prefixes the gateway uses for system busy-acks (interrupting / queued /
 # steered). When the postback cache has a PENDING entry we *bypass* the
 # cache for these so they reach the user as visible bubbles instead of
@@ -699,6 +721,13 @@ class LineAdapter(BasePlatformAdapter):
         self.interrupted_text = (
             os.getenv("LINE_INTERRUPTED_TEXT")
             or extra.get("interrupted_text", DEFAULT_INTERRUPTED_TEXT)
+        )
+        self.language = (
+            os.getenv("LINE_LANGUAGE")
+            or os.getenv("LINE_LOCALE")
+            or extra.get("language")
+            or extra.get("locale")
+            or None
         )
 
         # Runtime state
@@ -1085,6 +1114,103 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=pending_rid)
 
         return await self._send_text_chunks(chat_id, content, force_push=False)
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a LINE quick-reply prompt for slash-command confirmations."""
+        if not self._client:
+            return SendResult(success=False, error="LINE adapter not connected")
+
+        text = strip_markdown_preserving_urls(message)
+        if len(text) > LINE_SAFE_BUBBLE_CHARS:
+            text = text[: LINE_SAFE_BUBBLE_CHARS - 1].rstrip() + "..."
+
+        line_message = _attach_quick_reply(
+            _text_message(text),
+            [
+                (self._label("allow_once"), "/approve"),
+                (self._label("always_allow"), "/always"),
+                (self._label("cancel"), "/cancel"),
+            ],
+        )
+        return await self._send_message_objects(
+            chat_id,
+            [line_message],
+            purpose="slash confirmation quick-reply",
+        )
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a LINE quick-reply approval prompt for dangerous commands."""
+        if not self._client:
+            return SendResult(success=False, error="LINE adapter not connected")
+
+        cmd_preview = command[:3200] + "..." if len(command) > 3200 else command
+        text = (
+            "Command approval required\n\n"
+            f"{cmd_preview}\n\n"
+            f"Reason: {description}"
+        )
+        text = strip_markdown_preserving_urls(text)
+        if len(text) > LINE_SAFE_BUBBLE_CHARS:
+            text = text[: LINE_SAFE_BUBBLE_CHARS - 1].rstrip() + "..."
+
+        message = _attach_quick_reply(
+            _text_message(text),
+            [
+                (self._label("allow_once"), "/approve"),
+                (self._label("this_session"), "/approve session"),
+                (self._label("always_allow"), "/approve always"),
+                (self._label("deny"), "/deny"),
+            ],
+        )
+        return await self._send_message_objects(
+            chat_id,
+            [message],
+            purpose="approval quick-reply",
+        )
+
+    async def _send_message_objects(
+        self,
+        chat_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        purpose: str,
+    ) -> SendResult:
+        """Send pre-built LINE message objects, preferring reply token first."""
+        if not self._client:
+            return SendResult(success=False, error="LINE adapter not connected")
+
+        token, used_reply = self._consume_reply_token(chat_id)
+        if used_reply:
+            try:
+                await self._client.reply(token, messages[:LINE_MAX_MESSAGES_PER_CALL])
+                return SendResult(success=True, message_id=token)
+            except Exception as exc:
+                logger.info("LINE: %s reply token rejected (%s); falling back to push", purpose, exc)
+
+        try:
+            await self._client.push(chat_id, messages[:LINE_MAX_MESSAGES_PER_CALL])
+            return SendResult(success=True, message_id=None)
+        except Exception as exc:
+            logger.error("LINE: %s push failed: %s", purpose, exc)
+            return SendResult(success=False, error=str(exc))
+
+    def _label(self, key: str) -> str:
+        return t(f"gateway.line_quick_reply.{key}", lang=self.language)
 
     async def _send_text_chunks(
         self,

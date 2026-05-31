@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "目前沒有作用中的目標。"
   config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
   config_save_failed: "⚠️ 無法儲存設定：{error}"
+  line_quick_reply:
+    allow_once: "批准一次"
+    this_session: "本次工作階段"
+    always_allow: "永遠批准"
+    deny: "拒絕"
+    cancel: "取消"
 
   model:
     error_prefix:           "錯誤：{error}"

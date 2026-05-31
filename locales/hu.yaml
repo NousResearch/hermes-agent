@@ -22,6 +22,12 @@ gateway:
   no_active_goal:   "Nincs aktív cél."
   config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"
   config_save_failed: "⚠️ Nem sikerült menteni a konfigurációt: {error}"
+  line_quick_reply:
+    allow_once: "Egyszer engedélyez"
+    this_session: "Ez a munkamenet"
+    always_allow: "Mindig engedélyez"
+    deny: "Elutasít"
+    cancel: "Mégse"
 
   model:
     error_prefix:           "Hiba: {error}"

@@ -1547,6 +1547,14 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     from hermes_cli.agents_os_tui import tui_cmd
     p.set_defaults(func=tui_cmd)
 
+    p = sub.add_parser("web", help="Open local Mission Control web dashboard")
+    p.add_argument("--host", default="127.0.0.1", help="Bind host; must be 127.0.0.1 or localhost")
+    p.add_argument("--port", type=int, default=18790)
+    p.add_argument("--open", action="store_true", help="Open dashboard in the default browser")
+    p.add_argument("--json", action="store_true", help="Print server capability payload without starting server")
+    from hermes_cli.agents_os_web import web_cmd
+    p.set_defaults(func=web_cmd)
+
     snapshot = sub.add_parser("snapshot", help="Manage local state snapshots")
     snapshot_sub = snapshot.add_subparsers(dest="snapshot_command")
     p = snapshot_sub.add_parser("create", help="Create snapshot")

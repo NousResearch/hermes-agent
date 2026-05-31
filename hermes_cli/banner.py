@@ -168,6 +168,25 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _local_git_update_refs(repo_dir: Path) -> tuple[Optional[str], Optional[str]]:
+    """Return full local and upstream refs used to scope update-check cache."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD", "origin/main"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            if len(lines) >= 2:
+                return lines[0], lines[1]
+    except Exception:
+        pass
+    return None, None
+
+
 def _version_tuple(v: str) -> tuple[int, ...]:
     """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
     parts = []
@@ -226,16 +245,22 @@ def check_for_updates() -> Optional[int]:
     embedded_rev = os.environ.get("HERMES_REVISION") or None
     repo_dir: Optional[Path] = None
     cache_repo: Optional[str] = None
+    cache_head: Optional[str] = None
+    cache_origin_main: Optional[str] = None
     if not embedded_rev:
         repo_dir = _resolve_repo_dir()
         cache_repo = str(repo_dir) if repo_dir is not None else None
+        if repo_dir is not None:
+            cache_head, cache_origin_main = _local_git_update_refs(repo_dir)
 
     # Read cache — invalidate if the embedded rev, installed version, or active
     # checkout changes. The version guard matters for pip installs:
     # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
     # changes VERSION but leaves rev unchanged (both None), and without this
     # the stale "behind" count would survive the upgrade for up to 6h. The repo
-    # guard keeps one checkout's behind count from leaking into another.
+    # guard keeps one checkout's behind count from leaking into another. The
+    # local/upstream ref guards avoid stale "behind" counts after a rebase or
+    # after another command fetches a newer origin/main inside the cache window.
     now = time.time()
     try:
         if cache_file.exists():
@@ -245,6 +270,8 @@ def check_for_updates() -> Optional[int]:
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
                 and cached.get("repo") == cache_repo
+                and cached.get("head") == cache_head
+                and cached.get("origin_main") == cache_origin_main
             ):
                 return cached.get("behind")
     except Exception:
@@ -257,6 +284,7 @@ def check_for_updates() -> Optional[int]:
             behind = check_via_pypi()
         else:
             behind = _check_via_local_git(repo_dir)
+            cache_head, cache_origin_main = _local_git_update_refs(repo_dir)
 
     try:
         cache_file.write_text(
@@ -267,6 +295,8 @@ def check_for_updates() -> Optional[int]:
                     "rev": embedded_rev,
                     "ver": VERSION,
                     "repo": cache_repo,
+                    "head": cache_head,
+                    "origin_main": cache_origin_main,
                 }
             )
         )

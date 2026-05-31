@@ -133,6 +133,8 @@ def test_check_for_updates_cache_is_scoped_to_active_repo(tmp_path):
     def fake_run(cmd, **kwargs):
         if cmd[:2] == ["git", "fetch"]:
             return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd == ["git", "rev-parse", "HEAD", "origin/main"]:
+            return MagicMock(returncode=0, stdout="new-head\norigin-head\n", stderr="")
         if cmd == ["git", "rev-list", "--count", "HEAD..origin/main"]:
             return MagicMock(returncode=0, stdout="0\n", stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -146,3 +148,48 @@ def test_check_for_updates_cache_is_scoped_to_active_repo(tmp_path):
     cached = json.loads(cache_file.read_text(encoding="utf-8"))
     assert cached["repo"] == str(repo_dir)
     assert cached["behind"] == 0
+    assert cached["head"] == "new-head"
+    assert cached["origin_main"] == "origin-head"
+
+
+def test_check_for_updates_cache_invalidates_when_local_head_changes(tmp_path):
+    from hermes_cli import banner
+
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    repo_dir = tmp_path / "active-repo"
+    (repo_dir / ".git").mkdir(parents=True)
+    cache_file = hermes_home / ".update_check"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "ts": 999999,
+                "repo": str(repo_dir),
+                "rev": None,
+                "ver": banner.VERSION,
+                "head": "old-head",
+                "origin_main": "origin-head",
+                "behind": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd == ["git", "rev-parse", "HEAD", "origin/main"]:
+            return MagicMock(returncode=0, stdout="new-head\norigin-head\n", stderr="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/main"]:
+            return MagicMock(returncode=0, stdout="0\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch.object(banner, "get_hermes_home", return_value=hermes_home), \
+         patch.object(banner, "_resolve_repo_dir", return_value=repo_dir), \
+         patch.object(banner.time, "time", return_value=1000), \
+         patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        assert banner.check_for_updates() == 0
+
+    cached = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert cached["behind"] == 0
+    assert cached["head"] == "new-head"

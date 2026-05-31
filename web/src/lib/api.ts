@@ -554,6 +554,14 @@ export const api = {
       },
     ),
 
+  // Agents (read-only view of delegation agent_profiles)
+  getAgentProfiles: () =>
+    fetchJSON<{ agent_profiles: AgentProfileInfo[] }>("/api/agent-profiles"),
+  getAgentProfile: (name: string) =>
+    fetchJSON<AgentProfileDetail>(`/api/agent-profiles/${encodeURIComponent(name)}`),
+  getActiveAgents: () =>
+    fetchJSON<{ active: ActiveAgentInfo[] }>("/api/agent-profiles/active"),
+
   // Session search (FTS5)
   searchSessions: (q: string) =>
     fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
@@ -1690,6 +1698,41 @@ export interface ToolsetEnvResult {
   saved: string[];
   skipped: string[];
   is_set: Record<string, boolean>;
+}
+
+// Read-only view of a delegation agent_profile (from config.yaml agent_profiles).
+export interface AgentProfileInfo {
+  name: string;
+  model: string;
+  provider: string;
+  toolsets: string[];
+  max_iterations: number | null;
+  description: string;
+  tool_count: number | null;
+  warnings: string[];
+  system_prompt_preview: string;
+}
+export interface AgentProfileDetail {
+  name: string;
+  model: string;
+  provider: string;
+  toolsets: string[];
+  max_iterations: number | null;
+  description: string;
+  tool_count: number | null;
+  warnings: string[];
+  system_prompt: string;
+  system_prompt_file: string;
+}
+export interface ActiveAgentInfo {
+  subagent_id?: string;
+  parent_id?: string;
+  depth?: number;
+  goal?: string;
+  model?: string;
+  started_at?: number;
+  tool_count?: number;
+  status?: string;
 }
 
 export interface SessionSearchResult {

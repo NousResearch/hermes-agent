@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway_windows."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -699,3 +700,33 @@ def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
 
     # Returns True because _pid_exists immediately says "gone".
     assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True
+
+
+def test_exec_schtasks_decodes_defensively(monkeypatch):
+    """schtasks output must decode without raising on non-UTF-8 console bytes.
+
+    On Chinese Windows the schtasks code page is cp936/GBK; under a UTF-8
+    ambient locale (git-bash/MSYS) the default strict decode raises
+    UnicodeDecodeError inside subprocess's reader thread, spamming a
+    traceback on an otherwise-successful ``hermes gateway status`` (#34083).
+    Pin the decode to errors="replace" so the call stays quiet.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="Status: Running", stderr="")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows.shutil, "which",
+        lambda name: r"C:\Windows\System32\schtasks.exe",
+    )
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
+
+    assert code == 0
+    assert out == "Status: Running"
+    assert captured.get("encoding") == "utf-8"
+    assert captured.get("errors") == "replace"

@@ -112,6 +112,16 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
             [schtasks, *args],
             capture_output=True,
             text=True,
+            # schtasks emits text in the console's localized code page (e.g.
+            # cp936/GBK on Chinese Windows). When the ambient locale resolves
+            # to UTF-8 — common under git-bash/MSYS — the default strict decode
+            # raises UnicodeDecodeError inside subprocess's reader thread and
+            # spams a traceback even though the command succeeded (issue
+            # #34083). Decode defensively, matching find_gateway_pids() in
+            # gateway.py. The ASCII keys we parse (status, last run result)
+            # survive; only localized free-text becomes U+FFFD.
+            encoding="utf-8",
+            errors="replace",
             timeout=_SCHTASKS_TIMEOUT_S,
             # CREATE_NO_WINDOW avoids a flashing console window when the CLI
             # is itself hosted in a TUI. See tools/browser_tool.py for the

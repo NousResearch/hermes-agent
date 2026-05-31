@@ -140,3 +140,50 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+    # -- Stage 1b: cumulative-resend duplicate collapse (#35592) --
+
+    def test_collapse_duplicate_object_2x(self):
+        """Two concatenated identical objects collapse to one."""
+        raw = '{"path":"x"}{"path":"x"}'
+        result = _repair_tool_call_arguments(raw, "search_files")
+        assert json.loads(result) == {"path": "x"}
+
+    def test_collapse_duplicate_object_many(self):
+        """K concatenated identical objects collapse to one."""
+        raw = '{"a":1,"b":2}' * 100
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"a": 1, "b": 2}
+
+    def test_collapse_nested_object_repeat(self):
+        """Repeated nested-key object collapses correctly."""
+        raw = '{"command":{"command":"x"}}' * 3
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"command": {"command": "x"}}
+
+    def test_single_object_not_touched_by_collapse(self):
+        """A clean single object never enters the collapse path."""
+        raw = '{"path": "x.py"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"path": "x.py"}
+
+    def test_single_nested_object_not_corrupted(self):
+        """Nested-key single object is NOT mistaken for a repeat (safety)."""
+        raw = '{"command":{"command":"x"}}'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"command": {"command": "x"}}
+
+    def test_two_different_objects_not_collapsed(self):
+        """Distinct concatenated objects are not a clean repeat — collapse
+        declines and the generic repair handles it (returns '{}')."""
+        from agent.message_sanitization import _collapse_repeated_json_arguments
+        assert _collapse_repeated_json_arguments('{"a":1}{"b":2}') is None
+
+    def test_collapse_helper_returns_none_for_valid_single(self):
+        from agent.message_sanitization import _collapse_repeated_json_arguments
+        assert _collapse_repeated_json_arguments('{"a":1}') is None
+
+    def test_collapse_helper_returns_none_for_repeated_non_json(self):
+        from agent.message_sanitization import _collapse_repeated_json_arguments
+        # 'abab' repeats 'ab' but 'ab' is not valid JSON.
+        assert _collapse_repeated_json_arguments('abab') is None
+

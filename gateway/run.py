@@ -2249,6 +2249,51 @@ class GatewayRunner:
                 e,
             )
 
+    async def _safe_adapter_teardown(self, adapter, platform) -> None:
+        """Bounded, never-raising per-adapter teardown for clean shutdown.
+
+        Each op runs under the shared per-adapter timeout
+        (HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT, default 5s) so a single
+        wedged adapter cannot stall shutdown before it reaches the
+        runtime-lock / PID-file cleanup that follows.
+
+        NOTE: for thread-backed adapters (e.g. Feishu's run_in_executor WS
+        client) the timeout abandons the worker thread rather than closing
+        the socket gracefully; the daemon thread is reclaimed at process
+        exit. This is bounded teardown, not graceful disconnect.
+        """
+        timeout = self._adapter_disconnect_timeout_secs()
+        started_at = time.monotonic()
+
+        async def _bounded(coro):
+            if timeout <= 0:
+                return await coro
+            return await asyncio.wait_for(coro, timeout=timeout)
+
+        try:
+            await _bounded(adapter.cancel_background_tasks())
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Timed out after %.1fs cancelling %s background tasks; continuing shutdown",
+                timeout, platform.value,
+            )
+        except Exception as e:
+            logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
+
+        try:
+            await _bounded(adapter.disconnect())
+            logger.info("✓ %s disconnected (%.2fs)", platform.value, time.monotonic() - started_at)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Timed out after %.1fs disconnecting %s adapter (%.2fs total); continuing shutdown",
+                timeout, platform.value, time.monotonic() - started_at,
+            )
+        except Exception as e:
+            logger.error(
+                "✗ %s disconnect error after %.2fs: %s",
+                platform.value, time.monotonic() - started_at, e,
+            )
+
     def _adapter_disconnect_timeout_secs(self) -> float:
         """Return the per-adapter disconnect timeout used during shutdown."""
         raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
@@ -6451,25 +6496,7 @@ class GatewayRunner:
                     self._cleanup_agent_resources(_agent)
 
             for platform, adapter in list(self.adapters.items()):
-                _adapter_started_at = time.monotonic()
-                try:
-                    await adapter.cancel_background_tasks()
-                except Exception as e:
-                    logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
-                try:
-                    await adapter.disconnect()
-                    logger.info(
-                        "✓ %s disconnected (%.2fs)",
-                        platform.value,
-                        time.monotonic() - _adapter_started_at,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "✗ %s disconnect error after %.2fs: %s",
-                        platform.value,
-                        time.monotonic() - _adapter_started_at,
-                        e,
-                    )
+                await self._safe_adapter_teardown(adapter, platform)
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),

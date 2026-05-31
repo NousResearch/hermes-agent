@@ -781,7 +781,6 @@ _hermes_home = get_hermes_home()
 from dotenv import (
     load_dotenv,  # noqa: F401  # backward-compat for tests that monkeypatch this symbol
 )
-
 from hermes_cli.env_loader import load_hermes_dotenv
 
 _env_path = _hermes_home / ".env"
@@ -1345,14 +1344,16 @@ _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
 
-_CONTROL_INTERRUPT_MESSAGES = frozenset({
-    _INTERRUPT_REASON_STOP.lower(),
-    _INTERRUPT_REASON_RESET.lower(),
-    _INTERRUPT_REASON_TIMEOUT.lower(),
-    _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
-    _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
-    _INTERRUPT_REASON_GATEWAY_RESTART.lower(),
-})
+_CONTROL_INTERRUPT_MESSAGES = frozenset(
+    {
+        _INTERRUPT_REASON_STOP.lower(),
+        _INTERRUPT_REASON_RESET.lower(),
+        _INTERRUPT_REASON_TIMEOUT.lower(),
+        _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
+        _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
+        _INTERRUPT_REASON_GATEWAY_RESTART.lower(),
+    }
+)
 
 
 def _is_control_interrupt_message(message: Optional[str]) -> bool:
@@ -4132,11 +4133,9 @@ class GatewayRunner:
     # SessionStore.suspend_recently_active() on crash recovery (no
     # .clean_shutdown marker).  All three mean "the agent was mid-turn and
     # we killed it" — eligible for startup auto-resume.
-    _AUTO_RESUME_REASONS = frozenset({
-        "restart_timeout",
-        "shutdown_timeout",
-        "restart_interrupted",
-    })
+    _AUTO_RESUME_REASONS = frozenset(
+        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+    )
 
     def _schedule_resume_pending_sessions(self) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
@@ -5371,14 +5370,16 @@ class GatewayRunner:
                                     old_cursor,
                                     cursor,
                                 )
-                                deliveries.append({
-                                    "sub": sub,
-                                    "old_cursor": old_cursor,
-                                    "cursor": cursor,
-                                    "events": events,
-                                    "task": task,
-                                    "board": slug,
-                                })
+                                deliveries.append(
+                                    {
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "task": task,
+                                        "board": slug,
+                                    }
+                                )
                         finally:
                             conn.close()
                     return deliveries
@@ -10856,29 +10857,33 @@ class GatewayRunner:
         ]
         if title:
             lines.append(t("gateway.status.title", title=title))
-        lines.extend([
-            t(
-                "gateway.status.created",
-                timestamp=session_entry.created_at.strftime("%Y-%m-%d %H:%M"),
-            ),
-            t(
-                "gateway.status.last_activity",
-                timestamp=session_entry.updated_at.strftime("%Y-%m-%d %H:%M"),
-            ),
-            t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t(
-                "gateway.status.agent_running",
-                state=t("gateway.status.state_yes")
-                if is_running
-                else t("gateway.status.state_no"),
-            ),
-        ])
+        lines.extend(
+            [
+                t(
+                    "gateway.status.created",
+                    timestamp=session_entry.created_at.strftime("%Y-%m-%d %H:%M"),
+                ),
+                t(
+                    "gateway.status.last_activity",
+                    timestamp=session_entry.updated_at.strftime("%Y-%m-%d %H:%M"),
+                ),
+                t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
+                t(
+                    "gateway.status.agent_running",
+                    state=t("gateway.status.state_yes")
+                    if is_running
+                    else t("gateway.status.state_no"),
+                ),
+            ]
+        )
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
-        lines.extend([
-            "",
-            t("gateway.status.platforms", platforms=", ".join(connected_platforms)),
-        ])
+        lines.extend(
+            [
+                "",
+                t("gateway.status.platforms", platforms=", ".join(connected_platforms)),
+            ]
+        )
 
         # Session recap — what was this session ABOUT? Pure local compute,
         # no LLM call, no prompt-cache impact. Useful when juggling multiple
@@ -10916,17 +10921,21 @@ class GatewayRunner:
             started = float(running_started.get(session_key, now))
             elapsed = max(0, int(now - started))
             is_pending = agent is _AGENT_PENDING_SENTINEL
-            agent_rows.append({
-                "session_key": session_key,
-                "elapsed": elapsed,
-                "state": t("gateway.agents.state_starting")
-                if is_pending
-                else t("gateway.agents.state_running"),
-                "session_id": ""
-                if is_pending
-                else str(getattr(agent, "session_id", "") or ""),
-                "model": "" if is_pending else str(getattr(agent, "model", "") or ""),
-            })
+            agent_rows.append(
+                {
+                    "session_key": session_key,
+                    "elapsed": elapsed,
+                    "state": t("gateway.agents.state_starting")
+                    if is_pending
+                    else t("gateway.agents.state_running"),
+                    "session_id": ""
+                    if is_pending
+                    else str(getattr(agent, "session_id", "") or ""),
+                    "model": ""
+                    if is_pending
+                    else str(getattr(agent, "model", "") or ""),
+                }
+            )
 
         agent_rows.sort(key=lambda row: row["elapsed"], reverse=True)
 
@@ -10968,10 +10977,12 @@ class GatewayRunner:
             if len(agent_rows) > 12:
                 lines.append(t("gateway.agents.more", count=len(agent_rows) - 12))
 
-        lines.extend([
-            "",
-            t("gateway.agents.running_processes", count=len(running_processes)),
-        ])
+        lines.extend(
+            [
+                "",
+                t("gateway.agents.running_processes", count=len(running_processes)),
+            ]
+        )
         if running_processes:
             for proc in running_processes[:12]:
                 cmd = " ".join(str(proc.get("command", "")).split())
@@ -10986,10 +10997,12 @@ class GatewayRunner:
                     t("gateway.agents.more", count=len(running_processes) - 12)
                 )
 
-        lines.extend([
-            "",
-            t("gateway.agents.async_jobs", count=len(background_tasks)),
-        ])
+        lines.extend(
+            [
+                "",
+                t("gateway.agents.async_jobs", count=len(background_tasks)),
+            ]
+        )
 
         if not agent_rows and not running_processes and not background_tasks:
             lines.append("")
@@ -11374,7 +11387,6 @@ class GatewayRunner:
           /model --provider <provider>        — switch to provider, auto-detect model
         """
         import yaml
-
         from hermes_cli.model_switch import (
             list_authenticated_providers,
             list_picker_providers,
@@ -11840,8 +11852,12 @@ class GatewayRunner:
         self, event: MessageEvent, session_key: str
     ) -> Optional[str]:
         """Handle a digit reply during a /model numbered-menu flow."""
-        from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.model_switch import switch_model as _switch_model
+        from hermes_cli.model_switch import (
+            list_authenticated_providers,
+        )
+        from hermes_cli.model_switch import (
+            switch_model as _switch_model,
+        )
 
         state = self._model_menu_state.get(session_key)
         if not state:
@@ -13584,7 +13600,6 @@ class GatewayRunner:
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
         import yaml
-
         from hermes_cli.models import model_supports_fast_mode
 
         args = event.get_command_args().strip().lower()
@@ -14503,21 +14518,25 @@ class GatewayRunner:
                 if preview:
                     line += f" — {preview}"
                 lines.append(line)
-            lines.extend([
-                "",
-                "To restore one:",
-                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
-                "2. Send /topic <session-id> inside that topic.",
-                f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "To restore one:",
+                    "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
+                    "2. Send /topic <session-id> inside that topic.",
+                    f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
+                ]
+            )
         else:
-            lines.extend([
-                "No previous unlinked Telegram sessions found.",
-                "",
-                "To restore a previous session later:",
-                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
-                "2. Send /topic <session-id> inside that topic.",
-            ])
+            lines.extend(
+                [
+                    "No previous unlinked Telegram sessions found.",
+                    "",
+                    "To restore a previous session later:",
+                    "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
+                    "2. Send /topic <session-id> inside that topic.",
+                ]
+            )
         return "\n".join(lines)
 
     async def _restore_telegram_topic_session(
@@ -15791,26 +15810,28 @@ class GatewayRunner:
 
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
-    _UPDATE_ALLOWED_PLATFORMS = frozenset({
-        Platform.TELEGRAM,
-        Platform.DISCORD,
-        Platform.SLACK,
-        Platform.WHATSAPP,
-        Platform.SIGNAL,
-        Platform.MATTERMOST,
-        Platform.MATRIX,
-        Platform.HOMEASSISTANT,
-        Platform.EMAIL,
-        Platform.SMS,
-        Platform.DINGTALK,
-        Platform.FEISHU,
-        Platform.WECOM,
-        Platform.WECOM_CALLBACK,
-        Platform.WEIXIN,
-        Platform.BLUEBUBBLES,
-        Platform.QQBOT,
-        Platform.LOCAL,
-    })
+    _UPDATE_ALLOWED_PLATFORMS = frozenset(
+        {
+            Platform.TELEGRAM,
+            Platform.DISCORD,
+            Platform.SLACK,
+            Platform.WHATSAPP,
+            Platform.SIGNAL,
+            Platform.MATTERMOST,
+            Platform.MATRIX,
+            Platform.HOMEASSISTANT,
+            Platform.EMAIL,
+            Platform.SMS,
+            Platform.DINGTALK,
+            Platform.FEISHU,
+            Platform.WECOM,
+            Platform.WECOM_CALLBACK,
+            Platform.WEIXIN,
+            Platform.BLUEBUBBLES,
+            Platform.QQBOT,
+            Platform.LOCAL,
+        }
+    )
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload debug report (summary only) and return paste URLs.
@@ -16933,15 +16954,17 @@ class GatewayRunner:
                         f"Command: {session.command}\n"
                         f"Output:\n{_out}]"
                     )
-                    source = self._build_process_event_source({
-                        "session_id": session_id,
-                        "session_key": session_key,
-                        "platform": platform_name,
-                        "chat_id": chat_id,
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "user_name": user_name,
-                    })
+                    source = self._build_process_event_source(
+                        {
+                            "session_id": session_id,
+                            "session_key": session_key,
+                            "platform": platform_name,
+                            "chat_id": chat_id,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "user_name": user_name,
+                        }
+                    )
                     if not source:
                         logger.warning(
                             "Dropping completion notification with no routing metadata for process %s",

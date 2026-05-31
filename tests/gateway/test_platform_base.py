@@ -361,6 +361,45 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    # Windows path support — regression coverage for #34632
+
+    def test_media_tag_windows_backslash_path(self):
+        """extract_media should recognise Windows backslash paths."""
+        media, cleaned = BasePlatformAdapter.extract_media(
+            r"MEDIA:C:\Users\kotsu\file.pdf"
+        )
+        assert len(media) == 1
+        assert media[0][0].endswith("file.pdf")
+
+    def test_media_tag_windows_forward_slash_path(self):
+        """extract_media should recognise Windows forward-slash paths."""
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "MEDIA:C:/Users/kotsu/file.pdf"
+        )
+        assert len(media) == 1
+        assert media[0][0].endswith("file.pdf")
+
+    def test_media_tag_windows_drive_root(self):
+        """extract_media should recognise a path at the drive root."""
+        media, cleaned = BasePlatformAdapter.extract_media(
+            r"MEDIA:D:\report.md"
+        )
+        assert len(media) == 1
+        assert media[0][0].endswith("report.md")
+
+    def test_media_tag_unix_paths_still_work(self):
+        """Unix absolute and tilde paths must still extract after Windows change."""
+        for content in ["MEDIA:/tmp/audio.ogg", r"MEDIA:~/docs/notes.md"]:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Failed for: {content}"
+
+    def test_relative_path_still_ignored(self):
+        """Relative Windows-style paths (no drive letter) must not match."""
+        media, _ = BasePlatformAdapter.extract_media(
+            r"MEDIA:Users\kotsu\file.pdf"
+        )
+        assert media == []
+
 
 class TestMediaExtensionAllowlistParity:
     """Regression coverage for issue #34517 — the MEDIA: extension black hole.

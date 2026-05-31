@@ -1471,8 +1471,9 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
     """Rename Honcho host blocks for a renamed profile without changing peers."""
-    old_host = f"hermes.{old_name}"
-    new_host = f"hermes.{new_name}"
+    old_host = f"hermes_{old_name}"
+    legacy_old_host = f"hermes.{old_name}"
+    new_host = f"hermes_{new_name}"
 
     candidates = [
         new_dir / "honcho.json",
@@ -1496,18 +1497,24 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             continue
 
         hosts = raw.get("hosts")
-        if not isinstance(hosts, dict) or old_host not in hosts:
+        if not isinstance(hosts, dict):
+            continue
+        source_host = old_host if old_host in hosts else legacy_old_host
+        if source_host not in hosts:
             continue
 
         if new_host in hosts:
             print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
             continue
 
-        block = hosts[old_host]
+        block = hosts[source_host]
         if isinstance(block, dict) and "aiPeer" not in block:
-            bare = old_host.split(".", 1)[1] if "." in old_host else old_host
+            if source_host.startswith("hermes_"):
+                bare = source_host.split("_", 1)[1]
+            else:
+                bare = source_host.split(".", 1)[1] if "." in source_host else source_host
             block["aiPeer"] = bare
-        hosts[new_host] = hosts.pop(old_host)
+        hosts[new_host] = hosts.pop(source_host)
         tmp = path.with_suffix(path.suffix + ".tmp")
         try:
             tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1519,7 +1526,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
                 pass
             continue
 
-        print(f"✓ Honcho host updated: {old_host} → {new_host}")
+        print(f"✓ Honcho host updated: {source_host} → {new_host}")
 
 
 def rename_profile(old_name: str, new_name: str) -> Path:

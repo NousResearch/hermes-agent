@@ -1738,6 +1738,14 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        # Last successfully-resolved (non-empty) model, keyed by session. Used
+        # as a fallback when a fresh config read transiently returns an empty
+        # model (e.g. an mtime-keyed config-cache miss during a post-interrupt
+        # recovery turn). Without this, the agent is built with model="" and
+        # every API call fails HTTP 400 "No models provided" — the session goes
+        # silent until the user manually re-sends. See #35314. ``"*"`` holds a
+        # process-wide last-known-good for sessions seen for the first time.
+        self._last_resolved_model: Dict[str, str] = {}
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -2496,6 +2504,32 @@ class GatewayRunner:
             except Exception:
                 pass
 
+        # Final safety net (#35314): if resolution still produced an empty
+        # model — e.g. a transient config-cache miss during a post-interrupt
+        # recovery turn returned an empty user_config — reuse the last model we
+        # successfully resolved for this session (or, failing that, the most
+        # recent one resolved process-wide). Building an agent with model=""
+        # makes every API call fail HTTP 400 "No models provided" and the
+        # session goes silent until the user manually re-sends. ``getattr``
+        # guards against bare test runners built via ``object.__new__``.
+        _last_good = getattr(self, "_last_resolved_model", None)
+        if _last_good is not None:
+            if not model:
+                _recovered = _last_good.get(resolved_session_key or "") or _last_good.get("*")
+                if _recovered:
+                    logger.warning(
+                        "Empty model resolved for session=%s — recovering "
+                        "last-known-good model %s (config read likely returned "
+                        "empty; see #35314)",
+                        resolved_session_key or "", _recovered,
+                    )
+                    model = _recovered
+            elif model:
+                # Cache the good resolution for future recovery turns.
+                if resolved_session_key:
+                    _last_good[resolved_session_key] = model
+                _last_good["*"] = model
+
         return model, runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
@@ -2792,10 +2826,12 @@ class GatewayRunner:
         """Mark a queued platform as paused — keep it in ``_failed_platforms``
         but stop the reconnect watcher from hammering it.
 
-        Used by the circuit breaker after ``_PAUSE_AFTER_FAILURES`` consecutive
-        retryable failures, and by ``/platform pause <name>`` for manual
-        intervention.  Paused platforms are surfaced in ``/platform list``
-        and resumed with ``/platform resume <name>``.
+        Used by ``/platform pause <name>`` for manual operator intervention.
+        Paused platforms are surfaced in ``/platform list`` and resumed with
+        ``/platform resume <name>``.  Note: the reconnect watcher does NOT
+        auto-pause — retryable (network/DNS) failures keep retrying at the
+        backoff cap indefinitely so a transient outage self-heals without
+        manual intervention.
         """
         info = getattr(self, "_failed_platforms", {}).get(platform)
         if info is None:
@@ -5814,15 +5850,17 @@ class GatewayRunner:
         """Background task that periodically retries connecting failed platforms.
 
         Uses exponential backoff: 30s → 60s → 120s → 240s → 300s (cap).
-        Retryable failures keep retrying at the backoff cap indefinitely
-        — but if a platform fails ``_PAUSE_AFTER_FAILURES`` times in a row
-        without ever succeeding, it is *paused*: kept in the retry queue
-        but no longer hammered.  The user surfaces it with ``/platform list``
-        and resumes it with ``/platform resume <name>``.  Non-retryable
-        failures (bad auth, etc.) still drop out of the queue immediately.
+        Retryable failures (network/DNS blips) keep retrying at the backoff
+        cap indefinitely — they self-heal once connectivity returns, so a
+        transient outage never requires manual intervention. Non-retryable
+        failures (bad auth, etc.) drop out of the queue immediately. The
+        circuit breaker (``_pause_failed_platform`` / ``/platform pause``)
+        remains available for manual operator control via ``/platform list``
+        and ``/platform resume <name>``, but is no longer triggered
+        automatically — auto-pausing a recovered platform was the cause of
+        bots silently staying dead after a transient DNS failure.
         """
         _BACKOFF_CAP = 300  # 5 minutes max between retries
-        _PAUSE_AFTER_FAILURES = 10  # circuit-breaker threshold
 
         await asyncio.sleep(10)  # initial delay — let startup finish
         while self._running:
@@ -5917,14 +5955,14 @@ class GatewayRunner:
                             "Reconnect %s failed, next retry in %ds",
                             platform.value, backoff,
                         )
-                        if attempt >= _PAUSE_AFTER_FAILURES:
-                            self._pause_failed_platform(
-                                platform,
-                                reason=(
-                                    adapter.fatal_error_message
-                                    or "failed to reconnect"
-                                ),
-                            )
+                        # Retryable failures (network/DNS blips) keep retrying
+                        # at the backoff cap indefinitely — they self-heal once
+                        # connectivity returns. We do NOT auto-pause them: a
+                        # transient outage must never require manual `/platform
+                        # resume` to recover. Non-retryable failures (bad auth,
+                        # etc.) already drop out of the queue via the
+                        # `not fatal_error_retryable` branch above, so anything
+                        # reaching here is by definition retryable.
                 except Exception as e:
                     self._update_platform_runtime_status(
                         platform.value,
@@ -5939,8 +5977,9 @@ class GatewayRunner:
                         "Reconnect %s error: %s, next retry in %ds",
                         platform.value, e, backoff,
                     )
-                    if attempt >= _PAUSE_AFTER_FAILURES:
-                        self._pause_failed_platform(platform, reason=str(e))
+                    # A raised exception during reconnect (connect timeout, DNS
+                    # resolution failure, etc.) is inherently transient — keep
+                    # retrying at the backoff cap rather than auto-pausing.
 
             # Check every 10 seconds for platforms that need reconnection
             for _ in range(10):
@@ -10489,6 +10528,22 @@ class GatewayRunner:
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
 
+                        # Persist the new model to the session DB so the
+                        # dashboard shows the updated model (#34850).
+                        _sess_db = getattr(_self, "_session_db", None)
+                        if _sess_db is not None:
+                            try:
+                                _sess_entry = _self.session_store.get_or_create_session(
+                                    event.source
+                                )
+                                _sess_db.update_session_model(
+                                    _sess_entry.session_id, result.new_model
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "Failed to persist model switch to DB: %s", exc
+                                )
+
                         # Store model note + session override
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
@@ -10625,6 +10680,20 @@ class GatewayRunner:
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
+
+        # Persist the new model to the session DB so the dashboard
+        # shows the updated model (#34850).
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is not None:
+            try:
+                _sess_entry = self.session_store.get_or_create_session(source)
+                _sess_db.update_session_model(
+                    _sess_entry.session_id, result.new_model
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to persist model switch to DB: %s", exc
+                )
 
         # Store a note to prepend to the next user message so the model
         # knows about the switch (avoids system messages mid-history).
@@ -15378,7 +15447,51 @@ class GatewayRunner:
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("memory", "provider"),
     )
+
+    _HONCHO_CACHE_BUSTING_KEYS = (
+        "honcho.peer_name",
+        "honcho.ai_peer",
+        "honcho.pin_peer_name",
+        "honcho.runtime_peer_prefix",
+        "honcho.user_peer_aliases",
+    )
+    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+
+    @classmethod
+    def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
+        return {key: None for key in cls._HONCHO_CACHE_BUSTING_KEYS}
+
+    @classmethod
+    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
+        """Extract Honcho identity keys, memoized by honcho.json mtime."""
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+
+            path = resolve_config_path()
+            try:
+                mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = None
+            memo_key = (str(path), mtime_ns)
+            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
+            if cached is not None:
+                return dict(cached)
+
+            hcfg = HonchoClientConfig.from_global_config(config_path=path)
+            aliases = hcfg.user_peer_aliases or {}
+            values = {
+                "honcho.peer_name": hcfg.peer_name,
+                "honcho.ai_peer": hcfg.ai_peer,
+                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
+                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
+                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
+            }
+            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
+            return dict(values)
+        except Exception:
+            return cls._empty_honcho_cache_busting_config()
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
@@ -15408,6 +15521,15 @@ class GatewayRunner:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
+
+        # Honcho identity-mapping keys live in honcho.json, not user_config.
+        # Only read that file when Honcho is the active memory provider.
+        provider = cfg_get(cfg, "memory", "provider")
+        if isinstance(provider, str) and provider.lower() == "honcho":
+            out.update(cls._extract_honcho_cache_busting_config())
+        else:
+            out.update(cls._empty_honcho_cache_busting_config())
+
         return out
 
     @staticmethod
@@ -15417,6 +15539,8 @@ class GatewayRunner:
         enabled_toolsets: list,
         ephemeral_prompt: str,
         cache_keys: dict | None = None,
+        user_id: str | None = None,
+        user_id_alt: str | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -15441,6 +15565,11 @@ class GatewayRunner:
         _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
+        _user_identity = []
+        if user_id is not None:
+            _user_identity.append(["user_id", str(user_id)])
+        if user_id_alt is not None:
+            _user_identity.append(["user_id_alt", str(user_id_alt)])
 
         blob = _j.dumps(
             [
@@ -15454,6 +15583,7 @@ class GatewayRunner:
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
                 _cache_keys_sorted,
+                _user_identity,
             ],
             sort_keys=True,
             default=str,
@@ -16991,6 +17121,8 @@ class GatewayRunner:
                 enabled_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
+                user_id=getattr(source, "user_id", None),
+                user_id_alt=getattr(source, "user_id_alt", None),
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -17220,7 +17352,7 @@ class GatewayRunner:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
                         _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                             r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                             r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
                             r'txt|csv|apk|ipa))',
@@ -17550,7 +17682,7 @@ class GatewayRunner:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                                r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                                 r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                                 r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
                                 r'txt|csv|apk|ipa))',

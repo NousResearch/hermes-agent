@@ -380,6 +380,7 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        self._fts_enabled = False
         try:
             self._conn = sqlite3.connect(
                 str(self.db_path),
@@ -388,7 +389,6 @@ class SessionDB:
                 # handles contention instead of sitting in SQLite's internal
                 # busy handler for up to 30s.
                 timeout=1.0,
-                # Autocommit mode: Python's default isolation_level=""
                 # auto-starts transactions on DML, which conflicts with our
                 # explicit BEGIN IMMEDIATE.  None = we manage transactions
                 # ourselves.
@@ -724,14 +724,44 @@ class SessionDB:
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+            self._fts_enabled = True
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+            try:
+                cursor.executescript(FTS_SQL)
+                self._fts_enabled = True
+            except sqlite3.OperationalError as fts_exc:
+                err = str(fts_exc).lower()
+                if "fts5" not in err and "no such module" not in err:
+                    raise
+                logger.warning(
+                    "SQLite FTS5 unavailable for %s; full-text session search "
+                    "disabled. This usually means Hermes is running on an "
+                    "unsupported install (e.g. a pip-installed or pip-managed "
+                    "Python whose bundled SQLite lacks FTS5) rather than a "
+                    "mainline install. Some features may be missing or behave "
+                    "differently. Install the supported way: "
+                    "https://hermes-agent.nousresearch.com (underlying error: %s)",
+                    self.db_path,
+                    fts_exc,
+                )
 
         # Trigram FTS5 for CJK/substring search
         try:
             cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+            try:
+                cursor.executescript(FTS_TRIGRAM_SQL)
+            except sqlite3.OperationalError as fts_exc:
+                err = str(fts_exc).lower()
+                if "fts5" not in err and "no such module" not in err:
+                    raise
+                # Same FTS5-unavailable cause already warned about above for
+                # messages_fts; the trigram table is an additional CJK index,
+                # so just degrade silently here. CJK search falls back to LIKE.
 
         self._conn.commit()
 
@@ -932,6 +962,20 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
+            )
+        self._execute_write(_do)
+
+    def update_session_model(self, session_id: str, model: str) -> None:
+        """Update the model for a session after a mid-session switch.
+
+        Unlike ``update_token_counts`` which uses ``COALESCE(model, ?)``
+        (only filling in NULL), this unconditionally sets the model column
+        so that the dashboard reflects the user's latest /model choice.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model = ? WHERE id = ?",
+                (model, session_id),
             )
         self._execute_write(_do)
 
@@ -2317,6 +2361,9 @@ class SessionDB:
         ignores ``sort``. The trigram CJK path honours ``sort`` like the main
         FTS5 path.
         """
+        if not self._fts_enabled:
+            return []
+
         if not query or not query.strip():
             return []
 

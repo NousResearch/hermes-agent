@@ -48,12 +48,32 @@ def test_stamp_file_takes_precedence(tmp_path):
         assert detect_install_method(project_root=tmp_path) == "docker"
 
 
-def test_docker_detected_via_dockerenv(tmp_path):
+def test_container_without_stamp_is_not_docker(tmp_path):
+    """An unstamped install in a generic container must NOT be flagged as docker.
+
+    Regression for issue #34397. The two supported installs both stamp
+    ``.install_method`` (the curl installer -> ``git``, covered by
+    ``test_stamp_file_takes_precedence``; the published image -> ``docker``),
+    so neither hits this path. An unsupported manual install dropped into a
+    container has no stamp and was wrongly classified as the published Docker
+    image, so ``hermes update`` refused to run. With a ``.git`` checkout it
+    must resolve to ``git``.
+    """
+    (tmp_path / ".git").mkdir()
     with patch("hermes_cli.config.get_managed_system", return_value=None), \
          patch("hermes_cli.config.get_hermes_home", return_value=tmp_path), \
          patch("hermes_constants.is_container", return_value=True):
         from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=tmp_path) == "docker"
+        assert detect_install_method(project_root=tmp_path) == "git"
+
+
+def test_container_pip_install_without_stamp_is_pip(tmp_path):
+    """Container + no .git + no stamp -> pip, not docker (issue #34397)."""
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path), \
+         patch("hermes_constants.is_container", return_value=True):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=tmp_path) == "pip"
 
 
 def test_recommended_update_command_docker():

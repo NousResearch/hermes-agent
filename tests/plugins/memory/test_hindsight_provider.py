@@ -6,7 +6,9 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 import textwrap
@@ -1731,3 +1733,13 @@ class TestProcessShutdownLifecycle:
         assert "coroutine was never awaited" not in stderr
         assert "Unclosed client session" not in stderr
 
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+def test_save_config_sets_owner_only_permissions(tmp_path):
+    """hindsight/config.json must be written with 0o600 so API key is not world-readable."""
+    provider = HindsightMemoryProvider()
+    provider.save_config({"api_key": "hd-test-key"}, str(tmp_path))
+    config_file = tmp_path / "hindsight" / "config.json"
+    assert config_file.exists()
+    mode = stat.S_IMODE(config_file.stat().st_mode)
+    assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"

@@ -58,6 +58,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
+| `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
 | `hermes backup` | Back up Hermes home directory to a zip file. |
 | `hermes checkpoints` | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
@@ -885,6 +886,50 @@ Lines without a parseable timestamp are included when `--since` is active (they 
 ### Log rotation
 
 Hermes uses Python's `RotatingFileHandler`. Old logs are rotated automatically — look for `agent.log.1`, `agent.log.2`, etc. The `hermes logs list` subcommand shows all log files including rotated ones.
+
+
+## `hermes prompt-size`
+
+```bash
+hermes prompt-size [--platform <name>] [--json]
+```
+
+Reports the fixed prompt budget for a fresh session — what gets sent on every
+API call *before* any conversation content. Useful when a downstream adapter or
+proxy has a tighter prompt budget than the model's context window, or when you
+want to see which block (skills index, memory, profile) dominates.
+
+It builds the same system prompt the agent would, then breaks it down:
+
+- **System prompt total** — full assembled prompt (identity, guidance, skills
+  index, context files, memory, profile, timestamp).
+- **Skills index** — the `<available_skills>` block. This is often the largest
+  single block when many skills are installed.
+- **Memory** and **user profile** — your `MEMORY.md` / `USER.md` snapshots.
+- **Prompt tiers** — stable / context / volatile, matching how Hermes layers
+  the prompt for cache-friendliness.
+- **Tool schemas** — the JSON for all enabled tools (the other half of the
+  fixed per-call payload).
+
+Runs entirely offline — no API call, works with no credentials configured.
+
+```bash
+# Human-readable breakdown for the CLI platform (default)
+hermes prompt-size
+
+# Simulate a messaging platform's prompt (different platform hint)
+hermes prompt-size --platform telegram
+
+# Machine-readable output for scripts
+hermes prompt-size --json
+```
+
+:::tip
+The skills index and tool schemas scale with how many skills and tools you have
+enabled. To shrink the prompt, disable unused toolsets (`hermes tools`) or
+uninstall skills you don't need (`hermes skills`). Context files (AGENTS.md,
+.cursorrules) in your current directory also count toward the total.
+:::
 
 ## `hermes config`
 

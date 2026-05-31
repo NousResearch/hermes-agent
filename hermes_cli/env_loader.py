@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+import dotenv
 from utils import atomic_replace
 
 
@@ -144,10 +144,14 @@ def _sanitize_loaded_credentials() -> None:
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    # Call through the ``dotenv`` module (not a ``from dotenv import load_dotenv``
+    # binding) so a ``patch("dotenv.load_dotenv")`` in tests is honored at call
+    # time and cannot be frozen into this module by an import that happens to
+    # occur while the patch is active.
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        dotenv.load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        dotenv.load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

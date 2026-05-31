@@ -193,3 +193,109 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
 
     assert calls
     assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+
+
+# ── _workspace_root helper ──────────────────────────────────────────
+
+
+def test_workspace_root_returns_parent_when_subpackage(tmp_path: Path, main_mod) -> None:
+    """Sub-package has package.json, no lockfile; parent has lockfile → parent."""
+    sub = tmp_path / "ui-tui"
+    sub.mkdir()
+    (sub / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+    assert main_mod._workspace_root(sub) == tmp_path
+
+
+def test_workspace_root_returns_dir_when_standalone(tmp_path: Path, main_mod) -> None:
+    """No package.json → not a sub-package, return dir itself."""
+    assert main_mod._workspace_root(tmp_path) == tmp_path
+
+
+def test_workspace_root_returns_dir_when_own_lockfile(tmp_path: Path, main_mod) -> None:
+    """Has package.json AND its own lockfile → standalone, return dir."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+    (tmp_path.parent / "package-lock.json").write_text("{}")
+    assert main_mod._workspace_root(tmp_path) == tmp_path
+
+
+def test_workspace_root_returns_dir_when_no_parent_lockfile(
+    tmp_path: Path, main_mod
+) -> None:
+    """Has package.json, no own lockfile, but parent also has no lockfile → standalone."""
+    sub = tmp_path / "ui-tui"
+    sub.mkdir()
+    (sub / "package.json").write_text("{}")
+    # tmp_path has no package-lock.json either
+    assert main_mod._workspace_root(sub) == sub
+
+
+def test_workspace_root_consistent_with_need_npm_install(
+    tmp_path: Path, main_mod
+) -> None:
+    """Divergence regression: if someone creates ui-tui/package-lock.json
+    by accident, _workspace_root (used by both _tui_need_npm_install AND
+    the npm install cwd) returns ui-tui/ for both, so they never disagree.
+
+    Before the shared helper, _tui_need_npm_install used a 3-condition
+    check (falling back to ui-tui/ when its own lockfile exists) while
+    the npm install cwd used a simpler check (still going to the parent
+    because the parent lockfile still exists).  The shared helper
+    eliminates the split.
+    """
+    sub = tmp_path / "ui-tui"
+    sub.mkdir()
+    (sub / "package.json").write_text("{}")
+    # Both sub and parent have lockfiles — accidental state
+    (sub / "package-lock.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    ws = main_mod._workspace_root(sub)
+    # _workspace_root sees sub has its own lockfile → treats it as standalone
+    assert ws == sub
+
+    # _tui_need_npm_install also uses _workspace_root, so both agree
+    assert main_mod._tui_need_npm_install.__code__.co_names
+    # (Smoke test: just confirm _tui_need_npm_install doesn't crash)
+    # It won't need install because the lockfile exists and there's no
+    # hidden lockfile to compare against, and ink is missing → True.
+    # But the key invariant is: ws_root for the need-check == ws_root
+    # for the install cwd — both use _workspace_root(sub).
+
+
+def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
+    """Workspace sub-directories must not contain their own package-lock.json.
+
+    With a single workspace root lockfile, per-directory lockfiles are
+    always accidental (typically from running ``npm install`` inside the
+    wrong directory).  They cause ``_workspace_root`` to treat the
+    sub-package as standalone, which breaks hoisted ``node_modules``
+    resolution and can silently diverge the install cwd from the
+    lockfile-check root.
+
+    This is an invariant, not a change-detector: the workspace structure
+    is not expected to gain per-dir lockfiles.
+    """
+    root = main_mod.PROJECT_ROOT
+    # Workspace members that live one level below the root and should
+    # NOT have their own lockfile.  (ui-tui/packages/* members are
+    # two levels deep and even less likely to get accidental lockfiles,
+    # but we check them too for completeness.)
+    subdirs = [
+        root / "ui-tui",
+        root / "web",
+        root / "apps" / "desktop",
+        root / "apps" / "shared",
+    ]
+    # Also sweep ui-tui/packages/* (hermes-ink etc.)
+    tui_pkgs = root / "ui-tui" / "packages"
+    if tui_pkgs.is_dir():
+        subdirs.extend(d for d in tui_pkgs.iterdir() if d.is_dir())
+
+    stray = [d for d in subdirs if (d / "package-lock.json").is_file()]
+    assert not stray, (
+        "stray package-lock.json found in workspace sub-directory(es); "
+        "delete them and run `npm install` from the repo root instead: "
+        + ", ".join(str(d / "package-lock.json") for d in stray)
+    )

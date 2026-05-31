@@ -4,7 +4,10 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "apps/*",
+    "ui-tui",
+    "ui-tui/packages/*",
+    "web"
   ],
   "scripts": {
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"

@@ -18,13 +18,15 @@ from hermes_cli.colors import Colors, color
 
 # Patterns that indicate a cron job targets the gateway lifecycle.
 # Matches commands that restart/stop the gateway or its service manager.
+# Deliberately specific — a bare "gateway ... restart" catch-all would block
+# legitimate prompts that merely mention an unrelated gateway (e.g. "summarize
+# the API gateway logs and report restart events").
 _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"(?i)"
     r"(hermes\s+gateway\s+(restart|stop|start))"
     r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
     r"|(systemctl\s+(restart|stop|start)\s+.*hermes)"
     r"|(p?kill\s+.*hermes.*gateway)"
-    r"|(\bgateway.*restart)"
 )
 
 
@@ -191,7 +193,7 @@ def cron_create(args):
     combined = prompt
     if script:
         try:
-            script_text = Path(script).read_text()
+            script_text = Path(script).read_text(encoding="utf-8")
             combined = f"{combined}\n{script_text}"
         except (OSError, UnicodeDecodeError):
             pass

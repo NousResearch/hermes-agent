@@ -298,3 +298,32 @@ def test_loop_stops_if_task_reclaimed(monkeypatch):
         first_response="x",
     )
     assert res["outcome"] == "stopped"
+
+
+def test_loop_finalize_nudge_runs_on_last_turn(monkeypatch):
+    """When the judge says 'done' on the final budgeted turn, the loop must
+    send the finalize nudge instead of blocking with 'turn budget exhausted'.
+
+    Before the fix, the budget check fired AFTER preparing the finalize
+    prompt, so run_turn() was never called and the card was incorrectly
+    blocked even though the judge said the work was complete.
+    """
+    _patch_judge(monkeypatch, ["done", "done"])
+    # Worker completes after receiving the finalize nudge.
+    statuses = iter(["running", "done"])
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t7",
+        goal_text="task",
+        run_turn=lambda p: turns.append(p) or "done",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: pytest.fail(f"should not block: {r}"),
+        # max_turns=1 means budget is already at ceiling on the first
+        # judge call (turns_used starts at 1).
+        max_turns=1,
+        first_response="looks complete",
+    )
+    assert res["outcome"] == "completed_by_worker"
+    assert len(turns) == 1, "finalize nudge must have been sent"
+    assert "still open" in turns[0]

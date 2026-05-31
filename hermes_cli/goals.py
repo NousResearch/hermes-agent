@@ -873,7 +873,10 @@ def run_kanban_goal_loop(
             prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
 
         # Budget check BEFORE spending another turn.
-        if turns_used >= max_turns:
+        # Exception: when the judge just said "done" for the first time this
+        # iteration, allow one grace turn to send the finalize nudge so the
+        # worker has a chance to call kanban_complete.
+        if turns_used >= max_turns and verdict != "done":
             _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
             try:
                 block_fn(

@@ -176,13 +176,13 @@ def run_oneshot(
     real_stdout = sys.stdout
     real_stderr = sys.stderr
     devnull = open(os.devnull, "w", encoding="utf-8")
-
     response: Optional[str] = None
+    result: dict = {}
     failure: BaseException | None = None
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
-                response = _run_agent(
+                response, result = _run_agent(
                     prompt,
                     model=model,
                     provider=provider,
@@ -213,16 +213,20 @@ def run_oneshot(
         real_stderr.flush()
         return 1
 
+    if response:
+        real_stdout.write(response)
+        if not response.endswith("\n"):
+            real_stdout.write("\n")
+        real_stdout.flush()
+
+    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+        return 2
+
     if not (response or "").strip():
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1
 
-    assert response is not None  # narrowed by the empty-response guard above
-    real_stdout.write(response)
-    if not response.endswith("\n"):
-        real_stdout.write("\n")
-    real_stdout.flush()
     return 0
 
 
@@ -248,9 +252,9 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
-) -> str:
+) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns the final response string."""
+    run a single conversation.  Returns ``(final_response, run_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -364,7 +368,8 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    result = agent.run_conversation(prompt)
+    return (result.get("final_response") or "", result)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

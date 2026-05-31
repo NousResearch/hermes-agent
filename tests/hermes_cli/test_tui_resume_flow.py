@@ -642,7 +642,9 @@ def test_oneshot_fails_closed_on_empty_final_response(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod
 
-    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("", {})
+    )
 
     assert oneshot_mod.run_oneshot("hello") == 1
     captured = capsys.readouterr()
@@ -654,7 +656,9 @@ def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod
 
-    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: "done")
+    monkeypatch.setattr(
+        oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("done", {})
+    )
 
     assert oneshot_mod.run_oneshot("hello") == 0
     captured = capsys.readouterr()
@@ -690,6 +694,30 @@ def test_oneshot_reraises_keyboard_interrupt(monkeypatch):
 
     with _pytest.raises(KeyboardInterrupt):
         oneshot_mod.run_oneshot("hello")
+
+
+def test_oneshot_exit_code_when_failed_without_response(monkeypatch):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: ("", {"failed": True, "partial": False}),
+    )
+    assert run_oneshot("hi") == 2
+
+
+def test_oneshot_exit_code_zero_when_failed_with_error_text(monkeypatch, capsys):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: (
+            "API call failed after 3 retries: HTTP 404: model not found",
+            {"failed": True, "partial": False},
+        ),
+    )
+    assert run_oneshot("hi") == 0
+    assert "HTTP 404" in capsys.readouterr().out
 
 
 def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
@@ -806,9 +834,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
-        def chat(self, prompt):
+        def run_conversation(self, prompt, **_kwargs):
             captured["prompt"] = prompt
-            return "ok"
+            return {"final_response": "ok", "failed": False, "partial": False}
 
     class FakeSessionDB:
         def __new__(cls):
@@ -852,7 +880,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    assert _run_agent("recall this") == "ok"
+    text, result = _run_agent("recall this")
+    assert text == "ok"
+    assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"

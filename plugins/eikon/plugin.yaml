@@ -1,0 +1,7 @@
+name: eikon
+version: 1.0.0
+description: "Herm eikon installer tool. Lets Hermes chat install terminal avatars through the existing `herm eikon install` CLI path."
+author: NousResearch
+kind: backend
+provides_tools:
+  - eikon_install

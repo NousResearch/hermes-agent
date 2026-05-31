@@ -220,6 +220,16 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "sales": {
+        "description": "Agent-native commercial/sales core: catalog, inventory, quotes, orders, invoices, and payment requests",
+        "tools": [
+            "sales_status", "sales_product_upsert", "sales_inventory_adjust",
+            "sales_quote_create", "sales_order_create", "sales_invoice_create",
+            "sales_payment_request_create",
+        ],
+        "includes": []
+    },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",

@@ -25,6 +25,7 @@ DEFAULTS = {
     "AGENT_DB_RUNTIME_USER": "agent_runtime",
     "FACTORY_DB_RUNTIME_USER": "factory_runtime",
     "CRM_DB_RUNTIME_USER": "crm_runtime",
+    "SALES_DB_RUNTIME_USER": "sales_runtime",
 }
 
 
@@ -49,6 +50,7 @@ def _fill_passwords_from_urls(env: dict[str, str]) -> None:
         "FACTORY_DB_RUNTIME_PASSWORD": "FACTORY_DATABASE_URL",
         "CALENDAR_DB_RUNTIME_PASSWORD": "CALENDAR_DATABASE_URL",
         "CRM_DB_RUNTIME_PASSWORD": "CRM_DATABASE_URL",
+        "SALES_DB_RUNTIME_PASSWORD": "SALES_DATABASE_URL",
     }
     for password_key, url_key in pairs.items():
         if env.get(password_key):

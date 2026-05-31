@@ -30,4 +30,4 @@ Planning gates should be recorded in Factory DB for project `smb-agent-business-
 
 ## Next recommended action
 
-Open/merge this documentation branch, then execute Sprint 1: Commercial/Sales Core.
+Sprint 1 has started and delivered the Commercial/Sales Core foundation. See `SPRINT_1_REPORT.md` for schema, tools, tests, and live smoke evidence. Next implementation step: payment adapter contract/implementation selection for IzyPagos/Flexipos/Stripe-style payment links, or Sprint 2 Accounting Lite Core.

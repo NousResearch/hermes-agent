@@ -908,7 +908,8 @@ class TestWeixinVoiceSending:
 
 
 class TestIsStaleSessionRet:
-    """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2."""
+    """Regression tests for #17228 and #35713: distinguish stale-session
+    ret=-2 from genuine rate-limit ret=-2."""
 
     def test_ret_minus_2_with_unknown_error_is_stale(self):
         assert weixin._is_stale_session_ret(-2, None, "unknown error") is True
@@ -918,6 +919,21 @@ class TestIsStaleSessionRet:
 
     def test_unknown_error_case_insensitive(self):
         assert weixin._is_stale_session_ret(-2, None, "Unknown Error") is True
+
+    def test_ret_minus_2_with_rate_limited_is_stale(self):
+        # Third variant (#35713): iLink returns errmsg="rate limited" for
+        # stale context_token — same recovery as "unknown error".
+        assert weixin._is_stale_session_ret(-2, None, "rate limited") is True
+
+    def test_errcode_minus_2_with_rate_limited_is_stale(self):
+        assert weixin._is_stale_session_ret(None, -2, "rate limited") is True
+
+    def test_rate_limited_case_insensitive(self):
+        assert weixin._is_stale_session_ret(-2, None, "Rate Limited") is True
+        assert weixin._is_stale_session_ret(-2, None, "RATE LIMITED") is True
+
+    def test_rate_limited_with_whitespace_is_stale(self):
+        assert weixin._is_stale_session_ret(-2, None, "  rate limited  ") is True
 
     def test_ret_minus_2_with_freq_limit_is_not_stale(self):
         # Genuine rate limit — must NOT be treated as stale session.

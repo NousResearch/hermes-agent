@@ -277,3 +277,45 @@ class TestSessionEntryAutoResetRoundtrip:
         assert reloaded.was_auto_reset is False
         assert reloaded.auto_reset_reason is None
         assert reloaded.reset_had_activity is False
+
+    def test_compression_exhaustion_reset_carries_bounded_handoff(self, tmp_path):
+        """Compression-exhaustion auto-reset is not a plain manual /reset.
+
+        The new session should start fresh enough to avoid replaying the
+        oversized transcript, but it needs one bounded handoff so the next turn
+        does not wake up with total amnesia.
+        """
+        store = _make_store(tmp_path=tmp_path)
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        parent_session_id = entry.session_id
+        new_entry = store.reset_session(
+            entry.session_key,
+            auto_reset_reason="compression_exhausted",
+            reset_context_handoff="short continuity note",
+        )
+
+        assert new_entry is not None
+        assert new_entry.session_id != parent_session_id
+        assert new_entry.is_fresh_reset is False
+        assert new_entry.was_auto_reset is True
+        assert new_entry.auto_reset_reason == "compression_exhausted"
+        assert new_entry.reset_had_activity is True
+        assert new_entry.reset_parent_session_id == parent_session_id
+        assert new_entry.reset_context_handoff == "short continuity note"
+        if store._db:
+            db_row = store._db.get_session(new_entry.session_id)
+            assert db_row is not None
+            assert db_row["parent_session_id"] == parent_session_id
+
+        store._loaded = False
+        store._entries.clear()
+        store._ensure_loaded()
+
+        reloaded = store._entries.get(entry.session_key)
+        assert reloaded is not None
+        assert reloaded.was_auto_reset is True
+        assert reloaded.auto_reset_reason == "compression_exhausted"
+        assert reloaded.reset_parent_session_id == parent_session_id
+        assert reloaded.reset_context_handoff == "short continuity note"

@@ -751,6 +751,77 @@ def _collect_auto_append_media_tags(
 
     return media_tags, has_voice_directive
 
+def _clip_handoff_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _build_compression_exhaustion_handoff(
+    *,
+    parent_session_id: str,
+    history: Optional[List[Dict[str, Any]]],
+    failed_user_message: str,
+    agent_result: Dict[str, Any],
+    max_chars: int = 4000,
+) -> str:
+    """Build a bounded continuity note for post-exhaustion auto-reset.
+
+    The goal is not to replay the old transcript. Replaying is exactly what
+    caused the context-overflow loop. This note is a small audit/continuity
+    bridge so the next fresh session understands why it woke up with less
+    context and what the user had just asked.
+    """
+    lines = [
+        "[System note: The previous session exceeded the model context window "
+        "and Hermes could not compress it further, so a fresh session was "
+        "created. The following handoff is bounded background context only; "
+        "do not continue old work unless the user asks.]",
+        f"Parent session: {parent_session_id}",
+    ]
+
+    api_calls = agent_result.get("api_calls")
+    if api_calls is not None:
+        lines.append(f"Failed turn API calls before reset: {api_calls}")
+
+    error = _clip_handoff_text(agent_result.get("error"), 500)
+    if error:
+        lines.append(f"Failure reason: {error}")
+
+    failed_user_message = _clip_handoff_text(failed_user_message, 900)
+    if failed_user_message:
+        lines.append("")
+        lines.append("User message that triggered the exhausted turn:")
+        lines.append(f"- {failed_user_message}")
+
+    recent: list[str] = []
+    for msg in reversed(history or []):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        content = _clip_handoff_text(msg.get("content"), 650)
+        if not content:
+            continue
+        recent.append(f"- {role}: {content}")
+        if len(recent) >= 8:
+            break
+    if recent:
+        lines.append("")
+        lines.append("Recent prior conversation, newest last:")
+        lines.extend(reversed(recent))
+
+    lines.append("")
+    lines.append(
+        "Recovery guidance: answer the user's next message from this short "
+        "handoff plus durable memory/files. If more detail is needed, ask the "
+        "user or suggest /resume instead of loading the whole old transcript."
+    )
+
+    return _clip_handoff_text("\n".join(lines), max_chars)
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -8797,10 +8868,20 @@ class GatewayRunner:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+            elif reset_reason == "compression_exhausted":
+                context_note = (
+                    "[System note: The user's previous session exceeded the model "
+                    "context window and could not be compressed further. This is a "
+                    "fresh conversation; use the bounded handoff below as background "
+                    "context only.]"
+                )
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+            _reset_handoff = getattr(session_entry, "reset_context_handoff", None)
+            if _reset_handoff:
+                context_note = f"{context_note}\n\n{_reset_handoff}"
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
@@ -8826,6 +8907,8 @@ class GatewayRunner:
                     if adapter:
                         if reset_reason == "suspended":
                             reason_text = "previous session was stopped or interrupted"
+                        elif reset_reason == "compression_exhausted":
+                            reason_text = "previous session exceeded the model context window and could not be compressed"
                         elif reset_reason == "daily":
                             reason_text = f"daily schedule at {policy.at_hour}:00"
                         else:
@@ -8835,7 +8918,7 @@ class GatewayRunner:
                             reason_text = f"inactive for {duration}"
                         notice = (
                             f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
+                            f"Conversation history cleared from the live context.\n"
                             f"Use /resume to browse and restore a previous session.\n"
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
@@ -8854,6 +8937,12 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+            session_entry.reset_parent_session_id = None
+            session_entry.reset_context_handoff = None
+            try:
+                self.session_store._save()
+            except Exception:
+                logger.debug("Failed to persist auto-reset handoff consumption", exc_info=True)
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
@@ -9540,7 +9629,17 @@ class GatewayRunner:
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                self.session_store.reset_session(session_key)
+                _handoff = _build_compression_exhaustion_handoff(
+                    parent_session_id=session_entry.session_id,
+                    history=history,
+                    failed_user_message=message_text,
+                    agent_result=agent_result,
+                )
+                self.session_store.reset_session(
+                    session_key,
+                    auto_reset_reason="compression_exhausted",
+                    reset_context_handoff=_handoff,
+                )
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)

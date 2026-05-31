@@ -565,6 +565,8 @@ def apply_bitwarden_secrets(
     cache_ttl_seconds: float = 300,
     auto_install: bool = True,
     server_url: str = "",
+    key_prefix: str = "",
+    strip_prefix: bool = False,
     home_path: Optional[Path] = None,
 ) -> FetchResult:
     """Pull secrets from BSM and set them on ``os.environ``.
@@ -622,10 +624,23 @@ def apply_bitwarden_secrets(
         result.error = str(exc)
         return result
 
-    result.secrets = secrets
+    result.secrets = {}
     result.warnings.extend(warnings)
 
-    for key, value in secrets.items():
+    normalized_prefix = str(key_prefix or "").strip()
+    for raw_key, value in secrets.items():
+        if normalized_prefix:
+            if not raw_key.startswith(normalized_prefix):
+                continue
+            key = raw_key[len(normalized_prefix):] if strip_prefix else raw_key
+            if not _is_valid_env_name(key):
+                result.warnings.append(
+                    f"Skipping secret {raw_key!r}: stripped key {key!r} is not a valid env-var name"
+                )
+                continue
+        else:
+            key = raw_key
+        result.secrets[key] = value
         if key == access_token_env:
             # Don't let BSM clobber the very token we used to fetch
             # itself — that would be a footgun if someone stored the

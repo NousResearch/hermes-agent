@@ -476,6 +476,36 @@ def test_apply_override_existing(monkeypatch, tmp_path):
     assert os.environ["OPENAI_API_KEY"] == "fresh"
 
 
+def test_apply_key_prefix_strips_and_ignores_unprefixed_secrets(monkeypatch, tmp_path):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([
+        {"key": "TELEGRAM_BOT_TOKEN", "value": "main-token"},
+        {"key": "PROFILE_BACKEND_TELEGRAM_BOT_TOKEN", "value": "backend-token"},
+    ])
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
+
+    result = bw.apply_bitwarden_secrets(
+        enabled=True,
+        project_id="p",
+        override_existing=False,
+        auto_install=False,
+        key_prefix="PROFILE_BACKEND_",
+        strip_prefix=True,
+    )
+
+    assert result.ok
+    assert result.applied == ["TELEGRAM_BOT_TOKEN"]
+    assert os.environ["TELEGRAM_BOT_TOKEN"] == "backend-token"
+
+
 def test_apply_never_overrides_bootstrap_token(monkeypatch, tmp_path):
     """Even with override_existing=True, the access-token var is preserved."""
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.original")
@@ -545,6 +575,8 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         "    cache_ttl_seconds: 0\n"
         "    override_existing: false\n"
         "    auto_install: false\n"
+        "    key_prefix: 'PROFILE_BACKEND_'\n"
+        "    strip_prefix: true\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
@@ -555,6 +587,8 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         called["n"] += 1
         assert kwargs["enabled"] is True
         assert kwargs["project_id"] == "proj-1"
+        assert kwargs["key_prefix"] == "PROFILE_BACKEND_"
+        assert kwargs["strip_prefix"] is True
         os.environ["MY_BSM_KEY"] = "from-bsm"
         return bw.FetchResult(
             secrets={"MY_BSM_KEY": "from-bsm"},

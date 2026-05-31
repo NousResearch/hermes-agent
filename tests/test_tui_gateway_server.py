@@ -5158,3 +5158,72 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+
+
+def test_notification_poller_routes_completion_to_owner_live_session(monkeypatch):
+    """Completion notifications route to the live session that owns the process."""
+    from tools.process_registry import ProcessSession, process_registry
+
+    owner_turns = []
+    poller_turns = []
+    emitted = []
+
+    class _OwnerAgent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            owner_turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _PollerAgent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            poller_turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    owner = _session(agent=_OwnerAgent(), session_key="owner-key")
+    poller = _session(agent=_PollerAgent(), session_key="poller-key")
+    server._sessions["sid_owner"] = owner
+    server._sessions["sid_poller"] = poller
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    isolated_queue = __import__("queue").Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_owner_test")
+    process_registry._finished["proc_owner_test"] = ProcessSession(
+        id="proc_owner_test",
+        command="echo owner",
+        session_key="owner-key",
+        exited=True,
+        exit_code=0,
+    )
+    isolated_queue.put(
+        {
+            "type": "completion",
+            "session_id": "proc_owner_test",
+            "command": "echo owner",
+            "exit_code": 0,
+            "output": "owner",
+        }
+    )
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_poller", poller)
+
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) >= 1
+        assert status_calls[0][1] == "sid_owner"
+        assert owner_turns and "[IMPORTANT: Background process proc_owner_test completed" in owner_turns[0]
+        assert poller_turns == []
+    finally:
+        server._sessions.pop("sid_owner", None)
+        server._sessions.pop("sid_poller", None)
+        process_registry._finished.pop("proc_owner_test", None)

@@ -184,7 +184,7 @@ class TurnController {
 
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
     this.interrupted = true
-    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
+    const interruptPromise = gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
     this.closeReasoningSegment()
 
@@ -225,6 +225,8 @@ class TurnController {
       this.statusTimer = null
       patchUiState({ status: 'ready' })
     }, INTERRUPT_COOLDOWN_MS)
+
+    return interruptPromise
   }
 
   pruneTransient() {

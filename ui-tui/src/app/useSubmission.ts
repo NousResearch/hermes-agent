@@ -265,13 +265,30 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       // 'interrupt' (default): tear down the current turn, then send.
-      // `interruptTurn` fires `session.interrupt` without awaiting; if
-      // the gateway is still mid-response when `prompt.submit` lands,
-      // `send()`'s catch path re-queues with a "queued: ..." sys note
-      // (`isSessionBusyError`) — so a lost race degrades to queue
-      // semantics, not a dropped message.
+      // Await `session.interrupt` so the gateway has processed the cancel
+      // before we fire `prompt.submit` — otherwise the submit hits
+      // "session busy" and the message gets queued instead of going through.
       if (live.sid) {
-        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
+        const interruptDone = turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
+
+        patchUiState({ busy: true, status: 'interrupting…' })
+
+        interruptDone
+          .then(() => {
+            if (hasInterpolation(full)) {
+              return interpolate(full, send)
+            }
+
+            send(full)
+          })
+          .catch(() => {
+            // Gateway unreachable or timed out — fall back to queue
+            composerActions.enqueue(full)
+            patchUiState({ busy: true, status: 'queued for next turn' })
+            sys(`queued: "${full.slice(0, 50)}${full.length > 50 ? '…' : ''}"`)
+          })
+
+        return
       }
 
       if (hasInterpolation(full)) {

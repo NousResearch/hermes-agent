@@ -7,7 +7,9 @@ cache. See `tools/mcp_oauth_manager.py` for design rationale.
 import json
 import os
 import time
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 pytest.importorskip(
@@ -139,3 +141,39 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
 
+
+@pytest.mark.asyncio
+async def test_hermes_provider_tolerates_created_token_response():
+    """Some providers return 201 Created for OAuth token exchange responses."""
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    class _Storage:
+        def __init__(self):
+            self.tokens = None
+
+        async def set_tokens(self, tokens):
+            self.tokens = tokens
+
+    storage = _Storage()
+    provider = _HERMES_PROVIDER_CLS.__new__(_HERMES_PROVIDER_CLS)
+    provider.context = SimpleNamespace(
+        current_tokens=None,
+        storage=storage,
+        update_token_expiry=lambda tokens: None,
+    )
+    response = httpx.Response(
+        201,
+        json={
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": 86400,
+            "token_type": "Bearer",
+        },
+    )
+
+    await provider._handle_token_response(response)
+
+    assert provider.context.current_tokens.access_token == "access-token"
+    assert storage.tokens is provider.context.current_tokens

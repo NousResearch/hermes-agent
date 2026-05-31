@@ -89,6 +89,7 @@ def _make_hermes_provider_class() -> Optional[type]:
     """
     try:
         from mcp.client.auth.oauth2 import OAuthClientProvider
+        from mcp.client.auth.utils import handle_token_response_scopes
     except ImportError:  # pragma: no cover — SDK required in CI
         return None
 
@@ -110,6 +111,24 @@ def _make_hermes_provider_class() -> Optional[type]:
         def __init__(self, *args: Any, server_name: str = "", **kwargs: Any):
             super().__init__(*args, **kwargs)
             self._hermes_server_name = server_name
+
+        async def _handle_token_response(self, response):  # type: ignore[override]
+            """Tolerate successful non-200 OAuth token responses.
+
+            OAuth token responses are specified as ``200 OK``, but some
+            providers return another successful 2xx status with a valid token
+            payload. Preserve the SDK's handling for the standard path and for
+            non-2xx errors, but parse and persist successful non-200 responses
+            to avoid repeated browser auth loops.
+            """
+            if response.status_code == 200 or not 200 <= response.status_code < 300:
+                await super()._handle_token_response(response)
+                return
+
+            token_response = await handle_token_response_scopes(response)
+            self.context.current_tokens = token_response
+            self.context.update_token_expiry(token_response)
+            await self.context.storage.set_tokens(token_response)
 
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.

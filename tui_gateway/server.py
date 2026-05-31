@@ -2789,6 +2789,7 @@ def _(rid, params: dict) -> dict:
                 "cwd": _sessions[sid]["cwd"],
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
+                "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                 "profile_name": _current_profile_name(),
             },
         },

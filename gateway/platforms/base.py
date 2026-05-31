@@ -33,6 +33,8 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_MEDIA_IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+_MEDIA_VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 
 
 def _platform_name(platform) -> str:
@@ -492,6 +494,25 @@ class MediaKind(Enum):
     VIDEO = "video"
     VOICE = "voice"
     DOCUMENT = "document"
+
+
+def classify_media_kind(path, is_voice=False, platform=None, force_document=False) -> MediaKind:
+    """Map a local media path to the MediaKind a dispatcher should send it as.
+
+    Mirrors the reply path's routing (image/video by extension, audio via
+    should_send_media_as_audio). ``force_document`` wins, matching the
+    ``[[as_document]]`` directive; unknown extensions fall back to DOCUMENT.
+    """
+    if force_document:
+        return MediaKind.DOCUMENT
+    ext = Path(path).suffix.lower()
+    if ext in _MEDIA_IMAGE_EXTS:
+        return MediaKind.IMAGE
+    if ext in _MEDIA_VIDEO_EXTS:
+        return MediaKind.VIDEO
+    if should_send_media_as_audio(platform, ext, is_voice=is_voice):
+        return MediaKind.VOICE
+    return MediaKind.DOCUMENT
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (

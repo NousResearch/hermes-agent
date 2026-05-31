@@ -30,6 +30,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
+import { evalRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
@@ -48,11 +49,6 @@ const GOOD_VIBES_RE = /\b(good bot|thanks|thank you|thx|ty|ily|love you)\b/i
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
-// Crash-recovery budget: cap respawn+resume attempts so a gateway that
-// crash-loops on startup can't spawn-storm. Past the budget we fall back to
-// the inert "gateway exited" state.
-const GATEWAY_RECOVERY_LIMIT = 3
-const GATEWAY_RECOVERY_WINDOW_MS = 60_000
 
 const capHistory = (items: Msg[]): Msg[] => {
   if (items.length <= MAX_HISTORY) {
@@ -743,7 +739,11 @@ export function useMainApp(gw: GatewayClient) {
     const exitHandler = () => {
       turnController.reset()
       const deadSid = getUiState().sid
-      patchUiState({ busy: false, status: 'gateway exited' })
+      // Clear sid immediately: while the gateway is down, sid-guarded effects
+      // (session.active_list poll, queue drain) would otherwise fire RPCs at a
+      // dead/respawning gateway. recoverSidRef carries the session forward, and
+      // resumeById restores sid once the fresh gateway is ready.
+      patchUiState({ busy: false, sid: null, status: 'gateway exited' })
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
       // death — a user /quit exits Node before this fires, and a replaced child
@@ -752,11 +752,10 @@ export function useMainApp(gw: GatewayClient) {
       // persisted session via the next gateway.ready, so a single crash / OOM /
       // signal doesn't lose their work. Bounded so a gateway that crash-loops
       // on startup can't spawn-storm.
-      const now = Date.now()
-      const recent = recoveryAtRef.current.filter(t => now - t < GATEWAY_RECOVERY_WINDOW_MS)
+      const { allowed, recent } = evalRecovery(recoveryAtRef.current, Date.now())
 
-      if (deadSid && recent.length < GATEWAY_RECOVERY_LIMIT) {
-        recoveryAtRef.current = [...recent, now]
+      if (deadSid && allowed) {
+        recoveryAtRef.current = [...recent, Date.now()]
         recoverSidRef.current = deadSid
         turnController.pushActivity('gateway exited · recovering session…', 'warn')
         sys('gateway exited — recovering your session (the in-flight reply was lost)')
@@ -767,7 +766,6 @@ export function useMainApp(gw: GatewayClient) {
 
       recoveryAtRef.current = recent
       recoverSidRef.current = null
-      patchUiState({ sid: null })
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
       sys('error: gateway exited')
     }

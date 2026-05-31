@@ -1555,6 +1555,18 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+def _only_platforms_filter() -> set[str] | None:
+    """Platforms a worker may initialize, from HERMES_GATEWAY_ONLY_PLATFORMS.
+
+    None => no restriction (the normal front/standalone path).  A worker sets
+    this to ``api_server`` so its token adapters never start (one-loop-per-token).
+    """
+    raw = os.environ.get("HERMES_GATEWAY_ONLY_PLATFORMS", "").strip()
+    if not raw:
+        return None
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -4445,8 +4457,13 @@ class GatewayRunner:
         startup_retryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
+        only_platforms = _only_platforms_filter()
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
+                continue
+            if only_platforms is not None and platform.value not in only_platforms:
+                # Worker mode: skip token adapters so the shared bot token stays
+                # owned by the front (one-loop-per-token invariant).
                 continue
             enabled_platform_count += 1
             

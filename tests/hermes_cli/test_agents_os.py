@@ -79,6 +79,8 @@ def test_agents_os_sprint1_schema_routing_next_and_dashboard(tmp_path, monkeypat
         "--vault-root", str(vault), "run", "external-action-draft", "publish public post", "--title", "Public post", "--task-id", "task-public", "--priority", "0"
     ]) == 0
     capsys.readouterr()
+    assert agents_os.main(["--vault-root", str(vault), "agent", "add", "doni-local", "--capabilities", "code,qa,research", "--json"]) == 0
+    capsys.readouterr()
 
     assert agents_os.main(["--vault-root", str(vault), "route", "task-code", "--json"]) == 0
     code_route = json.loads(capsys.readouterr().out)

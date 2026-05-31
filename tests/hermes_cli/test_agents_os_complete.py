@@ -184,6 +184,61 @@ def test_agents_os_close_requires_evidence_or_approved_review(tmp_path, monkeypa
 
 
 
+def test_agents_os_agent_crud_and_routing_policy(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    assert agents_os.main(["--vault-root", str(vault), "init", "--no-vault"]) == 0
+    capsys.readouterr()
+
+    wf_path = tmp_path / "code-workflow.json"
+    wf_path.write_text(json.dumps({
+        "id": "needs-code",
+        "kind": "implementation",
+        "requires_approval": False,
+        "template": "Needs code capability",
+        "route": "doni:direct",
+        "capabilities": ["code"],
+        "allowed_paths": [str(tmp_path)],
+        "blocked_paths": [],
+    }), encoding="utf-8")
+    assert agents_os.main(["--vault-root", str(vault), "workflow", "import", str(wf_path), "--json"]) == 0
+    capsys.readouterr()
+
+    assert agents_os.main(["--vault-root", str(vault), "agent", "add", "researcher", "--capabilities", "research", "--json"]) == 0
+    capsys.readouterr()
+    assert agents_os.main(["--vault-root", str(vault), "task", "add", "Needs code", "--id", "task-needs-code", "--workflow", "needs-code"]) == 0
+    capsys.readouterr()
+    assert agents_os.main(["--vault-root", str(vault), "route", "task-needs-code", "--json"]) == 0
+    no_agent_route = _json_out(capsys)
+    assert no_agent_route["assigned_agent"] is None
+    assert no_agent_route["execution_allowed"] is False
+    assert no_agent_route["new_status"] == "blocked"
+
+    assert agents_os.main(["--vault-root", str(vault), "agent", "add", "coder", "--capabilities", "code", "--status", "disabled", "--json"]) == 0
+    capsys.readouterr()
+    assert agents_os.main(["--vault-root", str(vault), "agent", "set", "coder", "--status", "available", "--json"]) == 0
+    updated = _json_out(capsys)
+    assert updated["status"] == "available"
+    assert agents_os.main(["--vault-root", str(vault), "agent", "show", "coder", "--json"]) == 0
+    shown = _json_out(capsys)
+    assert shown["id"] == "coder"
+    assert shown["capabilities"] == ["code"]
+
+    assert agents_os.main(["--vault-root", str(vault), "route", "task-needs-code", "--json"]) == 0
+    assigned_route = _json_out(capsys)
+    assert assigned_route["assigned_agent"] == "coder"
+    assert assigned_route["execution_allowed"] is True
+
+    assert agents_os.main(["--vault-root", str(vault), "agent", "remove", "coder", "--json"]) == 0
+    removed = _json_out(capsys)
+    assert removed["removed"] is True
+    assert agents_os.main(["--vault-root", str(vault), "agent", "show", "coder", "--json"]) == 2
+    missing = _json_out(capsys)
+    assert missing["reason"] == "agent_not_found"
+
+
+
 def test_agents_os_execute_blocks_approval_gated_task(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     vault = tmp_path / "vault"

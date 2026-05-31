@@ -710,7 +710,7 @@ def _pick_agent(conn: sqlite3.Connection, task: sqlite3.Row) -> str | None:
             caps = set()
         if not needed or needed.intersection(caps):
             return agent["id"]
-    return agents[0]["id"] if agents else None
+    return None
 
 
 def _route_for_task(conn: sqlite3.Connection, task: sqlite3.Row) -> dict[str, Any]:
@@ -740,7 +740,8 @@ def route_task(args: argparse.Namespace) -> int:
         route = _route_for_task(conn, task)
         pending_approvals = _pending_approval_count(conn, args.id)
         requires_approval = route["requires_approval"] or pending_approvals > 0 or bool(task["approval_required"])
-        new_status = "needs_approval" if requires_approval else "ready"
+        no_agent = not requires_approval and route.get("assigned_agent") is None
+        new_status = "needs_approval" if requires_approval else ("blocked" if no_agent else "ready")
         conn.execute(
             "UPDATE tasks SET status=?, route=?, approval_required=?, updated_at=? WHERE id=?",
             (new_status, route["route"], 1 if requires_approval else 0, utc_now(), args.id),
@@ -753,7 +754,7 @@ def route_task(args: argparse.Namespace) -> int:
         "reason": route["reason"],
         "assigned_agent": route.get("assigned_agent"),
         "approval_required": requires_approval,
-        "execution_allowed": not requires_approval,
+        "execution_allowed": not requires_approval and not no_agent,
         "new_status": new_status,
     }
     if args.json:
@@ -1033,6 +1034,49 @@ def agent_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def agent_show(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        row = conn.execute("SELECT * FROM agents WHERE id=?", (args.id,)).fetchone()
+    if row is None:
+        print(json.dumps({"status": "error", "reason": "agent_not_found", "id": args.id}, ensure_ascii=False, indent=2))
+        return 2
+    payload = row_to_dict(row)
+    payload["capabilities"] = json.loads(payload.get("capabilities") or "[]")
+    print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else f"{payload['id']} [{payload['status']}] {payload['name']}")
+    return 0
+
+
+def agent_set(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        row = conn.execute("SELECT * FROM agents WHERE id=?", (args.id,)).fetchone()
+        if row is None:
+            print(json.dumps({"status": "error", "reason": "agent_not_found", "id": args.id}, ensure_ascii=False, indent=2))
+            return 2
+        conn.execute("UPDATE agents SET status=? WHERE id=?", (args.status, args.id))
+        log_event(conn, "agent_updated", payload={"agent_id": args.id, "status": args.status})
+        conn.commit()
+    payload = {"id": args.id, "status": args.status}
+    print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else f"{args.id} -> {args.status}")
+    return 0
+
+
+def agent_remove(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        row = conn.execute("SELECT * FROM agents WHERE id=?", (args.id,)).fetchone()
+        if row is None:
+            print(json.dumps({"removed": False, "reason": "agent_not_found", "id": args.id}, ensure_ascii=False, indent=2))
+            return 2
+        conn.execute("DELETE FROM agents WHERE id=?", (args.id,))
+        log_event(conn, "agent_removed", payload={"agent_id": args.id})
+        conn.commit()
+    print(json.dumps({"removed": True, "id": args.id}, ensure_ascii=False, indent=2) if args.json else f"removed {args.id}")
+    return 0
+
+
+
 def workflow_validate_payload(data: dict[str, Any]) -> tuple[bool, list[str]]:
     errors = []
     for key in ["id", "kind", "template"]:
@@ -1287,7 +1331,7 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     p = task_sub.add_parser("add", help="Create task")
     p.add_argument("title")
     p.add_argument("--id")
-    p.add_argument("--workflow", choices=sorted(SAFE_WORKFLOWS.keys()))
+    p.add_argument("--workflow")
     p.add_argument("--priority", type=int, default=3)
     p.add_argument("--notes", default="")
     p.set_defaults(func=task_add)
@@ -1347,6 +1391,19 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     p = agent_sub.add_parser("list", help="List agents")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=agent_list)
+    p = agent_sub.add_parser("show", help="Show agent")
+    p.add_argument("id")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=agent_show)
+    p = agent_sub.add_parser("set", help="Update agent status")
+    p.add_argument("id")
+    p.add_argument("--status", required=True, choices=["available", "busy", "paused", "disabled"])
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=agent_set)
+    p = agent_sub.add_parser("remove", help="Remove agent")
+    p.add_argument("id")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=agent_remove)
 
     workflow = sub.add_parser("workflow", help="Validate/import workflow plugins")
     workflow_sub = workflow.add_subparsers(dest="workflow_command")

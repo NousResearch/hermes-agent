@@ -9942,21 +9942,25 @@ class GatewayRunner:
                         # Also subscribe TUI platform so the gateway's
                         # TUIAdapter delivers terminal events to the
                         # TUI server via the shared notification file.
-                        try:
-                            def _sub_tui():
-                                from hermes_cli import kanban_db as _kb
-                                conn2 = _kb.connect(board=requested_board)
-                                try:
-                                    _kb.add_notify_sub(
-                                        conn2, task_id=task_id,
-                                        platform="tui", chat_id="tui",
-                                        notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                                    )
-                                finally:
-                                    conn2.close()
-                            await asyncio.to_thread(_sub_tui)
-                        except Exception:
-                            pass
+                        # Skip when source is already 'cli' — both cli
+                        # and tui map to the same TUIAdapter, so a
+                        # second subscription would cause double delivery.
+                        if platform_str != "cli":
+                            try:
+                                def _sub_tui():
+                                    from hermes_cli import kanban_db as _kb
+                                    conn2 = _kb.connect(board=requested_board)
+                                    try:
+                                        _kb.add_notify_sub(
+                                            conn2, task_id=task_id,
+                                            platform="tui", chat_id="tui",
+                                            notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                        )
+                                    finally:
+                                        conn2.close()
+                                await asyncio.to_thread(_sub_tui)
+                            except Exception:
+                                pass
                         output = (
                             output.rstrip()
                             + "\n"

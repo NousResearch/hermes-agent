@@ -4141,11 +4141,9 @@ def _notification_file_watcher() -> None:
     After consuming all lines, truncates the file to prevent unbounded
     growth.  Uses os.replace for atomic truncation.
     """
-    import hashlib
     import json as _json
 
     last_pos = 0
-    recent_hashes: set = set()  # dedup: content hashes of recently processed events
     while True:
         try:
             time.sleep(2.0)
@@ -4183,14 +4181,6 @@ def _notification_file_watcher() -> None:
                 line = line.strip()
                 if not line:
                     continue
-                # Dedup: skip events we already processed in a prior cycle.
-                evt_hash = hashlib.md5(line.encode("utf-8")).hexdigest()
-                if evt_hash in recent_hashes:
-                    continue
-                recent_hashes.add(evt_hash)
-                # Cap the dedup set to prevent unbounded growth.
-                if len(recent_hashes) > 200:
-                    recent_hashes = set(list(recent_hashes)[-100:])
                 try:
                     evt = _json.loads(line)
                 except (_json.JSONDecodeError, ValueError):

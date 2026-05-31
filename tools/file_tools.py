@@ -726,7 +726,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content, code_file=True)
+            # Skip redaction for config files — agent needs to read actual values
+            _ext = os.path.splitext(path)[1].lower() if path else ""
+            _is_config = _ext in {".yaml", ".yml", ".json", ".env", ".toml", ".conf"}
+            result.content = redact_sensitive_text(result.content, code_file=not _is_config)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask

@@ -323,8 +323,11 @@ def _make_run_env(env: dict) -> dict:
     # on Windows; the native PATH already points at whatever shell
     # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
     # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
-    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    if not _IS_WINDOWS:
+        existing_parts = existing_path.split(":") if existing_path else []
+        missing_parts = [p for p in _SANE_PATH.split(":") if p not in existing_parts]
+        if missing_parts:
+            run_env["PATH"] = f"{existing_path}:{':'.join(missing_parts)}" if existing_path else _SANE_PATH
 
     _inject_context_hermes_home(run_env)
 

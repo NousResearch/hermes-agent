@@ -1026,6 +1026,14 @@ def skill_view(
             pass
         for _td in _trusted_dirs:
             try:
+                # Check unresolved path first — a symlink inside the trusted dir is trusted
+                # even if its target is elsewhere (e.g., external skill repos symlinked in)
+                skill_md.relative_to(_td)
+                _outside_skills_dir = False
+                break
+            except ValueError:
+                pass
+            try:
                 skill_md.resolve().relative_to(_td)
                 _outside_skills_dir = False
                 break

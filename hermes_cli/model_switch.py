@@ -1243,7 +1243,7 @@ def list_authenticated_providers(
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = model_ids[:max_models] if max_models > 0 else model_ids
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -1369,7 +1369,7 @@ def list_authenticated_providers(
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = model_ids[:max_models] if max_models > 0 else model_ids
 
         results.append({
             "slug": hermes_slug,

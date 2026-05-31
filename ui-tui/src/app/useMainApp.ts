@@ -147,12 +147,25 @@ export function useMainApp(gw: GatewayClient) {
 
     stdout.on('resize', sync)
 
+    // SIGWINCH fallback for terminals that don't emit stdout resize events
+    const sigwinchHandler = () => sync()
+    try {
+      process.on('SIGWINCH', sigwinchHandler)
+    } catch {
+      // Not all platforms support SIGWINCH (e.g. Windows)
+    }
+
     if (stdout.isTTY) {
       stdout.write(BRACKET_PASTE_ON)
     }
 
     return () => {
       stdout.off('resize', sync)
+      try {
+        process.off('SIGWINCH', sigwinchHandler)
+      } catch {
+        // Ignore cleanup errors
+      }
 
       if (stdout.isTTY) {
         stdout.write(BRACKET_PASTE_OFF)

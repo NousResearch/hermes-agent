@@ -1439,6 +1439,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if is_native_gemini_base_url(base_url):
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
+            # Set a longer timeout for auxiliary calls (default 30s is too short for slow local LLMs)
+            extra["timeout"] = 600.0
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):
@@ -4131,13 +4133,25 @@ def resolve_vision_provider_client(
     return requested, client, final_model
 
 
-def get_auxiliary_extra_body() -> dict:
+def get_auxiliary_extra_body(task: str = "") -> dict:
     """Return extra_body kwargs for auxiliary API calls.
-    
+
     Includes Nous Portal product tags when the auxiliary client is backed
-    by Nous Portal. Returns empty dict otherwise.
+    by Nous Portal. Also merges task-specific extra_body from config.yaml
+    (auxiliary.<task>.extra_body) when provided.
     """
-    return _nous_extra_body() if auxiliary_is_nous else {}
+    result = _nous_extra_body() if auxiliary_is_nous else {}
+
+    if task:
+        try:
+            task_cfg = _get_auxiliary_task_config(task)
+            task_extra = task_cfg.get("extra_body", {}) or {}
+            if isinstance(task_extra, dict):
+                result.update(task_extra)
+        except Exception:
+            pass
+
+    return result
 
 
 def auxiliary_max_tokens_param(value: int) -> dict:

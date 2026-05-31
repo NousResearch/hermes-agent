@@ -972,6 +972,17 @@ def clear_task_env_overrides(task_id: str):
     _task_env_overrides.pop(task_id, None)
 
 
+def get_task_cwd(task_id: str) -> Optional[str]:
+    """
+    Get the current working directory for a task.
+
+    Returns the cwd from task env overrides if available, otherwise None.
+    Used by runtime_footer to display the live cwd instead of stale TERMINAL_CWD.
+    """
+    overrides = _task_env_overrides.get(task_id, {})
+    return overrides.get("cwd")
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by

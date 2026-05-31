@@ -1169,7 +1169,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".markdown", ".epub",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
     # Presentations

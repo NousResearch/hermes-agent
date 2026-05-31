@@ -354,7 +354,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_default_hermes_root, get_hermes_home  # noqa: F811,E402
 from utils import atomic_replace
 
 def get_config_path() -> Path:
@@ -4156,6 +4156,37 @@ def _expand_env_vars(obj):
     return obj
 
 
+def _inherit_root_mcp_servers(user_config: dict, config_path: Path) -> dict:
+    """Let named profiles share the root MCP server list by default.
+
+    Profiles are independent HERMES_HOME directories, so load_config() normally
+    reads only the active profile's config.yaml. For MCP servers, root config is
+    the shared source of truth unless a profile explicitly defines its own
+    mcp_servers key (including an empty dict to disable inheritance).
+    """
+    if "mcp_servers" in user_config:
+        return user_config
+
+    try:
+        root_config_path = get_default_hermes_root() / "config.yaml"
+        if config_path.resolve() == root_config_path.resolve():
+            return user_config
+        if not root_config_path.exists():
+            return user_config
+        with open(root_config_path, encoding="utf-8") as f:
+            root_config = yaml.safe_load(f) or {}
+        root_mcp_servers = root_config.get("mcp_servers")
+        if not isinstance(root_mcp_servers, dict) or not root_mcp_servers:
+            return user_config
+
+        inherited = dict(user_config)
+        inherited["mcp_servers"] = copy.deepcopy(root_mcp_servers)
+        return inherited
+    except Exception as exc:
+        logger.debug("Failed to inherit root mcp_servers for %s: %s", config_path, exc)
+        return user_config
+
+
 def _items_by_unique_name(items):
     """Return a name-indexed dict only when all items have unique string names."""
     if not isinstance(items, list):
@@ -4436,6 +4467,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
 
+                user_config = _inherit_root_mcp_servers(user_config, config_path)
                 config = _deep_merge(config, user_config)
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)

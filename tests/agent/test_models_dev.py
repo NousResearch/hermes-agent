@@ -177,10 +177,12 @@ class TestFetchModelsDev:
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
+        md._models_dev_refresh_in_flight = False
         yield
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
+        md._models_dev_refresh_in_flight = False
 
     @patch("agent.models_dev.requests.get")
     def test_fetch_success(self, mock_get):
@@ -226,6 +228,20 @@ class TestFetchModelsDev:
         assert result == SAMPLE_REGISTRY
 
     @patch("agent.models_dev.requests.get")
+    def test_stale_in_memory_cache_returns_without_foreground_network(self, mock_get):
+        """Expired in-memory data should not block foreground resolution."""
+        import agent.models_dev as md
+        md._models_dev_cache = SAMPLE_REGISTRY
+        md._models_dev_cache_time = 0
+
+        with patch.object(md, "_start_background_refresh_models_dev") as mock_refresh:
+            result = fetch_models_dev()
+
+        mock_get.assert_not_called()
+        mock_refresh.assert_called_once()
+        assert result == SAMPLE_REGISTRY
+
+    @patch("agent.models_dev.requests.get")
     def test_fresh_disk_cache_skips_network(self, mock_get):
         """When in-mem cache is empty but disk cache exists and is fresh by
         mtime (< TTL), fetch_models_dev returns disk data without ever
@@ -252,27 +268,20 @@ class TestFetchModelsDev:
         assert md._models_dev_cache == SAMPLE_REGISTRY
 
     @patch("agent.models_dev.requests.get")
-    def test_stale_disk_cache_falls_through_to_network(self, mock_get):
-        """When the disk cache is OLDER than TTL, we must hit the network
-        (and only fall back to the stale disk data if network fails)."""
+    def test_stale_disk_cache_returns_without_foreground_network(self, mock_get):
+        """#35838: stale disk cache should not wait on models.dev timeout."""
         import agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = SAMPLE_REGISTRY
-        mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
-
-        # Disk cache exists but is older than the TTL — must NOT short-circuit.
         with patch.object(md, "_disk_cache_age_seconds",
                           return_value=md._MODELS_DEV_CACHE_TTL + 60), \
              patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
-             patch.object(md, "_save_disk_cache"):
+             patch.object(md, "_start_background_refresh_models_dev") as mock_refresh:
             result = fetch_models_dev()
 
-        mock_get.assert_called_once()
+        mock_get.assert_not_called()
+        mock_refresh.assert_called_once()
         assert "anthropic" in result
 
     @patch("agent.models_dev.requests.get")
@@ -335,11 +344,24 @@ class TestFetchModelsDev:
             return_value=md._MODELS_DEV_CACHE_TTL + 60,
         ), patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
             first = fetch_models_dev()
-            second = fetch_models_dev()
+            # Wait for the background refresh worker to finish so its
+            # failure backoff is observable and requests.get stays patched.
+            deadline = time.time() + 5
+            while md._models_dev_refresh_in_flight and time.time() < deadline:
+                time.sleep(0.01)
 
         assert first == SAMPLE_REGISTRY
-        assert second == SAMPLE_REGISTRY
+        assert not md._models_dev_refresh_in_flight
         assert md._models_dev_retry_after > time.time()
+        mock_get.assert_called_once()
+
+        # A subsequent stale-cache hit inside the backoff window must not
+        # spawn another refresh worker (in_flight is set synchronously
+        # before the worker thread starts, so False proves no spawn).
+        md._models_dev_cache_time = time.time() - md._MODELS_DEV_CACHE_TTL - 1
+        second = fetch_models_dev()
+        assert second == SAMPLE_REGISTRY
+        assert not md._models_dev_refresh_in_flight
         mock_get.assert_called_once()
 
     @patch("agent.models_dev.requests.get")

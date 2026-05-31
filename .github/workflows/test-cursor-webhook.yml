@@ -1,0 +1,41 @@
+name: Test Cursor webhook
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST dry-run sync-failure payload
+        env:
+          WEBHOOK_URL: ${{ secrets.CURSOR_SYNC_RECOVERY_WEBHOOK_URL }}
+          WEBHOOK_KEY: ${{ secrets.CURSOR_SYNC_RECOVERY_WEBHOOK_KEY }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ] || [ -z "$WEBHOOK_KEY" ]; then
+            echo "::error::CURSOR_SYNC_RECOVERY_WEBHOOK_URL or CURSOR_SYNC_RECOVERY_WEBHOOK_KEY is not set"
+            exit 1
+          fi
+          payload=$(jq -n \
+            --arg event "sync-failure" \
+            --arg repository "${{ github.repository }}" \
+            --arg upstream_sha "connectivity-test" \
+            --arg failed_step "rebase-feature-branch" \
+            --arg failed_branch "feature/example-upstream" \
+            --argjson conflict_files '["gateway/example.py"]' \
+            --arg workflow_run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{
+              event: $event,
+              repository: $repository,
+              upstream_sha: $upstream_sha,
+              failed_step: $failed_step,
+              failed_branch: $failed_branch,
+              conflict_files: $conflict_files,
+              workflow_run_url: $workflow_run_url,
+              issue_number: null
+            }')
+          curl -sf -X POST "$WEBHOOK_URL" \
+            -H "Authorization: Bearer $WEBHOOK_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$payload"
+          echo "Cursor webhook accepted test payload"

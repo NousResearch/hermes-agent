@@ -401,6 +401,41 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
+    customProviders?: {
+      title: string;
+      description: string;
+      configDescription: string;
+      add: string;
+      edit: string;
+      endpointKey: string;
+      displayName: string;
+      baseUrl: string;
+      keyEnv: string;
+      apiMode: string;
+      defaultModel: string;
+      models: string;
+      modelsHelp: string;
+      contextLength: string;
+      discoverModels: string;
+      extraBody: string;
+      apiKey: string;
+      apiKeyHelp: string;
+      clearStoredKey: string;
+      probe: string;
+      noProviders: string;
+      active: string;
+      keySet: string;
+      keyMissing: string;
+      sourceConfig: string;
+      sourceEnv: string;
+      create: string;
+      update: string;
+      deleteTitle: string;
+      deleteMessage: string;
+      saved: string;
+      removed: string;
+      probeLoaded: string;
+    };
   };
 
   // ── OAuth ──

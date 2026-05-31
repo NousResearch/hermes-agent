@@ -21,6 +21,7 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
+import { CustomProvidersCard } from "@/components/CustomProvidersCard";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -779,6 +780,11 @@ export default function EnvPage() {
         </CardHeader>
 
         <CardContent className="grid gap-0 p-0">
+          <CustomProvidersCard
+            embedded
+            onError={(msg) => showToast(msg, "error")}
+            onSuccess={(msg) => showToast(msg, "success")}
+          />
           {providerGroups.map((group) => (
             <ProviderGroupCard
               key={group.name}

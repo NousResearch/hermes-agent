@@ -41,6 +41,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
+import { CustomProvidersCard } from "@/components/CustomProvidersCard";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -80,6 +81,7 @@ const CATEGORY_ICONS: Record<
   kanban: LayoutDashboard,
   model_catalog: BookOpen,
   openrouter: Route,
+  providers: Route,
   sessions: History,
   tool_loop_guardrails: Shield,
   tool_output: FileOutput,
@@ -210,6 +212,9 @@ export default function ConfigPage() {
         Object.values(schema).map((s) => String(s.category ?? "general")),
       ),
     ];
+    if (!allCats.includes("providers")) {
+      allCats.push("providers");
+    }
     const ordered = categoryOrder.filter((c) => allCats.includes(c));
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
@@ -223,8 +228,13 @@ export default function ConfigPage() {
       const cat = String(s.category ?? "general");
       counts[cat] = (counts[cat] || 0) + 1;
     }
+    const providerConfig = config?.providers;
+    counts.providers =
+      providerConfig && typeof providerConfig === "object" && !Array.isArray(providerConfig)
+        ? Object.keys(providerConfig).length
+        : 0;
     return counts;
-  }, [schema]);
+  }, [schema, config]);
 
   /* ---- Search ---- */
   const isSearching = searchQuery.trim().length > 0;
@@ -631,7 +641,16 @@ export default function ConfigPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
-                  {renderFields(activeFields)}
+                  {activeCategory === "providers" ? (
+                    <CustomProvidersCard
+                      embedded
+                      context="config"
+                      onError={(msg) => showToast(msg, "error")}
+                      onSuccess={(msg) => showToast(msg, "success")}
+                    />
+                  ) : (
+                    renderFields(activeFields)
+                  )}
                 </CardContent>
               </Card>
             )}

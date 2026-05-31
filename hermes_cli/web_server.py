@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -403,7 +404,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
-    "tts", "stt", "logging", "discord", "auxiliary",
+    "tts", "stt", "logging", "discord", "auxiliary", "providers",
 ]
 
 
@@ -491,6 +492,31 @@ class EnvVarDelete(BaseModel):
 
 class EnvVarReveal(BaseModel):
     key: str
+
+
+class CustomProviderPayload(BaseModel):
+    key: str
+    name: Optional[str] = None
+    base_url: str
+    key_env: Optional[str] = None
+    api_mode: str = "chat_completions"
+    default_model: Optional[str] = None
+    models: Optional[List[str]] = None
+    context_length: Optional[int] = None
+    discover_models: bool = False
+    extra_body: Optional[Dict[str, Any]] = None
+    rate_limit_delay: Optional[float] = None
+    request_timeout_seconds: Optional[float] = None
+    stale_timeout_seconds: Optional[float] = None
+    api_key: Optional[str] = None
+    clear_api_key: bool = False
+
+
+class CustomProviderProbePayload(BaseModel):
+    key: Optional[str] = None
+    base_url: Optional[str] = None
+    key_env: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 class ModelAssignment(BaseModel):
@@ -1323,6 +1349,341 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
 
     _log.info("env/reveal: %s", body.key)
     return {"key": body.key, "value": value}
+
+
+# ---------------------------------------------------------------------------
+# Custom provider endpoints
+# ---------------------------------------------------------------------------
+
+_CUSTOM_PROVIDER_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_ENV_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_CUSTOM_PROVIDER_API_MODES = {
+    "chat_completions",
+    "codex_responses",
+    "anthropic_messages",
+    "bedrock_converse",
+    "codex_app_server",
+}
+_CUSTOM_PROVIDER_MANAGED_KEYS = {
+    "name",
+    "base_url",
+    "key_env",
+    "api_mode",
+    "default_model",
+    "model",
+    "models",
+    "context_length",
+    "discover_models",
+    "extra_body",
+    "rate_limit_delay",
+    "request_timeout_seconds",
+    "stale_timeout_seconds",
+    "api_key",
+}
+
+
+def _custom_provider_key_from_name(name: str) -> str:
+    key = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip().lower()).strip("-_")
+    return key or "custom"
+
+
+def _default_custom_provider_key_env(key: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", key).strip("_").upper() or "CUSTOM"
+    return f"{safe}_API_KEY"
+
+
+def _validate_custom_provider_key(key: str) -> str:
+    key = str(key or "").strip()
+    if not _CUSTOM_PROVIDER_KEY_RE.match(key):
+        raise HTTPException(
+            status_code=400,
+            detail="Provider key must start with a letter or number and contain only letters, numbers, hyphens, or underscores.",
+        )
+    return key
+
+
+def _validate_custom_provider_env_key(key: str) -> str:
+    key = str(key or "").strip().upper()
+    if not _ENV_KEY_RE.match(key):
+        raise HTTPException(
+            status_code=400,
+            detail="Environment key must be uppercase letters, numbers, and underscores, and cannot start with a number.",
+        )
+    return key
+
+
+def _validate_custom_provider_url(url: str) -> str:
+    url = str(url or "").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Base URL must be an http(s) URL.")
+    return url
+
+
+def _custom_provider_models_to_list(raw_models: Any) -> List[Dict[str, Any]]:
+    if isinstance(raw_models, dict):
+        result = []
+        for name, meta in raw_models.items():
+            item: Dict[str, Any] = {"name": str(name)}
+            if isinstance(meta, dict) and isinstance(meta.get("context_length"), int):
+                item["context_length"] = meta["context_length"]
+            result.append(item)
+        return result
+    if isinstance(raw_models, list):
+        result = []
+        for item in raw_models:
+            if isinstance(item, str):
+                result.append({"name": item})
+            elif isinstance(item, dict) and item.get("name"):
+                result.append({"name": str(item["name"])})
+        return result
+    return []
+
+
+def _custom_provider_models_from_list(
+    models: Optional[List[str]],
+    existing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    existing_models = existing.get("models") if isinstance(existing, dict) else {}
+    existing_models = existing_models if isinstance(existing_models, dict) else {}
+    result: Dict[str, Dict[str, Any]] = {}
+    for raw in models or []:
+        name = str(raw or "").strip()
+        if not name or name in result:
+            continue
+        previous = existing_models.get(name)
+        result[name] = dict(previous) if isinstance(previous, dict) else {}
+    return result
+
+
+def _custom_provider_response(key: str, entry: Dict[str, Any], env_on_disk: Dict[str, str]) -> Dict[str, Any]:
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    env_value = env_on_disk.get(key_env) if key_env else None
+    inline_key = entry.get("api_key")
+    models = _custom_provider_models_to_list(entry.get("models"))
+    return {
+        "key": key,
+        "name": entry.get("name") or key,
+        "base_url": entry.get("base_url") or entry.get("url") or entry.get("api") or "",
+        "key_env": key_env,
+        "api_mode": entry.get("api_mode") or "chat_completions",
+        "default_model": entry.get("default_model") or entry.get("model") or "",
+        "models": models,
+        "context_length": entry.get("context_length"),
+        "discover_models": bool(entry.get("discover_models")),
+        "extra_body": entry.get("extra_body") if isinstance(entry.get("extra_body"), dict) else {},
+        "rate_limit_delay": entry.get("rate_limit_delay"),
+        "request_timeout_seconds": entry.get("request_timeout_seconds"),
+        "stale_timeout_seconds": entry.get("stale_timeout_seconds"),
+        "api_key_set": bool(env_value or inline_key),
+        "api_key_redacted": redact_key(env_value or inline_key) if (env_value or inline_key) else None,
+        "api_key_source": "env" if env_value else ("config" if inline_key else None),
+        "model_count": len(models),
+    }
+
+
+def _load_custom_providers_state() -> tuple[Dict[str, Any], Dict[str, Any]]:
+    cfg = load_config()
+    providers = cfg.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+        cfg["providers"] = providers
+    return cfg, providers
+
+
+def _is_active_custom_provider(config: Dict[str, Any], key: str) -> bool:
+    model_cfg = config.get("model")
+    provider = ""
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "")
+    elif isinstance(config.get("provider"), str):
+        provider = str(config["provider"])
+    provider = provider.strip().lower()
+    key_lower = key.lower()
+    return provider in {key_lower, f"custom:{key_lower}"}
+
+
+def _custom_provider_entry_from_payload(
+    body: CustomProviderPayload,
+    existing: Optional[Dict[str, Any]] = None,
+) -> tuple[str, Dict[str, Any], str, Optional[str], bool]:
+    provider_key = _validate_custom_provider_key(body.key)
+    base_url = _validate_custom_provider_url(body.base_url)
+    key_env = _validate_custom_provider_env_key(body.key_env or _default_custom_provider_key_env(provider_key))
+    api_mode = str(body.api_mode or "chat_completions").strip()
+    if api_mode not in _CUSTOM_PROVIDER_API_MODES:
+        raise HTTPException(status_code=400, detail=f"Unsupported API mode: {api_mode}")
+
+    existing = existing if isinstance(existing, dict) else {}
+    entry = {
+        k: v
+        for k, v in existing.items()
+        if k not in _CUSTOM_PROVIDER_MANAGED_KEYS
+    }
+    entry.update({
+        "name": str(body.name or provider_key).strip(),
+        "base_url": base_url,
+        "key_env": key_env,
+        "api_mode": api_mode,
+    })
+
+    default_model = str(body.default_model or "").strip()
+    if default_model:
+        entry["default_model"] = default_model
+    else:
+        entry.pop("default_model", None)
+
+    models = _custom_provider_models_from_list(body.models, existing)
+    if models:
+        entry["models"] = models
+    else:
+        entry.pop("models", None)
+
+    if body.context_length is not None and body.context_length > 0:
+        entry["context_length"] = int(body.context_length)
+    else:
+        entry.pop("context_length", None)
+
+    if body.discover_models:
+        entry["discover_models"] = True
+    else:
+        entry.pop("discover_models", None)
+
+    if isinstance(body.extra_body, dict) and body.extra_body:
+        entry["extra_body"] = body.extra_body
+    else:
+        entry.pop("extra_body", None)
+
+    for field in ("rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds"):
+        value = getattr(body, field)
+        if value is not None and value > 0:
+            entry[field] = value
+        else:
+            entry.pop(field, None)
+
+    api_key = body.api_key if body.api_key is not None and body.api_key != "" else None
+    clear_api_key = bool(body.clear_api_key)
+    return provider_key, entry, key_env, api_key, clear_api_key
+
+
+@app.get("/api/providers/custom")
+async def list_custom_providers():
+    cfg, providers = _load_custom_providers_state()
+    env_on_disk = load_env()
+    items = [
+        _custom_provider_response(str(key), entry, env_on_disk)
+        for key, entry in sorted(providers.items())
+        if isinstance(entry, dict)
+    ]
+    return {
+        "providers": items,
+        "active_provider": (
+            cfg.get("model", {}).get("provider")
+            if isinstance(cfg.get("model"), dict)
+            else cfg.get("provider")
+        ),
+    }
+
+
+@app.post("/api/providers/custom")
+async def create_custom_provider(body: CustomProviderPayload):
+    cfg, providers = _load_custom_providers_state()
+    provider_key, entry, key_env, api_key, clear_api_key = _custom_provider_entry_from_payload(body)
+    if provider_key in providers:
+        raise HTTPException(status_code=409, detail=f"Custom provider '{provider_key}' already exists")
+    providers[provider_key] = entry
+    save_config(cfg)
+    if clear_api_key:
+        remove_env_value(key_env)
+    if api_key:
+        save_env_value(key_env, api_key)
+    env_on_disk = load_env()
+    return _custom_provider_response(provider_key, entry, env_on_disk)
+
+
+@app.put("/api/providers/custom/{provider_key}")
+async def update_custom_provider(provider_key: str, body: CustomProviderPayload):
+    cfg, providers = _load_custom_providers_state()
+    current_key = _validate_custom_provider_key(provider_key)
+    if current_key not in providers or not isinstance(providers[current_key], dict):
+        raise HTTPException(status_code=404, detail=f"Custom provider '{current_key}' not found")
+    new_key, entry, key_env, api_key, clear_api_key = _custom_provider_entry_from_payload(
+        body,
+        providers[current_key],
+    )
+    if new_key != current_key and new_key in providers:
+        raise HTTPException(status_code=409, detail=f"Custom provider '{new_key}' already exists")
+    was_active = _is_active_custom_provider(cfg, current_key)
+    if new_key != current_key:
+        providers.pop(current_key, None)
+        if was_active and isinstance(cfg.get("model"), dict):
+            cfg["model"]["provider"] = f"custom:{new_key}"
+        elif was_active and isinstance(cfg.get("provider"), str):
+            cfg["provider"] = f"custom:{new_key}"
+    providers[new_key] = entry
+    save_config(cfg)
+    if clear_api_key:
+        remove_env_value(key_env)
+    if api_key:
+        save_env_value(key_env, api_key)
+    env_on_disk = load_env()
+    return _custom_provider_response(new_key, entry, env_on_disk)
+
+
+@app.delete("/api/providers/custom/{provider_key}")
+async def delete_custom_provider(provider_key: str):
+    cfg, providers = _load_custom_providers_state()
+    key = _validate_custom_provider_key(provider_key)
+    if key not in providers:
+        raise HTTPException(status_code=404, detail=f"Custom provider '{key}' not found")
+    if _is_active_custom_provider(cfg, key):
+        raise HTTPException(status_code=409, detail="Cannot delete the active model provider")
+    entry = providers.pop(key)
+    save_config(cfg)
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip() if isinstance(entry, dict) else ""
+    key_env_still_used = any(
+        isinstance(other, dict)
+        and str(other.get("key_env") or other.get("api_key_env") or "").strip() == key_env
+        for other in providers.values()
+    )
+    if key_env and not key_env_still_used:
+        remove_env_value(key_env)
+    return {"ok": True, "key": key}
+
+
+@app.post("/api/providers/custom/{provider_key}/probe")
+async def probe_custom_provider(provider_key: str, body: CustomProviderProbePayload):
+    cfg, providers = _load_custom_providers_state()
+    key = _validate_custom_provider_key(provider_key)
+    entry = providers.get(key)
+    if not isinstance(entry, dict):
+        raise HTTPException(status_code=404, detail=f"Custom provider '{key}' not found")
+
+    base_url = _validate_custom_provider_url(body.base_url or entry.get("base_url") or "")
+    key_env = str(body.key_env or entry.get("key_env") or "").strip()
+    api_key = body.api_key or (load_env().get(key_env) if key_env else None) or entry.get("api_key")
+    models_url = f"{base_url.rstrip('/')}/models"
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(models_url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Model probe failed: {exc}") from exc
+
+    raw_models = payload.get("data", payload) if isinstance(payload, dict) else payload
+    names: List[str] = []
+    if isinstance(raw_models, list):
+        for item in raw_models:
+            if isinstance(item, str):
+                names.append(item)
+            elif isinstance(item, dict) and item.get("id"):
+                names.append(str(item["id"]))
+            elif isinstance(item, dict) and item.get("name"):
+                names.append(str(item["name"]))
+    return {"models": sorted(dict.fromkeys(names))}
 
 
 # ---------------------------------------------------------------------------

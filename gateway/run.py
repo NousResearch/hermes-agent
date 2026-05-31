@@ -8706,6 +8706,25 @@ class GatewayRunner:
             await adapter.send(source.chat_id, output, reply_to=self._reply_anchor_for_event(event))
         return result or {}
 
+    async def _reset_routed_worker(self, event, source, profile: str) -> None:
+        """Forward /new or /reset to the routed worker, scoped to its own session."""
+        if getattr(self, "_worker_pool", None) is None:
+            from gateway.worker_pool import WorkerPool
+
+            self._worker_pool = WorkerPool()
+        worker = await self._worker_pool.acquire(profile)
+        client = self._make_worker_client(worker)
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=self.config.group_sessions_per_user,
+            thread_sessions_per_user=self.config.thread_sessions_per_user,
+            profile=profile,
+        )
+        await client.reset_session(session_key)
+        adapter = self.adapters.get(source.platform)
+        if adapter:
+            await adapter.send(source.chat_id, "🔄 Started a new conversation.")
+
     async def _maybe_dispatch_routed(self, event, source) -> bool:
         """Route to a worker if the message matched a profile route.
 
@@ -8726,8 +8745,12 @@ class GatewayRunner:
             if adapter:
                 await adapter.send(source.chat_id, f"⏳ '{profile}' is busy right now — please retry shortly.")
             return True
+        cmd = event.get_command() if hasattr(event, "get_command") else None
         try:
-            await self._dispatch_to_worker(event, source, profile)
+            if cmd in {"new", "reset"}:
+                await self._reset_routed_worker(event, source, profile)
+            else:
+                await self._dispatch_to_worker(event, source, profile)
         except Exception as e:
             logger.error("routed dispatch to profile %r failed: %s", profile, e, exc_info=True)
             adapter = self.adapters.get(source.platform)

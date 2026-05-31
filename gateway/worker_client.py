@@ -34,11 +34,13 @@ class WorkerClient:
         *,
         post: Callable[[str, dict], Awaitable[dict]] | None = None,
         sse: Callable[[str], AsyncIterator[dict]] | None = None,
+        delete: Callable[[str], Awaitable[None]] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.key = key
         self._post = post or self._aiohttp_post
         self._sse = sse or self._aiohttp_sse
+        self._delete = delete or self._aiohttp_delete
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -79,6 +81,14 @@ class WorkerClient:
                 raise WorkerRunError(event.get("error") or "worker run failed")
         raise WorkerRunError("worker event stream ended without a terminal event")
 
+    async def reset_session(self, session_id: str) -> None:
+        """Clear the worker's session (forwarded /new or /reset).
+
+        Scopes the reset to the routed profile's own state.db — the host
+        profile's sessions are never touched.
+        """
+        await self._delete(f"{self.base_url}/api/sessions/{session_id}")
+
     async def _aiohttp_post(self, url: str, body: dict) -> dict:
         import aiohttp
 
@@ -86,6 +96,13 @@ class WorkerClient:
             async with s.post(url, json=body) as r:
                 r.raise_for_status()
                 return await r.json()
+
+    async def _aiohttp_delete(self, url: str) -> None:
+        import aiohttp
+
+        async with aiohttp.ClientSession(headers=self._headers) as s:
+            async with s.delete(url) as r:
+                r.raise_for_status()
 
     async def _aiohttp_sse(self, url: str) -> AsyncIterator[dict]:
         import aiohttp

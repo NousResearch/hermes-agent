@@ -1684,6 +1684,20 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
+                    # Normalise non-string content before len() and
+                    # error detection.  Mirrors the logic inside
+                    # _looks_like_error_output so result_bytes is
+                    # measured on the extracted text, not element count.
+                    if isinstance(content, list):
+                        texts = [
+                            p["text"] for p in content
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        ]
+                        content = "\n".join(texts) if texts else ""
+                    elif isinstance(content, dict):
+                        content = json.dumps(content)
+                    elif not isinstance(content, str):
+                        content = str(content) if content is not None else ""
                     is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),

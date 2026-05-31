@@ -22,6 +22,7 @@ from tools.delegate_tool import (
     DelegateEvent,
     _get_max_concurrent_children,
     _LEGACY_EVENT_MAP,
+    _looks_like_error_output,
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
@@ -671,6 +672,207 @@ class TestDelegateObservability(unittest.TestCase):
             trace = result["results"][0]["tool_trace"]
             self.assertEqual(len(trace), 1)
             self.assertEqual(trace[0]["status"], "error")
+
+    def test_tool_trace_list_content_result_bytes_is_string_length(self):
+        """result_bytes must be measured on extracted text, not list element count."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "test-model"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"cmd": "echo hi"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1",
+                     "content": [{"type": "text", "text": "hello world"}]},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test result_bytes", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            # "hello world" = 11 chars, NOT 1 (list element count)
+            self.assertEqual(trace[0]["result_bytes"], 11)
+
+    def test_tool_trace_list_multiple_text_parts(self):
+        """List with multiple text parts should join them for error detection."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "test-model"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "failed",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1",
+                     "content": [
+                         {"type": "text", "text": "Error: file not found"},
+                         {"type": "text", "text": "at /tmp/missing"},
+                     ]},
+                    {"role": "assistant", "content": "failed"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test multi-part", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            # First part starts with "Error:" so should be detected
+            self.assertEqual(trace[0]["status"], "error")
+
+    def test_tool_trace_list_no_text_parts(self):
+        """List with only non-text parts (e.g. image_url) should not crash."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "test-model"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "vision", "arguments": '{}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1",
+                     "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test image-only", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["status"], "ok")
+            self.assertEqual(trace[0]["result_bytes"], 0)
+
+    def test_tool_trace_dict_error_detected_via_json(self):
+        """Dict with error key should be detected as error via json.dumps path."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "test-model"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "api_call", "arguments": '{}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1",
+                     "content": {"status": "failed", "message": "connection refused"}},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test dict status failed", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["status"], "error")
+
+
+class TestLooksLikeErrorOutputNonString(unittest.TestCase):
+    """Pure unit tests for _looks_like_error_output with non-string content.
+
+    Verifies that the normalisation layer handles all content types
+    without crashing and produces correct error detection results.
+    """
+
+    def test_none_returns_false(self):
+        self.assertFalse(_looks_like_error_output(None))
+
+    def test_empty_list_returns_false(self):
+        self.assertFalse(_looks_like_error_output([]))
+
+    def test_empty_dict_returns_false(self):
+        self.assertFalse(_looks_like_error_output({}))
+
+    def test_number_content_does_not_crash(self):
+        self.assertFalse(_looks_like_error_output(42))
+
+    def test_boolean_content_does_not_crash(self):
+        self.assertFalse(_looks_like_error_output(True))
+
+    def test_list_with_text_error_detected(self):
+        content = [{"type": "text", "text": "Error: command failed"}]
+        self.assertTrue(_looks_like_error_output(content))
+
+    def test_list_with_text_ok_not_detected(self):
+        content = [{"type": "text", "text": "hello world"}]
+        self.assertFalse(_looks_like_error_output(content))
+
+    def test_list_with_multiple_text_parts(self):
+        # When joined, first part is non-error text — error in second part
+        # is NOT detected because heuristic only checks first line.
+        content = [
+            {"type": "text", "text": "some output"},
+            {"type": "text", "text": "Error: something broke"},
+        ]
+        self.assertFalse(_looks_like_error_output(content))
+
+    def test_list_with_multiple_text_parts_error_first(self):
+        """Error in first part IS detected even with trailing parts."""
+        content = [
+            {"type": "text", "text": "Error: file not found"},
+            {"type": "text", "text": "at /tmp/missing"},
+        ]
+        self.assertTrue(_looks_like_error_output(content))
+
+    def test_list_no_text_parts_returns_false(self):
+        content = [{"type": "image_url", "image_url": {"url": "data:abc"}}]
+        self.assertFalse(_looks_like_error_output(content))
+
+    def test_dict_with_error_key_detected(self):
+        content = {"error": "timeout"}
+        self.assertTrue(_looks_like_error_output(content))
+
+    def test_dict_with_status_failed_detected(self):
+        content = {"status": "failed", "reason": "circuit breaker"}
+        self.assertTrue(_looks_like_error_output(content))
+
+    def test_dict_with_status_ok_not_detected(self):
+        content = {"status": "ok", "output": "success"}
+        self.assertFalse(_looks_like_error_output(content))
+
+    def test_nested_list_flattened(self):
+        # Nested lists aren't ContentPart format — str() fallback
+        content = [["Error: nested"]]
+        # str([["Error: nested"]]) = "[['Error: nested']]" — starts with [, not error prefix
+        self.assertFalse(_looks_like_error_output(content))
+
+    def test_string_content_unchanged(self):
+        self.assertTrue(_looks_like_error_output("Error: standard string error"))
+        self.assertFalse(_looks_like_error_output("normal output"))
+
+    def test_list_with_dict_error_json_detected(self):
+        """List containing a dict-type part with error JSON."""
+        content = [{"type": "text", "text": '{"error": "timeout", "code": 504}'}]
+        self.assertTrue(_looks_like_error_output(content))
 
     def test_parallel_tool_calls_paired_correctly(self):
         """Parallel tool calls should each get their own result via tool_call_id matching."""

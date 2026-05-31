@@ -480,6 +480,7 @@ class SlackAdapter(BasePlatformAdapter):
             "response_type": "ephemeral",
             "replace_original": True,
             "text": text,
+            "blocks": self._mrkdwn_blocks(text),
         }
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
@@ -796,6 +797,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "channel": chat_id,
                     "text": chunk,
                     "mrkdwn": True,
+                    "blocks": self._mrkdwn_blocks(chunk),
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
@@ -854,6 +856,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "user": user_id,
                 "text": formatted,
                 "mrkdwn": True,
+                "blocks": self._mrkdwn_blocks(formatted),
             }
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
@@ -885,6 +888,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel=chat_id,
                 ts=message_id,
                 text=formatted,
+                blocks=self._mrkdwn_blocks(formatted),
             )
             if finalize:
                 await self.stop_typing(chat_id)
@@ -1174,6 +1178,50 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Markdown → mrkdwn conversion -----
 
+    def _mrkdwn_blocks(self, text: str) -> List[Dict[str, Any]]:
+        """Build Block Kit mrkdwn sections for reliable Slack rendering.
+
+        Slack clients render top-level ``text`` inconsistently, especially for
+        edited/updated messages.  Supplying matching mrkdwn section blocks makes
+        bold, quotes, lists, and links render predictably while keeping ``text``
+        as a notification/accessibility fallback.
+        """
+        if not text:
+            return []
+
+        max_section = 3000
+        blocks: List[Dict[str, Any]] = []
+
+        def _append(chunk: str) -> None:
+            chunk = chunk.strip("\n")
+            if not chunk:
+                return
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": chunk},
+            })
+
+        current = ""
+        for line in text.splitlines(keepends=True):
+            if len(line) > max_section:
+                if current:
+                    _append(current)
+                    current = ""
+                for i in range(0, len(line), max_section):
+                    _append(line[i:i + max_section])
+                continue
+
+            if current and len(current) + len(line) > max_section:
+                _append(current)
+                current = line
+            else:
+                current += line
+
+        if current:
+            _append(current)
+
+        return blocks[:50]
+
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn format.
 
@@ -1196,10 +1244,23 @@ class SlackAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 1) Protect fenced code blocks (``` ... ```)
+        # 1) Protect fenced code blocks (``` ... ```). Slack code blocks do
+        # not support language info strings; if we send ```python, Slack
+        # renders "python" as the first code line. Strip the info string while
+        # preserving the code body untouched.
+        def _normalize_fenced_code_block(m):
+            block = m.group(0)
+            info_match = re.match(r'```([^`\n]*)\n([\s\S]*?)```$', block)
+            if not info_match:
+                return _ph(block)
+            info = info_match.group(1).strip()
+            if not info:
+                return _ph(block)
+            return _ph(f'```\n{info_match.group(2)}```')
+
         text = re.sub(
             r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-            lambda m: _ph(m.group(0)),
+            _normalize_fenced_code_block,
             text,
         )
 
@@ -1236,6 +1297,54 @@ class SlackAdapter(BasePlatformAdapter):
         text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
         text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
+        # 6.5) Convert Markdown pipe tables to Slack-readable bullet rows.
+        # Slack mrkdwn has no table syntax, so leaving the pipe table intact
+        # renders the separator row (|---|---|) as ugly raw text.
+        def _split_table_row(line: str) -> List[str]:
+            stripped = line.strip()
+            if stripped.startswith('|'):
+                stripped = stripped[1:]
+            if stripped.endswith('|'):
+                stripped = stripped[:-1]
+            return [cell.strip() for cell in stripped.split('|')]
+
+        def _is_table_sep(line: str) -> bool:
+            return bool(re.match(
+                r'^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$',
+                line,
+            ))
+
+        def _convert_pipe_tables(src: str) -> str:
+            lines = src.split('\n')
+            out: List[str] = []
+            i = 0
+            while i < len(lines):
+                if (
+                    i + 1 < len(lines)
+                    and lines[i].lstrip().startswith('|')
+                    and '|' in lines[i].strip()[1:]
+                    and _is_table_sep(lines[i + 1])
+                ):
+                    headers = _split_table_row(lines[i])
+                    rendered: List[str] = []
+                    i += 2
+                    while i < len(lines) and lines[i].lstrip().startswith('|'):
+                        cells = _split_table_row(lines[i])
+                        pairs = []
+                        for header, cell in zip(headers, cells):
+                            if header or cell:
+                                pairs.append(f'*{header}*: {cell}' if header else cell)
+                        if pairs:
+                            rendered.append('• ' + ' / '.join(pairs))
+                        i += 1
+                    out.append(_ph('\n'.join(rendered)))
+                    continue
+                out.append(lines[i])
+                i += 1
+            return '\n'.join(out)
+
+        text = _convert_pipe_tables(text)
+
         # 7) Convert headers (## Title) → *Title* (bold)
         def _convert_header(m):
             inner = m.group(1).strip()
@@ -1247,29 +1356,37 @@ class SlackAdapter(BasePlatformAdapter):
             r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
         )
 
+        # 7.5) Horizontal rules and markdown list bullets.
+        text = re.sub(r'^\s{0,3}(?:---|\*\*\*|___)\s*$', '────────', text, flags=re.MULTILINE)
+        text = re.sub(r'^(\s*)[-*]\s+', lambda m: m.group(1) + '• ', text, flags=re.MULTILINE)
+
         # 8) Convert bold+italic: ***text*** → *_text_* (Slack bold wrapping italic)
         text = re.sub(
-            r'\*\*\*(.+?)\*\*\*',
+            r'\*\*\*([\s\S]+?)\*\*\*',
             lambda m: _ph(f'*_{m.group(1)}_*'),
             text,
         )
 
-        # 9) Convert bold: **text** → *text* (Slack bold)
+        # 9) Convert bold: **text** → *text* (Slack bold).
+        # When bold wraps paired Japanese/paren punctuation, move the Slack
+        # emphasis markers inside the punctuation; Slack often fails to render
+        # `*「text」*` but renders `「*text*」` reliably.
         text = re.sub(
-            r'\*\*(.+?)\*\*',
+            r'\*\*([「『（(\[])([\s\S]+?)([」』）)\]])\*\*',
+            lambda m: _ph(f'{m.group(1)}*{m.group(2)}*{m.group(3)}'),
+            text,
+        )
+        text = re.sub(
+            r'\*\*([\s\S]+?)\*\*',
             lambda m: _ph(f'*{m.group(1)}*'),
             text,
         )
 
-        # 10) Convert italic: _text_ stays as _text_ (already Slack italic)
-        #     Single *text* → _text_ (Slack italic), but only when the
-        #     emphasized text touches non-whitespace on both sides so literal
-        #     delimiters like "a * b * c" are preserved.
-        text = re.sub(
-            r'(?<!\*)\*(\S(?:[^*\n]*?\S)?)\*(?!\*)',
-            lambda m: _ph(f'_{m.group(1)}_'),
-            text,
-        )
+        # 10) Preserve single-star spans. In Slack mrkdwn, *text* means bold
+        #     (not italic), and users often ask for Slack-native single-star
+        #     emphasis. Earlier versions converted *text* → _text_, which made
+        #     assistant output like *do-not-change* fail to render as bold. Leave
+        #     single-star spans untouched; _text_ remains Slack italic.
 
         # 11) Convert strikethrough: ~~text~~ → ~text~
         text = re.sub(

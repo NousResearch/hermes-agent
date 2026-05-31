@@ -620,13 +620,13 @@ class TestSendPrivateNotice:
         )
 
         assert result.success
-        adapter._app.client.chat_postEphemeral.assert_called_once_with(
-            channel="C123",
-            user="U123",
-            text="private hello",
-            mrkdwn=True,
-            thread_ts="1234567890.123456",
-        )
+        kwargs = adapter._app.client.chat_postEphemeral.call_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["user"] == "U123"
+        assert kwargs["text"] == "private hello"
+        assert kwargs["mrkdwn"] is True
+        assert kwargs["thread_ts"] == "1234567890.123456"
+        assert kwargs["blocks"][0]["text"] == {"type": "mrkdwn", "text": "private hello"}
 
 
 # ---------------------------------------------------------------------------
@@ -1359,11 +1359,11 @@ class TestSendTyping:
         )
 
         assert result.success
-        adapter._app.client.chat_update.assert_called_once_with(
-            channel="C123",
-            ts="reply_ts",
-            text="done",
-        )
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["ts"] == "reply_ts"
+        assert kwargs["text"] == "done"
+        assert kwargs["blocks"][0]["text"] == {"type": "mrkdwn", "text": "done"}
         adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
@@ -1400,8 +1400,15 @@ class TestFormatMessage:
     def test_bold_conversion(self, adapter):
         assert adapter.format_message("**hello**") == "*hello*"
 
-    def test_italic_asterisk_conversion(self, adapter):
-        assert adapter.format_message("*hello*") == "_hello_"
+    def test_multiline_bold_conversion(self, adapter):
+        text = "**Use Byteflare as the first customer,\nthen market it as an AI-automated company.**"
+        assert adapter.format_message(text) == "*Use Byteflare as the first customer,\nthen market it as an AI-automated company.*"
+
+    def test_single_asterisk_preserved_as_slack_bold(self, adapter):
+        assert adapter.format_message("*hello*") == "*hello*"
+
+    def test_single_asterisk_phrase_preserved_as_slack_bold(self, adapter):
+        assert adapter.format_message("Please *do not change* this") == "Please *do not change* this"
 
     def test_italic_underscore_preserved(self, adapter):
         assert adapter.format_message("_hello_") == "_hello_"
@@ -1432,9 +1439,17 @@ class TestFormatMessage:
     def test_strikethrough(self, adapter):
         assert adapter.format_message("~~deleted~~") == "~deleted~"
 
-    def test_code_block_preserved(self, adapter):
+    def test_code_block_strips_language_info_string(self, adapter):
         code = "```python\nx = **not bold**\n```"
+        assert adapter.format_message(code) == "```\nx = **not bold**\n```"
+
+    def test_code_block_without_language_preserved(self, adapter):
+        code = "```\nx = **not bold**\n```"
         assert adapter.format_message(code) == code
+
+    def test_code_block_strips_language_for_slack_inline_close(self, adapter):
+        code = "```py\ndef test()...```"
+        assert adapter.format_message(code) == "```\ndef test()...```"
 
     def test_inline_code_preserved(self, adapter):
         text = "Use `**raw**` syntax"
@@ -1444,7 +1459,7 @@ class TestFormatMessage:
         text = "**Bold** and *italic* with `code`"
         result = adapter.format_message(text)
         assert "*Bold*" in result
-        assert "_italic_" in result
+        assert "*italic*" in result
         assert "`code`" in result
 
     def test_empty_string(self, adapter):
@@ -1500,9 +1515,9 @@ class TestFormatMessage:
         """**bold** still works after adding ***bold italic*** support."""
         assert adapter.format_message("**bold**") == "*bold*"
 
-    def test_bold_italic_does_not_break_plain_italic(self, adapter):
-        """*italic* still works after adding ***bold italic*** support."""
-        assert adapter.format_message("*italic*") == "_italic_"
+    def test_bold_italic_does_not_break_single_star_slack_bold(self, adapter):
+        """*bold* stays Slack bold after adding ***bold italic*** support."""
+        assert adapter.format_message("*bold*") == "*bold*"
 
     def test_bold_italic_mixed_with_bold(self, adapter):
         """Both ***bold italic*** and **bold** in the same message."""
@@ -1580,9 +1595,9 @@ class TestFormatMessage:
     # --- Additional edge cases ---
 
     def test_message_only_code_block(self, adapter):
-        """Entire message is a fenced code block — no conversion."""
+        """Entire message is a fenced code block — language info is stripped for Slack."""
         code = "```python\nx = 1\n```"
-        assert adapter.format_message(code) == code
+        assert adapter.format_message(code) == "```\nx = 1\n```"
 
     def test_multiline_mixed_formatting(self, adapter):
         """Multi-line message with headers, bold, links, code, and blockquotes."""
@@ -1625,6 +1640,24 @@ class TestFormatMessage:
     def test_emoji_shortcodes_passthrough(self, adapter):
         """Emoji shortcodes like :smile: pass through unchanged."""
         assert adapter.format_message(":smile: hello :wave:") == ":smile: hello :wave:"
+
+    def test_horizontal_rule_conversion(self, adapter):
+        assert adapter.format_message("before\n---\nafter") == "before\n────────\nafter"
+
+    def test_markdown_pipe_table_converts_to_bullets(self, adapter):
+        text = "| Type | Market price |\n|---|---|\n| Lightweight setup | $2,000-$5,000 |"
+        assert adapter.format_message(text) == "• *Type*: Lightweight setup / *Market price*: $2,000-$5,000"
+
+    def test_separatorless_pipe_lines_are_preserved(self, adapter):
+        text = "| a | b |\n| c | d |"
+        assert adapter.format_message(text) == text
+
+    def test_mrkdwn_blocks_split_and_mark_sections(self, adapter):
+        blocks = adapter._mrkdwn_blocks("*bold*\n" + "x" * 3100)
+        assert blocks
+        assert all(block["type"] == "section" for block in blocks)
+        assert all(block["text"]["type"] == "mrkdwn" for block in blocks)
+        assert all(len(block["text"]["text"]) <= 3000 for block in blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -1710,7 +1743,7 @@ class TestEditMessageStreamingPipeline:
         assert result.success is True
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["text"].startswith("*Result:*")
-        assert "```python\nprint('hello')\n```" in kwargs["text"]
+        assert "```\nprint('hello')\n```" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_edit_message_formats_blockquote_in_stream(self, adapter):

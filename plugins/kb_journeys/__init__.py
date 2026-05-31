@@ -819,6 +819,210 @@ def _queue_decision_commands(item: dict[str, Any], *, index: int) -> list[str]:
     return lines
 
 
+def _descriptor_tool_name(target: str, tool_name: Any) -> str:
+    value = str(tool_name or "").strip()
+    if not value:
+        return ""
+    if value.startswith("mcp_"):
+        return value
+    return _mcp_tool_name(target, value)
+
+
+def _queue_descriptor_actions(ctx: Any, target: str, item: dict[str, Any], *, index: int) -> list[Any]:
+    try:
+        from tools.kb_callback_registry import KbAction
+    except Exception:
+        return []
+
+    actions: list[Any] = []
+    for descriptor in _safe_actions_for_item(item):
+        if descriptor.get("dashboard_owned_write") is True:
+            continue
+        params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
+        decision = str(params.get("decision") or "").strip().lower()
+        preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool"))
+        confirm_tool = _descriptor_tool_name(target, descriptor.get("confirm_tool"))
+        if not decision or not preview_tool or not confirm_tool:
+            continue
+        label = _short(descriptor.get("label") or decision.replace("_", " ").title(), decision.title())
+        action_id = _short(descriptor.get("action_id") or f"queue.{decision}", f"queue.{decision}")
+        descriptor_copy = dict(descriptor)
+        actions.append(
+            KbAction(
+                label=f"Preview {label}",
+                action_id=f"{action_id}.preview",
+                handler=lambda callback_ctx, d=descriptor_copy: _render_queue_descriptor_preview(
+                    ctx,
+                    target,
+                    item,
+                    index=index,
+                    descriptor=d,
+                    callback_ctx=callback_ctx,
+                ),
+                metadata={
+                    "target_kind": "proposal_queue",
+                    "target_ref": _item_target(item),
+                    "decision": decision,
+                    "preview_tool": preview_tool,
+                    "confirm_tool": confirm_tool,
+                },
+            )
+        )
+    return actions[:4]
+
+
+def _queue_descriptor_call_args(
+    descriptor: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    decision: str,
+    actor: str,
+    source: str,
+    note: str,
+) -> dict[str, Any]:
+    params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
+    proposal_ids = [str(proposal_id) for proposal_id in (params.get("proposal_ids") or []) if str(proposal_id)]
+    if not proposal_ids:
+        proposal_ids = _proposal_ids_for_item(item)
+    args = dict(params)
+    args["proposal_ids"] = proposal_ids
+    args["decision"] = decision
+    args["actor"] = actor
+    args["source"] = source
+    args["note"] = note
+    return args
+
+
+def _queue_callback_actor(callback_ctx: Any) -> str:
+    actor_id = str(getattr(callback_ctx, "actor_id", "") or "").strip()
+    return f"telegram:{actor_id}" if actor_id else "telegram:operator"
+
+
+def _render_queue_descriptor_preview(
+    ctx: Any,
+    target: str,
+    item: dict[str, Any],
+    *,
+    index: int,
+    descriptor: dict[str, Any],
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    try:
+        from tools.kb_callback_registry import KbAction
+    except Exception:
+        return {"title": "KB Queue", "text": "KB Queue\nAction buttons are unavailable. Use /kb queue to refresh.", "actions": []}
+
+    params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
+    decision = str(params.get("decision") or "").strip().lower()
+    if not decision:
+        return {"title": "KB Queue", "text": "KB Queue\nThis action is missing a proposal decision.", "actions": []}
+    proposal_ids = [str(proposal_id) for proposal_id in (params.get("proposal_ids") or []) if str(proposal_id)] or _proposal_ids_for_item(item)
+    actor = _queue_callback_actor(callback_ctx)
+    source = "Hermes Telegram Action Card"
+    preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool"))
+    preview_payload = _result_payload(
+        ctx.dispatch_tool(
+            preview_tool,
+            _queue_descriptor_call_args(
+                descriptor,
+                item,
+                decision=decision,
+                actor=actor,
+                source=source,
+                note=f"Previewed from Telegram action card for {_item_title(item)}",
+            ),
+        )
+    )
+    selection = [(index, item)]
+    text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
+    if not _preview_allows_confirmation(preview_payload):
+        return {"title": "KB Queue", "text": text, "actions": []}
+    label = _short(descriptor.get("label") or decision.replace("_", " ").title(), decision.title())
+    action_id = _short(descriptor.get("action_id") or f"queue.{decision}", f"queue.{decision}")
+    confirm_action = KbAction(
+        label=f"Confirm {label}",
+        action_id=f"{action_id}.confirm",
+        handler=lambda confirm_ctx: _render_queue_descriptor_confirm(
+            ctx,
+            target,
+            item,
+            index=index,
+            descriptor=descriptor,
+            callback_ctx=confirm_ctx,
+        ),
+        metadata={
+            "target_kind": "proposal_queue",
+            "target_ref": _item_target(item),
+            "decision": decision,
+            "preview_required": True,
+        },
+    )
+    return {
+        "title": "KB Queue",
+        "text": text + "\n\nConfirm with the button below only if the preview matches your intent.",
+        "actions": [confirm_action],
+    }
+
+
+def _render_queue_descriptor_confirm(
+    ctx: Any,
+    target: str,
+    item: dict[str, Any],
+    *,
+    index: int,
+    descriptor: dict[str, Any],
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
+    decision = str(params.get("decision") or "").strip().lower()
+    if not decision:
+        return {"title": "KB Queue", "text": "KB Queue\nThis action is missing a proposal decision.", "actions": []}
+    proposal_ids = [str(proposal_id) for proposal_id in (params.get("proposal_ids") or []) if str(proposal_id)] or _proposal_ids_for_item(item)
+    actor = _queue_callback_actor(callback_ctx)
+    source = "Hermes Telegram Action Card"
+    preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool"))
+    confirmed_tool = _descriptor_tool_name(target, descriptor.get("confirm_tool"))
+    selection = [(index, item)]
+    preview_payload = _result_payload(
+        ctx.dispatch_tool(
+            preview_tool,
+            _queue_descriptor_call_args(
+                descriptor,
+                item,
+                decision=decision,
+                actor=actor,
+                source=source,
+                note=f"Re-previewed before Telegram action-card confirmation for {_item_title(item)}",
+            ),
+        )
+    )
+    if not _preview_allows_confirmation(preview_payload):
+        return {"title": "KB Queue", "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection), "actions": []}
+    confirmed_args = _queue_descriptor_call_args(
+        descriptor,
+        item,
+        decision=decision,
+        actor=actor,
+        source=source,
+        note=f"Confirmed from Telegram action card for {_item_title(item)}",
+    )
+    confirmed_args["session_id"] = f"telegram-kb-card-{int(time.time())}"
+    confirmed_args["user_confirmation"] = {
+        "confirmed": True,
+        "surface": "telegram",
+        "action": f"queue.{decision}",
+        "preview_required": True,
+        "confirmation_text": str(descriptor.get("confirmation_copy") or f"Confirm {decision}"),
+        "proposal_ids": proposal_ids,
+    }
+    confirmed_payload = _result_payload(ctx.dispatch_tool(confirmed_tool, confirmed_args))
+    return {
+        "title": "KB Queue",
+        "text": _confirmed_text(decision, confirmed_payload, selection=selection, proposal_ids=proposal_ids),
+        "actions": [],
+    }
+
+
 def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
     proposal_ids = _proposal_ids_for_item(item)
     lines = [
@@ -1709,7 +1913,7 @@ def _render_queue_item(data: Any, *, index: int, ctx: Any, target: str) -> dict[
     return {
         "title": "KB Queue",
         "text": _queue_item_text(item, index=index),
-        "actions": [],
+        "actions": _queue_descriptor_actions(ctx, target, item, index=index),
     }
 
 

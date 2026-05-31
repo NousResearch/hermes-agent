@@ -1316,6 +1316,16 @@ def test_discord_toolsets_not_available_on_other_platforms():
     assert _toolset_allowed_for_platform("discord_admin", "discord")
 
 
+
+def test_google_chat_toolset_not_available_on_other_platforms():
+    from hermes_cli.tools_config import _toolset_allowed_for_platform
+
+    for plat in ["cli", "telegram", "discord", "slack", "whatsapp", "signal"]:
+        assert not _toolset_allowed_for_platform("google_chat", plat), (
+            f"`google_chat` toolset leaked onto {plat}"
+        )
+    assert _toolset_allowed_for_platform("google_chat", "google_chat")
+
 def test_discord_toolsets_user_enabled_are_honored():
     """When the user opts in via `hermes tools`, the toolset appears."""
     config = {"platform_toolsets": {"discord": ["web", "terminal", "discord"]}}
@@ -1336,6 +1346,14 @@ def test_save_platform_tools_strips_restricted_toolsets():
     assert "web" in saved
     assert "terminal" in saved
 
+
+
+def test_save_platform_tools_strips_google_chat_toolset_from_non_google_chat():
+    config = {}
+    _save_platform_tools(config, "telegram", {"web", "google_chat"})
+    saved = config["platform_toolsets"]["telegram"]
+    assert "google_chat" not in saved
+    assert "web" in saved
 
 def test_get_platform_tools_feishu_includes_doc_and_drive():
     enabled = _get_platform_tools({}, "feishu")

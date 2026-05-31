@@ -249,9 +249,19 @@ _LEGACY_TOOLSET_MAP = {
 #
 # Invalidation happens transparently via the registry's _generation counter,
 # which bumps on register() / deregister() / register_toolset_alias(). The
-# inner check_fn TTL cache in registry.py handles environment drift (Docker
-# daemon start/stop, env var changes, etc.) on a 30 s horizon.
+# inner check_fn TTL cache in registry.py handles slow environment drift
+# (Docker daemon start/stop, optional SDK installs, etc.) on a 30 s horizon.
+# Process-local session markers are different: gateway startup and worker
+# dispatch can flip them mid-process, so they are part of this cache key and
+# force the check_fn cache to refresh immediately.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_TOOL_AVAILABILITY_ENV_KEYS = (
+    "HERMES_EXEC_ASK",
+    "HERMES_GATEWAY_SESSION",
+    "HERMES_INTERACTIVE",
+    "HERMES_KANBAN_TASK",
+)
+_last_tool_availability_env_fp: Optional[tuple] = None
 
 
 def _clear_tool_defs_cache() -> None:
@@ -259,6 +269,28 @@ def _clear_tool_defs_cache() -> None:
     schema dependencies change (e.g. discord capability cache reset,
     execute_code sandbox reconfigured)."""
     _tool_defs_cache.clear()
+
+
+def _tool_availability_env_fingerprint() -> tuple:
+    """Return env values that can synchronously change tool availability."""
+    return tuple((key, os.environ.get(key)) for key in _TOOL_AVAILABILITY_ENV_KEYS)
+
+
+def _refresh_check_cache_if_tool_env_changed(env_fp: tuple) -> None:
+    """Drop stale registry check_fn results when session-context env flips."""
+    global _last_tool_availability_env_fp
+    if _last_tool_availability_env_fp is None:
+        _last_tool_availability_env_fp = env_fp
+        return
+    if _last_tool_availability_env_fp == env_fp:
+        return
+    _last_tool_availability_env_fp = env_fp
+    _clear_tool_defs_cache()
+    try:
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+    except Exception:
+        logger.debug("Could not invalidate registry check_fn cache after env change", exc_info=True)
 
 
 def get_tool_definitions(
@@ -285,6 +317,9 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    tool_env_fp = _tool_availability_env_fingerprint()
+    _refresh_check_cache_if_tool_env_changed(tool_env_fp)
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
@@ -306,7 +341,7 @@ def get_tool_definitions(
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
-            bool(os.environ.get("HERMES_KANBAN_TASK")),
+            tool_env_fp,
             bool(skip_tool_search_assembly),
         )
         cached = _tool_defs_cache.get(cache_key)

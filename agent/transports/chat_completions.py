@@ -151,6 +151,9 @@ class ChatCompletionsTransport(ProviderTransport):
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
                 needs_sanitize = True
                 break
+            if msg.get("role") == "tool" and "tool_call_id" not in msg:
+                needs_sanitize = True
+                break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -177,6 +180,10 @@ class ChatCompletionsTransport(ProviderTransport):
             # is safe and future-proofs against new markers being added.
             for key in [k for k in msg if isinstance(k, str) and k.startswith("_")]:
                 msg.pop(key, None)
+            
+            if msg.get("role") == "tool" and "tool_call_id" not in msg:
+                msg["tool_call_id"] = f"call_missing_{id(msg)}"
+
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:

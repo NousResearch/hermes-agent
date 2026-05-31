@@ -164,6 +164,122 @@ class TestFalsyValues:
         assert "model" in config
 
 
+class TestConfigGetUnset:
+    """config get/unset should mirror config set for scriptable workflows."""
+
+    def test_config_get_prints_resolved_nested_value(self, _isolated_hermes_home, capsys):
+        set_config_value("terminal.timeout", "120")
+        capsys.readouterr()
+
+        args = argparse.Namespace(config_command="get", key="terminal.timeout", json=False)
+        config_command(args)
+
+        assert capsys.readouterr().out.strip() == "120"
+
+    def test_config_get_prints_structured_json(self, _isolated_hermes_home, capsys):
+        set_config_value("terminal.backend", "docker")
+        capsys.readouterr()
+
+        args = argparse.Namespace(config_command="get", key="terminal", json=True)
+        config_command(args)
+
+        import json
+        assert json.loads(capsys.readouterr().out)["backend"] == "docker"
+
+    def test_config_get_prints_null_for_resolved_null_value(self, capsys):
+        args = argparse.Namespace(config_command="get", key="cron.max_parallel_jobs", json=False)
+        config_command(args)
+
+        assert capsys.readouterr().out.strip() == "null"
+
+    def test_config_get_missing_env_key_exits(self, capsys):
+        args = argparse.Namespace(config_command="get", key="OPENROUTER_API_KEY", json=False)
+
+        with pytest.raises(SystemExit) as exc:
+            config_command(args)
+
+        assert exc.value.code == 1
+        assert "Config key not set: OPENROUTER_API_KEY" in capsys.readouterr().err
+
+    def test_config_get_dotted_token_yaml_key(self, _isolated_hermes_home, capsys):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  teams:\n"
+            "    extra:\n"
+            "      access_token: yaml-token\n"
+        )
+
+        args = argparse.Namespace(
+            config_command="get",
+            key="platforms.teams.extra.access_token",
+            json=False,
+        )
+        config_command(args)
+
+        assert capsys.readouterr().out.strip() == "yaml-token"
+
+    def test_config_get_missing_key_exits(self, capsys):
+        args = argparse.Namespace(config_command="get", key="not.a.real.key", json=False)
+
+        with pytest.raises(SystemExit) as exc:
+            config_command(args)
+
+        assert exc.value.code == 1
+        assert "Config key not set: not.a.real.key" in capsys.readouterr().err
+
+    def test_config_unset_removes_yaml_key_and_synced_env(self, _isolated_hermes_home, capsys):
+        set_config_value("terminal.backend", "docker")
+        assert "TERMINAL_ENV=docker" in _read_env(_isolated_hermes_home)
+        capsys.readouterr()
+
+        args = argparse.Namespace(config_command="unset", key="terminal.backend")
+        config_command(args)
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home)) or {}
+        assert reloaded == {}
+        assert "TERMINAL_ENV=" not in _read_env(_isolated_hermes_home)
+        assert "Unset terminal.backend" in capsys.readouterr().out
+
+    def test_config_unset_removes_env_key(self, _isolated_hermes_home, capsys):
+        set_config_value("OPENROUTER_API_KEY", "sk-test")
+        assert "OPENROUTER_API_KEY=sk-test" in _read_env(_isolated_hermes_home)
+        capsys.readouterr()
+
+        args = argparse.Namespace(config_command="unset", key="OPENROUTER_API_KEY")
+        config_command(args)
+
+        assert "OPENROUTER_API_KEY=" not in _read_env(_isolated_hermes_home)
+        assert "Unset OPENROUTER_API_KEY" in capsys.readouterr().out
+
+    def test_config_unset_removes_dotted_token_yaml_key(self, _isolated_hermes_home, capsys):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  teams:\n"
+            "    extra:\n"
+            "      access_token: yaml-token\n"
+            "      tenant_id: tenant\n"
+        )
+
+        args = argparse.Namespace(config_command="unset", key="platforms.teams.extra.access_token")
+        config_command(args)
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert "access_token" not in reloaded["platforms"]["teams"]["extra"]
+        assert reloaded["platforms"]["teams"]["extra"]["tenant_id"] == "tenant"
+        assert "Unset platforms.teams.extra.access_token" in capsys.readouterr().out
+
+    def test_config_unset_missing_key_exits(self, capsys):
+        args = argparse.Namespace(config_command="unset", key="not.a.real.key")
+
+        with pytest.raises(SystemExit) as exc:
+            config_command(args)
+
+        assert exc.value.code == 1
+        assert "Config key not set: not.a.real.key" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876
 # ---------------------------------------------------------------------------

@@ -165,7 +165,12 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
 
-    with client.responses.stream(
+    # Use create(stream=True) instead of responses.stream(...).get_final_response().
+    # The ChatGPT/Codex backend can send response.completed with response.output=null,
+    # which the OpenAI SDK streaming accumulator treats as a TypeError or missing
+    # response.completed despite the image_generation_call result already having
+    # streamed successfully.
+    stream = client.responses.create(
         model=_CODEX_CHAT_MODEL,
         store=False,
         instructions=_CODEX_INSTRUCTIONS,
@@ -188,28 +193,20 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
             "mode": "required",
             "tools": [{"type": "image_generation"}],
         },
-    ) as stream:
-        for event in stream:
-            event_type = getattr(event, "type", "")
-            if event_type == "response.output_item.done":
-                item = getattr(event, "item", None)
-                if getattr(item, "type", None) == "image_generation_call":
-                    result = getattr(item, "result", None)
-                    if isinstance(result, str) and result:
-                        image_b64 = result
-            elif event_type == "response.image_generation_call.partial_image":
-                partial = getattr(event, "partial_image_b64", None)
-                if isinstance(partial, str) and partial:
-                    image_b64 = partial
-        final = stream.get_final_response()
-
-    # Final-response sweep covers the case where the stream finished before
-    # we observed the ``output_item.done`` event for the image call.
-    for item in getattr(final, "output", None) or []:
-        if getattr(item, "type", None) == "image_generation_call":
-            result = getattr(item, "result", None)
-            if isinstance(result, str) and result:
-                image_b64 = result
+        stream=True,
+    )
+    for event in stream:
+        event_type = getattr(event, "type", "")
+        if event_type == "response.output_item.done":
+            item = getattr(event, "item", None)
+            if getattr(item, "type", None) == "image_generation_call":
+                result = getattr(item, "result", None)
+                if isinstance(result, str) and result:
+                    image_b64 = result
+        elif event_type == "response.image_generation_call.partial_image":
+            partial = getattr(event, "partial_image_b64", None)
+            if isinstance(partial, str) and partial:
+                image_b64 = partial
 
     return image_b64
 

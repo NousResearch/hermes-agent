@@ -1323,6 +1323,44 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+class TestDelegationGuidance:
+    """Tests for compact system-prompt guidance around delegate_task routing."""
+
+    def _make_agent(self, tools):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tools)),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                model="anthropic/claude-sonnet-4",
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_injects_when_delegate_task_available(self):
+        from agent.prompt_builder import DELEGATION_GUIDANCE
+
+        agent = self._make_agent(["terminal", "delegate_task"])
+        prompt = agent._build_system_prompt()
+
+        assert DELEGATION_GUIDANCE in prompt
+        assert "bulky investigations" in prompt
+
+    def test_skips_when_delegate_task_unavailable(self):
+        from agent.prompt_builder import DELEGATION_GUIDANCE
+
+        agent = self._make_agent(["terminal"])
+        prompt = agent._build_system_prompt()
+
+        assert DELEGATION_GUIDANCE not in prompt
+
+
 class TestTaskCompletionGuidance:
     """Tests for the universal task-completion / no-fabrication guidance
     (config.yaml ``agent.task_completion_guidance``).

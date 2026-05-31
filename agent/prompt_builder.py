@@ -297,6 +297,21 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+# Short, tool-aware guidance for the delegation tool. The full safety and usage
+# rules live in the delegate_task schema; this block only lifts the highest-value
+# routing heuristic into the stable system prompt so models do not bury it behind
+# ordinary single-tool workflows.
+DELEGATION_GUIDANCE = (
+    "# Delegation\n"
+    "When `delegate_task` is available, use it for bulky investigations, "
+    "independent parallel workstreams, or reasoning-heavy subtasks whose raw "
+    "tool output would flood the main conversation. Keep the parent thread for "
+    "decisions, synthesis, verification, and final delivery. Do not delegate "
+    "single tool calls, simple mechanical steps, work that needs user "
+    "interaction, or durable/background jobs; use the direct tool, `clarify`, "
+    "`cronjob`, or background `terminal` instead."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

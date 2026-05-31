@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    DELEGATION_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
@@ -130,6 +131,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
+
+    # Delegation is available in the default Hermes toolset, but the model may
+    # under-use it because detailed routing guidance lives in the tool schema.
+    # Add a compact nudge only when the tool is actually loaded.
+    if "delegate_task" in agent.valid_tool_names:
+        stable_parts.append(DELEGATION_GUIDANCE)
 
     # Computer-use (macOS) — goes in as its own block rather than being
     # merged into tool_guidance because the content is multi-paragraph.

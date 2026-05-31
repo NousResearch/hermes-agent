@@ -233,6 +233,23 @@ json_escape() {
         -e 's/"/\\"/g'
 }
 
+# npm rewrites tracked package-lock.json files non-deterministically during
+# `npm install` / `npm run pack`. On a managed install those diffs are never
+# intentional, but they leave the checkout dirty — which forces `hermes update`
+# to autostash on every run and makes branch switches fragile. Restore them so
+# a fresh install ends with a clean tree. Best-effort; only touches lockfiles.
+restore_dirty_lockfiles() {
+    local repo="${1:-$INSTALL_DIR}"
+    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+    local dirty
+    dirty=$(git -C "$repo" diff --name-only 2>/dev/null | grep 'package-lock\.json$' || true)
+    [ -z "$dirty" ] && return 0
+    echo "$dirty" | while IFS= read -r f; do
+        [ -n "$f" ] && git -C "$repo" checkout -- "$f" 2>/dev/null || true
+    done
+}
+
 emit_manifest() {
     # Stage-Desktop is included only with --include-desktop, mirroring
     # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
@@ -1908,7 +1925,8 @@ install_node_deps() {
         log_success "TUI dependencies installed"
     fi
 
-
+    # Keep the checkout clean so `hermes update` doesn't autostash every run.
+    restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
 run_setup_wizard() {
@@ -2307,6 +2325,10 @@ install_desktop() {
         return 1
     fi
     log_success "Desktop app built: $app"
+
+    # `npm install` + `npm run pack` rewrite lockfiles; restore them so the
+    # checkout stays clean for the next `hermes update`.
+    restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
 # Each --stage runs in its own process, so (unlike the monolithic main() where

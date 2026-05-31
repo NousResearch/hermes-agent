@@ -9119,6 +9119,43 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _discard_lockfile_churn(git_cmd, repo_root):
+    """Restore tracked ``package-lock.json`` files that npm dirtied locally.
+
+    npm rewrites lockfiles non-deterministically at install/build time. On a
+    managed install those diffs are never intentional, so we discard them so
+    ``hermes update`` sees a clean tree instead of autostashing every run.
+    Best-effort; only ever touches files named ``package-lock.json``.
+    """
+    try:
+        diff = subprocess.run(
+            git_cmd + ["diff", "--name-only"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        if diff.returncode != 0:
+            return
+        dirty = [
+            line.strip()
+            for line in diff.stdout.splitlines()
+            if line.strip().endswith("package-lock.json")
+        ]
+        if not dirty:
+            return
+        subprocess.run(
+            git_cmd + ["checkout", "--", *dirty],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
+    except Exception:
+        # Never let lockfile cleanup block an update.
+        pass
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9295,6 +9332,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_cmd = ["git"]
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    # Discard npm lockfile churn before any stash/branch logic. npm rewrites
+    # tracked package-lock.json files non-deterministically at install/build
+    # time (platform-specific optional deps, ideallyInert annotations, etc.),
+    # which is never an intentional edit on a managed install but leaves the
+    # tree dirty — forcing an autostash on every update and making branch
+    # switches fragile. Restoring them first lets the common case (only
+    # lockfile churn) update with a clean tree.
+    _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)

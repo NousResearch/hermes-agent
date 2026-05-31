@@ -7609,8 +7609,8 @@ class GatewayRunner:
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
-                    return "Queued for the next turn."
-                return t("gateway.queued", "Queued for the next turn. ({depth} queued)").format(depth=depth)
+                    return t("gateway.queued_simple", "Queued for the next turn.")
+                return t("gateway.queue_queued", "Queued for the next turn. ({depth} queued)").format(depth=depth)
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -7643,7 +7643,7 @@ class GatewayRunner:
                         return f"⚠️ Steer failed: {exc}"
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+                        return t("gateway.steer_accepted", "⏩ Steer queued — arrives after the next tool call: '{preview}'").format(preview=preview)
                     return t("gateway.steer_empty", "Steer rejected (empty payload).")
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)
@@ -8174,7 +8174,7 @@ class GatewayRunner:
                                 output = redact_sensitive_text(output)
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
+                            return t("gateway.quick_cmd_timeout", "Quick command timed out (30s).")
                         except Exception as e:
                             return f"Quick command error: {e}"
                     else:

@@ -596,6 +596,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        min_interval_seconds: float = 0,
     ):
         self.model = model
         self.base_url = base_url
@@ -607,6 +608,12 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        try:
+            self.min_interval_seconds = max(0.0, float(min_interval_seconds or 0))
+        except (TypeError, ValueError):
+            self.min_interval_seconds = 0.0
+        self._last_auto_compression_attempt_at: float = 0.0
+        self._last_compress_deferred_reason: Optional[str] = None
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
         # When False (default = historical behavior), insert a
@@ -1854,12 +1861,30 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compress_deferred_reason = None
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
         # this, /compress would silently no-op for 30-60s after a failure.
         if force and self._summary_failure_cooldown_until > 0.0:
             self._summary_failure_cooldown_until = 0.0
+
+        if not force and self.min_interval_seconds > 0:
+            now = time.monotonic()
+            if (
+                self._last_auto_compression_attempt_at > 0
+                and now - self._last_auto_compression_attempt_at < self.min_interval_seconds
+            ):
+                self._last_compress_deferred_reason = "min_interval"
+                if not self.quiet_mode:
+                    logger.info(
+                        "Context compression deferred by min_interval_seconds "
+                        "(%.0fs remaining)",
+                        self.min_interval_seconds - (now - self._last_auto_compression_attempt_at),
+                    )
+                return messages
+            self._last_auto_compression_attempt_at = now
+
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1

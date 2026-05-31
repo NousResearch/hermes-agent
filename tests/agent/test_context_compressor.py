@@ -175,6 +175,86 @@ class TestCompress:
         compressor.compress(msgs)
         assert compressor.compression_count == 2
 
+    def test_auto_compress_respects_min_interval_seconds(self):
+        """Automatic compression should debounce repeated summarizer calls."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\nfirst summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                min_interval_seconds=300,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "system", "content": "System"}] + self._make_messages(12)
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=[100.0, 100.0, 200.0]),
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=10),
+            patch("agent.context_compressor.call_llm", return_value=mock_response) as call_llm,
+        ):
+            first = c.compress(msgs)
+            second = c.compress(msgs)
+
+        assert call_llm.call_count == 1
+        assert second == msgs
+        assert c._last_compress_deferred_reason == "min_interval"
+
+    def test_force_compress_bypasses_min_interval_seconds(self):
+        """Manual /compress force=True should retry even during debounce."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\nforced summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                min_interval_seconds=300,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "system", "content": "System"}] + self._make_messages(12)
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=[100.0, 100.0, 200.0, 200.0]),
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=10),
+            patch("agent.context_compressor.call_llm", return_value=mock_response) as call_llm,
+        ):
+            first = c.compress(msgs)
+            second = c.compress(msgs, force=True)
+
+        assert call_llm.call_count == 2
+        assert len(second) <= len(first)
+        assert c._last_compress_deferred_reason is None
+
+    def test_min_interval_default_zero_preserves_existing_behavior(self):
+        """Default debounce of zero should preserve back-to-back auto compression."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\ndefault summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "system", "content": "System"}] + self._make_messages(12)
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=10),
+            patch("agent.context_compressor.call_llm", return_value=mock_response) as call_llm,
+        ):
+            c.compress(msgs)
+            c.compress(msgs)
+
+        assert call_llm.call_count == 2
+
     def test_protects_first_and_last(self, compressor):
         msgs = self._make_messages(10)
         result = compressor.compress(msgs)

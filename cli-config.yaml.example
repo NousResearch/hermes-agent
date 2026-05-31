@@ -367,6 +367,11 @@ compression:
   # Range: 0.10 - 0.80
   target_ratio: 0.20
 
+  # Minimum seconds between automatic compression attempts (default: 0 = disabled).
+  # Applies to both in-agent compression and gateway session hygiene. Manual
+  # /compress still bypasses this debounce.
+  min_interval_seconds: 0
+
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.

@@ -61,6 +61,9 @@ grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 - **Token source**: Prefers actual API-reported tokens from last turn; falls back
   to rough character-based estimate (`estimate_messages_tokens_rough`)
 - **Fires**: Only when `len(history) >= 4` and compression is enabled
+- **Debounce**: Honors `compression.min_interval_seconds` using a persisted
+  per-session timestamp, because hygiene creates a fresh `AIAgent` for each
+  compression attempt
 - **Purpose**: Catch sessions that escaped the agent's own compressor
 
 The gateway hygiene threshold is intentionally higher than the agent's compressor.
@@ -83,6 +86,7 @@ compression:
   enabled: true              # Enable/disable compression (default: true)
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
+  min_interval_seconds: 0    # Debounce automatic compression attempts (default: disabled)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
 
 # Summarization model/provider configured under auxiliary:
@@ -99,6 +103,7 @@ auxiliary:
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
+| `min_interval_seconds` | `0` | ≥0 | Minimum seconds between automatic compression attempts; `0` disables debounce. Manual `/compress` bypasses it. |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 

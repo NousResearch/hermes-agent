@@ -778,6 +778,12 @@ class TestUserMessagePreviewConfig:
         assert preview["last_lines"] == 2
 
 
+class TestCompressionConfig:
+    def test_default_config_includes_min_interval_seconds(self):
+        compression = DEFAULT_CONFIG["compression"]
+        assert compression["min_interval_seconds"] == 0
+
+
 class TestEnvWriteDenylist:
     """``save_env_value`` refuses to persist env-var names that
     influence how subprocesses execute — ``LD_PRELOAD``, ``PYTHONPATH``,

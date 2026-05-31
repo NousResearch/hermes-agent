@@ -8654,6 +8654,7 @@ class GatewayRunner:
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
             _hyg_hard_msg_limit = 400
+            _hyg_min_interval_seconds = 0.0
             _hyg_config_context_length = None
             _hyg_provider = None
             _hyg_base_url = None
@@ -8696,6 +8697,13 @@ class GatewayRunner:
                                     _hyg_hard_msg_limit = _parsed
                             except (TypeError, ValueError):
                                 pass
+                        try:
+                            _hyg_min_interval_seconds = max(
+                                0.0,
+                                float(_comp_cfg.get("min_interval_seconds", 0) or 0),
+                            )
+                        except (TypeError, ValueError):
+                            _hyg_min_interval_seconds = 0.0
 
                 try:
                     _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -8786,7 +8794,27 @@ class GatewayRunner:
                     or _msg_count >= _HARD_MSG_LIMIT
                 )
 
+                if _needs_compress and _hyg_min_interval_seconds > 0:
+                    _now = time.time()
+                    _last_hyg_attempt = float(
+                        getattr(session_entry, "last_hygiene_compression_at", 0.0) or 0.0
+                    )
+                    _elapsed = _now - _last_hyg_attempt if _last_hyg_attempt > 0 else None
+                    if _elapsed is not None and _elapsed < _hyg_min_interval_seconds:
+                        _needs_compress = False
+                        logger.info(
+                            "Session hygiene: compression deferred by "
+                            "compression.min_interval_seconds (%.0fs remaining)",
+                            _hyg_min_interval_seconds - _elapsed,
+                        )
+
                 if _needs_compress:
+                    if _hyg_min_interval_seconds > 0:
+                        session_entry.last_hygiene_compression_at = time.time()
+                        try:
+                            self.session_store._save()
+                        except Exception:
+                            pass
                     logger.info(
                         "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
                         "(threshold: %s%% of %s = %s tokens)",

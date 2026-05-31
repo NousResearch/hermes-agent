@@ -188,10 +188,10 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
-// Branch we track for self-update. Flip to 'main' once the GUI work merges —
-// single field edit, no rebuild required. User can also override at runtime
-// via hermesDesktop.updates.setBranch().
-const DEFAULT_UPDATE_BRANCH = 'bb/gui'
+// Branch we track for self-update. The GUI work has merged to main, so this
+// tracks main. User can also override at runtime via
+// hermesDesktop.updates.setBranch().
+const DEFAULT_UPDATE_BRANCH = 'main'
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.

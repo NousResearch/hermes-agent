@@ -1903,7 +1903,18 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:
         state.history.clear()
-        self.session_manager.save_session(state.session_id)
+        reset_failed = False
+        try:
+            reset_session_state = getattr(state.agent, "reset_session_state", None)
+            if callable(reset_session_state):
+                reset_session_state()
+        except Exception:
+            reset_failed = True
+            logger.warning("ACP session state reset failed for %s", state.session_id, exc_info=True)
+        finally:
+            self.session_manager.save_session(state.session_id)
+        if reset_failed:
+            return "Conversation history cleared. Agent session state reset failed; see logs."
         return "Conversation history cleared."
 
     def _cmd_compact(self, args: str, state: SessionState) -> str:

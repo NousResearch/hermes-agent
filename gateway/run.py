@@ -10124,6 +10124,45 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
+        """Find running-agent keys for OTHER participants in the same thread.
+
+        Only applies when the message originates in a thread.  In per-user
+        thread mode (``thread_sessions_per_user=True``) each participant gets
+        an isolated session key of the form
+        ``agent:main:{platform}:{chat_type}:{chat_id}:{thread_id}:{user_id}``,
+        so a run started by another user is invisible to the caller's own
+        ``/stop``.  This returns the keys of any *actually running* agents
+        (not the pending sentinel, not the caller's own key) whose key shares
+        the caller's ``{chat_id}:{thread_id}`` prefix.
+
+        Returns an empty list when the source is not in a thread, or when no
+        sibling runs exist — callers must still gate on authorization.
+        """
+        thread_id = getattr(source, "thread_id", None)
+        chat_id = getattr(source, "chat_id", None)
+        if not thread_id or not chat_id:
+            return []
+        platform = source.platform.value
+        chat_type = getattr(source, "chat_type", None) or ""
+        # Prefix that every per-user key in this thread shares, up to and
+        # including the thread_id segment.  Matching either the exact
+        # shared-thread key or any key with a further (user_id) segment
+        # (prefix + ":") avoids cross-matching an unrelated thread whose id
+        # merely starts with this one.
+        prefix = ":".join(
+            ["agent:main", platform, chat_type, str(chat_id), str(thread_id)]
+        )
+        matches = []
+        for key, agent in list(self._running_agents.items()):
+            if key == own_key:
+                continue
+            if agent is _AGENT_PENDING_SENTINEL or not agent:
+                continue
+            if key == prefix or key.startswith(prefix + ":"):
+                matches.append(key)
+        return matches
+
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
 
@@ -10160,8 +10199,31 @@ class GatewayRunner:
                 invalidation_reason="stop_command_handler",
             )
             return EphemeralReply(t("gateway.stop.stopped"))
-        else:
-            return t("gateway.stop.no_active")
+
+        # No run under the caller's own session key.  In a per-user thread
+        # (thread_sessions_per_user=True) each participant is isolated even
+        # inside one shared thread, so a run another user started lives under
+        # a different key.  Authorized users should still be able to /stop it
+        # (#bernard-thread-stop).  Fall back to interrupting any running
+        # agent(s) that share this thread, gated on authorization.
+        sibling_keys = self._sibling_thread_run_keys(source, session_key)
+        if sibling_keys and self._is_user_authorized(source):
+            for sibling_key in sibling_keys:
+                await self._interrupt_and_clear_session(
+                    sibling_key,
+                    source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="stop_command_thread_sibling",
+                )
+            logger.info(
+                "STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
+                session_key,
+                len(sibling_keys),
+                ", ".join(sibling_keys),
+            )
+            return EphemeralReply(t("gateway.stop.stopped"))
+
+        return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and

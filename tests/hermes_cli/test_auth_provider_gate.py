@@ -18,9 +18,16 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_anthropic_env(monkeypatch):
-    """Strip Anthropic env vars so CI secrets don't leak into tests."""
-    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+def _clean_provider_env(monkeypatch):
+    """Strip provider env vars so CI secrets don't leak into tests."""
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -82,3 +89,23 @@ def test_claude_code_oauth_token_does_not_count_as_explicit(tmp_path, monkeypatc
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("anthropic") is False
+
+
+@pytest.mark.parametrize("env_var", ["GH_TOKEN", "GITHUB_TOKEN"])
+def test_generic_github_tokens_do_not_count_as_explicit_copilot(tmp_path, monkeypatch, env_var):
+    """Generic GitHub tokens are commonly set for git/CI and are not Copilot opt-in."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv(env_var, "ghp_classic_pat_for_git_only")
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("copilot") is False
+
+
+def test_copilot_specific_env_var_counts_as_explicit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_explicit_copilot_token")
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("copilot") is True

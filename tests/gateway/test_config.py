@@ -477,6 +477,69 @@ class TestLoadGatewayConfig:
         assert telegram.token == "top-token"
         assert telegram.extra["reply_prefix"] == "top"
 
+    def test_shared_key_loop_bridges_allow_from_from_nested_platforms(self, tmp_path, monkeypatch):
+        """Regression: shared-key loop must bridge allow_from / require_mention
+        into PlatformConfig.extra even when the platform is configured only
+        under ``platforms:`` (no top-level ``telegram:`` block).
+
+        Before the fix, ``platform_cfg = yaml_cfg.get('telegram')`` returned
+        None for nested-only configs, so the loop skipped the platform entirely
+        and allow_from was silently ignored.  The apply_yaml_config_fn dispatch
+        received the same fix in #44f3e51; the shared-key loop now mirrors it.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    allow_from:\n"
+            "      - \"111222333\"\n"
+            "      - \"444555666\"\n"
+            "    require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.extra.get("allow_from") == ["111222333", "444555666"], (
+            "allow_from configured under platforms.telegram must be bridged "
+            "into PlatformConfig.extra by the shared-key loop"
+        )
+        assert telegram.extra.get("require_mention") is True, (
+            "require_mention configured under platforms.telegram must be "
+            "bridged into PlatformConfig.extra by the shared-key loop"
+        )
+
+    def test_shared_key_loop_bridges_allow_from_from_nested_gateway_platforms(self, tmp_path, monkeypatch):
+        """Same regression check for ``gateway.platforms:`` path."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      allow_from:\n"
+            "        - \"777888999\"\n"
+            "      require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.extra.get("allow_from") == ["777888999"], (
+            "allow_from configured under gateway.platforms.telegram must be "
+            "bridged into PlatformConfig.extra by the shared-key loop"
+        )
+        assert telegram.extra.get("require_mention") is False
+
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

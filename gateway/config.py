@@ -843,6 +843,25 @@ def load_gateway_config() -> GatewayConfig:
                 if plat == Platform.LOCAL:
                     continue
                 platform_cfg = yaml_cfg.get(plat.value)
+                _cfg_toplevel = isinstance(platform_cfg, dict)
+                # Fall back to the platform's block under ``platforms`` /
+                # ``gateway.platforms`` so shared-key bridging (allow_from,
+                # require_mention, free_response_channels, …) still runs when
+                # the user configured the platform only under those nested paths
+                # and not via a top-level block.  Mirrors the identical fallback
+                # already applied to the apply_yaml_config_fn dispatch below
+                # (#44f3e51).
+                # Note: ``enabled`` is only written to plat_data from a
+                # top-level block (``_cfg_toplevel``); for nested-only configs
+                # ``_merge_platform_map`` already merged it with the correct
+                # precedence, so re-applying it here would overwrite that.
+                if not _cfg_toplevel:
+                    for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                        if isinstance(_src, dict):
+                            _candidate = _src.get(plat.value)
+                            if isinstance(_candidate, dict):
+                                platform_cfg = _candidate
+                                break
                 if not isinstance(platform_cfg, dict):
                     continue
                 # Collect bridgeable keys from this platform section
@@ -903,7 +922,7 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
-                enabled_was_explicit = "enabled" in platform_cfg
+                enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)

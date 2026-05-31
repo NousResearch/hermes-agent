@@ -132,9 +132,13 @@ _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
+    _addon_event_to_card_click_payload,
+    _card_click_action_name,
+    _card_click_parameters,
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
+    _synthesize_card_click_text,
     card_spec_to_cards_v2,
     check_google_chat_requirements,
 )
@@ -512,6 +516,164 @@ class TestHttpEventIngress:
 
         assert await adapter.dispatch_http_event(envelope) == {}
         adapter.handle_message.assert_not_awaited()
+
+
+class TestCardClickCallbacks:
+    def test_card_click_helpers_extract_action_and_parameters(self):
+        payload = {
+            "action": {
+                "function": "custom_action",
+                "parameters": [
+                    {"key": "choice", "value": "A"},
+                    {"name": "extra", "value": "B"},
+                ],
+            },
+            "common": {
+                "formInputs": {
+                    "field": {"stringInputs": {"value": ["x", "y"]}},
+                }
+            },
+        }
+
+        assert _card_click_action_name(payload) == "custom_action"
+        assert _card_click_parameters(payload)["choice"] == "A"
+        text = _synthesize_card_click_text(payload)
+        assert "Google Chat card click" in text
+        assert "action: custom_action" in text
+        assert "- field: x, y" in text
+
+    def test_addon_event_normalizes_button_payload(self):
+        payload = _addon_event_to_card_click_payload(
+            {
+                "commonEventObject": {
+                    "invokedFunction": "hermes_clarify",
+                    "parameters": {"clarify_id": "c1", "choice": "A"},
+                },
+                "chat": {
+                    "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                    "messagePayload": {
+                        "message": {"name": "spaces/S/messages/M.M"}
+                    },
+                    "user": {"name": "users/123", "email": "u@example.com"},
+                },
+            }
+        )
+
+        assert payload["type"] == "CARD_CLICKED"
+        assert payload["common"]["invokedFunction"] == "hermes_clarify"
+        assert payload["common"]["parameters"]["choice"] == "A"
+        assert payload["space"]["name"] == "spaces/S"
+        assert payload["message"]["name"] == "spaces/S/messages/M.M"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_card_click_as_message_event(self, adapter):
+        payload = {
+            "space": {"name": "spaces/S", "spaceType": "SPACE", "displayName": "Room"},
+            "user": {
+                "name": "users/123",
+                "email": "u@example.com",
+                "displayName": "User",
+            },
+            "message": {"name": "spaces/S/messages/CARD.CARD"},
+            "action": {
+                "function": "custom_action",
+                "parameters": [{"key": "choice", "value": "A"}],
+            },
+        }
+
+        await adapter._dispatch_card_click(payload)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text.startswith("Google Chat card click")
+        assert "custom_action" in event.text
+        assert event.source.chat_id == "spaces/S"
+        assert event.source.user_id == "u@example.com"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_resolves_clarify_card_click(self, adapter):
+        from tools.clarify_gateway import register, wait_for_response
+
+        clarify_id = "clarify123"
+        session_key = "agent:main:google_chat:dm:spaces/S"
+        register(
+            clarify_id=clarify_id,
+            session_key=session_key,
+            question="Pick one",
+            choices=["A", "B"],
+        )
+        adapter._clarify_state[clarify_id] = session_key
+        adapter._create_message = AsyncMock(
+            return_value=type(
+                "R",
+                (),
+                {"success": True, "message_id": "m/ack", "error": None},
+            )()
+        )
+
+        await adapter.dispatch_http_event(
+            {
+                "commonEventObject": {
+                    "invokedFunction": "hermes_clarify",
+                    "parameters": {"clarify_id": clarify_id, "choice": "B"},
+                },
+                "chat": {
+                    "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                    "messagePayload": {
+                        "message": {"name": "spaces/S/messages/CARD.CARD"}
+                    },
+                    "user": {"name": "users/123", "email": "u@example.com"},
+                },
+            }
+        )
+
+        assert wait_for_response(clarify_id, timeout=0.1) == "B"
+        assert clarify_id not in adapter._clarify_state
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_clarify_card_click_does_not_resolve(self, adapter):
+        from tools.clarify_gateway import register, wait_for_response
+
+        class Runner:
+            def _is_user_authorized(self, _source):
+                return False
+
+            async def handle(self, _event):
+                return None
+
+        clarify_id = "clarify-denied"
+        register(
+            clarify_id=clarify_id,
+            session_key="agent:main:google_chat:dm:spaces/S",
+            question="Pick one",
+            choices=["A", "B"],
+        )
+        adapter._clarify_state[clarify_id] = "agent:main:google_chat:dm:spaces/S"
+        adapter._message_handler = Runner().handle
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m/deny", "error": None})()
+        )
+
+        await adapter._dispatch_card_click(
+            {
+                "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                "user": {"name": "users/999", "email": "blocked@example.com"},
+                "message": {"name": "spaces/S/messages/CARD.CARD"},
+                "action": {
+                    "function": "hermes_clarify",
+                    "parameters": [
+                        {"key": "clarify_id", "value": clarify_id},
+                        {"key": "choice", "value": "A"},
+                    ],
+                },
+            }
+        )
+
+        assert wait_for_response(clarify_id, timeout=0.1) is None
+        assert clarify_id in adapter._clarify_state
+        sent = adapter._create_message.await_args.args[1]["text"]
+        assert "not authorized" in sent
 
 
 class TestConnectModes:

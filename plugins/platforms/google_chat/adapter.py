@@ -30,9 +30,10 @@ Pub/Sub delivery diagram::
 Event type routing
 ------------------
 Inbound envelope carries ``type`` in [MESSAGE, ADDED_TO_SPACE, REMOVED_FROM_SPACE,
-CARD_CLICKED]. Only MESSAGE dispatches to the agent. ADDED_TO_SPACE caches the
+CARD_CLICKED]. MESSAGE dispatches to the agent. ADDED_TO_SPACE caches the
 bot's resource name (belt-and-suspenders on top of eager resolution in connect()).
-CARD_CLICKED is ACK'd only in v1 (follow-up PR implements interactivity).
+CARD_CLICKED resolves built-in clarify prompts or dispatches a synthesized action
+event to the agent.
 """
 
 from __future__ import annotations
@@ -339,6 +340,155 @@ def _mime_for_message_type(mime: str) -> MessageType:
     if mime.startswith("video/"):
         return MessageType.VIDEO
     return MessageType.DOCUMENT
+
+
+def _card_click_action_name(payload: Dict[str, Any]) -> str:
+    action = payload.get("action") or {}
+    common = payload.get("common") or {}
+    params = _card_click_parameters(payload)
+    return str(
+        action.get("actionMethodName")
+        or common.get("invokedFunction")
+        or params.get("__action_method_name__")
+        or params.get("action")
+        or params.get("method")
+        or params.get("action_method_name")
+        or action.get("methodName")
+        or action.get("function")
+        or ""
+    ).strip()
+
+
+def _card_click_parameters(payload: Dict[str, Any]) -> Dict[str, str]:
+    action = payload.get("action") or {}
+    raw_params = action.get("parameters") or []
+    if isinstance(raw_params, dict):
+        raw_params = [{"key": key, "value": value} for key, value in raw_params.items()]
+
+    params: Dict[str, str] = {}
+    common = payload.get("common") or {}
+    common_params = common.get("parameters") or {}
+    if isinstance(common_params, dict):
+        for key, value in common_params.items():
+            key = str(key).strip()
+            if key:
+                params[key] = str(value)
+
+    for item in raw_params:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or item.get("name") or "").strip()
+        if key:
+            params[key] = str(item.get("value", ""))
+    return params
+
+
+def _card_click_form_inputs(payload: Dict[str, Any]) -> Dict[str, List[str]]:
+    common = payload.get("common") or {}
+    raw_inputs = common.get("formInputs") or {}
+    if not isinstance(raw_inputs, dict):
+        return {}
+
+    selections: Dict[str, List[str]] = {}
+    for name, value in raw_inputs.items():
+        if not isinstance(value, dict):
+            continue
+        selected: List[str] = []
+        for input_key in ("stringInputs", "dateTimeInput", "dateInput", "timeInput"):
+            input_value = value.get(input_key)
+            if not isinstance(input_value, dict):
+                continue
+            raw_values = input_value.get("value")
+            if raw_values is None:
+                raw_values = [
+                    input_value.get("msSinceEpoch"),
+                    input_value.get("hours"),
+                    input_value.get("minutes"),
+                ]
+            if not isinstance(raw_values, list):
+                raw_values = [raw_values]
+            selected.extend(str(item) for item in raw_values if item is not None)
+        if selected:
+            selections[str(name)] = selected
+    return selections
+
+
+def _synthesize_card_click_text(payload: Dict[str, Any]) -> str:
+    action_name = _card_click_action_name(payload)
+    params = _card_click_parameters(payload)
+    selections = _card_click_form_inputs(payload)
+    if not action_name and not params and not selections:
+        return ""
+
+    lines = ["Google Chat card click"]
+    if action_name:
+        lines.append(f"action: {action_name}")
+    if params:
+        lines.append("parameters:")
+        for key in sorted(params):
+            lines.append(f"- {key}: {params[key]}")
+    if selections:
+        lines.append("selections:")
+        for key in sorted(selections):
+            lines.append(f"- {key}: {', '.join(selections[key])}")
+    return "\n".join(lines)
+
+
+def _extract_card_clicked_payload(
+    envelope: Dict[str, Any], ce_type: str = ""
+) -> Optional[Dict[str, Any]]:
+    chat_payload = (envelope.get("chat") or {}).get("cardClickedPayload")
+    if isinstance(chat_payload, dict):
+        return chat_payload
+    event_type = str(envelope.get("type") or "").upper()
+    at_type = str(envelope.get("@type") or "")
+    if (
+        event_type == "CARD_CLICKED"
+        or "card" in ce_type.lower()
+        or "widget" in ce_type.lower()
+        or "CardClicked" in at_type
+    ):
+        return envelope
+    return None
+
+
+def _addon_event_to_card_click_payload(event: Dict[str, Any]) -> Dict[str, Any]:
+    common = event.get("commonEventObject") or event.get("common") or {}
+    chat = event.get("chat") or {}
+    payload = chat.get("buttonClickedPayload") or event.get("buttonClickedPayload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    normalized: Dict[str, Any] = dict(payload)
+    normalized["type"] = "CARD_CLICKED"
+
+    common_params = common.get("parameters") if isinstance(common, dict) else {}
+    if isinstance(common_params, dict):
+        existing_common = (
+            normalized.get("common") if isinstance(normalized.get("common"), dict) else {}
+        )
+        merged_common = dict(existing_common)
+        merged_params = dict(merged_common.get("parameters") or {})
+        merged_params.update(common_params)
+        merged_common["parameters"] = merged_params
+        if common.get("invokedFunction"):
+            merged_common["invokedFunction"] = common.get("invokedFunction")
+        normalized["common"] = merged_common
+
+    for key in ("space", "message", "user"):
+        if normalized.get(key):
+            continue
+        value = chat.get(key) or event.get(key)
+        if isinstance(value, dict):
+            normalized[key] = value
+
+    message_payload = chat.get("messagePayload")
+    if not normalized.get("message") and isinstance(message_payload, dict):
+        message = message_payload.get("message")
+        if isinstance(message, dict):
+            normalized["message"] = message
+
+    return normalized
 
 
 def _required_str(mapping: Dict[str, Any], key: str, context: str) -> str:
@@ -1397,11 +1547,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 message.ack()
                 return
 
-            # --- Card-click events (v2 follow-up) ---
-            if "widget" in ce_type or "card" in ce_type.lower():
-                logger.info(
-                    "[GoogleChat] Card/widget event ack'd (v2 feature, deferred)"
-                )
+            # --- Card-click events ---
+            card_payload = _extract_card_clicked_payload(envelope, ce_type)
+            if card_payload is not None:
+                self._submit_on_loop(self._dispatch_card_click(card_payload))
                 message.ack()
                 return
 
@@ -1452,6 +1601,15 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 pass
 
     async def dispatch_http_event(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(envelope.get("commonEventObject"), dict):
+            await self._dispatch_card_click(_addon_event_to_card_click_payload(envelope))
+            return {}
+
+        card_payload = _extract_card_clicked_payload(envelope)
+        if card_payload is not None:
+            await self._dispatch_card_click(card_payload)
+            return {}
+
         extracted = self._extract_message_payload(envelope)
         if extracted is None:
             return {}
@@ -1506,6 +1664,139 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return False, "unexpected_google_bearer_identity"
 
         return True, ""
+
+    async def _dispatch_card_click(self, payload: Dict[str, Any]) -> None:
+        synthesized = _synthesize_card_click_text(payload)
+        if not synthesized:
+            logger.debug("[GoogleChat] CARD_CLICKED ignored without action context")
+            return
+
+        message = payload.get("message") or {}
+        message_name = message.get("name", "") or ""
+        user = payload.get("user") or message.get("sender") or {}
+        user_key = user.get("email") or user.get("name") or ""
+        dedup_key = (
+            f"{message_name}:card_click:{user_key}:{synthesized}"
+            if message_name
+            else ""
+        )
+        if dedup_key and self._dedup.is_duplicate(dedup_key):
+            return
+
+        space = payload.get("space") or message.get("space") or {}
+        thread = message.get("thread") or {}
+        space_name = space.get("name") or ""
+        space_type = (space.get("type") or space.get("spaceType") or "").upper()
+        chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
+        thread_name = thread.get("name") or None
+        if chat_type == "dm":
+            is_side_thread = (
+                thread_name is not None
+                and self._thread_count_store.get(space_name, thread_name) > 1
+            )
+            session_thread_id = thread_name if is_side_thread else None
+            if thread_name and is_side_thread:
+                self._last_inbound_thread[space_name] = thread_name
+            elif space_name:
+                self._last_inbound_thread.pop(space_name, None)
+        else:
+            session_thread_id = None
+            if space_name:
+                self._last_inbound_thread.pop(space_name, None)
+
+        source = self.build_source(
+            chat_id=space_name,
+            chat_name=space.get("displayName") or space.get("name") or "",
+            chat_type=chat_type,
+            user_id=(user.get("email") or user.get("name") or ""),
+            user_name=(
+                user.get("displayName")
+                or user.get("email")
+                or user.get("name")
+                or ""
+            ),
+            thread_id=session_thread_id,
+            user_id_alt=(user.get("name") or None),
+        )
+        params = _card_click_parameters(payload)
+        if _card_click_action_name(payload) == "hermes_clarify":
+            await self._dispatch_clarify_card_click(
+                source=source,
+                clarify_id=params.get("clarify_id", ""),
+                choice=params.get("choice", ""),
+            )
+            return
+
+        event = MessageEvent(
+            message_id=message_name or f"card_click:{user_key}:{hash(synthesized)}",
+            source=source,
+            message_type=MessageType.COMMAND,
+            text=synthesized,
+            raw_message={"google_chat_card_click": payload},
+        )
+        await self.handle_message(event)
+
+    async def _dispatch_clarify_card_click(
+        self,
+        *,
+        source: Any,
+        clarify_id: str,
+        choice: str,
+    ) -> None:
+        if not clarify_id:
+            return
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn) and not auth_fn(source):
+            await self.send(
+                source.chat_id,
+                "⛔ You are not authorized to answer this prompt.",
+                metadata={"thread_id": source.thread_id} if source.thread_id else None,
+            )
+            return
+
+        if clarify_id not in self._clarify_state:
+            await self.send(
+                source.chat_id,
+                "This prompt has already been resolved.",
+                metadata={"thread_id": source.thread_id} if source.thread_id else None,
+            )
+            return
+
+        if choice == "__other__":
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+
+                mark_awaiting_text(clarify_id)
+            except Exception as exc:
+                logger.warning("[GoogleChat] mark_awaiting_text failed: %s", exc)
+            await self.send(
+                source.chat_id,
+                "✏️ Type your answer in the chat.",
+                metadata={"thread_id": source.thread_id} if source.thread_id else None,
+            )
+            return
+
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+
+            resolved = resolve_gateway_clarify(clarify_id, choice)
+        except Exception as exc:
+            logger.error("[GoogleChat] resolve_gateway_clarify failed: %s", exc)
+            resolved = False
+        self._clarify_state.pop(clarify_id, None)
+        if resolved:
+            await self.send(
+                source.chat_id,
+                f"✓ {choice[:80]}",
+                metadata={"thread_id": source.thread_id} if source.thread_id else None,
+            )
+        else:
+            await self.send(
+                source.chat_id,
+                "This prompt has already been resolved.",
+                metadata={"thread_id": source.thread_id} if source.thread_id else None,
+            )
 
     async def _dispatch_message(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> None:
         """Translate a Chat message payload to a MessageEvent and hand off.

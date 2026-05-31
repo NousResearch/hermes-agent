@@ -505,35 +505,88 @@ except Exception:
 PY
 }
 
+# Reinstall $PYTHON_VERSION with the current uv and re-resolve PYTHON_PATH.
+# Returns 0 if the resulting interpreter ships FTS5.
+_reinstall_python_with_fts5() {
+    local uv_bin="$1"
+    "$uv_bin" python install "$PYTHON_VERSION" --reinstall >/dev/null 2>&1 || return 1
+    PYTHON_PATH="$("$uv_bin" python find "$PYTHON_VERSION" 2>/dev/null)"
+    PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+    [ -n "${PYTHON_PATH:-}" ] && _python_has_fts5 "$PYTHON_PATH"
+}
+
+_warn_no_fts5() {
+    # Could not obtain an FTS5-capable interpreter (offline, pinned env, etc.).
+    # Install proceeds — Hermes degrades gracefully and disables only full-text
+    # session search — but warn so it isn't a silent gap.
+    log_warn "Could not obtain an FTS5-capable Python. Hermes will run, but"
+    log_warn "full-text session search will be disabled until FTS5 is present."
+}
+
 # Guarantee the resolved uv-managed interpreter ships FTS5. uv's Python
 # distributions only gained FTS5 in mid-2025 (python-build-standalone #694),
-# so a stale interpreter already in uv's store — which `uv python find`
-# happily reuses — can lack it. When that happens, force a reinstall of the
-# latest patch for $PYTHON_VERSION (which has FTS5) and re-resolve. This keeps
-# the supported install path's session search working without bundling a
-# second SQLite or asking the user to do anything.
+# but WHICH builds a given uv can install is baked into the uv binary's
+# download manifest — so a stale uv (e.g. `pip install uv==0.7.20`) only knows
+# about pre-FTS5 builds, and even `uv python install --reinstall` just pulls the
+# same FTS5-less interpreter. A plain reinstall with an old uv is therefore a
+# no-op for FTS5. To actually fix everyone's install, we escalate uv itself:
+#
+#   1. reinstall with the current $UV_CMD (handles a stale *interpreter* under
+#      an already-current uv)
+#   2. if still no FTS5, bring uv up to date (`uv self update`) and reinstall —
+#      this is what fixes a stale standalone uv
+#   3. if uv can't self-update (pip/apt/brew-managed uv refuses), install a
+#      fresh standalone uv via the official installer into a temp dir and use
+#      THAT to reinstall — this fixes package-manager-managed stale uv
+#
+# Pythons live in uv's shared store, so a fresh uv's --reinstall overwrites the
+# stale interpreter in place and the installer's later `uv python find` resolves
+# to it. Keeps session search working without bundling a second SQLite or asking
+# the user to do anything.
 ensure_fts5() {
     [ -n "${PYTHON_PATH:-}" ] || return 0
     if _python_has_fts5 "$PYTHON_PATH"; then
         return 0
     fi
+    # Termux / non-uv installs have nothing to escalate.
+    [ -n "${UV_CMD:-}" ] || { _warn_no_fts5; return 0; }
 
     log_warn "Resolved Python's SQLite lacks the FTS5 module (session search needs it)."
     log_info "Reinstalling a current Python $PYTHON_VERSION with FTS5 via uv..."
-    if "$UV_CMD" python install "$PYTHON_VERSION" --reinstall >/dev/null 2>&1; then
-        PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"
-        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+    if _reinstall_python_with_fts5 "$UV_CMD"; then
+        log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
+        return 0
     fi
 
-    if [ -n "${PYTHON_PATH:-}" ] && _python_has_fts5 "$PYTHON_PATH"; then
-        log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
-    else
-        # Could not obtain an FTS5-capable interpreter (offline, pinned env,
-        # etc.). Install proceeds — Hermes degrades gracefully and disables
-        # only full-text session search — but warn so it isn't a silent gap.
-        log_warn "Could not obtain an FTS5-capable Python. Hermes will run, but"
-        log_warn "full-text session search will be disabled until FTS5 is present."
+    # Still no FTS5 — the uv binary itself is too old to know about FTS5-capable
+    # Python builds. Try to update uv in place.
+    log_info "uv is too old to provide an FTS5-capable Python — updating uv..."
+    if "$UV_CMD" self update >/dev/null 2>&1; then
+        if _reinstall_python_with_fts5 "$UV_CMD"; then
+            log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
+            return 0
+        fi
     fi
+
+    # `uv self update` is unavailable on externally-managed uv (pip/apt/brew),
+    # which is exactly the case the user hit (`pip install uv==0.7.20`). Install
+    # a fresh standalone uv into a temp dir and use it just for the reinstall.
+    log_info "Installing an up-to-date standalone uv to obtain an FTS5 Python..."
+    local _tmp_uv_dir _fresh_uv
+    _tmp_uv_dir="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-fresh-uv.$$")"
+    mkdir -p "$_tmp_uv_dir"
+    if curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null \
+            | env UV_INSTALL_DIR="$_tmp_uv_dir" UV_UNMANAGED_INSTALL="$_tmp_uv_dir" sh >/dev/null 2>&1; then
+        _fresh_uv="$_tmp_uv_dir/uv"
+        if [ -x "$_fresh_uv" ] && _reinstall_python_with_fts5 "$_fresh_uv"; then
+            log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
+            rm -rf "$_tmp_uv_dir"
+            return 0
+        fi
+    fi
+    rm -rf "$_tmp_uv_dir"
+
+    _warn_no_fts5
 }
 
 check_git() {

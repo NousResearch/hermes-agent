@@ -1,0 +1,29 @@
+name: Deploy to Contabo
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        env:
+          SSH_KEY: ${{ secrets.HERMES_SSH_KEY }}
+          HOST_KEY: ${{ secrets.HERMES_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$HOST_KEY" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 root@5.189.159.195 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/hermes/app
+          git config --global --add safe.directory /opt/hermes/app
+          git pull origin main
+          docker build -t hermes-agent:local .
+          docker compose -f /opt/hermes/docker-compose.yml up -d
+          echo "Deploy complete"
+          REMOTE

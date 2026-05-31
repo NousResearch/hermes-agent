@@ -3059,6 +3059,19 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        config_extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        if (
+            not thread_id
+            and message_id
+            and chat_type != "p2p"
+            and bool(config_extra.get("auto_thread_top_level_messages", False))
+        ):
+            # Feishu/Lark top-level group messages have no thread/root id until
+            # somebody replies in a thread.  When this opt-in is enabled, use
+            # the seed message id as the provisional thread lane so the first
+            # bot answer is sent with reply_in_thread=True and the gateway
+            # session key is isolated from other top-level conversations.
+            thread_id = message_id
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)

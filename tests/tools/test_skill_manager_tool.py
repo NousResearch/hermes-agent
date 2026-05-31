@@ -582,6 +582,34 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
+    def test_write_file_accepts_content_fallback(self, tmp_path):
+        """LLMs sometimes pass 'content' instead of 'file_content' for write_file.
+        The dispatcher should fall back to content rather than erroring."""
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="my-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(
+                action="write_file",
+                name="my-skill",
+                file_path="references/api.md",
+                content="# API\nDocs here.",
+            )
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert (tmp_path / "my-skill" / "references" / "api.md").read_text() == "# API\nDocs here."
+
+    def test_create_accepts_file_content_fallback(self, tmp_path):
+        """LLMs sometimes pass 'file_content' instead of 'content' for create.
+        The dispatcher should fall back to file_content rather than erroring."""
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create",
+                name="my-skill",
+                file_content=VALID_SKILL_CONTENT,
+            )
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
 
 class TestSecurityScanGate:
     """_security_scan_skill is gated by skills.guard_agent_created config flag."""

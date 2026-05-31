@@ -46,6 +46,7 @@ _lock = threading.RLock()
 # the adapter drops the callback_data (Telegram: ~48h; Discord: ephemeral;
 # Slack: 3s ack + long-lived actions).
 DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_HANDLER_TIMEOUT_SECONDS = 30.0
 
 
 def register(
@@ -101,6 +102,7 @@ async def resolve(
     confirm_id: str,
     choice: str,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    handler_timeout: float | None = DEFAULT_HANDLER_TIMEOUT_SECONDS,
 ) -> Optional[str]:
     """Resolve a pending confirm.
 
@@ -130,7 +132,21 @@ async def resolve(
     if not handler:
         return None
     try:
-        result = await handler(choice)
+        if handler_timeout is None:
+            result = await handler(choice)
+        else:
+            result = await asyncio.wait_for(handler(choice), timeout=handler_timeout)
+    except asyncio.TimeoutError:
+        logger.error(
+            "Slash-confirm handler for /%s timed out after %.1fs",
+            command,
+            handler_timeout or 0.0,
+            exc_info=True,
+        )
+        return (
+            f"❌ Confirmation for /{command} timed out. "
+            "Try again, or use /stop first if the session is busy."
+        )
     except Exception as exc:
         logger.error(
             "Slash-confirm handler for /%s raised: %s",

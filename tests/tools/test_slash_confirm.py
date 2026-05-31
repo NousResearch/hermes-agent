@@ -126,6 +126,28 @@ class TestResolve:
         assert slash_confirm.get_pending("sess1") is None
 
     @pytest.mark.asyncio
+    async def test_resolve_handler_timeout_returns_error_string(self):
+        async def handler(choice):
+            await asyncio.Event().wait()
+
+        slash_confirm.register("sess1", "cid1", "new", handler)
+
+        result = await asyncio.wait_for(
+            slash_confirm.resolve(
+                "sess1",
+                "cid1",
+                "once",
+                handler_timeout=0.01,
+            ),
+            timeout=0.5,
+        )
+
+        assert result is not None
+        assert "timed out" in result.lower()
+        # Entry should still be popped even when handler times out.
+        assert slash_confirm.get_pending("sess1") is None
+
+    @pytest.mark.asyncio
     async def test_resolve_non_string_return_becomes_none(self):
         async def handler(choice):
             return {"not": "a string"}

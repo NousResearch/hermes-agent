@@ -3579,14 +3579,15 @@ class GatewayRunner:
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = t("gateway.shutdown.restarting", "restarting") if self._restart_requested else t("gateway.shutdown.shutting_down", "shutting down")
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            t("gateway.shutdown.restart_hint",
+              "Your current task will be interrupted. "
+              "Send any message after restart and I'll try to resume where you left off.")
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else t("gateway.shutdown.stop_hint", "Your current task will be interrupted.")
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = t("gateway.shutdown.message", "⚠️ Gateway {action} — {hint}").format(action=action, hint=hint)
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:

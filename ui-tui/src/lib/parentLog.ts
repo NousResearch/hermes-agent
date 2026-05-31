@@ -23,6 +23,10 @@ const CRASH_LOG = join(logDir, 'tui_gateway_crash.log')
 // Skipped under vitest so unit tests exercising start()/kill() can't write into
 // a real ~/.hermes (tests must stay hermetic — see AGENTS.md).
 const enabled = !process.env.VITEST
+// Cap a single breadcrumb, matching GatewayClient's in-memory log-line cap, so
+// a pathological value (e.g. a giant error) can't bloat the shared crash log or
+// add noticeable blocking on the synchronous append during a failure path.
+const MAX_BREADCRUMB = 4096
 let warned = false
 
 export function recordParentLifecycle(line: string): void {
@@ -36,8 +40,11 @@ export function recordParentLifecycle(line: string): void {
     // the child's panic output sharing this file.
     const oneLine = line.replace(/[\r\n]+/g, ' ↵ ')
 
+    const capped =
+      oneLine.length > MAX_BREADCRUMB ? `${oneLine.slice(0, MAX_BREADCRUMB)}… [truncated ${oneLine.length} chars]` : oneLine
+
     mkdirSync(logDir, { recursive: true })
-    appendFileSync(CRASH_LOG, `[tui-parent] ${new Date().toISOString()} ${oneLine}\n`)
+    appendFileSync(CRASH_LOG, `[tui-parent] ${new Date().toISOString()} ${capped}\n`)
   } catch {
     if (!warned) {
       warned = true

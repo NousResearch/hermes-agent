@@ -51,6 +51,17 @@ describe('recordParentLifecycle', () => {
     expect(lines[0]).toContain('boom ↵   at foo() ↵   at bar()')
   })
 
+  it('caps an oversized breadcrumb so it cannot bloat the shared crash log', async () => {
+    const { recordParentLifecycle } = await loadFresh(home)
+
+    recordParentLifecycle('x'.repeat(10_000))
+
+    const line = readFileSync(join(home, 'logs', 'tui_gateway_crash.log'), 'utf8')
+
+    expect(line).toContain('[truncated 10000 chars]')
+    expect(line.length).toBeLessThan(4_500)
+  })
+
   it('is a no-op under VITEST so tests stay hermetic', async () => {
     vi.resetModules()
     vi.stubEnv('VITEST', 'true')

@@ -311,9 +311,20 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     return data_url
 
 
-# Hard limit for vision API payloads (20 MB) — matches the most restrictive
-# major provider (Gemini inline data limit).  Images above this are rejected.
+# Absolute hard ceiling for vision API payloads (20 MB) — above this, no major
+# provider accepts the image and we reject outright.
 _MAX_BASE64_BYTES = 20 * 1024 * 1024
+
+# Proactive embed cap (4 MB).  This is the size we resize an image DOWN to
+# before embedding it into conversation history, regardless of the 20 MB hard
+# ceiling.  Anthropic's per-image base64 limit is 5 MB; once an oversized image
+# is baked into history (e.g. a vision tool-result), it is re-sent on every
+# subsequent turn and permanently wedges the session with a 400 that retries
+# can't clear (the bad bytes are immutable history).  Capping at embed time —
+# with headroom under 5 MB — is the only durable fix.  Matches the post-failure
+# shrink target in agent.conversation_compression so behaviour is consistent
+# whether we resize proactively or reactively.
+_EMBED_TARGET_BYTES = 4 * 1024 * 1024
 
 # Target size when auto-resizing on API failure (5 MB).  After a provider
 # rejects an image, we downscale to this target and retry once.
@@ -656,11 +667,21 @@ async def _vision_analyze_native(
             temp_image_path, mime_type=detected_mime_type,
         )
 
-        # Honour the same hard cap as the legacy path. Resize if needed.
-        if len(image_data_url) > _MAX_BASE64_BYTES:
+        # Proactive embed cap: this image gets baked into conversation
+        # history and re-sent on every subsequent turn.  Anthropic rejects
+        # any single base64 image over 5 MB with a 400, and because history
+        # is immutable, an oversized embed permanently wedges the session —
+        # retries can't clear bytes that are already in the request.  Resize
+        # DOWN to the embed target (4 MB, headroom under 5 MB) whenever the
+        # payload exceeds it, not just at the 20 MB hard ceiling.
+        if len(image_data_url) > _EMBED_TARGET_BYTES:
             image_data_url = _resize_image_for_vision(
                 temp_image_path, mime_type=detected_mime_type,
+                max_base64_bytes=_EMBED_TARGET_BYTES,
             )
+            # If even resizing can't get under the absolute hard ceiling,
+            # there's nothing more we can do — reject rather than embed a
+            # session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(
                     f"Image too large for vision API: base64 payload is "

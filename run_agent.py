@@ -2106,13 +2106,48 @@ class AIAgent:
             pass
         return True  # safe default: verifier on
 
-    @staticmethod
-    def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
+    # Bare absolute / home / Windows-drive file paths in a footer line.
+    # Anchors mirror the gateway's ``extract_local_files`` bare-path
+    # detector so that anything the gateway WOULD auto-attach is wrapped
+    # in inline-code backticks here first (the extractor skips paths inside
+    # `code` spans).  Defense-in-depth: even if a future error message
+    # echoes a credential path (config.yaml, .env, auth.json) into the
+    # user-facing footer, it can never be matched as a deliverable bare
+    # path and silently uploaded to a messaging channel (#35584).
+    _FOOTER_PATH_RE = re.compile(
+        r"(?<![/:\w.`])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.[\w]+",
+    )
+
+    @classmethod
+    def _neutralize_footer_paths(cls, text: str) -> str:
+        """Wrap bare file paths in backticks so they aren't auto-delivered.
+
+        The gateway's ``extract_local_files`` scans response text for bare
+        absolute/home paths ending in a deliverable extension and uploads
+        any that exist on disk as native attachments — but it explicitly
+        skips paths inside inline-code (`` `...` ``) spans.  Backticking
+        every path the footer renders defeats that auto-detection while
+        keeping the path fully human-readable.  Paths already wrapped in a
+        backtick (the negative lookbehind excludes a preceding `` ` ``) are
+        left untouched so we never double-wrap.
+        """
+        if not text:
+            return text
+        return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
+
+    @classmethod
+    def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
 
         Displays up to 10 paths with their first error preview, then a
         count of any additional failures.  Returns an empty string when
         the dict is empty so callers can concatenate unconditionally.
+
+        Every file path that reaches the user-facing text — both the bullet
+        path and any path echoed inside the tool's error preview — is
+        backtick-wrapped via ``_neutralize_footer_paths`` so the gateway's
+        bare-path media extractor can never auto-attach a protected file
+        (e.g. ``~/.hermes/config.yaml``) to a messaging channel (#35584).
         """
         if not failed:
             return ""
@@ -2129,14 +2164,17 @@ class AIAgent:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
             if preview:
-                lines.append(f"  • {path} — [{tool}] {preview}")
+                lines.append(f"  • `{path}` — [{tool}] {preview}")
             else:
-                lines.append(f"  • {path} — [{tool}] failed")
+                lines.append(f"  • `{path}` — [{tool}] failed")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")
-        return "\n".join(lines)
+        # Neutralize any path the preview text echoed (the bullet path is
+        # already backticked above; the lookbehind keeps it from being
+        # double-wrapped).
+        return cls._neutralize_footer_paths("\n".join(lines))
 
     def _turn_completion_explainer_enabled(self) -> bool:
         """Check whether the end-of-turn completion explainer footer is on.

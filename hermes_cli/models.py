@@ -32,34 +32,43 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
+    # Anthropic
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
-    ("anthropic/claude-opus-4.7",              ""),
-    ("anthropic/claude-opus-4.6",              ""),
     ("anthropic/claude-sonnet-4.6",            ""),
-    ("moonshotai/kimi-k2.6",                   "recommended"),
-    ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
-    ("qwen/qwen3.7-max",                       ""),
     ("anthropic/claude-haiku-4.5",             ""),
+    # OpenAI
     ("openai/gpt-5.5",                         ""),
     ("openai/gpt-5.5-pro",                     ""),
     ("openai/gpt-5.4-mini",                    ""),
-    ("openai/gpt-5.4-nano",                    ""),
-    ("openai/gpt-5.3-codex",                   ""),
-    ("xiaomi/mimo-v2.5-pro",                   ""),
-    ("tencent/hy3-preview",                    ""),
-    ("google/gemini-3-pro-image-preview",      ""),
-    ("google/gemini-3.5-flash",                ""),
+    # Google
+    ("google/gemini-3-pro-preview",            ""),
     ("google/gemini-3.1-pro-preview",          ""),
-    ("google/gemini-3.1-flash-lite-preview",   ""),
-    ("qwen/qwen3.6-35b-a3b",                   ""),
-    ("stepfun/step-3.7-flash",                 ""),
-    ("minimax/minimax-m2.7",                   ""),
-    ("z-ai/glm-5.1",                           ""),
-    ("x-ai/grok-4.20",                         ""),
+    ("google/gemini-3.5-flash",                ""),
+    # xAI
     ("x-ai/grok-4.3",                          ""),
-    ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
+    ("deepseek/deepseek-v4-flash",             ""),
+    # Qwen
+    ("qwen/qwen3.7-max",                       ""),
+    ("qwen/qwen3.6-35b-a3b",                   ""),
+    # MoonshotAI
+    ("moonshotai/kimi-k2.6",                   "recommended"),
+    # MiniMax
+    ("minimax/minimax-m2.7",                   ""),
+    # Z-AI
+    ("z-ai/glm-5.1",                           ""),
+    # Xiaomi
+    ("xiaomi/mimo-v2.5-pro",                   ""),
+    # Tencent
+    ("tencent/hy3-preview",                    ""),
+    # StepFun
+    ("stepfun/step-3.7-flash",                 ""),
+    # NVIDIA
+    ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # OpenRouter routers
+    ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
@@ -141,31 +150,40 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
+        # Anthropic
         "anthropic/claude-opus-4.8",
-        "anthropic/claude-opus-4.7",
-        "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
-        "moonshotai/kimi-k2.6",
-        "qwen/qwen3.7-max",
         "anthropic/claude-haiku-4.5",
+        # OpenAI
         "openai/gpt-5.5",
         "openai/gpt-5.5-pro",
         "openai/gpt-5.4-mini",
-        "openai/gpt-5.4-nano",
-        "openai/gpt-5.3-codex",
-        "xiaomi/mimo-v2.5-pro",
-        "tencent/hy3-preview",
+        # Google
         "google/gemini-3-pro-preview",
-        "google/gemini-3.5-flash",
         "google/gemini-3.1-pro-preview",
-        "google/gemini-3.1-flash-lite-preview",
-        "qwen/qwen3.6-35b-a3b",
-        "stepfun/step-3.7-flash",
-        "minimax/minimax-m2.7",
-        "z-ai/glm-5.1",
+        "google/gemini-3.5-flash",
+        # xAI
         "x-ai/grok-4.3",
-        "nvidia/nemotron-3-super-120b-a12b",
+        # DeepSeek
         "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+        # Qwen
+        "qwen/qwen3.7-max",
+        "qwen/qwen3.6-35b-a3b",
+        # MoonshotAI
+        "moonshotai/kimi-k2.6",
+        # MiniMax
+        "minimax/minimax-m2.7",
+        # Z-AI
+        "z-ai/glm-5.1",
+        # Xiaomi
+        "xiaomi/mimo-v2.5-pro",
+        # Tencent
+        "tencent/hy3-preview",
+        # StepFun
+        "stepfun/step-3.7-flash",
+        # NVIDIA
+        "nvidia/nemotron-3-super-120b-a12b",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.

@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 import unittest
+from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
@@ -4603,7 +4604,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         adapter._bot_open_id = "ou_bot"
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
-        adapter._message_text_cache = {}
+        adapter._message_text_cache = OrderedDict()
         adapter._client = Mock()
         adapter._build_get_message_request = Mock(return_value=object())
         return adapter

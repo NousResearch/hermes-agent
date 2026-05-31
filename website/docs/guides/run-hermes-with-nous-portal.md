@@ -136,6 +136,8 @@ hermes tools
 # → TTS              → "Nous Subscription"     (recommended)
 ```
 
+These rows appear in `hermes tools` even before you've logged into Nous Portal — if you pick "Nous Subscription" without an active session, Hermes runs the Portal login inline (without changing your inference provider or your other tools).
+
 Verify your mix with:
 
 ```bash

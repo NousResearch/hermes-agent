@@ -4455,23 +4455,17 @@ def _remove_custom_provider(config):
     choices.append("Cancel")
 
     try:
-        from simple_term_menu import TerminalMenu
+        from hermes_cli.curses_ui import curses_radiolist
 
-        menu = TerminalMenu(
-            [f"  {c}" for c in choices],
-            cursor_index=0,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_red", "bold"),
-            menu_highlight_style=("fg_red",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title="Select provider to remove:",
+        idx = curses_radiolist(
+            "Select provider to remove:",
+            list(choices),
+            selected=0,
+            cancel_returns=-1,
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-
-        flush_stdin()
         print()
+        if idx < 0:
+            idx = None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
@@ -4538,27 +4532,19 @@ def _model_flow_named_custom(config, provider_info):
 
         print(f"Found {len(models)} model(s):\n")
         try:
-            from simple_term_menu import TerminalMenu
+            from hermes_cli.curses_ui import curses_radiolist
 
             menu_items = [
-                f"  {m} (current)" if m == saved_model else f"  {m}" for m in models
-            ] + ["  Cancel"]
-            menu = TerminalMenu(
+                f"{m} (current)" if m == saved_model else m for m in models
+            ] + ["Cancel"]
+            idx = curses_radiolist(
+                f"Select model from {name}:",
                 menu_items,
-                cursor_index=default_idx,
-                menu_cursor="-> ",
-                menu_cursor_style=("fg_green", "bold"),
-                menu_highlight_style=("fg_green",),
-                cycle_cursor=True,
-                clear_screen=False,
-                title=f"Select model from {name}:",
+                selected=default_idx,
+                cancel_returns=-1,
             )
-            idx = menu.show()
-            from hermes_cli.curses_ui import flush_stdin
-
-            flush_stdin()
             print()
-            if idx is None or idx >= len(models):
+            if idx < 0 or idx >= len(models):
                 print("Cancelled.")
                 return
             model_name = models[idx]
@@ -4735,26 +4721,18 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         default_idx = 0
 
     try:
-        from simple_term_menu import TerminalMenu
+        from hermes_cli.curses_ui import curses_radiolist
 
-        choices = [f"  {_label(effort)}" for effort in ordered]
-        choices.append(f"  {disable_label}")
-        choices.append(f"  {skip_label}")
-        menu = TerminalMenu(
+        choices = [_label(effort) for effort in ordered]
+        choices.append(disable_label)
+        choices.append(skip_label)
+        idx = curses_radiolist(
+            "Select reasoning effort:",
             choices,
-            cursor_index=default_idx,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title="Select reasoning effort:",
+            selected=default_idx,
+            cancel_returns=-1,
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-
-        flush_stdin()
-        if idx is None:
+        if idx < 0:
             return None
         print()
         if idx < len(ordered):
@@ -9564,16 +9542,61 @@ def _cmd_update_impl(args, gateway_mode: bool):
         missing_config = get_missing_config_fields()
         current_ver, latest_ver = check_config_version()
 
-        needs_migration = missing_env or missing_config or current_ver < latest_ver
+        has_new_options = bool(missing_env or missing_config)
+        version_bump_only = (
+            not has_new_options and current_ver < latest_ver
+        )
+        needs_migration = has_new_options or current_ver < latest_ver
 
-        if needs_migration:
+        if version_bump_only:
+            # Nothing for the user to fill in — only the config format version
+            # changed (new defaults already merge in transparently). Asking
+            # "configure new options now?" here is misleading: saying yes just
+            # bumps the version and looks like a no-op (issue: ScottFive /
+            # Tt2021). Apply it silently and say what actually happened.
             print()
+            print(
+                f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…"
+            )
+            try:
+                migrate_config(interactive=False, quiet=True)
+                print("  ✓ Config format updated (no new settings to configure)")
+            except Exception as _mig_err:
+                print(f"  ⚠️  Config format update failed: {_mig_err}")
+                print("     Run 'hermes config migrate' to retry.")
+        elif needs_migration:
+            print()
+            # Show WHAT changed, not just a count, so the user can make an
+            # informed yes/no decision (previously the prompt named nothing).
+            def _print_items(items, label, key, fallback_key=None):
+                if not items:
+                    return
+                print(f"  {label}:")
+                shown = items[:8]
+                for it in shown:
+                    if isinstance(it, dict):
+                        name = it.get(key) or (fallback_key and it.get(fallback_key)) or "?"
+                        desc = (it.get("description") or "").strip()
+                    else:
+                        # Defensive: some callers/mocks pass bare name strings.
+                        name = str(it)
+                        desc = ""
+                    if desc:
+                        print(f"      • {name} — {desc}")
+                    else:
+                        print(f"      • {name}")
+                extra = len(items) - len(shown)
+                if extra > 0:
+                    print(f"      … and {extra} more")
+
             if missing_env:
                 print(
                     f"  ⚠️  {len(missing_env)} new required setting(s) need configuration"
                 )
+                _print_items(missing_env, "New settings", "name")
             if missing_config:
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
+                _print_items(missing_config, "New options", "key")
 
             print()
             if assume_yes:

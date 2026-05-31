@@ -400,6 +400,50 @@ class TestExtractMedia:
         )
         assert media == []
 
+    # --- Code block / inline code / blockquote false-positive guards (#35695) ---
+
+    def test_media_in_fenced_code_block_ignored(self):
+        """MEDIA: inside ``` fenced code blocks must not be extracted."""
+        content = "Here is an example:\n```text\nMEDIA:/path/to/example.png\n```\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "example" in cleaned.lower()
+
+    def test_media_in_inline_code_ignored(self):
+        """MEDIA: inside backtick inline code must not be extracted."""
+        content = "Use `MEDIA:/path/to/file.png` in your response."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" in cleaned  # preserved as text
+
+    def test_media_in_blockquote_ignored(self):
+        """MEDIA: inside a > blockquote must not be extracted."""
+        content = "> To send an image, include MEDIA:/path/to/image.jpg\nEnd."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "End." in cleaned
+
+    def test_media_outside_code_blocks_still_extracted(self):
+        """Real MEDIA: tags outside protected regions must still work."""
+        content = "MEDIA:/real/file.png\n```code\nMEDIA:/fake/file.png\n```"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/real/file.png"
+
+    def test_media_mixed_code_and_prose(self):
+        """Real MEDIA: in prose + example in code block: only prose extracted."""
+        content = (
+            "Here is your file:\n"
+            "MEDIA:/output/report.pdf\n"
+            "Example usage:\n"
+            "```text\nMEDIA:/example/path.pdf\n```\n"
+            "Done."
+        )
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/output/report.pdf"
+        assert "Done." in cleaned
+
 
 class TestMediaInsideSerializedJson:
     """Regression coverage for #34375 — MEDIA: embedded in serialized JSON

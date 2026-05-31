@@ -6808,7 +6808,8 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend([
-            "-z", prompt,
+            "chat",
+            "-q", prompt,
         ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so

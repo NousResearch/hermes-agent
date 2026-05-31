@@ -2212,6 +2212,24 @@ def cmd_chat(args):
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
+    # Headless fallback: when a query is provided but stdin is not a TTY,
+    # route to oneshot mode instead of interactive CLI.  This lets the
+    # kanban dispatcher (`chat -q "work kanban task ..."`) work without
+    # a TTY — the oneshot runner doesn't need the TUI and auto-completes
+    # kanban tasks via the safety net in run_oneshot().
+    _query = kwargs.get("query", "") or ""
+    if _query and not sys.stdin.isatty():
+        from hermes_cli.oneshot import run_oneshot
+
+        sys.exit(
+            run_oneshot(
+                _query,
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                toolsets=kwargs.get("toolsets"),
+            )
+        )
+
     try:
         cli_main(**kwargs)
     except ValueError as e:

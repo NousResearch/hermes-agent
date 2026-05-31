@@ -231,11 +231,12 @@ def run_oneshot(
     # blocks downstream tasks.  This safety net catches the common case
     # where the agent produced output but forgot the lifecycle call.
     _kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    _kanban_board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if _kanban_task:
         try:
             from hermes_cli import kanban_db as _kb
 
-            with _kb.connect_closing() as _conn:
+            with _kb.connect_closing(board=_kanban_board or None) as _conn:
                 _kb.complete_task(_conn, _kanban_task, summary="oneshot: agent responded successfully")
         except Exception as _exc:
             real_stderr.write(f"hermes -z: kanban_complete failed for {_kanban_task}: {_exc}\n")

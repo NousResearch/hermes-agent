@@ -36,6 +36,7 @@ MASTER_PLAN_HEADING = "# Master Project Plan"
 ISSUE_RUN_MAX_ATTEMPTS = 3
 ISSUE_RUN_RETRY_DELAYS_SECONDS = (60, 300)
 ISSUE_RUN_IDLE_POLL_SECONDS = 5.0
+DEFAULT_ALLOWED_ISSUE_REPOS = ("m0nklabs/cryptotrader",)
 REVIEW_FINDINGS_MAX_FIX_ATTEMPTS = 2
 REVIEW_TAG_MAX_PARSE_ATTEMPTS = 2
 REVIEW_TAG_STATES = {"ready_for_merge", "review_findings", "review_inconclusive"}
@@ -220,6 +221,7 @@ async def run_issue_resolution(
     notify: Callable[[str], Awaitable[None]],
 ) -> None:
     """Run one issue immediately without enqueueing it."""
+    _enforce_issue_repo_allowed(request.repo)
     store = IssueStateStore()
     issue = await _load_issue(request.repo, request.issue_number)
     if is_master_issue(issue):
@@ -236,6 +238,7 @@ async def submit_issue_resolution(
     notify: Callable[[str], Awaitable[None]],
 ) -> SubmitResult:
     """Persist a run and ensure the single-flight worker is active."""
+    _enforce_issue_repo_allowed(request.repo)
     issue = await _load_issue(request.repo, request.issue_number)
     run_type = IssueRunType.MASTER if is_master_issue(issue) else IssueRunType.ISSUE
     store = IssueStateStore()
@@ -256,6 +259,7 @@ async def submit_next_issue_resolution(
     notify: Callable[[str], Awaitable[None]],
 ) -> SubmitResult:
     """Resolve the oldest open issue in the repo and queue it for coding."""
+    _enforce_issue_repo_allowed(request.repo)
     issue = await _load_next_open_issue(request.repo)
     return await submit_issue_resolution(
         IssueResolutionRequest(
@@ -265,6 +269,29 @@ async def submit_next_issue_resolution(
             branch=request.branch,
         ),
         notify=notify,
+    )
+
+
+def allowed_issue_repos() -> tuple[str, ...]:
+    """Return repositories allowed to run issue automation."""
+    configured = os.getenv("HERMES_ISSUE_ALLOWED_REPOS", "").strip()
+    if not configured:
+        return DEFAULT_ALLOWED_ISSUE_REPOS
+    repos = tuple(repo.strip() for repo in configured.split(",") if repo.strip())
+    return repos or DEFAULT_ALLOWED_ISSUE_REPOS
+
+
+def is_issue_repo_allowed(repo: str) -> bool:
+    """Return true when the issue lane may execute for this repository."""
+    return repo in allowed_issue_repos()
+
+
+def _enforce_issue_repo_allowed(repo: str) -> None:
+    if is_issue_repo_allowed(repo):
+        return
+    allowed = ", ".join(allowed_issue_repos())
+    raise RuntimeError(
+        f"Hermes issue automation is not allowed for {repo}; allowed repositories: {allowed}"
     )
 
 

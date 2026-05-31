@@ -26,6 +26,7 @@ from gateway.issue_resolution import (
     _find_existing_sub_issue,
     _issue_branch_name,
     _load_next_open_issue,
+    allowed_issue_repos,
     _pr_body,
     build_aider_invocation,
     can_merge_pr,
@@ -35,6 +36,7 @@ from gateway.issue_resolution import (
     is_master_issue,
     parse_decomposition_response,
     parse_issue_command_args,
+    submit_issue_resolution,
     parse_issue_next_command_args,
 )
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
@@ -92,6 +94,66 @@ def test_github_issue_webhook_command_builds_slash_command():
         github_issue_webhook_command(payload)
         == "/issue --repo m0nklabs/cryptotrader --issue 5"
     )
+
+
+def test_issue_repo_allowlist_uses_safe_default(monkeypatch):
+    """Issue automation should default to the controlled CryptoTrader playground."""
+    monkeypatch.delenv("HERMES_ISSUE_ALLOWED_REPOS", raising=False)
+
+    assert allowed_issue_repos() == ("m0nklabs/cryptotrader",)
+
+
+@pytest.mark.asyncio
+async def test_submit_issue_resolution_blocks_disallowed_repo(tmp_path, monkeypatch):
+    """Issue execution should fail before loading unapproved repositories."""
+    monkeypatch.delenv("HERMES_ISSUE_ALLOWED_REPOS", raising=False)
+
+    async def fake_load_issue(_repo, _issue_number):
+        raise AssertionError("disallowed repositories must not be loaded")
+
+    async def notify(_message: str):
+        return None
+
+    monkeypatch.setattr("gateway.issue_resolution._load_issue", fake_load_issue)
+
+    with pytest.raises(RuntimeError, match="not allowed for evil/example"):
+        await submit_issue_resolution(
+            IssueResolutionRequest("evil/example", 1, tmp_path), notify=notify
+        )
+
+
+@pytest.mark.asyncio
+async def test_submit_issue_resolution_accepts_configured_repo(tmp_path, monkeypatch):
+    """Operators can explicitly allow additional issue automation repositories."""
+    monkeypatch.setenv("HERMES_ISSUE_ALLOWED_REPOS", "m0nklabs/cryptotrader,team/app")
+
+    async def fake_load_issue(_repo, issue_number):
+        return IssueMetadata(
+            number=issue_number,
+            title="Allowed",
+            body="body",
+            url="https://github.com/team/app/issues/1",
+        )
+
+    async def fake_ensure_issue_queue_worker(*, notify=None):
+        return None
+
+    async def notify(_message: str):
+        return None
+
+    monkeypatch.setattr("gateway.issue_resolution._load_issue", fake_load_issue)
+    monkeypatch.setattr(
+        "gateway.issue_resolution.ensure_issue_queue_worker",
+        fake_ensure_issue_queue_worker,
+    )
+    monkeypatch.setattr("gateway.issue_resolution.IssueStateStore", IssueStateStore)
+
+    result = await submit_issue_resolution(
+        IssueResolutionRequest("team/app", 1, tmp_path), notify=notify
+    )
+
+    assert result.reused is False
+    assert result.status is IssueRunStatus.QUEUED
 
 
 def test_issue_branch_name_includes_managed_repo_slug():

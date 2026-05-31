@@ -308,7 +308,7 @@ export interface ModeOption {
 export const MODE_OPTIONS: ModeOption[] = [
   { id: 'light', label: 'Light', description: 'Bright desktop surfaces', icon: Sun },
   { id: 'dark', label: 'Dark', description: 'Low-glare workspace', icon: Moon },
-  { id: 'system', label: 'System', description: 'Follow macOS appearance', icon: Monitor }
+  { id: 'system', label: 'System', description: 'Follow OS appearance', icon: Monitor }
 ]
 
 export const SEARCH_PLACEHOLDER: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'tools', string> = {

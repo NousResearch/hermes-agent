@@ -2038,6 +2038,15 @@ def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
 
+    # Headless fallback: when a query is provided but stdin is not a TTY,
+    # force CLI mode regardless of HERMES_TUI env var.  This lets the
+    # kanban dispatcher (`chat -q "work kanban task ..."`) work in
+    # subprocess/headless environments where the TUI can't start.
+    _query = getattr(args, "query", None) or ""
+    if _query and not sys.stdin.isatty():
+        use_tui = False
+        os.environ.pop("HERMES_TUI", None)
+
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):

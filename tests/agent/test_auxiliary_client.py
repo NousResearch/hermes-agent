@@ -5653,3 +5653,84 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+class TestResolveTaskProviderModelKeyEnv:
+    """_resolve_task_provider_model must resolve auxiliary.<task>.key_env → env var."""
+
+    def test_key_env_resolved_to_api_key(self, monkeypatch):
+        """When config has key_env but no explicit api_key, the env var should be read."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setenv("MY_TEST_AUX_KEY", "env-resolved-key-123")
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "gemini",
+                    "model": "gemini-2.5-flash",
+                    "key_env": "MY_TEST_AUX_KEY",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+
+        assert provider == "gemini"
+        assert api_key == "env-resolved-key-123"
+
+    def test_api_key_env_alias_also_resolved(self, monkeypatch):
+        """api_key_env (snake_case alias) should also work."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setenv("MY_ALIAS_KEY", "alias-resolved-key")
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "gemini",
+                    "model": "gemini-2.5-flash",
+                    "api_key_env": "MY_ALIAS_KEY",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+
+        assert api_key == "alias-resolved-key"
+
+    def test_explicit_api_key_wins_over_key_env(self, monkeypatch):
+        """An explicit api_key in config takes precedence over key_env."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setenv("MY_TEST_AUX_KEY", "env-key")
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "gemini",
+                    "model": "gemini-2.5-flash",
+                    "api_key": "explicit-key",
+                    "key_env": "MY_TEST_AUX_KEY",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+
+        assert api_key == "explicit-key"
+
+    def test_missing_env_var_returns_none(self, monkeypatch):
+        """If the env var referenced by key_env doesn't exist, api_key stays None."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.delenv("NONEXISTENT_AUX_KEY", raising=False)
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "gemini",
+                    "model": "gemini-2.5-flash",
+                    "key_env": "NONEXISTENT_AUX_KEY",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("vision")
+
+        assert api_key is None

@@ -5958,6 +5958,16 @@ def _resolve_task_provider_model(
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        # Resolve key_env / api_key_env indirection when no explicit api_key is set,
+        # mirroring the provider-level resolution in resolve_provider_client() (lines
+        # 3501-3503). Without this, auxiliary.<task>.key_env references are silently
+        # ignored and the API key resolves to None → auth errors downstream.
+        if not cfg_api_key:
+            _task_key_env = (
+                task_config.get("key_env") or task_config.get("api_key_env") or ""
+            ).strip()
+            if _task_key_env:
+                cfg_api_key = os.getenv(_task_key_env, "").strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not

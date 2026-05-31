@@ -88,6 +88,15 @@ def _make_resume_runner():
     runner.session_store.load_transcript.return_value = []
     runner._session_db = MagicMock()
     runner._session_db.resolve_session_by_title.return_value = "resumed-session"
+    runner._session_db.get_session.side_effect = (
+        lambda session_id: {
+            "id": "resumed-session",
+            "source": "telegram",
+            "user_id": "u1",
+        }
+        if session_id == "resumed-session"
+        else None
+    )
     runner._session_db.get_session_title.return_value = "Resumed Work"
     return runner, session_key
 
@@ -176,6 +185,7 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     result = await runner._handle_branch_command(_make_event("/branch"))
 
     assert "Branched to" in result
+    assert runner._session_db.create_session.call_args.kwargs["user_id"] == "u1"
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
     assert session_key not in runner._pending_approvals

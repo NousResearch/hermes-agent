@@ -13338,6 +13338,8 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
+        user_source = source.platform.value if source.platform else "gateway"
+        user_id = source.user_id
 
         # Strip common outer brackets/quotes users may type literally from the
         # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
@@ -13349,9 +13351,19 @@ class GatewayRunner:
         ):
             name = name[1:-1].strip()
 
+        def _session_in_resume_scope(session: dict) -> bool:
+            if user_source and session.get("source") != user_source:
+                return False
+            if user_id is not None and session.get("user_id") != user_id:
+                return False
+            return True
+
         def _list_titled_sessions() -> list[dict]:
-            user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source,
+                user_id=user_id,
+                limit=10,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -13389,10 +13401,14 @@ class GatewayRunner:
             # Try direct session ID lookup first (so `/resume <session_id>`
             # works in the gateway, not just `/resume <title>`).
             session = self._session_db.get_session(name)
-            if session:
+            if session and _session_in_resume_scope(session):
                 target_id = session["id"]
             else:
-                target_id = self._session_db.resolve_session_by_title(name)
+                target_id = self._session_db.resolve_session_by_title(
+                    name,
+                    source=user_source,
+                    user_id=user_id,
+                )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
@@ -13475,12 +13491,14 @@ class GatewayRunner:
             branch_title = self._session_db.get_next_title_in_lineage(base)
 
         parent_session_id = current_entry.session_id
+        branch_source = source.platform.value if source.platform else "gateway"
 
         # Create the new session with parent link
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
-                source=source.platform.value if source.platform else "gateway",
+                source=branch_source,
+                user_id=source.user_id,
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 parent_session_id=parent_session_id,
             )

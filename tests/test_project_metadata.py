@@ -70,9 +70,10 @@ def test_lazy_installable_extras_excluded_from_all():
         "fal",
         "edge-tts", "tts-premium",
         "voice",  # faster-whisper / sounddevice / numpy
-        "modal", "daytona", "vercel",
+        "modal", "daytona",
         "messaging", "slack", "matrix", "dingtalk", "feishu",
         "honcho", "hindsight",
+        "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]
     for extra in lazy_covered_extras:

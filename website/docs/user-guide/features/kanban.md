@@ -155,6 +155,36 @@ events WebSocket is pinned to a board at connection time; switching in
 the UI opens a fresh WS against the new board.
 
 
+## File attachments
+
+Tasks can carry file attachments — PDFs, images, source documents — so a
+worker has the source material it needs without you pasting paths into the
+body and hoping it finds them.
+
+- **Upload** — open a task in the dashboard drawer and use the
+  **Attachments** section's *Upload file* button (multiple files at once
+  are fine). Each upload is capped at 25 MB.
+- **Storage** — files land under
+  `<hermes-home>/kanban/attachments/<task_id>/` for the default board, or
+  `<hermes-home>/kanban/boards/<slug>/attachments/<task_id>/` for a named
+  board. Set `HERMES_KANBAN_ATTACHMENTS_ROOT` to pin a custom location.
+- **What the worker sees** — when the dispatcher hands a task to a worker,
+  the worker's context includes an **Attachments** section listing each
+  file's name and its **absolute path**. The worker has full file/terminal
+  tool access, so it reads attachments directly (`read_file`, or shell
+  tools like `pdftotext`).
+- **Download / remove** — the drawer lists each attachment with a download
+  link and a remove (×) control. Removing an attachment deletes both the
+  metadata row and the on-disk file.
+
+:::note Remote terminal backends
+Attachment paths resolve directly on the **local** terminal backend, which
+is the default for Kanban workers. If you run workers on a remote backend
+(Docker, Modal), mount the board's `attachments/` directory into the
+sandbox so the absolute paths in the worker context are reachable.
+:::
+
+
 ## Quick start
 
 The commands below are **you** (the human) setting up the board and creating tasks. Once a task is assigned, the dispatcher spawns the assigned profile as a worker, and from there **the model drives the task through `kanban_*` tool calls, not CLI commands** — see [How workers interact with the board](#how-workers-interact-with-the-board).
@@ -604,7 +634,10 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--max-retries N]
                                 [--skill <name>]...
                                 [--json]
-hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived] [--json]
+hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
+        [--workflow-template-id <id>] [--current-step-key <key>]
+        [--sort created|created-desc|priority|priority-desc|status|assignee|title|updated]
+        [--json]
 hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban link <parent_id> <child_id>
@@ -645,6 +678,62 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
+
+### Concurrency, scheduling, and child promotion config
+
+| Config key | Default | What it does |
+|------------|---------|--------------|
+| `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
+| `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
+| `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
+
+```yaml
+kanban:
+  max_in_progress: 2
+  auto_promote_children: false
+  default_workdir: ~/work/active-project
+```
+
+### Scheduled task starts (`scheduled_at`)
+
+Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.
+
+```bash
+hermes kanban create "nightly backup audit" \
+  --assignee ops --scheduled-at "2026-06-01T03:00:00Z"
+```
+
+### Respawn guard
+
+The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
+
+### Drag-to-delete and bulk delete (dashboard)
+
+The dashboard exposes a **trash drop zone** on the kanban page — drag any card into it to delete the task (cascades through `task_events`, child links, and subscriptions). A confirmation prompt protects against accidents. Bulk delete is also reachable via `DELETE /api/plugins/kanban/tasks` with a JSON body `{"ids": ["t_abc", "t_def", ...]}`.
+
+### Worker visibility endpoints
+
+The dashboard plugin API now exposes three read-only endpoints for external monitors:
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, last heartbeat |
+| `GET /api/plugins/kanban/runs/{id}` | Single-run detail — task id, status, started/ended, exit code, log path |
+| `GET /api/plugins/kanban/inspect` | Combined dispatcher snapshot — backlog, in-progress count vs. `max_in_progress`, recent events |
+
+All three are gated by the same dashboard plugin auth as the rest of the kanban plugin API.
+
+### Kanban Swarm topology helper
+
+`hermes kanban swarm` creates a durable **Kanban Swarm v1** graph in one shot: a completed root/blackboard card, N parallel worker cards, a verifier card gated on all workers, and a synthesizer card gated on the verifier. Shared swarm context (the "blackboard") is stored as structured JSON comments on the root card so any worker can read it.
+
+```bash
+hermes kanban swarm "Design a multi-region failover plan" \
+  --workers researcher,architect,sre \
+  --verifier reviewer --synthesizer writer
+```
+
+The resulting graph dispatches normally — workers run in parallel, the verifier wakes after they all finish, the synthesizer wakes after the verifier marks the work clean.
 
 ## `/kanban` slash command {#kanban-slash-command}
 

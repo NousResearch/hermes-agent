@@ -227,6 +227,9 @@ TIPS = [
     "browser_vision with annotate=true overlays numbered labels on interactive elements.",
 
     # --- MCP ---
+    "hermes mcp opens an interactive picker of Nous-approved MCPs you can install in one keystroke.",
+    "hermes mcp catalog lists Nous-approved MCP servers shipped with the repo.",
+    "hermes mcp install <name> installs a catalog entry, prompts for credentials, and lets you pick which of its tools to enable.",
     "MCP servers are configured in config.yaml — both stdio and HTTP transports supported.",
     "Per-server tool filtering: tools.include whitelists and tools.exclude blacklists specific tools.",
     "MCP servers auto-generate toolsets at runtime — hermes tools can toggle them per platform.",
@@ -260,7 +263,7 @@ TIPS = [
     "Custom providers: save named endpoints in config.yaml under custom_providers.",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.",
     "credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.",
-    "hermes login supports OAuth-based auth for Nous and OpenAI Codex providers.",
+    "hermes auth add nous or hermes auth add openai-codex sets up OAuth-based providers.",
     "The API server supports both Chat Completions and Responses API with server-side state.",
     "tool_preview_length: 0 in config shows full file paths in the spinner's activity feed.",
     "hermes status --deep runs deeper diagnostic checks across all components.",

@@ -58,7 +58,9 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         table = Table()
         table.add_column("Source", style="dim")
         table.add_column("Trust", style="dim")
-        table.add_column("Identifier", style="bold cyan")
+        # overflow="fold" keeps the full slug visible (wraps instead of ellipsis-truncating)
+        # so users can copy it for `hermes skills install`.
+        table.add_column("Identifier", style="bold cyan", overflow="fold", no_wrap=False)
         for r in exact:
             trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
             trust_label = "official" if r.source == "official" else r.trust_level
@@ -244,15 +246,39 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
 
 
 def do_search(query: str, source: str = "all", limit: int = 10,
-              console: Optional[Console] = None) -> None:
-    """Search registries and display results as a Rich table."""
+              console: Optional[Console] = None, as_json: bool = False) -> None:
+    """Search registries and display results as a Rich table.
+
+    When ``as_json=True`` writes a JSON array of result records to stdout
+    (one object per skill: ``name``, ``identifier``, ``source``,
+    ``trust_level``, ``description``) and skips the table render. This is
+    the scripting / copy-paste handle: the full identifier is always
+    intact, even for browse-sh slugs that the table would otherwise wrap.
+    """
     from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
     c = console or _console
-    c.print(f"\n[bold]Searching for:[/] {query}")
 
     auth = GitHubAuth()
     sources = create_source_router(auth)
+    if as_json:
+        # Avoid Rich status spinner contaminating stdout — JSON consumers
+        # expect a clean parseable stream.
+        results = unified_search(query, sources, source_filter=source, limit=limit)
+        payload = [
+            {
+                "name": r.name,
+                "identifier": r.identifier,
+                "source": r.source,
+                "trust_level": r.trust_level,
+                "description": r.description,
+            }
+            for r in results
+        ]
+        print(json.dumps(payload, indent=2))
+        return
+
+    c.print(f"\n[bold]Searching for:[/] {query}")
     with c.status("[bold]Searching registries..."):
         results = unified_search(query, sources, source_filter=source, limit=limit)
 
@@ -265,7 +291,11 @@ def do_search(query: str, source: str = "all", limit: int = 10,
     table.add_column("Description", max_width=60)
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
-    table.add_column("Identifier", style="dim")
+    # overflow="fold" keeps the full slug visible (wraps instead of
+    # ellipsis-truncating). Browse.sh slugs end in a `-XXXXXX` hash that
+    # is part of the actual identifier — truncating it makes copy-paste
+    # into `hermes skills install` fail.
+    table.add_column("Identifier", style="dim", overflow="fold", no_wrap=False)
 
     for r in results:
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
@@ -280,7 +310,8 @@ def do_search(query: str, source: str = "all", limit: int = 10,
 
     c.print(table)
     c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
-            "hermes skills install <identifier> to install[/]\n")
+            "hermes skills install <identifier> to install "
+            "(--json for scripting)[/]\n")
 
 
 def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
@@ -519,11 +550,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if bundle.source == "url" and not category and not skip_confirm:
         category = _prompt_for_category(c, _existing_categories())
 
-    # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
+    # Auto-detect the full parent path for official skills. Optional skills
+    # can be nested (e.g. "official/mlops/training/trl-fine-tuning"), so keep
+    # every identifier segment between "official" and the final skill slug.
     if bundle.source == "official" and not category:
-        id_parts = bundle.identifier.split("/")  # ["official", "category", "skill"]
+        id_parts = bundle.identifier.split("/")
         if len(id_parts) >= 3:
-            category = id_parts[1]
+            category = "/".join(id_parts[1:-1])
 
     # Check if already installed
     lock = HubLockFile()
@@ -550,7 +583,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    if bundle.source == "official":
+        scan_source = "official"
+    else:
+        scan_source = (
+            getattr(bundle, "identifier", "")
+            or getattr(meta, "identifier", "")
+            or identifier
+        )
     result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
@@ -1032,6 +1072,48 @@ def do_reset(name: str, restore: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
 
+def do_repair_official(name: str, restore: bool = False,
+                       console: Optional[Console] = None,
+                       skip_confirm: bool = False,
+                       invalidate_cache: bool = True) -> None:
+    """Backfill or restore official optional skills from repo source."""
+    from tools.skills_sync import restore_official_optional_skill
+
+    c = console or _console
+    if restore and not skip_confirm:
+        c.print(f"\n[bold]Restore official optional skill '{name}' from repo source?[/]")
+        c.print("[dim]Existing matching active copies will be moved to a restore backup before copying the official source.[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in {"y", "yes"}:
+            c.print("[dim]Cancelled.[/]\n")
+            return
+
+    result = restore_official_optional_skill(name, restore=restore)
+    if not result.get("ok"):
+        c.print(f"[bold red]Error:[/] {result.get('message', 'Repair failed')}\n")
+        return
+
+    c.print(f"[bold green]{result['message']}[/]")
+    if result.get("restored"):
+        c.print(f"[dim]Restored: {', '.join(result['restored'])}[/]")
+    if result.get("backfilled"):
+        c.print(f"[dim]Backfilled provenance: {', '.join(result['backfilled'])}[/]")
+    if result.get("backed_up"):
+        c.print(f"[dim]Backed up: {', '.join(result['backed_up'])}[/]")
+        c.print(f"[dim]Backup dir: {result.get('backup_dir')}[/]")
+    c.print()
+
+    if invalidate_cache:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+
+
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
     """Manage taps (custom GitHub repo sources)."""
     from tools.skills_hub import TapsManager
@@ -1339,7 +1421,8 @@ def skills_command(args) -> None:
     if action == "browse":
         do_browse(page=args.page, page_size=args.size, source=args.source)
     elif action == "search":
-        do_search(args.query, source=args.source, limit=args.limit)
+        do_search(args.query, source=args.source, limit=args.limit,
+                  as_json=getattr(args, "json", False))
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),
@@ -1363,6 +1446,9 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "repair-official":
+        do_repair_official(args.name, restore=getattr(args, "restore", False),
+                           skip_confirm=getattr(args, "yes", False))
     elif action == "publish":
         do_publish(
             args.skill_path,
@@ -1457,10 +1543,11 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N] [--json]\n")
             return
         source = "all"
         limit = 10
+        as_json = False
         query_parts = []
         i = 0
         while i < len(args):
@@ -1473,10 +1560,14 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 except ValueError:
                     pass
                 i += 2
+            elif args[i] == "--json":
+                as_json = True
+                i += 1
             else:
                 query_parts.append(args[i])
                 i += 1
-        do_search(" ".join(query_parts), source=source, limit=limit, console=c)
+        do_search(" ".join(query_parts), source=source, limit=limit,
+                  console=c, as_json=as_json)
 
     elif action == "install":
         if not args:

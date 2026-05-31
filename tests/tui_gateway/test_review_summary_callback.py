@@ -11,7 +11,6 @@ transcript line.
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,11 +33,17 @@ def server():
 
         mod = importlib.import_module("tui_gateway.server")
         yield mod
+        # Reset module-level session state without re-importing. importlib.reload
+        # would re-register the module's atexit hooks (ThreadPoolExecutor
+        # shutdown, _shutdown_sessions); the duplicates race the stderr
+        # buffer at interpreter shutdown and surface as Fatal Python error:
+        # _enter_buffered_busy. Clearing the per-session dicts gives the
+        # next test a clean slate; _methods is NOT cleared because it's
+        # populated at module import time and re-registration only happens
+        # via reload (which we don't do).
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
-        mod._methods.clear()
-        importlib.reload(mod)
 
 
 def test_init_session_attaches_background_review_callback(server, monkeypatch):

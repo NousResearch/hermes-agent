@@ -1,5 +1,6 @@
 """Tests for tools/skills_sync.py — manifest-based skill seeding and updating."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,8 +14,7 @@ from tools.skills_sync import (
     _dir_hash,
     sync_skills,
     reset_bundled_skill,
-    MANIFEST_FILE,
-    SKILLS_DIR,
+    restore_official_optional_skill,
 )
 
 
@@ -196,6 +196,7 @@ class TestSyncSkills:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
@@ -482,12 +483,123 @@ class TestSyncSkills:
         assert "new-skill" in captured
         assert "hermes skills reset new-skill" in captured
 
+    def test_backfills_official_optional_provenance_for_existing_identical_skill(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "mlops" / "training" / "trl-fine-tuning"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text(
+            "---\nname: fine-tuning-with-trl\n---\n# TRL\n"
+        )
+        (optional_skill / "references").mkdir()
+        (optional_skill / "references" / "api.md").write_text("api\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        active = skills_dir / "mlops" / "training" / "trl-fine-tuning"
+        active.mkdir(parents=True)
+        (active / "SKILL.md").write_text(
+            "---\nname: fine-tuning-with-trl\n---\n# TRL\n"
+        )
+        (active / "references").mkdir()
+        (active / "references" / "api.md").write_text("api\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = sync_skills(quiet=True)
+
+        assert result["optional_provenance_backfilled"] == ["trl-fine-tuning"]
+        lock_path = skills_dir / ".hub" / "lock.json"
+        data = json.loads(lock_path.read_text())
+        entry = data["installed"]["trl-fine-tuning"]
+        assert entry["source"] == "official"
+        assert entry["identifier"] == "official/mlops/training/trl-fine-tuning"
+        assert entry["trust_level"] == "builtin"
+        assert entry["install_path"] == "mlops/training/trl-fine-tuning"
+
+    def test_does_not_backfill_optional_provenance_for_modified_skill(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "mlops" / "training" / "trl-fine-tuning"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text("# upstream optional\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        active = skills_dir / "mlops" / "training" / "trl-fine-tuning"
+        active.mkdir(parents=True)
+        (active / "SKILL.md").write_text("# user modified\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = sync_skills(quiet=True)
+
+        assert result["optional_provenance_backfilled"] == []
+        assert not (skills_dir / ".hub" / "lock.json").exists()
+
+    def test_repair_official_optional_restores_reorganized_skill_with_backup(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "mlops" / "training" / "trl-fine-tuning"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text(
+            "---\nname: fine-tuning-with-trl\n---\n# Official TRL\n"
+        )
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        wrong = skills_dir / "mlops" / "trl-fine-tuning"
+        wrong.mkdir(parents=True)
+        (wrong / "SKILL.md").write_text(
+            "---\nname: fine-tuning-with-trl\n---\n# Curator mangled\n"
+        )
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = restore_official_optional_skill("fine-tuning-with-trl", restore=True)
+
+        canonical = skills_dir / "mlops" / "training" / "trl-fine-tuning"
+        assert result["ok"] is True
+        assert result["restored"] == ["trl-fine-tuning"]
+        assert result["backed_up"] == ["mlops/trl-fine-tuning"]
+        assert "Official TRL" in (canonical / "SKILL.md").read_text()
+        assert not wrong.exists()
+        assert (Path(result["backup_dir"]) / "mlops" / "trl-fine-tuning" / "SKILL.md").exists()
+
+        data = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert data["installed"]["trl-fine-tuning"]["source"] == "official"
+        assert data["installed"]["trl-fine-tuning"]["install_path"] == "mlops/training/trl-fine-tuning"
+
+    def test_repair_official_optional_without_restore_does_not_replace_modified_copy(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "mlops" / "training" / "trl-fine-tuning"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text("# official\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        canonical = skills_dir / "mlops" / "training" / "trl-fine-tuning"
+        canonical.mkdir(parents=True)
+        (canonical / "SKILL.md").write_text("# modified\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = restore_official_optional_skill("trl-fine-tuning", restore=False)
+
+        assert result["ok"] is True
+        assert result["restored"] == []
+        assert result["backfilled"] == []
+        assert (canonical / "SKILL.md").read_text() == "# modified\n"
+        assert not (skills_dir / ".hub" / "lock.json").exists()
+
     def test_nonexistent_bundled_dir(self, tmp_path):
         with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "optional_provenance_backfilled": [],
         }
 
     def test_failed_copy_does_not_poison_manifest(self, tmp_path):
@@ -620,6 +732,7 @@ class TestResetBundledSkill:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
@@ -732,3 +845,85 @@ class TestResetBundledSkill:
             post_manifest = _read_manifest()
             assert "google-workspace" in post_manifest
         assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()
+
+    def test_reset_restore_succeeds_on_readonly_nix_tree(self, tmp_path):
+        """#34972: --restore must succeed even when the user copy is a fully
+        read-only tree (r-xr-xr-x dirs + files), as produced by copying a
+        Nix-store source. The manifest is re-baselined and bundled re-copied."""
+        import os
+        import stat
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        sub = dest / "references"
+        sub.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# user version\n")
+        (sub / "ref.md").write_text("# nested ref\n")
+        manifest_file.write_text(
+            "google-workspace:STALEHASH000000000000000000000000\n"
+        )
+
+        # Read-only files AND directories — the real Nix-store case.
+        ro_dir = (
+            stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP
+            | stat.S_IROTH | stat.S_IXOTH
+        )
+        os.chmod(sub / "ref.md", stat.S_IREAD)
+        os.chmod(dest / "SKILL.md", stat.S_IREAD)
+        os.chmod(sub, ro_dir)
+        os.chmod(dest, ro_dir)
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = reset_bundled_skill("google-workspace", restore=True)
+
+            assert result["ok"] is True
+            assert result["action"] == "restored"
+            # Bundled version was re-copied over the (deleted) user copy.
+            assert "upstream" in (dest / "SKILL.md").read_text()
+            # The read-only nested user dir/file was fully removed, not left behind.
+            assert not (sub / "ref.md").exists()
+            # sync ran and re-copied the skill (not stuck in limbo).
+            assert "google-workspace" in result["synced"]["copied"]
+        finally:
+            # Restore perms so tmp_path teardown can remove anything left.
+            for p in (sub, dest):
+                if p.exists():
+                    os.chmod(p, stat.S_IRWXU)
+
+    def test_reset_restore_preserves_manifest_on_rmtree_failure(self, tmp_path):
+        """#34972: when the user copy genuinely cannot be removed, the manifest
+        entry must NOT be deleted — otherwise the skill enters a limbo state
+        where future syncs silently skip it forever."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# user version\n")
+        manifest_file.write_text(
+            "google-workspace:STALEHASH000000000000000000000000\n"
+        )
+
+        # Simulate an unremovable tree (e.g. a busy mountpoint or a path even
+        # chmod can't rescue) by making the removal helper raise.
+        def _boom(_path):
+            raise PermissionError(13, "Permission denied")
+
+        with self._patches(bundled, skills_dir, manifest_file), patch(
+            "tools.skills_sync._rmtree_writable", side_effect=_boom
+        ):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+        # Restore failed, and the manifest must be left untouched.
+        assert result["ok"] is False
+        assert result["action"] == "not_reset"
+        assert "Manifest entry preserved" in result["message"]
+        manifest_after = manifest_file.read_text()
+        assert "google-workspace" in manifest_after
+        # User copy is still on disk (we changed nothing).
+        assert (dest / "SKILL.md").exists()

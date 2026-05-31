@@ -5063,6 +5063,74 @@ def test_notification_poller_delivers_completion(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_notification_poller_routes_events_to_owner_session(monkeypatch):
+    """A poller that wakes first must dispatch to the event's owning TUI session."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    class _Agent:
+        def __init__(self, label):
+            self.label = label
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append((self.label, prompt))
+            return {
+                "final_response": f"ok {self.label}",
+                "messages": [{"role": "assistant", "content": f"ok {self.label}"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    owner = _session(agent=_Agent("owner"), session_key="owner-session-key")
+    thief = _session(agent=_Agent("thief"), session_key="thief-session-key")
+    server._sessions["sid_owner"] = owner
+    server._sessions["sid_thief"] = thief
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_owner_test")
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc_owner_test",
+        "session_key": "owner-session-key",
+        "command": "echo owner",
+        "exit_code": 0,
+        "output": "owner",
+    })
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        # Simulate the non-owner session's poller winning the global queue race.
+        server._notification_poller_loop(stop, "sid_thief", thief)
+
+        assert len(turns) == 1
+        assert turns[0][0] == "owner"
+        assert "[IMPORTANT: Background process proc_owner_test completed" in turns[0][1]
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert status_calls
+        assert status_calls[0][1] == "sid_owner"
+    finally:
+        server._sessions.pop("sid_owner", None)
+        server._sessions.pop("sid_thief", None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
 def test_notification_poller_skips_consumed(monkeypatch):
     """Already-consumed completions are not dispatched by the poller."""
     from tools.process_registry import process_registry

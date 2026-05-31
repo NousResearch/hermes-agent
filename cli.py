@@ -7468,6 +7468,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_goal_command(cmd_original)
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
+        elif canonical == "swarm":
+            self._handle_swarm_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -7663,6 +7665,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return mgr
 
 
+
+    def _handle_swarm_command(self, cmd: str) -> None:
+        """Handle /swarm <goal> — decompose and create a kanban swarm."""
+        import argparse
+        from hermes_cli.kanban_swarm_command import _cmd_swarm
+
+        parts = (cmd or "").strip().split(None, 1)
+        goal_text = parts[1].strip() if len(parts) > 1 else ""
+        ns = argparse.Namespace(
+            goal=goal_text,
+            tenant=getattr(self, "_tenant", None),
+            json=False,
+        )
+        _cmd_swarm(ns)
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.

@@ -1675,6 +1675,43 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
 
 
+def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
+    """_resolve_api_key_provider must not probe Copilot tokens unless configured."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+
+    fake_registry = OrderedDict({
+        "copilot": ProviderConfig(
+            id="copilot",
+            name="GitHub Copilot",
+            auth_type="api_key",
+            inference_base_url="https://api.githubcopilot.com",
+            api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+        ),
+    })
+
+    def fail_if_probed(provider_id):
+        raise AssertionError(f"{provider_id} credentials should not be probed")
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_classic_pat")
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        fail_if_probed,
+    )
+    monkeypatch.setattr(
+        "agent.auxiliary_client._select_pool_entry",
+        lambda provider_id: (False, None),
+    )
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    assert _resolve_api_key_provider() == (None, None)
+
+
 # ---------------------------------------------------------------------------
 # model="default" elimination (#7512)
 # ---------------------------------------------------------------------------

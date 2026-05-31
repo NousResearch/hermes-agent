@@ -7,6 +7,7 @@ cache. See `tools/mcp_oauth_manager.py` for design rationale.
 import json
 import os
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -139,3 +140,93 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
 
+
+@pytest.mark.asyncio
+async def test_force_login_runs_authorization_without_401(tmp_path, monkeypatch):
+    """Explicit login must not depend on the server first returning HTTP 401."""
+    import httpx
+
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir()
+    token_file = token_dir / "srv.json"
+    sent_requests = []
+
+    class FakeStorage:
+        def _tokens_path(self):
+            return token_file
+
+    class FakeProvider:
+        _initialized = False
+
+        def __init__(self):
+            self.initialized = False
+            self.prefetched = False
+            self.authorized = False
+            self.handled_token = False
+            self.persisted = False
+            self.context = SimpleNamespace(
+                oauth_metadata=None,
+                storage=FakeStorage(),
+            )
+
+        async def _initialize(self):
+            self._initialized = True
+            self.initialized = True
+
+        async def _prefetch_oauth_metadata(self):
+            self.prefetched = True
+            self.context.oauth_metadata = object()
+
+        async def _perform_authorization(self):
+            self.authorized = True
+            return httpx.Request("POST", "https://auth.example/token")
+
+        async def _handle_token_response(self, response):
+            self.handled_token = True
+            token_file.write_text(json.dumps({
+                "access_token": "tok",
+                "status": response.status_code,
+            }))
+
+        def _persist_oauth_metadata_if_changed(self):
+            self.persisted = True
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def send(self, request):
+            sent_requests.append((request.method, str(request.url), self.timeout))
+            return httpx.Response(200, request=request)
+
+    provider = FakeProvider()
+    mgr = MCPOAuthManager()
+    mgr._entries["srv"] = _ProviderEntry(
+        server_url="https://mcp.example/mcp",
+        oauth_config={"timeout": 12},
+        provider=provider,
+    )
+    monkeypatch.setattr(mgr, "get_or_build_provider", lambda *args: provider)
+    monkeypatch.setattr("httpx.AsyncClient", FakeAsyncClient)
+
+    assert await mgr.force_login(
+        "srv",
+        "https://mcp.example/mcp",
+        {"timeout": 12},
+    )
+
+    assert provider.initialized is True
+    assert provider.prefetched is True
+    assert provider.authorized is True
+    assert provider.handled_token is True
+    assert provider.persisted is True
+    assert sent_requests == [("POST", "https://auth.example/token", 12.0)]
+    assert mgr._entries["srv"].last_mtime_ns == token_file.stat().st_mtime_ns

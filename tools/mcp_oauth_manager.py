@@ -461,6 +461,61 @@ class MCPOAuthManager:
             server_name,
         )
 
+    async def force_login(
+        self,
+        server_name: str,
+        server_url: str,
+        oauth_config: Optional[dict],
+    ) -> bool:
+        """Run an explicit browser OAuth flow for ``hermes mcp login``.
+
+        The normal MCP SDK auth path starts OAuth only after an HTTP 401.
+        Some servers allow initialize/tools-list without auth, so a login
+        probe can succeed without ever obtaining a token.  This path drives
+        authorization directly for pre-registered clients.
+        """
+        provider = self.get_or_build_provider(server_name, server_url, oauth_config)
+        if provider is None:
+            return False
+
+        entry = self._entries.get(server_name)
+        if entry is None:
+            return False
+
+        async with entry.lock:
+            if not getattr(provider, "_initialized", False):
+                await provider._initialize()
+
+            prefetch = getattr(provider, "_prefetch_oauth_metadata", None)
+            if (
+                callable(prefetch)
+                and getattr(provider.context, "oauth_metadata", None) is None
+            ):
+                await prefetch()
+
+            token_request = await provider._perform_authorization()
+
+            import httpx
+
+            timeout = float((oauth_config or {}).get("timeout", 300))
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                token_response = await client.send(token_request)
+
+            await provider._handle_token_response(token_response)
+
+            persist = getattr(provider, "_persist_oauth_metadata_if_changed", None)
+            if callable(persist):
+                persist()
+
+            storage = getattr(provider.context, "storage", None)
+            tokens_path_fn = getattr(storage, "_tokens_path", None)
+            if callable(tokens_path_fn):
+                try:
+                    entry.last_mtime_ns = tokens_path_fn().stat().st_mtime_ns
+                except OSError:
+                    entry.last_mtime_ns = 0
+            return True
+
     # -- Disk watch ----------------------------------------------------------
 
     async def invalidate_if_disk_changed(self, server_name: str) -> bool:

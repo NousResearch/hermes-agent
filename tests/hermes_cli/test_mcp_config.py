@@ -623,6 +623,47 @@ class TestMcpLogin:
         assert "Authenticated" not in out
         assert "client_id" in out
 
+    def test_login_forces_preregistered_oauth_before_probe(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Pre-registered clients should auth even when tools/list is public."""
+        _seed_config(tmp_path, {
+            "googledrive": {
+                "url": "https://drivemcp.googleapis.com/mcp/v1",
+                "auth": "oauth",
+                "oauth": {
+                    "client_id": "client-id",
+                    "client_secret": "client-secret",
+                },
+            },
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        calls = []
+
+        def mock_force_login(name, cfg):
+            calls.append((name, cfg["oauth"]["client_id"]))
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "googledrive.json").write_text('{"access_token": "x"}')
+            return True
+
+        def mock_probe(name, cfg):
+            assert (token_dir / "googledrive.json").exists()
+            return [("search_files", "d"), ("read_file_content", "d")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._force_oauth_login", mock_force_login
+        )
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="googledrive"))
+        out = capsys.readouterr().out
+
+        assert calls == [("googledrive", "client-id")]
+        assert "Authenticated — 2 tool(s) available" in out
+        assert "no OAuth token was obtained" not in out
+
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""
         _seed_config(tmp_path, {

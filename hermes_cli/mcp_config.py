@@ -221,6 +221,40 @@ def _oauth_tokens_present(name: str) -> bool:
         return True
 
 
+def _mcp_oauth_config(config: dict) -> dict:
+    oauth_config = config.get("oauth")
+    return oauth_config if isinstance(oauth_config, dict) else {}
+
+
+def _has_preregistered_oauth_client(config: dict) -> bool:
+    return bool(_mcp_oauth_config(config).get("client_id"))
+
+
+def _force_oauth_login(name: str, config: dict) -> bool:
+    """Run an explicit OAuth flow for pre-registered MCP clients.
+
+    Some MCP servers allow initialize/tools-list without auth, so probing the
+    server is not enough to start the SDK's 401-driven OAuth flow.
+    """
+    from tools.mcp_oauth_manager import get_manager
+    from tools.mcp_tool import _ensure_mcp_loop, _run_on_mcp_loop, _stop_mcp_loop
+
+    url = config.get("url")
+    oauth_config = _mcp_oauth_config(config)
+    timeout = float(oauth_config.get("timeout", 300))
+
+    _ensure_mcp_loop()
+    try:
+        return bool(
+            _run_on_mcp_loop(
+                get_manager().force_login(name, url, oauth_config),
+                timeout=timeout + 10,
+            )
+        )
+    finally:
+        _stop_mcp_loop()
+
+
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -644,8 +678,17 @@ def cmd_mcp_login(args):
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
-    # Probe triggers the OAuth flow (browser redirect + callback capture).
+    # If the user configured a pre-registered OAuth client, run the browser
+    # flow explicitly before probing.  Relying on the probe alone only works
+    # for servers that 401 initialize/tools-list; Google Drive's MCP server can
+    # list tools unauthenticated, so no SDK auth flow is triggered otherwise.
     try:
+        if _has_preregistered_oauth_client(server_config):
+            _force_oauth_login(name, server_config)
+
+        # Probe discovers tools after the token is available.  For servers
+        # without a pre-registered client, this remains the legacy path where
+        # the SDK starts OAuth lazily in response to a 401.
         tools = _probe_single_server(name, server_config)
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +

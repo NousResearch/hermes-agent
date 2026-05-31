@@ -108,6 +108,51 @@ class TestModalWindowsFallback:
         assert setup_calls == ["capture"]
         assert teardown_calls == ["restore"]
 
+    def test_windows_daemon_thread_uses_modal_via_app_loop(self):
+        """On native Windows, the destructive-confirm must use the modal via the
+        app loop, not the raw input() fallback that deadlocks the daemon thread.
+
+        Regression test for #33961: bare /reset froze on native Windows because
+        the win32 early-return routed confirmation to input() on the process_loop
+        daemon thread, deadlocking against prompt_toolkit's main-thread stdin.
+        """
+        cli = _make_cli()
+        result_holder = {}
+        setup_calls = []
+        teardown_calls = []
+
+        def run_on_daemon():
+            with patch.object(sys, "platform", "win32"), \
+                 patch.object(cli._app.loop, "call_soon_threadsafe", side_effect=lambda cb: cb()), \
+                 patch.object(cli, "_prompt_text_input") as mock_stdin, \
+                 patch.object(cli, "_capture_modal_input_snapshot", side_effect=lambda: setup_calls.append("capture")), \
+                 patch.object(cli, "_restore_modal_input_snapshot", side_effect=lambda: teardown_calls.append("restore")):
+                result_holder["result"] = cli._prompt_text_input_modal(
+                    title="⚠️  /reset",
+                    detail="This starts a fresh session.",
+                    choices=_SAMPLE_CHOICES,
+                    timeout=5,
+                )
+                result_holder["stdin_called"] = mock_stdin.called
+
+        def _submit_after_delay():
+            time.sleep(0.2)
+            state = cli._slash_confirm_state
+            if state and "response_queue" in state:
+                state["response_queue"].put("once")
+
+        submitter = threading.Thread(target=_submit_after_delay, daemon=True)
+        t = threading.Thread(target=run_on_daemon, daemon=True)
+        submitter.start()
+        t.start()
+        t.join(timeout=2.0)
+        submitter.join(timeout=2.0)
+        assert not t.is_alive(), "daemon thread hung — modal deadlocked"
+        assert result_holder["stdin_called"] is False, "win32 must NOT use the input() fallback"
+        assert result_holder["result"] == "once"
+        assert setup_calls == ["capture"]
+        assert teardown_calls == ["restore"]
+
     def test_main_thread_non_windows_uses_modal(self):
         """On macOS/Linux main thread, the queue-based modal is still used."""
         cli = _make_cli()

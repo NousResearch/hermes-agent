@@ -1,7 +1,7 @@
 """Tests for gateway restart-loop defenses (#30719).
 
 Covers:
-- Defense 1: gateway stop/restart refuse when HERMES_IN_GATEWAY=1
+- Defense 1: gateway stop/restart refuse when _HERMES_GATEWAY=1
 - Defense 2: cron create rejects prompts containing gateway lifecycle commands
 - _contains_gateway_lifecycle_command pattern matching
 """
@@ -61,6 +61,11 @@ class TestGatewayLifecyclePattern:
         "echo 'just a normal cron job'",
         "run the backup script",
         "gateway is running fine",
+        # Regression (#30728 follow-up): legit prompts that merely mention an
+        # unrelated gateway + a restart must NOT be blocked.
+        "Summarize the API gateway logs and report any restart events from last night",
+        "Check if the payment gateway needs a restart after the deploy",
+        "Monitor the gateway and tell me if a restart is recommended",
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
@@ -189,10 +194,10 @@ class TestCronCreateLifecycleBlock:
 # ---------------------------------------------------------------------------
 
 class TestGatewaySelfTargetingGuard:
-    """Verify hermes gateway stop/restart refuse when HERMES_IN_GATEWAY=1."""
+    """Verify hermes gateway stop/restart refuse when _HERMES_GATEWAY=1."""
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
-        monkeypatch.setenv("HERMES_IN_GATEWAY", "1")
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
         from hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="stop", all=False, system=False)
         with pytest.raises(SystemExit) as exc_info:
@@ -200,7 +205,7 @@ class TestGatewaySelfTargetingGuard:
         assert exc_info.value.code == 1
 
     def test_restart_refuses_inside_gateway(self, monkeypatch):
-        monkeypatch.setenv("HERMES_IN_GATEWAY", "1")
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
         from hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="restart", all=False, system=False)
         with pytest.raises(SystemExit) as exc_info:
@@ -208,23 +213,40 @@ class TestGatewaySelfTargetingGuard:
         assert exc_info.value.code == 1
 
     def test_stop_allows_outside_gateway(self, monkeypatch):
-        monkeypatch.delenv("HERMES_IN_GATEWAY", raising=False)
-        from hermes_cli.gateway import gateway_command
+        # With the gateway marker unset, the self-targeting guard must NOT
+        # fire. Prove control reaches the real stop path (rather than driving
+        # real signal delivery, which would trip the live-system guard) by
+        # short-circuiting the first downstream call with a sentinel.
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        import hermes_cli.gateway as gw
+
+        class _Reached(Exception):
+            pass
+
+        def _sentinel(*a, **k):
+            raise _Reached()
+
+        monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _sentinel)
+        monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6", _sentinel)
         args = Namespace(gateway_command="stop", all=False, system=False)
-        # Should not raise SystemExit(1) — it may fail for other reasons
-        # (no gateway running) but it won't exit with code 1 from the guard.
-        try:
-            gateway_command(args)
-        except SystemExit as e:
-            # The guard exit code is 1 and prints "Refusing" — make sure
-            # that's NOT what we hit.
-            assert e.code != 1 or "Refusing" not in str(e)
+        with pytest.raises(_Reached):
+            gw.gateway_command(args)
 
     def test_restart_allows_outside_gateway(self, monkeypatch):
-        monkeypatch.delenv("HERMES_IN_GATEWAY", raising=False)
-        from hermes_cli.gateway import gateway_command
+        # Same as above for restart: guard must not fire when the marker is
+        # unset. The first thing restart does after the guard is the s6
+        # dispatch check — sentinel it so we never reach real signal delivery.
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        import hermes_cli.gateway as gw
+
+        class _Reached(Exception):
+            pass
+
+        def _sentinel(*a, **k):
+            raise _Reached()
+
+        monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _sentinel)
+        monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6", _sentinel)
         args = Namespace(gateway_command="restart", all=False, system=False)
-        try:
-            gateway_command(args)
-        except SystemExit as e:
-            assert e.code != 1 or "Refusing" not in str(e)
+        with pytest.raises(_Reached):
+            gw.gateway_command(args)

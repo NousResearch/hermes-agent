@@ -305,7 +305,7 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     monkeypatch.setattr(hub, "create_source_router", lambda auth: [_ResolvedSource()])
     monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
     monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
-    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "scan_skill_with_external_scanner", _scan_skill)
     monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
     monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
 
@@ -359,7 +359,7 @@ def test_do_install_scans_official_bundles_with_source_provenance(
     monkeypatch.setattr(hub, "create_source_router", lambda auth: [_OfficialSource()])
     monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
     monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
-    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "scan_skill_with_external_scanner", _scan_skill)
     monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
     monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
 
@@ -428,7 +428,7 @@ def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
         lambda: type("Lock", (), {"get_installed": lambda self, n: None})(),
     )
     monkeypatch.setattr(
-        guard, "scan_skill",
+        guard, "scan_skill_with_external_scanner",
         lambda skill_path, source="community": guard.ScanResult(
             skill_name="pending", source=source, trust_level="community", verdict="safe",
         ),
@@ -618,3 +618,55 @@ def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
         "browse_skills() must not deduplicate browse-sh skills with the same name "
         "but different identifiers"
     )
+
+def test_do_install_uses_external_scanner_hook(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    class _Source:
+        def inspect(self, identifier):
+            return type("Meta", (), {"extra": {}, "identifier": identifier})()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "externally-scanned",
+                "files": {"SKILL.md": "# Externally Scanned"},
+                "source": "github",
+                "identifier": identifier,
+                "trust_level": "community",
+                "metadata": {},
+            })()
+
+    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "externally-scanned"
+    q_path.mkdir(parents=True)
+    (q_path / "SKILL.md").write_text("# Externally Scanned")
+    scanner = tmp_path / "scanner.py"
+    scanner.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "print(json.dumps({'verdict':'safe','skill_name':'externally-scanned','findings':[]}))\n"
+    )
+    scanner.chmod(0o755)
+
+    installs = []
+
+    def _install_from_quarantine(q, name, category, bundle, result):
+        installs.append({"name": name, "verdict": result.verdict})
+        install_dir = tmp_path / "skills" / name
+        install_dir.mkdir(parents=True, exist_ok=True)
+        return install_dir
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_Source()])
+    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
+    monkeypatch.setattr(hub, "install_from_quarantine", _install_from_quarantine)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
+    monkeypatch.setattr(guard, "_config_external_scanner_command", lambda: str(scanner))
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_install("example/repo/externally-scanned", console=console, skip_confirm=True)
+
+    assert installs == [{"name": "externally-scanned", "verdict": "safe"}]
+    assert "Installed:" in sink.getvalue()
+

@@ -1311,6 +1311,11 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Optional external scanner command for `hermes skills install`.
+        # When set, the command is invoked with the quarantined skill path as
+        # argv[1] and must emit JSON that maps to tools.skills_guard.ScanResult.
+        # Empty string preserves the native regex/structure scanner.
+        "external_scanner_command": "",
     },
 
     # Curator — background skill maintenance.

@@ -24,10 +24,14 @@ Usage:
 
 import re
 import hashlib
+import json
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 
 
@@ -51,6 +55,7 @@ INSTALL_POLICY = {
 }
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
+
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +82,103 @@ class ScanResult:
     findings: List[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
+
+
+# ---------------------------------------------------------------------------
+# External scanner integration
+# ---------------------------------------------------------------------------
+
+def _config_external_scanner_command() -> str:
+    """Return skills.external_scanner_command from config.yaml, if set."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        skills_cfg = cfg.get("skills", {}) if isinstance(cfg, dict) else {}
+        command = skills_cfg.get("external_scanner_command", "")
+        return str(command).strip() if command else ""
+    except Exception:
+        return ""
+
+
+def _finding_from_external_issue(issue: dict[str, Any], default_severity: str) -> Finding:
+    loc = issue.get("location", {}) if isinstance(issue.get("location"), dict) else {}
+    severity = str(issue.get("severity") or default_severity or "high").lower()
+    if severity not in {"critical", "high", "medium", "low"}:
+        severity = "high"
+    return Finding(
+        pattern_id=str(issue.get("id") or issue.get("pattern") or "external_scanner"),
+        severity=severity,
+        category=str(issue.get("category") or "external_scanner"),
+        file=str(loc.get("file") or issue.get("file") or ""),
+        line=int(loc.get("start_line") or issue.get("line") or 0),
+        match=str(issue.get("finding") or issue.get("pattern") or "")[:200],
+        description=str(issue.get("explanation") or issue.get("description") or issue.get("remediation") or "External scanner finding"),
+    )
+
+
+def scan_skill_with_external_scanner(skill_path: Path, source: str = "community", *, command: str | None = None) -> ScanResult:
+    """Run a configured external scanner and convert its JSON to ScanResult.
+
+    Contract: command receives the skill path as argv[1] and must print JSON to
+    stdout. Supported JSON is intentionally small and deterministic:
+      {"verdict": "safe|caution|dangerous", "findings": [...]}
+    or SkillSpector-style:
+      {"risk_assessment": {"severity": "LOW|MEDIUM|HIGH|CRITICAL"}, "issues": [...]}
+    Non-zero exit codes are accepted when valid JSON is printed because security
+    scanners often use exit status to mean "findings present".
+    """
+    scanner = (command or _config_external_scanner_command()).strip()
+    if not scanner:
+        return scan_skill(skill_path, source=source)
+
+    env = os.environ.copy()
+    env.update({"HERMES_SKILL_SOURCE": source})
+    proc = subprocess.run(
+        [scanner, str(skill_path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        raise RuntimeError(
+            f"External skill scanner produced no JSON: {scanner} exit={proc.returncode} stderr={proc.stderr.strip()}"
+        )
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"External skill scanner returned invalid JSON: {exc}") from exc
+
+    risk = payload.get("risk_assessment", {}) if isinstance(payload.get("risk_assessment"), dict) else {}
+    severity = str(risk.get("severity") or payload.get("severity") or "").upper()
+    verdict = str(payload.get("verdict") or "").lower()
+    if verdict not in VERDICT_INDEX:
+        verdict = {
+            "LOW": "safe",
+            "MEDIUM": "caution",
+            "HIGH": "dangerous",
+            "CRITICAL": "dangerous",
+        }.get(severity, "dangerous")
+
+    issue_items = payload.get("findings") or payload.get("issues") or []
+    findings = [
+        _finding_from_external_issue(i, severity)
+        for i in issue_items
+        if isinstance(i, dict)
+    ]
+    trust_level = _resolve_trust_level(source)
+    skill_name = str(payload.get("skill_name") or (payload.get("skill") or {}).get("name") or skill_path.name)
+    summary = str(payload.get("summary") or f"External scanner verdict={verdict} severity={severity or 'unknown'}")
+    return ScanResult(
+        skill_name=skill_name,
+        source=source,
+        trust_level=trust_level,
+        verdict=verdict,
+        findings=findings,
+        scanned_at=datetime.now(timezone.utc).isoformat(),
+        summary=summary,
+    )
 
 
 # ---------------------------------------------------------------------------

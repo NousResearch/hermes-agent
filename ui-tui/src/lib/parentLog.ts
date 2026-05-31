@@ -6,13 +6,17 @@ import { join } from 'node:path'
 // the Node parent so lifecycle breadcrumbs interleave, by timestamp, with the
 // child's `=== SIGTERM received ===` / `=== gateway exit ===` entries.
 //
-// A backend SIGTERM is ALWAYS a parent action — `gw.kill()` (graceful-exit on a
-// signal to Node, or an explicit /quit) or `start()` replacing a live child —
-// but #31051 left those breadcrumbs in an in-memory CircularBuffer that dies
-// with the process, so SIGTERM crash reports arrived with no parent context and
-// no way to tell a signal-driven kill from a memory-critical `process.exit(137)`
-// (which closes the child's stdin → clean EOF, not SIGTERM). Persisting the
-// death-explaining events here is what makes those reports diagnosable.
+// A backend SIGTERM is *usually* a parent action — `gw.kill()` (graceful-exit on
+// a signal to Node, or an explicit /quit) or `start()` replacing a live child —
+// but it can also come straight from an external supervisor (s6, a cgroup OOM
+// reaper, a stray `kill`) signalling the child directly. Telling those apart is
+// exactly the point: #31051 left these breadcrumbs in an in-memory CircularBuffer
+// that dies with the process, so SIGTERM crash reports arrived with no parent
+// context. A `[tui-parent]` line immediately before the child's panic means a
+// parent kill; its ABSENCE means an external signal. Persisting the
+// death-explaining events here is what makes that distinction (and a
+// memory-critical `process.exit(137)`, which closes stdin → clean EOF, not
+// SIGTERM) diagnosable after the fact.
 const logDir = join(process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes'), 'logs')
 const CRASH_LOG = join(logDir, 'tui_gateway_crash.log')
 
@@ -27,8 +31,13 @@ export function recordParentLifecycle(line: string): void {
   }
 
   try {
+    // Collapse embedded newlines so a multi-line value (e.g. an error message)
+    // stays one breadcrumb and can't masquerade as a separate log entry or as
+    // the child's panic output sharing this file.
+    const oneLine = line.replace(/[\r\n]+/g, ' ↵ ')
+
     mkdirSync(logDir, { recursive: true })
-    appendFileSync(CRASH_LOG, `[tui-parent] ${new Date().toISOString()} ${line}\n`)
+    appendFileSync(CRASH_LOG, `[tui-parent] ${new Date().toISOString()} ${oneLine}\n`)
   } catch {
     if (!warned) {
       warned = true

@@ -40,6 +40,17 @@ describe('recordParentLifecycle', () => {
     expect(contents).toMatch(/\d{4}-\d{2}-\d{2}T/)
   })
 
+  it('collapses embedded newlines so a value stays one breadcrumb', async () => {
+    const { recordParentLifecycle } = await loadFresh(home)
+
+    recordParentLifecycle('uncaughtException: boom\n  at foo()\r\n  at bar()')
+
+    const lines = readFileSync(join(home, 'logs', 'tui_gateway_crash.log'), 'utf8').trimEnd().split('\n')
+
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('boom ↵   at foo() ↵   at bar()')
+  })
+
   it('is a no-op under VITEST so tests stay hermetic', async () => {
     vi.resetModules()
     vi.stubEnv('VITEST', 'true')

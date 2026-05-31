@@ -4929,6 +4929,28 @@ def test_make_agent_handles_null_agent_config(monkeypatch):
     assert mock_agent.call_args.kwargs["max_iterations"] == 80
 
 
+def test_make_agent_passes_fallback_chain_from_config(monkeypatch):
+    fallback_chain = [
+        {"provider": "opencode-zen", "model": "deepseek-v4-flash-free"},
+        {"provider": "taro", "model": "qwen3.6-27b-256k"},
+    ]
+    _setup_make_agent_mocks(
+        monkeypatch,
+        {
+            "fallback_providers": fallback_chain,
+            "fallback_model": {
+                "provider": "opencode-zen",
+                "model": "deepseek-v4-flash-free",
+            },
+        },
+    )
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["fallback_model"] == fallback_chain
+
+
 class _FakeAgentForBackground:
     base_url = None
     api_key = None
@@ -4981,6 +5003,20 @@ def test_background_agent_kwargs_handles_null_agent_config(monkeypatch):
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
     assert kwargs["max_iterations"] == 40
+
+
+def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    agent = _FakeAgentForBackground()
+    agent._fallback_chain = [
+        {"provider": "opencode-zen", "model": "deepseek-v4-flash-free"},
+        {"provider": "taro", "model": "qwen3.6-27b-256k"},
+    ]
+    agent._fallback_model = {"provider": "opencode-zen", "model": "legacy-only"}
+
+    kwargs = server._background_agent_kwargs(agent, "task_1")
+
+    assert kwargs["fallback_model"] == agent._fallback_chain
 
 
 def test_config_show_displays_nested_max_turns(monkeypatch):

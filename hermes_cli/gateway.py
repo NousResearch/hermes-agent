@@ -3997,6 +3997,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
+    # Force the banner out NOW (issue #34473). Under s6 supervision the
+    # gateway's stdout is a pipe to s6-log, so Python block-buffers it
+    # instead of line-buffering (no TTY). Without an explicit flush the
+    # banner sits in Python's stdout buffer and never reaches s6-log's
+    # `1` stdout-tee → it's absent from `docker logs` (and the rotated
+    # `current` file) until enough later output accidentally fills the
+    # buffer. Flushing here guarantees the "yes, your gateway started"
+    # banner is the first thing operators see in `docker logs`.
+    sys.stdout.flush()
 
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=always will retry on transient errors

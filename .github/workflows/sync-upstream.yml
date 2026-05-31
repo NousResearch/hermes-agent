@@ -11,8 +11,6 @@ name: Sync upstream
 #     ← … ← feat/whatsapp-forward-owner-messages-upstream
 #   → NousResearch/hermes-agent#16445, #16485, busy-path PR (open)
 #
-#   feature/whatsapp-inbound-text-batch → #17165 WhatsApp text batching (open)
-#
 #   fix/auxiliary-opencode-strip-trailing-v1 → #18413 OpenCode auxiliary double /v1 (open)
 #
 #   feature/end-turn-tool-contract-upstream → #20713 terminal plugin tools can
@@ -31,6 +29,10 @@ name: Sync upstream
 #   #25183 queued follow-up transcript history (was fix/queued-followup-history-
 #   persistence-upstream) merged upstream on NousResearch/hermes-agent:main as
 #   commits 9a815b6c8 and cc64a04f6 — dropped from FEATURE_BRANCHES.
+#
+#   #17165 WhatsApp text batching (was feature/whatsapp-inbound-text-batch)
+#   closed without merge — core text debounce landed upstream as b0ce47daa /
+#   cddb7283d. Dropped from FEATURE_BRANCHES 2026-05-31.
 #
 # Drop a branch from FEATURE_BRANCHES (and delete it from the fork) once
 # its upstream PR merges or the change is otherwise absorbed upstream.
@@ -76,12 +78,10 @@ env:
   #   fix/whatsapp-forward-owner-allowlist-upstream (PR #16485), which is
   #   stacked on feat/whatsapp-forward-owner-messages-upstream (PR #16445).
   #   Listing the tip cherry-picks all three in one range.
-  # - feature/whatsapp-inbound-text-batch is independent (PR #17165); listed
-  #   second so it cherry-picks after the busy-path stack.
   # - fix/diagnostic-status-leak-and-end-turn-nudge is independent (PR #24853).
   # - fix/queued-followup-media-delivery-upstream is independent (PR #25119);
   #   listed last.
-  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream feature/whatsapp-inbound-text-batch fix/auxiliary-opencode-strip-trailing-v1 feature/end-turn-tool-contract-upstream fix/diagnostic-status-leak-and-end-turn-nudge fix/queued-followup-media-delivery-upstream"
+  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream fix/auxiliary-opencode-strip-trailing-v1 feature/end-turn-tool-contract-upstream fix/diagnostic-status-leak-and-end-turn-nudge fix/queued-followup-media-delivery-upstream"
   PLUGIN_REPO: pebble-tech/hermes-plugin-gateway-policy
 
 jobs:

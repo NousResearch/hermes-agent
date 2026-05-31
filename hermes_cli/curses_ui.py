@@ -32,6 +32,78 @@ def flush_stdin() -> None:
         pass
 
 
+# Normalized menu actions returned by ``read_menu_key``.  Using sentinels keeps
+# every menu's key-handling branch identical and free of raw escape-byte logic.
+NAV_UP = "up"
+NAV_DOWN = "down"
+NAV_SELECT = "select"
+NAV_TOGGLE = "toggle"
+NAV_CANCEL = "cancel"
+NAV_NONE = "none"
+
+
+def read_menu_key(stdscr) -> str:
+    """Read one keypress and normalize it to a menu action.
+
+    Decodes raw arrow-key escape sequences in addition to the translated
+    ``curses.KEY_*`` values.  Even with ``keypad(True)`` (which
+    ``curses.wrapper`` sets), some terminals/terminfo entries deliver cursor
+    keys as raw CSI/SS3 byte sequences — ``getch()`` then returns ``27`` (ESC)
+    followed by e.g. ``[`` ``A``.  Treating that leading ``27`` as a cancel is
+    what made the setup wizard's provider/model pickers bail to the numbered
+    fallback the moment a user pressed up/down.
+
+    Returns one of the ``NAV_*`` constants.  A lone ESC (no continuation byte
+    within a short window) is the only thing that maps to ``NAV_CANCEL`` via
+    the escape path; ``q`` also cancels.  Unknown sequences map to
+    ``NAV_NONE`` so the caller simply ignores them rather than misfiring.
+    """
+    import curses
+
+    key = stdscr.getch()
+
+    if key in (curses.KEY_UP, ord("k")):
+        return NAV_UP
+    if key in (curses.KEY_DOWN, ord("j")):
+        return NAV_DOWN
+    if key in (curses.KEY_ENTER, 10, 13):
+        return NAV_SELECT
+    if key == ord(" "):
+        return NAV_TOGGLE
+    if key == ord("q"):
+        return NAV_CANCEL
+
+    if key == 27:  # ESC — could be a lone ESC (cancel) or an escape sequence.
+        # Wait briefly for a continuation byte.  On slow PTYs (SSH/tmux) the
+        # bytes of an arrow key can arrive across separate reads, so a tiny
+        # timeout avoids misreading a split sequence as a bare ESC.
+        try:
+            stdscr.timeout(60)
+            nxt = stdscr.getch()
+        finally:
+            stdscr.timeout(-1)  # restore blocking mode
+
+        if nxt == -1:
+            return NAV_CANCEL  # genuine lone ESC
+
+        if nxt in (ord("["), ord("O")):  # CSI / SS3 introducer
+            final = stdscr.getch()
+            if final in (ord("A"), ord("k")):
+                return NAV_UP
+            if final in (ord("B"), ord("j")):
+                return NAV_DOWN
+            # Consume the tail of any other CSI sequence (e.g. ``[3~`` Delete,
+            # ``[H`` Home) up to its terminator so stray bytes don't leak into
+            # the next input() and corrupt it.
+            while 0x20 <= final <= 0x3F:  # CSI parameter/intermediate bytes
+                final = stdscr.getch()
+            return NAV_NONE
+        # ESC followed by some other byte we don't handle — swallow it.
+        return NAV_NONE
+
+    return NAV_NONE
+
+
 def curses_checklist(
     title: str,
     items: List[str],
@@ -137,18 +209,18 @@ def curses_checklist(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                action = read_menu_key(stdscr)
 
-                if key in {curses.KEY_UP, ord("k")}:
+                if action == NAV_UP:
                     cursor = (cursor - 1) % len(items)
-                elif key in {curses.KEY_DOWN, ord("j")}:
+                elif action == NAV_DOWN:
                     cursor = (cursor + 1) % len(items)
-                elif key == ord(" "):
+                elif action == NAV_TOGGLE:
                     chosen.symmetric_difference_update({cursor})
-                elif key in {curses.KEY_ENTER, 10, 13}:
+                elif action == NAV_SELECT:
                     result_holder[0] = set(chosen)
                     return
-                elif key in {27, ord("q")}:
+                elif action == NAV_CANCEL:
                     result_holder[0] = cancel_returns
                     return
 
@@ -263,16 +335,16 @@ def curses_radiolist(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                action = read_menu_key(stdscr)
 
-                if key in {curses.KEY_UP, ord("k")}:
+                if action == NAV_UP:
                     cursor = (cursor - 1) % len(items)
-                elif key in {curses.KEY_DOWN, ord("j")}:
+                elif action == NAV_DOWN:
                     cursor = (cursor + 1) % len(items)
-                elif key in {ord(" "), curses.KEY_ENTER, 10, 13}:
+                elif action in (NAV_SELECT, NAV_TOGGLE):
                     result_holder[0] = cursor
                     return
-                elif key in {27, ord("q")}:
+                elif action == NAV_CANCEL:
                     result_holder[0] = cancel_returns
                     return
 
@@ -386,16 +458,16 @@ def curses_single_select(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                action = read_menu_key(stdscr)
 
-                if key in {curses.KEY_UP, ord("k")}:
+                if action == NAV_UP:
                     cursor = (cursor - 1) % len(all_items)
-                elif key in {curses.KEY_DOWN, ord("j")}:
+                elif action == NAV_DOWN:
                     cursor = (cursor + 1) % len(all_items)
-                elif key in {curses.KEY_ENTER, 10, 13}:
+                elif action == NAV_SELECT:
                     result_holder[0] = cursor
                     return
-                elif key in {27, ord("q")}:
+                elif action == NAV_CANCEL:
                     result_holder[0] = None
                     return
 

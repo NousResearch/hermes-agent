@@ -61,6 +61,8 @@ _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
+_GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+
 
 def _redact(text: str) -> str:
     """Redact phone numbers and emails from log output."""
@@ -130,7 +132,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
-        self._GUID_CACHE_MAX = 500
 
     # ------------------------------------------------------------------
     # API helpers
@@ -380,15 +381,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if identifier == target:
                     if guid:
                         self._guid_cache[target] = guid
-                        self._guid_cache.move_to_end(target)
-                        if len(self._guid_cache) > self._GUID_CACHE_MAX:
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
                             self._guid_cache.popitem(last=False)
                     return guid
                 for part in chat.get("participants", []) or []:
                     if (part.get("address") or "").strip() == target and guid:
                         self._guid_cache[target] = guid
-                        self._guid_cache.move_to_end(target)
-                        if len(self._guid_cache) > self._GUID_CACHE_MAX:
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
                             self._guid_cache.popitem(last=False)
                         return guid
         except Exception:

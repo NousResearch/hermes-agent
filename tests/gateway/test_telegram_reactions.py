@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource
 
 
@@ -79,6 +79,34 @@ def test_reactions_disabled_with_no(monkeypatch):
     monkeypatch.setenv("TELEGRAM_REACTIONS", "no")
     adapter = _make_adapter()
     assert adapter._reactions_enabled() is False
+
+
+def test_ack_reactions_disabled_by_default(monkeypatch):
+    """ACK reactions should be disabled by default."""
+    monkeypatch.delenv("TELEGRAM_ACK_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    assert adapter._ack_reactions_enabled() is False
+
+
+def test_ack_reactions_enabled_when_set_true(monkeypatch):
+    """Setting TELEGRAM_ACK_REACTIONS=true enables ACK reactions."""
+    monkeypatch.setenv("TELEGRAM_ACK_REACTIONS", "true")
+    adapter = _make_adapter()
+    assert adapter._ack_reactions_enabled() is True
+
+
+def test_ack_reaction_emoji_defaults_to_salute(monkeypatch):
+    """ACK emoji defaults to salute when not configured."""
+    monkeypatch.delenv("TELEGRAM_ACK_REACTION_EMOJI", raising=False)
+    adapter = _make_adapter()
+    assert adapter._ack_reaction_emoji() == "🫡"
+
+
+def test_ack_reaction_emoji_reads_from_env(monkeypatch):
+    """ACK emoji should use TELEGRAM_ACK_REACTION_EMOJI when provided."""
+    monkeypatch.setenv("TELEGRAM_ACK_REACTION_EMOJI", "✅")
+    adapter = _make_adapter()
+    assert adapter._ack_reaction_emoji() == "✅"
 
 
 # ── _set_reaction ────────────────────────────────────────────────────
@@ -273,6 +301,50 @@ async def test_clear_reactions_returns_false_without_bot(monkeypatch):
     result = await adapter._clear_reactions("123", "456")
     assert result is False
 
+@pytest.mark.asyncio
+async def test_handle_message_sets_ack_reaction_before_super(monkeypatch):
+    """ACK reaction should be applied immediately before normal message processing."""
+    monkeypatch.setenv("TELEGRAM_ACK_REACTIONS", "true")
+    monkeypatch.setenv("TELEGRAM_ACK_REACTION_EMOJI", "✅")
+    adapter = _make_adapter()
+    event = _make_event()
+
+    called = {"super": False}
+
+    async def _fake_super(self, _event):
+        called["super"] = True
+
+    monkeypatch.setattr(BasePlatformAdapter, "handle_message", _fake_super)
+
+    await adapter.handle_message(event)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="✅",
+    )
+    assert called["super"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_message_skips_ack_when_disabled(monkeypatch):
+    """When ACK reactions are disabled, adapter should delegate directly to super."""
+    monkeypatch.delenv("TELEGRAM_ACK_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    event = _make_event()
+
+    called = {"super": False}
+
+    async def _fake_super(self, _event):
+        called["super"] = True
+
+    monkeypatch.setattr(BasePlatformAdapter, "handle_message", _fake_super)
+
+    await adapter.handle_message(event)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+    assert called["super"] is True
+
 
 # ── config.py bridging ───────────────────────────────────────────────
 
@@ -284,34 +356,46 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
     config_file.write_text(yaml.dump({
         "telegram": {
             "reactions": True,
+            "ack_reactions": True,
+            "ack_reaction_emoji": "🫡",
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Use setenv (not delenv) so monkeypatch registers cleanup even when
     # the var doesn't exist yet — load_gateway_config will overwrite it.
     monkeypatch.setenv("TELEGRAM_REACTIONS", "")
+    monkeypatch.setenv("TELEGRAM_ACK_REACTIONS", "")
+    monkeypatch.setenv("TELEGRAM_ACK_REACTION_EMOJI", "")
 
     from gateway.config import load_gateway_config
     load_gateway_config()
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "true"
+    assert os.getenv("TELEGRAM_ACK_REACTIONS") == "true"
+    assert os.getenv("TELEGRAM_ACK_REACTION_EMOJI") == "🫡"
 
 
 def test_config_reactions_env_takes_precedence(monkeypatch, tmp_path):
-    """Env var should take precedence over config.yaml for reactions."""
+    """Env vars should take precedence over config.yaml for reactions."""
     import yaml
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.dump({
         "telegram": {
             "reactions": True,
+            "ack_reactions": True,
+            "ack_reaction_emoji": "🫡",
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    monkeypatch.setenv("TELEGRAM_ACK_REACTIONS", "false")
+    monkeypatch.setenv("TELEGRAM_ACK_REACTION_EMOJI", "✅")
 
     from gateway.config import load_gateway_config
     load_gateway_config()
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "false"
+    assert os.getenv("TELEGRAM_ACK_REACTIONS") == "false"
+    assert os.getenv("TELEGRAM_ACK_REACTION_EMOJI") == "✅"

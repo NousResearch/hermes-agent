@@ -5432,7 +5432,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         "The document is too large or its size could not be verified. "
                         f"Maximum: {limit_mb} MB."
                     )
-                    logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                     await self.handle_message(event)
                     return
 
@@ -5899,8 +5898,16 @@ class TelegramAdapter(BasePlatformAdapter):
     # ── Message reactions (processing lifecycle) ──────────────────────────
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
+        """Check if processing lifecycle reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+
+    def _ack_reactions_enabled(self) -> bool:
+        """Check if deterministic ACK reaction is enabled via config/env."""
+        return os.getenv("TELEGRAM_ACK_REACTIONS", "false").lower() not in {"false", "0", "no"}
+
+    def _ack_reaction_emoji(self) -> str:
+        """Return emoji used for immediate receipt ACK."""
+        return (os.getenv("TELEGRAM_ACK_REACTION_EMOJI", "🫡") or "🫡").strip() or "🫡"
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
@@ -5938,6 +5945,15 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] clear reactions failed: %s", self.name, e)
             return False
 
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Process message and optionally ACK receipt before LLM processing."""
+        if self._ack_reactions_enabled():
+            chat_id = getattr(event.source, "chat_id", None)
+            message_id = getattr(event, "message_id", None)
+            if chat_id and message_id:
+                await self._set_reaction(chat_id, message_id, self._ack_reaction_emoji())
+        await super().handle_message(event)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -5945,6 +5961,10 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
+            # When ACK reactions are enabled, keep ACK visible briefly before
+            # replacing it with the in-progress marker.
+            if self._ack_reactions_enabled():
+                await asyncio.sleep(1.0)
             await self._set_reaction(chat_id, message_id, "\U0001f440")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:

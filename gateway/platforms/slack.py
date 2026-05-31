@@ -2119,11 +2119,26 @@ class SlackAdapter(BasePlatformAdapter):
                     if ext not in SUPPORTED_DOCUMENT_TYPES:
                         continue  # Skip unsupported file types silently
 
-                    # Check file size (Slack limit: 20 MB for bots)
+                    # Slack limit: was 20 MB for bots originally; raised to 100 MB
+                    # (2026-05-24) and now redirects > 100MB to Drive Inbox.
                     file_size = f.get("size", 0)
-                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    MAX_DOC_BYTES = 100 * 1024 * 1024
                     if not file_size or file_size > MAX_DOC_BYTES:
-                        logger.warning("[Slack] Document too large or unknown size: %s", file_size)
+                        size_mb = (file_size or 0) / (1024 * 1024)
+                        fname = f.get("name", "arquivo")
+                        drive_url = os.environ.get(
+                            "CHICO_DRIVE_INBOX_URL",
+                            "https://drive.google.com/drive/my-drive",
+                        )
+                        notice = (
+                            f"\U0001F4CE Arquivo muito grande: {fname} ({size_mb:.1f} MB, limite 100 MB). "
+                            f"Sobe aqui no Drive: {drive_url} e me fala processa drive."
+                        )
+                        attachment_notices.append(notice)
+                        logger.info(
+                            "[Slack] Document too large, redirected to Drive: %s (%s bytes)",
+                            fname, file_size,
+                        )
                         continue
 
                     # Download and cache

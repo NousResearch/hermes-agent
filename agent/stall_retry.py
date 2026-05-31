@@ -18,6 +18,7 @@ Entirely opt-in: does nothing unless ``HERMES_STALL_RETRY_MODEL`` is set
 
 Env:
   HERMES_STALL_RETRY_MODEL  retry lane/model name (required to enable)
+  HERMES_STALL_RETRY_MAX_PER_TURN  max retries per user turn (default 5)
   HERMES_STALL_RETRY_MAX_CHARS  max content length to still count as a stall
                                 (default 400; real final answers are longer)
 """

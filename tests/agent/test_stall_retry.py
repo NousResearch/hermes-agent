@@ -16,6 +16,15 @@ def test_action_preamble_without_tool_call_is_a_stall() -> None:
     )
 
 
+def test_followup_action_preamble_after_successful_retry_is_a_stall() -> None:
+    assert looks_like_stall(
+        "Let me look at open tasks with high priority that I can actually pick up.",
+        "stop",
+        False,
+        400,
+    )
+
+
 def test_completion_text_is_not_a_stall() -> None:
     assert not looks_like_stall(
         "Done. The task is complete and no further action is needed.",
@@ -104,3 +113,12 @@ def test_conversation_loop_adopts_retry_before_tool_call_branch() -> None:
     assert retry_idx < tool_branch_idx
     assert "continue  # re-enter loop top; tool-calls path handles it" not in source
     assert "stall_retry_failed_no_tool_call" in source
+
+
+def test_conversation_loop_allows_bounded_multiple_stall_retries() -> None:
+    source = inspect.getsource(conversation_loop.run_conversation)
+
+    assert "_stall_retry_used" not in source
+    assert "_stall_retry_count += 1" in source
+    assert "HERMES_STALL_RETRY_MAX_PER_TURN" in source
+    assert "stall_retry_limit_exhausted" in source

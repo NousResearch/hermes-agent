@@ -793,10 +793,18 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    # Agentic stall-retry guard: ensures the HERMES_STALL_RETRY_MODEL retry
-    # fires at most once per conversation (avoids loops if the retry lane also
-    # stalls). See agent/stall_retry.py.
-    _stall_retry_used = False
+    # Agentic stall-retry guard: dflash can stall more than once in a long
+    # tool loop, so allow a bounded number of successful rescues per user turn.
+    # If the cap is exhausted, fail partial rather than accept another
+    # planning-only text response as final. See agent/stall_retry.py.
+    _stall_retry_count = 0
+    try:
+        _stall_retry_max_per_turn = int(
+            os.environ.get("HERMES_STALL_RETRY_MAX_PER_TURN", "5") or 5
+        )
+    except ValueError:
+        _stall_retry_max_per_turn = 5
+    _stall_retry_max_per_turn = max(0, _stall_retry_max_per_turn)
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -3666,7 +3674,6 @@ def run_conversation(
             retry_model = os.environ.get("HERMES_STALL_RETRY_MODEL", "").strip()
             if (
                 retry_model
-                and not _stall_retry_used
                 and getattr(agent, "tools", None)
                 and not getattr(assistant_message, "tool_calls", None)
             ):
@@ -3685,7 +3692,35 @@ def run_conversation(
                         False,
                         max_chars,
                     ):
-                        _stall_retry_used = True
+                        if _stall_retry_count >= _stall_retry_max_per_turn:
+                            _turn_exit_reason = "stall_retry_limit_exhausted"
+                            agent._mute_post_response = False
+                            agent._vprint(
+                                (
+                                    f"{agent.log_prefix}❌ Stall retry limit "
+                                    f"({_stall_retry_max_per_turn}/turn) exhausted; "
+                                    "saving as partial without storing the "
+                                    "planning-only assistant turn."
+                                ),
+                                force=True,
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "failed": True,
+                                "error": (
+                                    "Model repeatedly stopped after an agentic "
+                                    "preamble with no tool call; configured stall "
+                                    "retry limit was exhausted."
+                                ),
+                                "failure_subclass": "stall_retry_limit_exhausted",
+                            }
+                        _stall_retry_count += 1
                         retried = retry_on_stall(agent, api_messages, finish_reason)
                         if retried is not None and getattr(retried, "tool_calls", None):
                             assistant_message = retried

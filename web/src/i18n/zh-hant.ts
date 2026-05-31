@@ -73,6 +73,7 @@ export const zhHant: Translations = {
       cron: "排程任務",
       documentation: "文件",
       keys: "金鑰",
+      memory: "記憶",
       logs: "日誌",
       models: "模型",
       profiles: "多代理設定檔",
@@ -193,6 +194,23 @@ export const zhHant: Translations = {
     perDayAvg: "/日 平均",
     acrossModels: "共 {count} 個模型",
     inOut: "輸入 {input} / 輸出 {output}",
+  },
+
+  memory: {
+    title: "記憶",
+    userProfile: "使用者個人檔案",
+    notes: "記憶筆記",
+    refresh: "重新整理",
+    addEntry: "新增項目",
+    emptyStore: "尚無項目。",
+    entryCount: "項目",
+    chars: "字元",
+    edit: "編輯",
+    delete: "刪除",
+    saveFailed: "儲存失敗",
+    addFailed: "新增失敗",
+    deleteFailed: "刪除失敗",
+    target: "目標",
   },
 
   models: {

@@ -2,36 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Brain, ChevronDown, ChevronRight, Pencil, RefreshCw, Save, Search, Trash2, User, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { MemoryEntry, MemoryResponse, MemoryStoreResponse } from "@/lib/api";
-import { Toast } from "@/components/Toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { useToast } from "@/hooks/useToast";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
-
-const MEMORY_TEXT = {
-  title: "Memory",
-  userProfile: "User profile",
-  notes: "Memory notes",
-  builtInOnly: "built-in only",
-  provider: "Provider",
-  builtIn: "Built-in memory",
-  directory: "Directory",
-  refresh: "Refresh",
-  snapshotNote: "Saved immediately. Changes apply to future sessions; current sessions keep their existing snapshot.",
-  addEntry: "Add entry",
-  emptyStore: "No entries yet.",
-  entryCount: "entries",
-  chars: "chars",
-  edit: "Edit",
-  delete: "Delete",
-  saveFailed: "Failed to save",
-  addFailed: "Failed to add",
-  deleteFailed: "Failed to delete",
-  target: "Target",
-};
+import type { Translations } from "@/i18n/types";
 
 function previewForEntry(content: string) {
   const firstLine = content
@@ -75,7 +54,7 @@ function StoreSection({
   onDraftChange: (id: string, value: string) => void;
   onSaveEdit: (id: string) => void;
   onDelete: (id: string) => void;
-  m: typeof MEMORY_TEXT;
+  m: Translations["memory"];
   t: ReturnType<typeof useI18n>["t"];
 }) {
   const normalizedSearch = searchValue.trim().toLowerCase();
@@ -205,7 +184,7 @@ export default function MemoryPage() {
   const [search, setSearch] = useState<{ memory: string; user: string }>({ memory: "", user: "" });
   const { toast, showToast } = useToast();
   const { t } = useI18n();
-  const m = MEMORY_TEXT;
+  const m = t.memory;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -219,7 +198,8 @@ export default function MemoryPage() {
   }, [showToast]);
 
   useEffect(() => {
-    void load();
+    const timeout = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timeout);
   }, [load]);
 
   const totalEntries = useMemo(() => {
@@ -342,10 +322,6 @@ export default function MemoryPage() {
           </div>
         </CardContent>
       </Card>
-
-      <div className="border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
-        {data.note || m.snapshotNote}
-      </div>
 
       <StoreSection
         target="user"

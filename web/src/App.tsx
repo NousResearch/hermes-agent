@@ -179,6 +179,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
   {
     path: "/memory",
+    labelKey: "memory",
     label: "Memory",
     icon: Brain,
   },

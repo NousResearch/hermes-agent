@@ -1825,12 +1825,11 @@ export interface MemoryStoreResponse {
   entries: MemoryEntry[];
 }
 
-export interface MemoryResponse {
+export interface MemoryResponse extends MemoryStatus {
   builtin_active: boolean;
   provider: string;
   provider_label: string;
   directory: string;
-  note?: string;
   stores: {
     user: MemoryStoreResponse;
     memory: MemoryStoreResponse;

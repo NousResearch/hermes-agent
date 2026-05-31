@@ -73,6 +73,7 @@ export const ko: Translations = {
       cron: "Cron",
       documentation: "문서",
       keys: "키",
+      memory: "메모리",
       logs: "로그",
       models: "모델",
       profiles: "프로필: 멀티 에이전트",
@@ -193,6 +194,23 @@ export const ko: Translations = {
     perDayAvg: "/일 평균",
     acrossModels: "{count}개 모델 전반",
     inOut: "입력 {input} / 출력 {output}",
+  },
+
+  memory: {
+    title: "메모리",
+    userProfile: "사용자 프로필",
+    notes: "메모리 노트",
+    refresh: "새로고침",
+    addEntry: "항목 추가",
+    emptyStore: "아직 항목이 없습니다.",
+    entryCount: "개 항목",
+    chars: "자",
+    edit: "편집",
+    delete: "삭제",
+    saveFailed: "저장 실패",
+    addFailed: "추가 실패",
+    deleteFailed: "삭제 실패",
+    target: "대상",
   },
 
   models: {

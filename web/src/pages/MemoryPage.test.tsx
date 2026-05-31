@@ -17,6 +17,9 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const baseResponse: MemoryResponse = {
+  active: "",
+  providers: [],
+  builtin_files: { memory: 0, user: 0 },
   builtin_active: true,
   provider: "",
   provider_label: "built-in only",
@@ -59,6 +62,7 @@ describe("MemoryPage", () => {
     expect(screen.queryByText(/^provider$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^directory$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^built-in$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/current sessions keep their existing snapshot/i)).not.toBeInTheDocument();
   });
 
   it("filters each section independently via the header search inputs", async () => {

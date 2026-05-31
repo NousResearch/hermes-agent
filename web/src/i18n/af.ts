@@ -73,6 +73,7 @@ export const af: Translations = {
       cron: "Cron",
       documentation: "Dokumentasie",
       keys: "Sleutels",
+      memory: "Geheue",
       logs: "Logs",
       models: "Modelle",
       profiles: "profiele : multi-agente",
@@ -193,6 +194,23 @@ export const af: Translations = {
     perDayAvg: "/dag gem.",
     acrossModels: "oor {count} modelle",
     inOut: "{input} in / {output} uit",
+  },
+
+  memory: {
+    title: "Geheue",
+    userProfile: "Gebruikersprofiel",
+    notes: "Geheuenotas",
+    refresh: "Verfris",
+    addEntry: "Voeg inskrywing by",
+    emptyStore: "Nog geen inskrywings nie.",
+    entryCount: "inskrywings",
+    chars: "karakters",
+    edit: "Wysig",
+    delete: "Vee uit",
+    saveFailed: "Kon nie stoor nie",
+    addFailed: "Kon nie byvoeg nie",
+    deleteFailed: "Kon nie uitvee nie",
+    target: "Teiken",
   },
 
   models: {

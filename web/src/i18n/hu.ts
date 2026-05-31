@@ -73,6 +73,7 @@ export const hu: Translations = {
       cron: "Cron",
       documentation: "Dokumentáció",
       keys: "Kulcsok",
+      memory: "Memória",
       logs: "Naplók",
       models: "Modellek",
       profiles: "profilok: több ügynök",
@@ -193,6 +194,23 @@ export const hu: Translations = {
     perDayAvg: "/nap átlag",
     acrossModels: "{count} modellen át",
     inOut: "{input} be / {output} ki",
+  },
+
+  memory: {
+    title: "Memória",
+    userProfile: "Felhasználói profil",
+    notes: "Memóriajegyzetek",
+    refresh: "Frissítés",
+    addEntry: "Bejegyzés hozzáadása",
+    emptyStore: "Még nincsenek bejegyzések.",
+    entryCount: "bejegyzés",
+    chars: "karakter",
+    edit: "Szerkesztés",
+    delete: "Törlés",
+    saveFailed: "Sikertelen mentés",
+    addFailed: "Sikertelen hozzáadás",
+    deleteFailed: "Sikertelen törlés",
+    target: "Cél",
   },
 
   models: {

@@ -4691,6 +4691,30 @@ class TestWebServerMemoryEndpoints:
         data = resp.json()
         assert data["provider"] == "supermemory"
 
+    def test_get_memory_reflects_configured_char_limits(self, tmp_path, monkeypatch):
+        from hermes_cli.config import save_config
+
+        self._write_memory_files(tmp_path, monkeypatch, user_entries=["A"], memory_entries=["B"])
+        save_config({"memory": {"memory_char_limit": 31, "user_char_limit": 17}})
+
+        resp = self.client.get("/api/memory")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["stores"]["memory"]["char_limit"] == 31
+        assert data["stores"]["user"]["char_limit"] == 17
+
+    def test_memory_mutations_use_configured_char_limits(self, tmp_path, monkeypatch):
+        from hermes_cli.config import save_config
+
+        self._write_memory_files(tmp_path, monkeypatch, user_entries=[], memory_entries=[])
+        save_config({"memory": {"memory_char_limit": 12, "user_char_limit": 5}})
+
+        too_long_for_user = self.client.post("/api/memory/user/entries", json={"content": "123456"})
+        assert too_long_for_user.status_code == 400
+
+        fits_memory = self.client.post("/api/memory/memory/entries", json={"content": "123456"})
+        assert fits_memory.status_code == 200
+
     def test_get_memory_deduplicates_entries_from_disk(self, tmp_path, monkeypatch):
         self._write_memory_files(tmp_path, monkeypatch, user_entries=["dup", "dup", "unique"], memory_entries=[])
 

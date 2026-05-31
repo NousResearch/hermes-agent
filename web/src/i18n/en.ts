@@ -76,6 +76,7 @@ export const en: Translations = {
       cron: "Cron",
       documentation: "Documentation",
       keys: "Keys",
+      memory: "Memory",
       logs: "Logs",
       models: "Models",
       profiles: "Profiles",
@@ -208,6 +209,23 @@ export const en: Translations = {
     perDayAvg: "/day avg",
     acrossModels: "across {count} models",
     inOut: "{input} in / {output} out",
+  },
+
+  memory: {
+    title: "Memory",
+    userProfile: "User profile",
+    notes: "Memory notes",
+    refresh: "Refresh",
+    addEntry: "Add entry",
+    emptyStore: "No entries yet.",
+    entryCount: "entries",
+    chars: "chars",
+    edit: "Edit",
+    delete: "Delete",
+    saveFailed: "Failed to save",
+    addFailed: "Failed to add",
+    deleteFailed: "Failed to delete",
+    target: "Target",
   },
 
   models: {

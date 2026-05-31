@@ -7,8 +7,12 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   children?: ReactNode;
 };
 
-export function Button({ ghost: _ghost, destructive: _destructive, size: _size, children, ...props }: ButtonProps) {
-  return <button {...props}>{children}</button>;
+export function Button({ children, ...props }: ButtonProps) {
+  const { ghost, destructive, size, ...buttonProps } = props;
+  void ghost;
+  void destructive;
+  void size;
+  return <button {...buttonProps}>{children}</button>;
 }
 
 type BadgeProps = HTMLAttributes<HTMLSpanElement> & {
@@ -16,6 +20,8 @@ type BadgeProps = HTMLAttributes<HTMLSpanElement> & {
   children?: ReactNode;
 };
 
-export function Badge({ tone: _tone, children, ...props }: BadgeProps) {
-  return <span {...props}>{children}</span>;
+export function Badge({ children, ...props }: BadgeProps) {
+  const { tone, ...badgeProps } = props;
+  void tone;
+  return <span {...badgeProps}>{children}</span>;
 }

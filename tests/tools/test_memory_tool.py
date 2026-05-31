@@ -9,6 +9,7 @@ from tools.memory_tool import (
     memory_tool,
     _scan_memory_content,
     MEMORY_SCHEMA,
+    ENTRY_DELIMITER,
     load_memory_entries,
     save_memory_entries,
     memory_char_count,

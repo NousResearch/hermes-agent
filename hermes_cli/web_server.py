@@ -100,7 +100,6 @@ from tools.memory_tool import (
     get_memory_dir,
     load_memory_entries,
     memory_char_count,
-    memory_char_limit,
     memory_entry_id,
 )
 from utils import env_var_enabled
@@ -3707,9 +3706,44 @@ def _memory_file_path(target: str) -> Path:
     raise HTTPException(status_code=400, detail=f"Invalid memory target '{target}'")
 
 
-def _memory_provider_info() -> tuple[str, str]:
+def _memory_config() -> Dict[str, Any]:
     config = load_config()
-    memory_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
+    memory_cfg = config.get("memory", {})
+    return memory_cfg if isinstance(memory_cfg, dict) else {}
+
+
+def _configured_memory_limits() -> tuple[int, int]:
+    memory_cfg = _memory_config()
+    defaults = DEFAULT_CONFIG.get("memory", {})
+    default_memory_limit = int(defaults.get("memory_char_limit", 2200)) if isinstance(defaults, dict) else 2200
+    default_user_limit = int(defaults.get("user_char_limit", 1375)) if isinstance(defaults, dict) else 1375
+
+    def _limit(key: str, fallback: int) -> int:
+        try:
+            value = int(memory_cfg.get(key, fallback))
+        except (TypeError, ValueError):
+            return fallback
+        return value if value > 0 else fallback
+
+    return _limit("memory_char_limit", default_memory_limit), _limit("user_char_limit", default_user_limit)
+
+
+def _configured_memory_char_limit(target: str) -> int:
+    memory_limit, user_limit = _configured_memory_limits()
+    if target == "memory":
+        return memory_limit
+    if target == "user":
+        return user_limit
+    raise HTTPException(status_code=400, detail=f"Invalid memory target '{target}'")
+
+
+def _new_memory_store() -> MemoryStore:
+    memory_limit, user_limit = _configured_memory_limits()
+    return MemoryStore(memory_char_limit=memory_limit, user_char_limit=user_limit)
+
+
+def _memory_provider_info() -> tuple[str, str]:
+    memory_cfg = _memory_config()
     provider = str(memory_cfg.get("provider", "") or "")
     provider_label = provider or "built-in only"
     return provider, provider_label
@@ -3729,7 +3763,7 @@ def _build_memory_store_payload(target: str) -> dict:
         "path": str(path),
         "entry_count": len(entries),
         "char_count": memory_char_count(entries),
-        "char_limit": memory_char_limit(target),
+        "char_limit": _configured_memory_char_limit(target),
         "updated_at": updated_at,
         "entries": [
             {"id": memory_entry_id(target, content), "index": idx, "content": content}
@@ -3738,9 +3772,36 @@ def _build_memory_store_payload(target: str) -> dict:
     }
 
 
+def _memory_provider_options() -> list[dict]:
+    from plugins.memory import discover_memory_providers
+
+    providers = []
+    try:
+        for name, description, configured in discover_memory_providers():
+            providers.append({
+                "name": name,
+                "description": description,
+                "configured": bool(configured),
+            })
+    except Exception:
+        _log.exception("discover_memory_providers failed")
+    return providers
+
+
+def _builtin_memory_file_sizes() -> dict:
+    files = {}
+    for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
+        path = get_memory_dir() / fname
+        files[key] = path.stat().st_size if path.exists() else 0
+    return files
+
+
 def _build_memory_response() -> dict:
     provider, provider_label = _memory_provider_info()
     return {
+        "active": provider,
+        "providers": _memory_provider_options(),
+        "builtin_files": _builtin_memory_file_sizes(),
         "builtin_active": True,
         "provider": provider,
         "provider_label": provider_label,
@@ -4788,7 +4849,7 @@ async def add_memory_entry(target: str, body: MemoryEntryCreate):
     if target not in ("memory", "user"):
         raise HTTPException(status_code=400, detail=f"Invalid memory target '{target}'")
 
-    store = MemoryStore()
+    store = _new_memory_store()
     store.load_from_disk()
     result = store.add(target, body.content)
     if not result.get("success"):
@@ -4801,7 +4862,7 @@ async def update_memory_entry(target: str, entry_id: str, body: MemoryEntryUpdat
     if target not in ("memory", "user"):
         raise HTTPException(status_code=400, detail=f"Invalid memory target '{target}'")
 
-    store = MemoryStore()
+    store = _new_memory_store()
     store.load_from_disk()
     result = store.replace_entry_id(target, urllib.parse.unquote(entry_id), body.content)
     if not result.get("success"):
@@ -4816,7 +4877,7 @@ async def delete_memory_entry(target: str, entry_id: str):
     if target not in ("memory", "user"):
         raise HTTPException(status_code=400, detail=f"Invalid memory target '{target}'")
 
-    store = MemoryStore()
+    store = _new_memory_store()
     store.load_from_disk()
     result = store.remove_entry_id(target, urllib.parse.unquote(entry_id))
     if not result.get("success"):

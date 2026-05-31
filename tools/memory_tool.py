@@ -72,12 +72,22 @@ MEMORY_CHAR_LIMIT = 2200
 USER_CHAR_LIMIT = 1375
 
 
-def memory_char_limit(target: str) -> int:
+def default_memory_char_limit(target: str) -> int:
+    """Return the built-in default char limit for a memory target.
+
+    Runtime components that need the effective limit should apply config
+    overrides before constructing MemoryStore instead of using this helper.
+    """
     if target == "user":
         return USER_CHAR_LIMIT
     if target == "memory":
         return MEMORY_CHAR_LIMIT
     raise ValueError(f"Invalid memory target: {target}")
+
+
+def memory_char_limit(target: str) -> int:
+    """Backward-compatible alias for the built-in default char limit."""
+    return default_memory_char_limit(target)
 
 
 def parse_memory_entry_id(entry_id: str) -> Tuple[str, int]:

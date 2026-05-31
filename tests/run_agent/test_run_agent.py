@@ -2293,6 +2293,56 @@ class TestExecuteToolCalls:
         assert "Rate limit reached" not in output
 
 
+class TestRetryAfterCap:
+    """#26293: the conversation loop owns rate-limit backoff and honors the
+    Retry-After header up to a 600s ceiling (was 120s, which retried before
+    Tier-1 reset windows of ~171s and re-tripped the limit)."""
+
+    def _drive_once(self, agent, retry_after_value):
+        """Raise one 429 carrying ``Retry-After`` and capture the wait the loop
+        chose. Interrupt during the backoff sleep so the test doesn't actually
+        wait, and return the status string that reports the wait time."""
+
+        class _RateLimitError(Exception):
+            status_code = 429
+            response = SimpleNamespace(headers={"retry-after": str(retry_after_value)})
+
+            def __str__(self):
+                return "Error code: 429 - Rate limit exceeded."
+
+        def _fake_api_call(api_kwargs):
+            raise _RateLimitError()
+
+        agent._interruptible_api_call = _fake_api_call
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+
+        captured = []
+        original_buffer = agent._buffer_status
+
+        def _capture_status(msg, *args, **kwargs):
+            captured.append(msg)
+            # Break out of the incremental backoff sleep immediately rather
+            # than blocking for the full Retry-After window.
+            if "Waiting" in msg:
+                agent._interrupt_requested = True
+            return original_buffer(msg, *args, **kwargs)
+
+        agent._buffer_status = _capture_status
+        agent.run_conversation("hello")
+        return next((m for m in captured if "Waiting" in m), "")
+
+    def test_retry_after_under_cap_is_honored(self, agent):
+        # 300s > old 120s cap but < new 600s cap → used verbatim.
+        status = self._drive_once(agent, 300)
+        assert "Waiting 300.0s" in status
+
+    def test_retry_after_above_cap_is_clamped_to_600s(self, agent):
+        # 900s exceeds the ceiling → clamped to 600s, not the old 120s.
+        status = self._drive_once(agent, 900)
+        assert "Waiting 600.0s" in status
+
+
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""
 

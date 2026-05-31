@@ -261,7 +261,16 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
         name="Ops Topic",
         thread_id="777",
     )
-    adapter._get_dm_topic_info = MagicMock(return_value={"name": "Ops Topic"})
+    # Declare the DM-topic lookup on the adapter CLASS, not the instance.
+    # _is_telegram_dm_topic_target resolves _get_dm_topic_info via type(adapter)
+    # so a MagicMock auto-attribute (instance-level) is intentionally ignored;
+    # a real adapter exposes the method on its class. Mirrors the fake-adapter
+    # pattern in test_telegram_topic_mode.py.
+    class _DmTopicAdapter(type(adapter)):
+        def _get_dm_topic_info(self, chat_id, thread_id):
+            return {"name": "Ops Topic"}
+
+    adapter.__class__ = _DmTopicAdapter
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
 
     delivered = await runner._send_home_channel_startup_notifications()

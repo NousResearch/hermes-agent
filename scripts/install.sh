@@ -617,6 +617,73 @@ ensure_fts5() {
     fi
 }
 
+# Best-effort automatic git provisioning, mirroring install.ps1's Install-Git
+# (which downloads PortableGit on Windows). git is required to clone the repo,
+# and a fresh "normie" machine with no developer tools won't have it. Returns 0
+# if git is available afterwards, non-zero otherwise (caller prints manual
+# instructions and aborts).
+attempt_install_git() {
+    case "$OS" in
+        macos)
+            # Prefer Homebrew — fully headless when present.
+            if command -v brew >/dev/null 2>&1; then
+                log_info "Installing Git via Homebrew..."
+                brew install git >/dev/null 2>&1 || true
+                command -v git >/dev/null 2>&1 && return 0
+            fi
+            # Fall back to Apple Command Line Tools, which provide git AND the
+            # compiler some Python wheels need. `xcode-select --install` pops a
+            # system dialog (Apple gates CLT behind it — it cannot be fully
+            # silent without MDM), so we trigger it and poll for git to appear.
+            if command -v xcode-select >/dev/null 2>&1; then
+                log_info "Requesting Apple Command Line Tools (provides git + compiler)..."
+                log_info "If a macOS dialog appears, click \"Install\" and accept the license."
+                xcode-select --install >/dev/null 2>&1 || true
+                local waited=0
+                local timeout=900
+                while [ "$waited" -lt "$timeout" ]; do
+                    if command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; then
+                        return 0
+                    fi
+                    sleep 5
+                    waited=$((waited + 5))
+                    if [ $((waited % 60)) -eq 0 ]; then
+                        log_info "Still waiting for Command Line Tools install ($((waited / 60))m)..."
+                    fi
+                done
+            fi
+            return 1
+            ;;
+        linux)
+            local sudo_cmd=""
+            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
+                command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+            fi
+            case "$DISTRO" in
+                ubuntu|debian)
+                    log_info "Installing Git via apt..."
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null 2>&1 || true
+                    ;;
+                fedora)
+                    log_info "Installing Git via dnf..."
+                    $sudo_cmd dnf install -y git >/dev/null 2>&1 || true
+                    ;;
+                arch)
+                    log_info "Installing Git via pacman..."
+                    $sudo_cmd pacman -S --noconfirm git >/dev/null 2>&1 || true
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            command -v git >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+    esac
+    return 1
+}
+
 check_git() {
     log_info "Checking Git..."
 
@@ -638,7 +705,15 @@ check_git() {
         fi
     fi
 
-    log_info "Please install Git:"
+    # Try to install it automatically before giving up (parity with install.ps1).
+    log_info "Attempting to install Git automatically..."
+    if attempt_install_git; then
+        GIT_VERSION=$(git --version | awk '{print $3}')
+        log_success "Git $GIT_VERSION installed"
+        return 0
+    fi
+
+    log_warn "Could not install Git automatically. Please install it manually:"
 
     case "$OS" in
         linux)

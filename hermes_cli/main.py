@@ -6371,6 +6371,12 @@ def _print_version_info(*, check_updates: bool = True) -> None:
                 f"Update available: {behind} {commits_word} behind — "
                 f"run '{recommended_update_command()}'"
             )
+        elif behind is not None and behind < 0:
+            # UPDATE_AVAILABLE_NO_COUNT sentinel (e.g. PyPI fallback inside
+            # Docker has no commit count to report). See #35857.
+            print(
+                f"Update available — run '{recommended_update_command()}'"
+            )
         elif behind == 0:
             print("Up to date")
     except Exception:

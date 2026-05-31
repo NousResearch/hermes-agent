@@ -195,7 +195,12 @@ def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
 def check_via_pypi() -> Optional[int]:
     """Compare installed version against PyPI latest.
 
-    Returns 0 if up-to-date, 1 if behind, None on failure.
+    Returns 0 if up-to-date, UPDATE_AVAILABLE_NO_COUNT if behind,
+    or None on failure. We deliberately do NOT return a positive
+    integer here: the banner renderer treats positive values as a
+    literal commit count ("N commits behind"), but a PyPI version
+    delta is not a commit count. Using the sentinel routes us through
+    the "update available" branch instead (see #35857).
     """
     latest = _fetch_pypi_latest()
     if latest is None:
@@ -204,10 +209,10 @@ def check_via_pypi() -> Optional[int]:
         return 0
     try:
         if _version_tuple(latest) > _version_tuple(VERSION):
-            return 1
+            return UPDATE_AVAILABLE_NO_COUNT
         return 0
     except Exception:
-        return 1 if latest != VERSION else 0
+        return UPDATE_AVAILABLE_NO_COUNT if latest != VERSION else 0
 
 
 def check_for_updates() -> Optional[int]:

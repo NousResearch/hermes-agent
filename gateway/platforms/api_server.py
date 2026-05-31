@@ -965,7 +965,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — return available Hermes skills for UI discovery."""
         auth_err = self._check_auth(request)
-        if auth_err:
+        if auth_err is not None:
             return auth_err
 
         try:
@@ -2674,7 +2674,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
@@ -2689,7 +2689,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         try:
             body = await request.json()
@@ -2737,10 +2737,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         job_id, id_err = self._check_job_id(request)
-        if id_err:
+        if id_err is not None:
             return id_err
         try:
             job = _cron_get(job_id)
@@ -2756,10 +2756,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         job_id, id_err = self._check_job_id(request)
-        if id_err:
+        if id_err is not None:
             return id_err
         try:
             body = await request.json()
@@ -2789,10 +2789,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         job_id, id_err = self._check_job_id(request)
-        if id_err:
+        if id_err is not None:
             return id_err
         try:
             success = _cron_remove(job_id)
@@ -2808,10 +2808,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         job_id, id_err = self._check_job_id(request)
-        if id_err:
+        if id_err is not None:
             return id_err
         try:
             job = _cron_pause(job_id)
@@ -2827,10 +2827,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         job_id, id_err = self._check_job_id(request)
-        if id_err:
+        if id_err is not None:
             return id_err
         try:
             job = _cron_resume(job_id)
@@ -2846,10 +2846,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err is not None:
             return auth_err
         cron_err = self._check_jobs_available()
-        if cron_err:
+        if cron_err is not None:
             return cron_err
         job_id, id_err = self._check_job_id(request)
-        if id_err:
+        if id_err is not None:
             return id_err
         try:
             job = _cron_trigger(job_id)

@@ -663,3 +663,139 @@ class TestCronUnavailable:
             with patch(f"{_MOD}._CRON_AVAILABLE", False):
                 resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
                 assert resp.status == 501
+
+
+# ---------------------------------------------------------------------------
+# 19. test_jobs_round_trip — full lifecycle integration test
+# ---------------------------------------------------------------------------
+
+class TestJobsRoundTrip:
+    @pytest.mark.asyncio
+    async def test_jobs_round_trip(self, adapter):
+        """Full lifecycle: create → list → get → patch → pause → resume → run → delete → verify gone."""
+        app = _create_app(adapter)
+
+        created_job = {
+            "id": "112233445566",
+            "name": "round-trip-job",
+            "schedule": "0 * * * *",
+            "prompt": "run the round trip",
+            "deliver": "local",
+            "enabled": True,
+        }
+        updated_job = {**created_job, "name": "round-trip-job-renamed", "prompt": "updated prompt"}
+        paused_job = {**updated_job, "enabled": False, "paused_at": "2026-01-01T00:00:00Z"}
+        resumed_job = {**updated_job, "enabled": True}
+        triggered_job = {**updated_job, "last_run_at": "2026-01-01T01:00:00Z"}
+
+        mock_create = MagicMock(return_value=created_job)
+        mock_list_with = MagicMock(return_value=[created_job])
+        mock_list_empty = MagicMock(return_value=[])
+        mock_get = MagicMock(return_value=created_job)
+        mock_update = MagicMock(return_value=updated_job)
+        mock_pause = MagicMock(return_value=paused_job)
+        mock_resume = MagicMock(return_value=resumed_job)
+        mock_trigger = MagicMock(return_value=triggered_job)
+        mock_remove = MagicMock(return_value=True)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+
+                # Step 1: POST /api/jobs — create the job
+                with patch(f"{_MOD}._cron_create", mock_create):
+                    resp = await cli.post("/api/jobs", json={
+                        "name": "round-trip-job",
+                        "schedule": "0 * * * *",
+                        "prompt": "run the round trip",
+                    })
+                    assert resp.status == 200, f"create failed: {await resp.text()}"
+                    data = await resp.json()
+                    assert data["job"]["id"] == "112233445566"
+                    assert data["job"]["name"] == "round-trip-job"
+                    job_id = data["job"]["id"]
+
+                # Step 2: GET /api/jobs — list, verify job appears
+                with patch(f"{_MOD}._cron_list", mock_list_with):
+                    resp = await cli.get("/api/jobs")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert "jobs" in data
+                    ids = [j["id"] for j in data["jobs"]]
+                    assert job_id in ids, f"Expected {job_id} in job list, got {ids}"
+
+                # Step 3: GET /api/jobs/{id} — single job fetch
+                with patch(f"{_MOD}._cron_get", mock_get):
+                    resp = await cli.get(f"/api/jobs/{job_id}")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["job"]["id"] == job_id
+                    assert data["job"]["name"] == "round-trip-job"
+                    mock_get.assert_called_once_with(job_id)
+
+                # Step 3b: PATCH /api/jobs/{id} — update allowed fields
+                with patch(f"{_MOD}._cron_update", mock_update):
+                    resp = await cli.patch(
+                        f"/api/jobs/{job_id}",
+                        json={
+                            "name": "round-trip-job-renamed",
+                            "prompt": "updated prompt",
+                            # `model` is not in _UPDATE_ALLOWED_FIELDS — must be silently dropped
+                            "model": "should-be-ignored",
+                        },
+                    )
+                    assert resp.status == 200, f"patch failed: {await resp.text()}"
+                    data = await resp.json()
+                    assert data["job"]["id"] == job_id
+                    assert data["job"]["name"] == "round-trip-job-renamed"
+                    assert data["job"]["prompt"] == "updated prompt"
+                    # Verify the handler sanitized the disallowed field before invoking _cron_update
+                    mock_update.assert_called_once()
+                    call_job_id, call_sanitized = mock_update.call_args.args
+                    assert call_job_id == job_id
+                    assert "model" not in call_sanitized
+                    assert call_sanitized.get("name") == "round-trip-job-renamed"
+                    assert call_sanitized.get("prompt") == "updated prompt"
+
+                # Step 4: POST /api/jobs/{id}/pause — pause the job
+                with patch(f"{_MOD}._cron_pause", mock_pause):
+                    resp = await cli.post(f"/api/jobs/{job_id}/pause")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["job"]["enabled"] is False
+                    assert "paused_at" in data["job"]
+                    mock_pause.assert_called_once_with(job_id)
+
+                # Step 5: POST /api/jobs/{id}/resume — resume the job
+                with patch(f"{_MOD}._cron_resume", mock_resume):
+                    resp = await cli.post(f"/api/jobs/{job_id}/resume")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["job"]["enabled"] is True
+                    mock_resume.assert_called_once_with(job_id)
+
+                # Step 6: POST /api/jobs/{id}/run — trigger immediate execution
+                with patch(f"{_MOD}._cron_trigger", mock_trigger):
+                    resp = await cli.post(f"/api/jobs/{job_id}/run")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["job"]["id"] == job_id
+                    assert "last_run_at" in data["job"]
+                    mock_trigger.assert_called_once_with(job_id)
+
+                # Step 7: DELETE /api/jobs/{id} — delete the job
+                with patch(f"{_MOD}._cron_remove", mock_remove):
+                    resp = await cli.delete(f"/api/jobs/{job_id}")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["ok"] is True
+                    mock_remove.assert_called_once_with(job_id)
+
+                # Step 8: GET /api/jobs — verify job is gone
+                with patch(f"{_MOD}._cron_list", mock_list_empty):
+                    resp = await cli.get("/api/jobs")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    remaining_ids = [j["id"] for j in data["jobs"]]
+                    assert job_id not in remaining_ids, (
+                        f"Deleted job {job_id} still appears in list: {remaining_ids}"
+                    )

@@ -138,6 +138,7 @@ export default function ConfigPage() {
   const [allowlistEditDraft, setAllowlistEditDraft] = useState("");
   const [allowlistTestCommand, setAllowlistTestCommand] = useState("");
   const [allowlistRestartingGateway, setAllowlistRestartingGateway] = useState(false);
+  const [allowlistDangerExpanded, setAllowlistDangerExpanded] = useState(false);
   const [allowlistConfirm, setAllowlistConfirm] = useState<
     { type: "delete"; pattern: string } | { type: "clear" } | null
   >(null);
@@ -312,6 +313,9 @@ export default function ConfigPage() {
     if (!exactTestCandidate) return null;
     return allowlistPatterns.find((pattern) => pattern === exactTestCandidate) ?? null;
   }, [allowlistPatterns, exactTestCandidate]);
+  const dangerCategoryCollapseThreshold = 3;
+  const shouldCollapseDangerCategories =
+    dangerCategoryAllowlistEntries.length > dangerCategoryCollapseThreshold;
 
   /* ---- Handlers ---- */
   const handleSave = async () => {
@@ -753,6 +757,37 @@ export default function ConfigPage() {
     </div>
   );
 
+  const renderDangerCategoryChipList = (entries: AllowlistEntry[]) => (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap gap-2">
+        {entries.map((entry) => (
+          <span
+            key={`danger-chip:${entry.pattern}`}
+            className="inline-flex max-w-full items-center rounded-full border border-amber-400/35 bg-amber-400/10 px-2.5 py-1 font-mono text-[11px] leading-5 text-amber-100"
+            title={`Broad approval category: ${entry.pattern}. ${"This can auto-approve future commands that match the same dangerous-command class."}`}
+          >
+            <span className="truncate">{entry.pattern}</span>
+          </span>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span>
+          Showing compact category chips because there are {dangerCategoryAllowlistEntries.length} danger approvals.
+          Expand to edit or delete individual entries.
+        </span>
+        <Button
+          size="sm"
+          outlined
+          className="h-8 min-w-[132px] justify-center px-2.5 text-[11px]"
+          onClick={() => setAllowlistDangerExpanded(true)}
+          disabled={allowlistBusy}
+        >
+          Expand controls
+        </Button>
+      </div>
+    </div>
+  );
+
   const renderAlwaysAllowCard = () => (
     <Card>
       <CardHeader className="py-3 px-4">
@@ -893,12 +928,38 @@ export default function ConfigPage() {
                     Broader dangerous-command approval keys created from prompt approvals, not reconstructed full commands.
                   </p>
                 </div>
-                <Badge tone={dangerCategoryAllowlistEntries.length > 0 ? "warning" : "secondary"} className="text-xs">
-                  {dangerCategoryAllowlistEntries.length}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  {shouldCollapseDangerCategories ? (
+                    <Badge tone={allowlistDangerExpanded ? "warning" : "secondary"} className="text-[11px]">
+                      {allowlistDangerExpanded ? "Expanded" : "Compact"}
+                    </Badge>
+                  ) : null}
+                  <Badge tone={dangerCategoryAllowlistEntries.length > 0 ? "warning" : "secondary"} className="text-xs">
+                    {dangerCategoryAllowlistEntries.length}
+                  </Badge>
+                </div>
               </div>
               {dangerCategoryAllowlistEntries.length > 0 ? (
-                renderAllowlistEntryRows(dangerCategoryAllowlistEntries, { compactDangerCategory: true })
+                shouldCollapseDangerCategories && !allowlistDangerExpanded ? (
+                  renderDangerCategoryChipList(dangerCategoryAllowlistEntries)
+                ) : (
+                  <div className="grid gap-2">
+                    {shouldCollapseDangerCategories ? (
+                      <div className="flex justify-end">
+                        <Button
+                          size="sm"
+                          outlined
+                          className="h-8 min-w-[132px] justify-center px-2.5 text-[11px]"
+                          onClick={() => setAllowlistDangerExpanded(false)}
+                          disabled={allowlistBusy}
+                        >
+                          Collapse to chips
+                        </Button>
+                      </div>
+                    ) : null}
+                    {renderAllowlistEntryRows(dangerCategoryAllowlistEntries, { compactDangerCategory: true })}
+                  </div>
+                )
               ) : (
                 <div className="border border-dashed border-border px-3 py-3 text-[11px] text-muted-foreground">
                   No approval-generated danger categories saved.

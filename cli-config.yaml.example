@@ -920,6 +920,9 @@ delegation:
 #   HERMES_TUI_REMOTE_BRIDGE_TOKEN=...
 #   HERMES_TUI_REMOTE_BRIDGE_ORIGINS=http://localhost:5174,https://app.example
 #
+# One-shot loopback-only convenience:
+#   hermes --tui --remote-control   # alias: --rc
+#
 # tui_remote_bridge:
 #   enabled: false
 #   host: "127.0.0.1"

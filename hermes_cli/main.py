@@ -1543,6 +1543,7 @@ def _launch_tui(
     pass_session_id: bool = False,
     max_turns: Optional[int] = None,
     accept_hooks: bool = False,
+    remote_control: bool = False,
 ):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -1622,6 +1623,12 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
+    if remote_control:
+        # Friendly CLI switch for the backend TUI Remote Control bridge. The
+        # bridge itself keeps the secure defaults: loopback bind, default port,
+        # and a token requirement for any non-loopback host configured by env or
+        # config.
+        env["HERMES_TUI_REMOTE_BRIDGE"] = "1"
     # Guarantee an 8GB V8 heap for the TUI. Default node cap is ~1.5–4GB
     # depending on version and can fatal-OOM on long sessions with large
     # transcripts / reasoning blobs. Token-level merge: respect any
@@ -1852,6 +1859,7 @@ def cmd_chat(args):
             pass_session_id=getattr(args, "pass_session_id", False),
             max_turns=getattr(args, "max_turns", None),
             accept_hooks=getattr(args, "accept_hooks", False),
+            remote_control=getattr(args, "remote_control", False),
         )
 
     # Import and run the CLI

@@ -782,7 +782,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    allow_bots = (self.config.extra.get("allow_bots") or os.getenv("DISCORD_ALLOW_BOTS", "none")).lower().strip()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
@@ -3769,7 +3769,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return ""
 
         # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        allow_bots_raw = (self.config.extra.get("allow_bots") or os.getenv("DISCORD_ALLOW_BOTS", "none")).lower().strip()
         include_other_bots = allow_bots_raw != "none"
 
         # Use the in-memory cache to narrow the fetch window on hot paths.

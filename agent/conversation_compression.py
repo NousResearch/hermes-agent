@@ -34,11 +34,31 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
+
+
+def _compression_lock_holder(agent: Any) -> str:
+    """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.
+
+    The pid+tid prefix lets ops tell crashed/abandoned holders apart from
+    live ones (expiry-based recovery uses the timestamp, but ``holder``
+    is what shows up in diagnostics + log lines). The agent instance id
+    and a per-acquire uuid disambiguate two co-resident agents on the
+    same thread (background_review forks run on a worker thread, but
+    on machines where compression itself dispatches to a thread pool
+    we want each acquire to be unique).
+    """
+    import threading
+    return (
+        f"pid={os.getpid()}"
+        f":tid={threading.get_ident()}"
+        f":agent={id(agent):x}"
+        f":nonce={uuid.uuid4().hex[:8]}"
+    )
 
 
 def check_compression_model_feasibility(agent: Any) -> None:
@@ -305,6 +325,103 @@ def compress_context(
         "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
     )
 
+    # ── Compression lock ────────────────────────────────────────────────
+    # Atomic, state.db-backed lock per session_id.  Without this, two
+    # AIAgent instances that share the same session_id (most commonly the
+    # parent-turn agent and its background-review fork — see
+    # ``agent/background_review.py``: ``review_agent.session_id =
+    # agent.session_id``) can each call compress() on overlapping
+    # snapshots of the same conversation.  Both succeed, both rotate
+    # ``agent.session_id`` to a fresh id, both create child sessions in
+    # state.db parented to the same old id.  The gateway's SessionEntry
+    # only catches one rotation, so the other child becomes an orphan
+    # that silently accumulates writes — Damien's repro shape.
+    #
+    # Acquire keyed on the OLD session_id (the rotation target's parent),
+    # because that's the id that competing paths see and read from
+    # SessionEntry at the start of their own compression attempt.
+    #
+    # If we can't acquire the lock, another path is mid-compression on
+    # this session.  Aborting is correct: the messages are unchanged, the
+    # other path's rotation will produce the canonical new session_id,
+    # and our caller's auto-compress loop sees ``len(returned) == len(input)``
+    # and stops retrying for this cycle. The session is NOT corrupted —
+    # we just sit out this round and let the winner finish.
+    _lock_db = getattr(agent, "_session_db", None)
+    _lock_sid = agent.session_id or ""
+    _lock_holder: Optional[str] = None
+    # Probe whether the lock subsystem is actually available on this
+    # SessionDB instance.  A process running mismatched module versions
+    # (e.g. ``conversation_compression.py`` reloaded after a pull but the
+    # long-lived ``hermes_state.SessionDB`` class still bound to the
+    # pre-#34351 version in memory) has the call site but not the method.
+    # In that case ``try_acquire_compression_lock`` raises AttributeError —
+    # NOT a ``sqlite3.Error`` — so the method's own fail-open guard never
+    # runs and the exception propagates to the outer agent loop, which
+    # prints the error and retries.  Because compression never succeeds,
+    # the token count never drops and the loop re-triggers compaction
+    # forever (the "API call #47/#48/#49 ... has no attribute
+    # try_acquire_compression_lock" spin).  Fail OPEN here: if the lock
+    # subsystem is missing or broken in any unexpected way, skip locking
+    # and proceed with compression.  Skipping the lock risks a rare
+    # concurrent-compression session fork; an infinite no-progress loop
+    # that never compresses at all is strictly worse.
+    if _lock_db is not None and _lock_sid:
+        _lock_holder = _compression_lock_holder(agent)
+        try:
+            _lock_acquired = _lock_db.try_acquire_compression_lock(
+                _lock_sid, _lock_holder
+            )
+        except Exception as _lock_err:
+            # Broken/absent lock subsystem (version skew, etc.).  Log once
+            # per session and proceed WITHOUT the lock rather than letting
+            # the exception spin the outer loop.
+            _lock_holder = None  # we don't own anything to release
+            if getattr(agent, "_last_compression_lock_error_sid", None) != _lock_sid:
+                agent._last_compression_lock_error_sid = _lock_sid
+                logger.warning(
+                    "compression lock subsystem unavailable for session=%s "
+                    "(%s: %s) — proceeding without lock. This usually means a "
+                    "stale in-memory module after an update; restart the "
+                    "process (or `hermes update`) to resync.",
+                    _lock_sid, type(_lock_err).__name__, _lock_err,
+                )
+            _lock_acquired = True  # treat as acquired-but-unlocked; proceed
+        if not _lock_acquired:
+            try:
+                existing = _lock_db.get_compression_lock_holder(_lock_sid)
+            except Exception:
+                existing = None
+            logger.warning(
+                "compression skipped: another path is compressing session=%s "
+                "(holder=%s) — returning messages unchanged to avoid session fork",
+                _lock_sid, existing,
+            )
+            _lock_holder = None  # don't release a lock we don't own
+            # Surface to the user once — quiet for downstream auto-compress loops
+            if getattr(agent, "_last_compression_lock_warning_sid", None) != _lock_sid:
+                agent._last_compression_lock_warning_sid = _lock_sid
+                try:
+                    agent._emit_warning(
+                        "⚠ Skipping concurrent compression — another path "
+                        "is already compressing this session. Will retry "
+                        "after it finishes."
+                    )
+                except Exception:
+                    pass
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+
+    def _release_lock() -> None:
+        """Release the lock keyed on the OLD session_id (before rotation)."""
+        if _lock_db is not None and _lock_sid and _lock_holder:
+            try:
+                _lock_db.release_compression_lock(_lock_sid, _lock_holder)
+            except Exception as _rel_err:
+                logger.debug("compression lock release failed: %s", _rel_err)
+
     # Notify external memory provider before compression discards context
     if agent._memory_manager:
         try:
@@ -318,6 +435,11 @@ def compress_context(
         # Plugin context engine with strict signature that doesn't accept
         # focus_topic / force — fall back to calling without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+    except BaseException:
+        # ANY exception during compress() must release the lock so the
+        # session isn't permanently blocked from future compression.
+        _release_lock()
+        raise
 
     # If compression aborted (aux LLM failed to produce a usable summary)
     # the compressor returns the input messages unchanged.  Surface the
@@ -336,6 +458,7 @@ def compress_context(
         _existing_sp = getattr(agent, "_cached_system_prompt", None)
         if not _existing_sp:
             _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()  # compression aborted — no rotation will happen
         return messages, _existing_sp
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
@@ -381,12 +504,12 @@ def compress_context(
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-            os.environ["HERMES_SESSION_ID"] = agent.session_id
             try:
-                from gateway.session_context import _SESSION_ID
-                _SESSION_ID.set(agent.session_id)
+                from gateway.session_context import set_current_session_id
+
+                set_current_session_id(agent.session_id)
             except Exception:
-                pass
+                os.environ["HERMES_SESSION_ID"] = agent.session_id
             agent._session_db_created = False
             agent._session_db.create_session(
                 session_id=agent.session_id,
@@ -421,6 +544,7 @@ def compress_context(
                 agent.session_id or "",
                 boundary_reason="compression",
                 old_session_id=_old_sid,
+                conversation_id=getattr(agent, "_gateway_session_key", None),
             )
     except Exception as _ce_err:
         logger.debug("context engine on_session_start (compression): %s", _ce_err)
@@ -451,19 +575,18 @@ def compress_context(
             force=True,
         )
 
-    # Update token estimate after compaction so pressure calculations
-    # use the post-compression count, not the stale pre-compression one.
-    # Use estimate_request_tokens_rough() so tool schemas are included —
-    # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
-    # omitting them delays the next compression cycle far past the
-    # configured threshold (issue #14695).
+    # Keep the post-compression rough estimate for diagnostics, but do not
+    # treat it as provider-reported prompt usage. Schema-heavy rough estimates
+    # can remain above threshold even after the next real API request fits.
     _compressed_est = estimate_request_tokens_rough(
         compressed,
         system_prompt=new_system_prompt or "",
         tools=agent.tools or None,
     )
-    agent.context_compressor.last_prompt_tokens = _compressed_est
+    agent.context_compressor.last_compression_rough_tokens = _compressed_est
+    agent.context_compressor.last_prompt_tokens = -1
     agent.context_compressor.last_completion_tokens = 0
+    agent.context_compressor.awaiting_real_usage_after_compression = True
 
     # Clear the file-read dedup cache.  After compression the original
     # read content is summarised away — if the model re-reads the same
@@ -475,10 +598,16 @@ def compress_context(
         pass
 
     logger.info(
-        "context compression done: session=%s messages=%d->%d tokens=~%s",
+        "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
         agent.session_id or "none", _pre_msg_count, len(compressed),
         f"{_compressed_est:,}",
     )
+    # Release the lock on the OLD session_id only AFTER rotation completed
+    # and all post-rotation bookkeeping (memory manager, context engine,
+    # file dedup) ran. A concurrent path that wakes up the moment we
+    # release will see the NEW session_id in state.db / SessionEntry and
+    # acquire on that — no race against our just-finished work.
+    _release_lock()
     return compressed, new_system_prompt
 
 
@@ -515,6 +644,12 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     # after a confirmed provider rejection, so the alternative is failure.
     target_bytes = 4 * 1024 * 1024
     changed_count = 0
+    # Track parts that are over the target but could NOT be shrunk under it.
+    # If any survive, retrying is pointless — the same oversized payload will
+    # be re-sent and rejected again, wasting the single retry budget.  We only
+    # report success (caller retries) when every over-threshold image was
+    # actually brought under the target.
+    unshrinkable_oversized = 0
 
     def _shrink_data_url(url: str) -> Optional[str]:
         """Return a smaller data URL, or None if shrink can't help."""
@@ -581,17 +716,34 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                 if resized:
                     image_value["url"] = resized
                     changed_count += 1
+                elif isinstance(url, str) and url.startswith("data:") \
+                        and len(url) > target_bytes:
+                    unshrinkable_oversized += 1
             elif isinstance(image_value, str):
                 resized = _shrink_data_url(image_value)
                 if resized:
                     part["image_url"] = resized
                     changed_count += 1
+                elif image_value.startswith("data:") \
+                        and len(image_value) > target_bytes:
+                    unshrinkable_oversized += 1
 
     if changed_count:
         logger.info(
             "image-shrink recovery: re-encoded %d image part(s) to fit under %.0f MB",
             changed_count, target_bytes / (1024 * 1024),
         )
+    if unshrinkable_oversized:
+        # At least one oversized image could not be shrunk under the target.
+        # Retrying would re-send it and fail identically, so signal "no
+        # progress" even if other parts shrank — the caller will surface the
+        # original error rather than burning its single retry on a no-op.
+        logger.warning(
+            "image-shrink recovery: %d oversized image part(s) could not be "
+            "shrunk under %.0f MB — not retrying (would re-send rejected payload)",
+            unshrinkable_oversized, target_bytes / (1024 * 1024),
+        )
+        return False
     return changed_count > 0
 
 

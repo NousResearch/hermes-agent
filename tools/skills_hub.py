@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -119,8 +120,73 @@ def _validate_skill_name(name: str) -> str:
     return _normalize_bundle_path(name, field_name="skill name", allow_nested=False)
 
 
-def _validate_category_name(category: str) -> str:
-    return _normalize_bundle_path(category, field_name="category", allow_nested=False)
+def _validate_install_parent_path(category: str) -> str:
+    return _normalize_bundle_path(category, field_name="install parent path", allow_nested=True)
+
+
+def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
+    """Validate a skill install path before it touches the lock file or disk.
+
+    Lock-file ``install_path`` entries are the source-of-truth for where
+    ``uninstall_skill`` will call ``shutil.rmtree``. A poisoned or buggy
+    entry — empty string, ``"."``, an absolute path, ``../..`` traversal,
+    or anything whose final component doesn't match the skill name — would
+    let ``rmtree`` wipe either the entire ``skills/`` tree or content
+    outside it.
+
+    Enforce that ``install_path`` ends with ``<skill_name>``. Nested
+    official optional skills may legitimately install below paths such as
+    ``mlops/training/<skill_name>``; traversal, absolute paths, empty paths,
+    and mismatched final components are still rejected.
+    """
+    safe_skill_name = _validate_skill_name(skill_name)
+    normalized = _normalize_bundle_path(
+        install_path,
+        field_name="install path",
+        allow_nested=True,
+    )
+    parts = normalized.split("/")
+    if not parts or parts[-1] != safe_skill_name:
+        raise ValueError(f"Unsafe install path: {install_path}")
+    return normalized
+
+
+def _is_path_redirect(path: Path) -> bool:
+    """True when ``path`` is a symlink or (on Windows) a directory junction.
+
+    Either form lets an attacker who can write into the ``skills/`` tree
+    redirect a subsequent ``rmtree`` to content outside it. ``is_junction``
+    only exists on Python 3.12+ Windows; gate with ``hasattr``.
+    """
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
+    """Resolve a lock-file install path without allowing escapes from ``SKILLS_DIR``.
+
+    Two layers of defence on top of the existing ``is_relative_to`` check
+    that's been on main:
+
+    1. Walk the path component-by-component and refuse if any intermediate
+       component is a symlink/junction (a path resolution that follows a
+       symlink to outside skills/ would otherwise be hidden by Path.resolve).
+    2. After resolve(), reject not just escape-out but also ``resolved == SKILLS_DIR``
+       — an empty/``"."``/``""`` install_path resolves to the skills root itself,
+       and ``rmtree(SKILLS_DIR)`` would wipe every installed skill.
+    """
+    normalized = _normalize_lock_install_path(install_path, skill_name)
+    skills_root = SKILLS_DIR.resolve()
+
+    target = SKILLS_DIR
+    for part in normalized.split("/"):
+        target = target / part
+        if _is_path_redirect(target):
+            raise ValueError(f"Unsafe install path: {install_path}")
+
+    target = target.resolve()
+    if target == skills_root or not target.is_relative_to(skills_root):
+        raise ValueError(f"Unsafe install path: {install_path}")
+    return target
 
 
 def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
@@ -327,12 +393,23 @@ class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
     DEFAULT_TAPS = [
-        {"repo": "openai/skills", "path": "skills/"},
+        # NOTE: openai/skills moved its content into skills/.curated/ (and
+        # skills/.system/ for system-level skills). _list_skills_in_repo
+        # skips directories starting with "." or "_", so we point both
+        # entries at the inner paths directly.
+        {"repo": "openai/skills", "path": "skills/.curated/"},
+        {"repo": "openai/skills", "path": "skills/.system/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
-        {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
+        # NVIDIA/skills: NVIDIA-verified skills for CUDA-X, AIQ, cuOpt,
+        # cuPyNumeric, DeepStream, NeMo, NemoClaw, etc. Each skill ships
+        # alongside a signed `skill.oms.sig`, an OMS-signed `skill-card.md`
+        # (governance card), and an `evals/` directory — synced daily from
+        # the NVIDIA product repos. Treated as `trusted` (see
+        # `tools/skills_guard.py::TRUSTED_REPOS`). Sample layout:
+        # https://github.com/NVIDIA/skills/tree/main/skills
+        {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
-        {"repo": "MiniMax-AI/cli", "path": "skill/"},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -343,6 +420,10 @@ class GitHubSource(SkillSource):
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        # Per-repo cache of the optional skills.sh.json grouping sidecar,
+        # mapping skill_name -> human-readable grouping title. ``None`` means
+        # "fetched, no sidecar"; a missing key means "not fetched yet".
+        self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
         # Set when GitHub returns 403 with rate limit exhausted
         self._rate_limited: bool = False
 
@@ -379,14 +460,16 @@ class GitHubSource(SkillSource):
                 logger.debug(f"Failed to search {tap['repo']}: {e}")
                 continue
 
-        # Deduplicate by name, preferring higher trust levels
+        # Deduplicate by identifier, preferring higher trust levels.
+        # identifier is unique per skill; name is not (two configured taps can
+        # publish skills with the same name but different identifiers).
         _trust_rank = {"builtin": 2, "trusted": 1, "community": 0}
         seen = {}
         for r in results:
-            if r.name not in seen:
-                seen[r.name] = r
-            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.name].trust_level, 0):
-                seen[r.name] = r
+            if r.identifier not in seen:
+                seen[r.identifier] = r
+            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.identifier].trust_level, 0):
+                seen[r.identifier] = r
         results = list(seen.values())
 
         return results[:limit]
@@ -479,6 +562,7 @@ class GitHubSource(SkillSource):
             return []
 
         skills: List[SkillMeta] = []
+        groupings = self._get_skillsh_groupings(repo)
         for entry in entries:
             if entry.get("type") != "dir":
                 continue
@@ -491,6 +575,10 @@ class GitHubSource(SkillSource):
             skill_identifier = f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}"
             meta = self.inspect(skill_identifier)
             if meta:
+                if groupings:
+                    category = groupings.get(meta.name) or groupings.get(dir_name)
+                    if category:
+                        meta.extra["category"] = category
                 skills.append(meta)
 
         # Cache the results
@@ -693,6 +781,61 @@ class GitHubSource(SkillSource):
             logger.debug("GitHub contents API fetch failed: %s", e)
         return None
 
+    def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:
+        """Fetch and parse the repo-root ``skills.sh.json`` grouping sidecar.
+
+        ``skills.sh.json`` is a published cross-ecosystem standard
+        (``$schema: https://skills.sh/schemas/skills.sh.schema.json``) that
+        lets a tap declare human-readable category groupings for its skills:
+
+            {"groupings": [{"title": "Inference AI", "skills": ["dynamo-..."]}]}
+
+        We flatten it into ``{skill_name: grouping_title}`` so the Skills Hub
+        UI can show a real category pill instead of a tag-derived guess. Any
+        tap that ships this file gets categorization for free — this is not
+        NVIDIA-specific.
+
+        Returns the map (possibly empty) on success, or ``None`` when the repo
+        has no sidecar / it couldn't be parsed. Cached per-repo on the instance.
+        """
+        if repo in self._skillsh_groupings:
+            return self._skillsh_groupings[repo]
+
+        content = self._fetch_file_content(repo, "skills.sh.json")
+        groupings = self._parse_skillsh_groupings(content) if content else None
+        self._skillsh_groupings[repo] = groupings
+        return groupings
+
+    @staticmethod
+    def _parse_skillsh_groupings(content: str) -> Optional[Dict[str, str]]:
+        """Flatten a ``skills.sh.json`` document into ``{skill_name: title}``.
+
+        Returns ``None`` when the content isn't a usable grouping document.
+        """
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        groupings = data.get("groupings")
+        if not isinstance(groupings, list):
+            return None
+
+        mapping: Dict[str, str] = {}
+        for group in groupings:
+            if not isinstance(group, dict):
+                continue
+            title = group.get("title")
+            members = group.get("skills")
+            if not isinstance(title, str) or not isinstance(members, list):
+                continue
+            for member in members:
+                if isinstance(member, str) and member:
+                    # First grouping wins if a skill is listed twice.
+                    mapping.setdefault(member, title)
+        return mapping
+
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
         cache_file = INDEX_CACHE_DIR / f"{key}.json"
@@ -726,6 +869,7 @@ class GitHubSource(SkillSource):
             "repo": meta.repo,
             "path": meta.path,
             "tags": meta.tags,
+            "extra": meta.extra,
         }
 
     @staticmethod
@@ -1146,6 +1290,16 @@ class SkillsShSource(SkillSource):
 
     BASE_URL = "https://skills.sh"
     SEARCH_URL = f"{BASE_URL}/api/search"
+    # Sitemap index — the real catalog source. The homepage scrape only
+    # exposes a curated featured strip (~200 entries); the sitemap covers
+    # the full ~20k+ catalog. https://www.skills.sh/sitemap.xml points at
+    # sitemap-skills-1.xml + sitemap-skills-2.xml, each up to 10k URLs.
+    SITEMAP_INDEX_URL = "https://www.skills.sh/sitemap.xml"
+    _SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>", re.IGNORECASE)
+    _SITEMAP_SKILL_RE = re.compile(
+        r"^https?://(?:www\.)?skills\.sh/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<skill>[^/]+)/?$",
+        re.IGNORECASE,
+    )
     _SKILL_LINK_RE = re.compile(r'href=["\']/(?P<id>(?!agents/|_next/|api/)[^"\'/]+/[^"\'/]+/[^"\'/]+)["\']')
     _INSTALL_CMD_RE = re.compile(
         r'npx\s+skills\s+add\s+(?P<repo>https?://github\.com/[^\s<]+|[^\s<]+)'
@@ -1175,7 +1329,10 @@ class SkillsShSource(SkillSource):
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         if not query.strip():
-            return self._featured_skills(limit)
+            # Empty query = bulk catalog dump (what build_skills_index.py
+            # calls with). The homepage scrape only sees ~200 featured
+            # entries; the sitemap walks the full ~20k+ catalog.
+            return self._sitemap_catalog(limit)
 
         cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
         cached = _read_index_cache(cache_key)
@@ -1235,6 +1392,97 @@ class SkillsShSource(SkillSource):
         if meta:
             return self._finalize_inspect_meta(meta, canonical, detail)
         return None
+
+    def _sitemap_catalog(self, limit: int) -> List[SkillMeta]:
+        """Walk the skills.sh sitemap to enumerate the full catalog.
+
+        Cached for the standard index TTL so we don't refetch ~2 MB of
+        sitemap XML per build. Falls back to ``_featured_skills`` if the
+        sitemap is unreachable or empty (network failure, hostname
+        change, etc.).
+        """
+        cache_key = "skills_sh_sitemap_v1"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            metas = [SkillMeta(**item) for item in cached]
+            return metas[:limit] if limit > 0 else metas
+
+        # skills.sh serves the per-skill sitemaps brotli-compressed, and
+        # httpx's optional brotlicffi backend has a streaming-decode bug
+        # that fails on these specific payloads. Excluding "br" from
+        # Accept-Encoding makes the server fall back to gzip (or
+        # identity), which works on every httpx install.
+        sitemap_headers = {"Accept-Encoding": "gzip"}
+
+        # Step 1: fetch the sitemap index → list of skill-sitemap URLs.
+        skill_sitemap_urls: List[str] = []
+        try:
+            resp = httpx.get(
+                self.SITEMAP_INDEX_URL,
+                timeout=20,
+                follow_redirects=True,
+                headers=sitemap_headers,
+            )
+            if resp.status_code != 200:
+                return self._featured_skills(limit)
+            for match in self._SITEMAP_LOC_RE.finditer(resp.text):
+                loc = match.group(1).strip()
+                # Sitemap index entries that point at the per-skill maps.
+                if "sitemap-skills" in loc:
+                    skill_sitemap_urls.append(loc)
+        except httpx.HTTPError:
+            return self._featured_skills(limit)
+
+        if not skill_sitemap_urls:
+            return self._featured_skills(limit)
+
+        # Step 2: fetch each skill sitemap and collect canonical "owner/repo/skill" IDs.
+        seen: set[str] = set()
+        results: List[SkillMeta] = []
+        for sitemap_url in skill_sitemap_urls:
+            try:
+                resp = httpx.get(
+                    sitemap_url,
+                    timeout=30,
+                    follow_redirects=True,
+                    headers=sitemap_headers,
+                )
+                if resp.status_code != 200:
+                    continue
+            except httpx.HTTPError:
+                continue
+            for loc_match in self._SITEMAP_LOC_RE.finditer(resp.text):
+                url = loc_match.group(1).strip()
+                m = self._SITEMAP_SKILL_RE.match(url)
+                if not m:
+                    continue
+                owner = m.group("owner")
+                repo_name = m.group("repo")
+                skill_name = m.group("skill")
+                canonical = f"{owner}/{repo_name}/{skill_name}"
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                repo = f"{owner}/{repo_name}"
+                results.append(SkillMeta(
+                    name=skill_name,
+                    description=f"Indexed by skills.sh from {repo}",
+                    source="skills.sh",
+                    identifier=self._wrap_identifier(canonical),
+                    trust_level=self.github.trust_level_for(canonical),
+                    repo=repo,
+                    path=skill_name,
+                    extra={
+                        "detail_url": f"{self.BASE_URL}/{canonical}",
+                        "repo_url": f"https://github.com/{repo}",
+                    },
+                ))
+
+        if not results:
+            return self._featured_skills(limit)
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(item) for item in results])
+        return results[:limit] if limit > 0 else results
 
     def _featured_skills(self, limit: int) -> List[SkillMeta]:
         cache_key = "skills_sh_featured"
@@ -1788,8 +2036,18 @@ class ClawHubSource(SkillSource):
             results = self._search_catalog(query, limit=limit)
             if results:
                 return results
+        else:
+            # Empty query: route through the paginating catalog walker so the
+            # full ClawHub catalog (20k+ skills) lands in the index. The
+            # single-request listing path below caps at one page (200 items)
+            # regardless of `limit`, which silently truncates the public
+            # skills index. The catalog walker follows `nextCursor`.
+            catalog = self._load_catalog_index()
+            if catalog:
+                return self._dedupe_results(catalog)[:limit] if limit > 0 else self._dedupe_results(catalog)
 
-        # Empty query or catalog fallback failure: use the lightweight listing API.
+        # Non-empty query catalog miss, or catalog walker failure: fall back to
+        # the lightweight listing API for a best-effort response.
         cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
@@ -1918,7 +2176,12 @@ class ClawHubSource(SkillSource):
         cursor: Optional[str] = None
         results: List[SkillMeta] = []
         seen: set[str] = set()
-        max_pages = 50
+        # ClawHub has 50k+ skills as of May 2026 (live E2E walked 49,698 with
+        # an active cursor still pending); 750 pages * 200/page = 150k ceiling
+        # leaves room for catalog growth. Walk-to-exhaustion typically
+        # terminates well before this on `nextCursor` going None — the cap is
+        # a safety rail against an infinite-cursor loop.
+        max_pages = 750
 
         for _ in range(max_pages):
             params: Dict[str, Any] = {"limit": 200}
@@ -2637,6 +2900,8 @@ class OptionalSkillSource(SkillSource):
         if not self._optional_dir.is_dir():
             return None
         for skill_md in self._optional_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
             if skill_md.parent.name == name:
                 return skill_md.parent
         return None
@@ -2648,10 +2913,9 @@ class OptionalSkillSource(SkillSource):
 
         results: List[SkillMeta] = []
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
-            parent = skill_md.parent
-            rel_parts = parent.relative_to(self._optional_dir).parts
-            if any(part.startswith(".") for part in rel_parts):
+            if is_excluded_skill_path(skill_md):
                 continue
+            parent = skill_md.parent
 
             try:
                 content = skill_md.read_text(encoding="utf-8")
@@ -2784,14 +3048,20 @@ class HubLockFile:
         files: List[str],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # Validate both the skill name and the install path SHAPE before
+        # writing into lock.json. A poisoned lock entry is the precondition
+        # for the uninstall_skill rmtree-escape; reject malformed input at
+        # write time so the file never carries the bad state.
+        safe_name = _validate_skill_name(name)
+        safe_install_path = _normalize_lock_install_path(install_path, safe_name)
         data = self.load()
-        data["installed"][name] = {
+        data["installed"][safe_name] = {
             "source": source,
             "identifier": identifier,
             "trust_level": trust_level,
             "scan_verdict": scan_verdict,
             "content_hash": skill_hash,
-            "install_path": install_path,
+            "install_path": safe_install_path,
             "files": files,
             "metadata": metadata or {},
             "installed_at": datetime.now(timezone.utc).isoformat(),
@@ -2932,16 +3202,21 @@ def install_from_quarantine(
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     safe_skill_name = _validate_skill_name(skill_name)
-    safe_category = _validate_category_name(category) if category else ""
+    safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
     quarantine_root = QUARANTINE_DIR.resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
     if safe_category:
-        install_dir = SKILLS_DIR / safe_category / safe_skill_name
+        install_rel_path = f"{safe_category}/{safe_skill_name}"
     else:
-        install_dir = SKILLS_DIR / safe_skill_name
+        install_rel_path = safe_skill_name
+
+    # Resolve via the same lock-path validator the uninstaller uses. Catches
+    # symlink-in-skills-tree redirects at install time so the lock entry's
+    # path can never refer to a redirected target.
+    install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
 
     if install_dir.exists():
         shutil.rmtree(install_dir)
@@ -2961,6 +3236,21 @@ def install_from_quarantine(
                 )
         except OSError:
             pass
+
+    # Reject symlinks inside the quarantined skill before moving it.
+    # A malicious skill bundle could include a symlink pointing outside the
+    # skills tree; its target contents would then be copied into skills/ and
+    # leaked to the agent on the next skill_view call.
+    for entry in quarantine_path.rglob("*"):
+        if not _is_path_redirect(entry):
+            continue
+        try:
+            rel = entry.relative_to(quarantine_resolved)
+        except ValueError:
+            rel = entry
+        raise ValueError(
+            f"Installed skill contains symlinks, which is not allowed: {rel}"
+        )
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
@@ -2995,7 +3285,20 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    install_path = SKILLS_DIR / entry["install_path"]
+    # Validate the lock entry's install_path against the skill name. This is
+    # the destructive boundary — anything that falls through to the rmtree
+    # below MUST be inside SKILLS_DIR and MUST NOT be SKILLS_DIR itself
+    # (an empty/"."/"/" install_path would otherwise wipe the entire tree).
+    # _resolve_lock_install_path enforces a relative path ending in
+    # <skill_name>, rejects absolute/traversal paths, and walks the path
+    # component-by-component refusing symlink/junction redirects.
+    try:
+        install_path = _resolve_lock_install_path(
+            entry.get("install_path", ""), skill_name
+        )
+    except ValueError as exc:
+        return False, f"Refusing to uninstall '{skill_name}': {exc}"
+
     if install_path.exists():
         shutil.rmtree(install_path)
 
@@ -3009,6 +3312,10 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
     for rel_path in sorted(bundle.files):
+        # Include the path so swapping file contents between two paths
+        # changes the hash (avoids filename-swap evading update detection).
+        h.update(rel_path.encode("utf-8"))
+        h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):
             h.update(content)
@@ -3425,14 +3732,17 @@ def unified_search(query: str, sources: List[SkillSource],
         overall_timeout=30,
     )
 
-    # Deduplicate by name, preferring higher trust levels
+    # Deduplicate by identifier, preferring higher trust levels.
+    # identifier is always unique per skill (e.g. "browse-sh/airbnb.com/search-listings-ddgioa").
+    # Using name would incorrectly collapse browse-sh skills from different sites that share
+    # the same task name (e.g. "search-listings" from Airbnb and Booking.com).
     _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
     seen: Dict[str, SkillMeta] = {}
     for r in all_results:
-        if r.name not in seen:
-            seen[r.name] = r
-        elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen:
+            seen[r.identifier] = r
+        elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
 
     return deduped[:limit]

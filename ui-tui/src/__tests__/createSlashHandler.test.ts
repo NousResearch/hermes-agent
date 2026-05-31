@@ -18,6 +18,16 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('opens the live session switcher locally even when the current session is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/sessions')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('handles /redraw locally without slash worker fallback', () => {
     const ctx = buildCtx()
 
@@ -220,6 +230,21 @@ describe('createSlashHandler', () => {
 
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('keeps visible scrollback when branching a TUI session', async () => {
+    patchUiState({ sid: 'sid-parent' })
+    const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
+
+    expect(rpc).toHaveBeenCalledWith('session.branch', { name: 'branch title', session_id: 'sid-parent' })
+    await vi.waitFor(() => {
+      expect(getUiState().sid).toBe('sid-branch')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
+    })
+    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
   })
 
   it('reloads skills in the live gateway and refreshes the catalog', async () => {
@@ -764,6 +789,7 @@ const buildSession = () => ({
   die: vi.fn(),
   dieWithCode: vi.fn(),
   guardBusySessionSwitch: vi.fn(() => false),
+  newLiveSession: vi.fn(),
   newSession: vi.fn(),
   resetVisibleHistory: vi.fn(),
   resumeById: vi.fn(),
@@ -781,7 +807,8 @@ const buildTranscript = () => ({
 
 const buildVoice = () => ({
   setVoiceEnabled: vi.fn(),
-  setVoiceRecordKey: vi.fn()
+  setVoiceRecordKey: vi.fn(),
+  setVoiceTts: vi.fn()
 })
 
 interface Ctx {

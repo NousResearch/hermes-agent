@@ -8,7 +8,6 @@ import os
 import sys
 import subprocess
 import shutil
-import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -25,7 +24,6 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
-from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -49,7 +47,6 @@ _PROVIDER_ENV_HINTS = (
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
     "HF_TOKEN",
-    "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
@@ -207,19 +204,134 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _read_pyproject_version() -> str | None:
+    """Read the ``version = "..."`` from ``pyproject.toml`` at the project root.
+
+    Returns None when running from an installed wheel (no pyproject.toml ships
+    with the package) or when the file can't be parsed. Reads only the
+    ``[project]`` version, ignoring any version strings that appear in other
+    tables.
+    """
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    in_project = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_project = line == "[project]"
+            continue
+        if in_project and line.startswith("version") and "=" in line:
+            value = line.split("=", 1)[1]
+            value = value.split("#", 1)[0].strip().strip("\"'")
+            return value or None
+    return None
+
+
+def _check_version_consistency(issues: list[str]) -> None:
+    """Verify pyproject.toml version matches hermes_cli.__version__.
+
+    A git conflict resolution (reset/merge) can revert one file without the
+    other, leaving ``hermes --version`` reporting a stale version while
+    ``pyproject.toml`` is current. Detect that drift so users can re-sync.
+    Silent no-op for installed wheels where pyproject.toml isn't present.
+    """
+    try:
+        from hermes_cli import __version__ as init_version
+    except Exception:
+        return
+    pyproject_version = _read_pyproject_version()
+    if pyproject_version is None:
+        # Installed wheel or unreadable pyproject — nothing to cross-check.
+        return
+    if pyproject_version == init_version:
+        check_ok("Version files consistent", f"({init_version})")
+    else:
+        _fail_and_issue(
+            "Version mismatch between source files",
+            f"(pyproject.toml {pyproject_version} != hermes_cli/__init__.py {init_version})",
+            "Re-sync version files (e.g. run 'hermes update', or set "
+            "hermes_cli/__init__.py __version__ to match pyproject.toml)",
+            issues,
+        )
+
+
+def _check_s6_supervision(issues: list[str]) -> None:
+    """Inside a container under our s6 /init, surface what s6 sees.
+
+    Runs as a counterpart to :func:`_check_gateway_service_linger` for
+    the systemd-on-host case. No-op everywhere except in the s6
+    container so host runs aren't cluttered with irrelevant output.
+
+    Reports:
+      - Whether the main-hermes and dashboard static services are up
+      - How many per-profile gateway slots are registered (via
+        ``S6ServiceManager.list_profile_gateways()``) and how many are
+        currently supervised as ``up``
+    """
+    try:
+        from hermes_cli.service_manager import (
+            S6ServiceManager,
+            detect_service_manager,
+        )
+    except Exception:
+        return
+
+    if detect_service_manager() != "s6":
+        return
+
+    _section("s6 Supervision")
+
+    mgr = S6ServiceManager()
+
+    # Static services. They live under /run/service/ via s6-rc symlinks,
+    # so the same s6-svstat probe works.
+    for static in ("main-hermes", "dashboard"):
+        if mgr.is_running(static):
+            check_ok(f"{static}: up")
+        else:
+            check_info(f"{static}: down (expected if not enabled via env)")
+
+    profiles = mgr.list_profile_gateways()
+    if not profiles:
+        check_info("No per-profile gateways registered yet — create one with `hermes profile create <name>`")
+        return
+
+    up_count = sum(1 for p in profiles if mgr.is_running(f"gateway-{p}"))
+    check_ok(
+        f"Per-profile gateways: {up_count}/{len(profiles)} supervised up"
+        + (f" ({', '.join(sorted(profiles))})" if len(profiles) <= 8 else "")
+    )
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
-    """Warn when a systemd user gateway service will stop after logout."""
+    """Warn when a systemd user gateway service will stop after logout.
+
+    Skipped inside a container running under s6 — the linger concept
+    (user-systemd surviving SSH logout) doesn't apply there, and the
+    s6 supervision state is surfaced separately by
+    ``_check_s6_supervision``.
+    """
     try:
         from hermes_cli.gateway import (
             get_systemd_linger_status,
             get_systemd_unit_path,
             is_linux,
         )
+        from hermes_cli.service_manager import detect_service_manager
     except Exception as e:
         check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
         return
 
     if not is_linux():
+        return
+
+    # Inside a container under our s6 /init, _check_s6_supervision
+    # reports the live supervision state; the linger warning would be
+    # confusing here (no systemd, no logout, no "lingering" concept).
+    if detect_service_manager() == "s6":
         return
 
     unit_path = get_systemd_unit_path()
@@ -263,7 +375,6 @@ def _build_apikey_providers_list() -> list:
         ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
-        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
         # OpenCode Go has no shared /models endpoint; skip the health check.
@@ -279,7 +390,7 @@ def _build_apikey_providers_list() -> list:
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
-        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
+        "MiniMax (China)": "minimax-cn",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",
     }
@@ -452,6 +563,10 @@ def run_doctor(args):
         check_ok("Virtual environment active")
     else:
         check_warn("Not in virtual environment", "(recommended)")
+
+    # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
+    # (a git conflict resolution can silently revert one but not the other).
+    _check_version_consistency(issues)
     
     _section("Required Packages")
     required_packages = [
@@ -508,6 +623,13 @@ def run_doctor(args):
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
                 env_path.touch()
+                # .env holds API keys — restrict to owner-only access from
+                # creation. touch() obeys umask which is commonly 0o022,
+                # leaving the file world-readable; tighten explicitly.
+                try:
+                    os.chmod(str(env_path), 0o600)
+                except OSError:
+                    pass
                 check_ok(f"Created empty {_DHH}/.env")
                 check_info("Run 'hermes setup' to configure API keys")
                 fixed_count += 1
@@ -622,7 +744,6 @@ def run_doctor(args):
                 "openrouter",
                 "custom",
                 "auto",
-                "ai-gateway",
                 "kilocode",
                 "opencode-zen",
                 "huggingface",
@@ -744,7 +865,18 @@ def run_doctor(args):
                     "(should be under 'model:' section)"
                 )
                 if should_fix:
-                    model_section = raw_config.setdefault("model", {})
+                    # Coerce scalar/None ``model:`` into a dict before mutation —
+                    # ``setdefault("model", {})`` would return an existing scalar
+                    # and then ``model_section[k] = ...`` would raise TypeError.
+                    raw_model = raw_config.get("model")
+                    if isinstance(raw_model, dict):
+                        model_section = raw_model
+                    elif isinstance(raw_model, str) and raw_model.strip():
+                        model_section = {"default": raw_model.strip()}
+                        raw_config["model"] = model_section
+                    else:
+                        model_section = {}
+                        raw_config["model"] = model_section
                     for k in stale_root_keys:
                         if not model_section.get(k):
                             model_section[k] = raw_config.pop(k)
@@ -984,6 +1116,7 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
+    _check_s6_supervision(issues)
 
     if sys.platform != "win32":
         _section("Command Installation")
@@ -1076,6 +1209,26 @@ def run_doctor(args):
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
+    try:
+        from hermes_constants import is_container as _is_container
+        running_in_container = _is_container()
+    except Exception:
+        running_in_container = False
+
+    if running_in_container:
+        # Inside our container the Docker terminal backend is not
+        # configured by default (Docker-in-Docker isn't set up); the
+        # local backend is the intended one. Skip the noisy "docker
+        # not found" warning. If the user has explicitly chosen
+        # TERMINAL_ENV=docker inside the container they likely mounted
+        # /var/run/docker.sock, so fall through to the normal check.
+        if terminal_env != "docker":
+            check_info(
+                "Running inside a container — using local terminal backend "
+                "(docker-in-docker is not configured by default)"
+            )
+            # Skip to next section; Docker isn't relevant here.
+            terminal_env = "local"
     if terminal_env == "docker":
         if _safe_which("docker"):
             # Check if docker daemon is running
@@ -1098,6 +1251,8 @@ def run_doctor(args):
         check_ok("docker", "(optional)")
     elif _is_termux():
         check_info("Docker backend is not available inside Termux (expected on Android)")
+    elif running_in_container:
+        pass  # already explained above
     else:
         check_warn("docker not found", "(optional)")
     
@@ -1159,68 +1314,6 @@ def run_doctor(args):
                 "Install daytona SDK: pip install daytona",
                 issues,
             )
-
-    # Vercel Sandbox (if using vercel_sandbox backend)
-    if terminal_env == "vercel_sandbox":
-        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
-        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
-        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
-            check_ok("Vercel runtime", f"({runtime})")
-        else:
-            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-            _fail_and_issue(
-                "Vercel runtime unsupported",
-                f"({runtime}; use {supported})",
-                f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}",
-                issues,
-            )
-
-        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in {"", "0", "51200"}:
-            check_ok("Vercel disk setting", "(uses platform default)")
-        else:
-            _fail_and_issue(
-                "Vercel custom disk unsupported",
-                "(reset terminal.container_disk to 51200)",
-                "Vercel Sandbox does not support custom container_disk; use the shared default 51200",
-                issues,
-            )
-
-        if importlib.util.find_spec("vercel") is not None:
-            check_ok("vercel SDK", "(installed)")
-        else:
-            _fail_and_issue(
-                "vercel SDK not installed",
-                "(pip install 'hermes-agent[vercel]')",
-                "Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'",
-                issues,
-            )
-
-        auth_status = describe_vercel_auth()
-        if auth_status.ok:
-            check_ok("Vercel auth", f"({auth_status.label})")
-        elif auth_status.label.startswith("partial"):
-            _fail_and_issue(
-                "Vercel auth incomplete",
-                f"({auth_status.label})",
-                "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together",
-                issues,
-            )
-        else:
-            _fail_and_issue(
-                "Vercel auth not configured",
-                f"({auth_status.label})",
-                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID",
-                issues,
-            )
-        for line in auth_status.detail_lines:
-            check_info(f"Vercel auth {line}")
-
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
-        if persistent:
-            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
-        else:
-            check_info("Vercel persistence: ephemeral filesystem")
 
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):

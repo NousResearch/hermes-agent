@@ -341,6 +341,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--goal", action="store_true", dest="goal_mode",
+                          help="Run the worker in a goal loop: after each "
+                               "turn a judge checks the response against the "
+                               "card title/body and, if not done, the worker "
+                               "keeps going in the same session until the "
+                               "judge agrees it's complete (or the turn "
+                               "budget runs out, which blocks the card for "
+                               "review). Best for open-ended cards one shot "
+                               "rarely finishes.")
+    p_create.add_argument("--goal-max-turns", type=int, default=None,
+                          metavar="N", dest="goal_max_turns",
+                          help="Turn budget for --goal workers (default 20). "
+                               "Ignored without --goal.")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -548,7 +561,45 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
+    p_unblock.add_argument(
+        "--reason",
+        default=None,
+        help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
+    )
     p_unblock.add_argument("task_ids", nargs="+")
+
+    p_promote = sub.add_parser(
+        "promote",
+        help="Manually move one or more todo/blocked tasks to ready (recovery path)",
+    )
+    p_promote.add_argument("task_id")
+    p_promote.add_argument(
+        "reason",
+        nargs="*",
+        help="Audit-trail reason (recorded on the task_events row)",
+    )
+    p_promote.add_argument(
+        "--ids",
+        nargs="+",
+        default=None,
+        help="Additional task ids to promote with the same reason (bulk mode)",
+    )
+    p_promote.add_argument(
+        "--force",
+        action="store_true",
+        help="Promote even if parent dependencies are not yet done/archived",
+    )
+    p_promote.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the promotion without mutating state",
+    )
+    p_promote.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Emit machine-readable JSON result",
+    )
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
@@ -899,6 +950,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
+        "promote":  _cmd_promote,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
         "dispatch": _cmd_dispatch,
@@ -987,7 +1039,7 @@ def _board_task_counts(slug: str) -> dict[str, int]:
         path = kb.kanban_db_path(board=slug)
         if not path.exists():
             return {}
-        with kb.connect(board=slug) as conn:
+        with kb.connect_closing(board=slug) as conn:
             rows = conn.execute(
                 "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
             ).fetchall()
@@ -1230,7 +1282,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         ok = kb.heartbeat_worker(
             conn,
             args.task_id,
@@ -1245,7 +1297,7 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
 
 
 def _cmd_assignees(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         data = kb.known_assignees(conn)
     if getattr(args, "json", False):
         print(json.dumps(data, indent=2, ensure_ascii=False))
@@ -1286,7 +1338,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -1304,6 +1356,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            goal_mode=bool(getattr(args, "goal_mode", False)),
+            goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -1335,7 +1389,7 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     if not workers:
         print("kanban swarm: at least one --worker is required", file=sys.stderr)
         return 2
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         created = ks.create_swarm(
             conn,
             goal=args.goal,
@@ -1361,7 +1415,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         # Cheap "mini-dispatch": recompute ready so list output reflects
         # dependencies that may have cleared since the last dispatcher tick.
         kb.recompute_ready(conn)
@@ -1410,7 +1464,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
             print(f"no such task: {args.task_id}", file=sys.stderr)
@@ -1576,7 +1630,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         ok = kb.assign_task(conn, args.task_id, profile)
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)
@@ -1586,7 +1640,7 @@ def _cmd_assign(args: argparse.Namespace) -> int:
 
 
 def _cmd_reclaim(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         ok = kb.reclaim_task(
             conn, args.task_id,
             reason=getattr(args, "reason", None),
@@ -1603,7 +1657,7 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         ok = kb.reassign_task(
             conn, args.task_id, profile,
             reclaim_first=bool(getattr(args, "reclaim", False)),
@@ -1633,7 +1687,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
     diag_config = kd.config_from_runtime_config(load_config())
 
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         # Either one-task mode or fleet mode.
         if getattr(args, "task", None):
             task = kb.get_task(conn, args.task)
@@ -1756,14 +1810,14 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         kb.link_tasks(conn, args.parent_id, args.child_id)
     print(f"Linked {args.parent_id} -> {args.child_id}")
     return 0
 
 
 def _cmd_unlink(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         ok = kb.unlink_tasks(conn, args.parent_id, args.child_id)
     if not ok:
         print(f"No such link: {args.parent_id} -> {args.child_id}", file=sys.stderr)
@@ -1773,7 +1827,7 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 
 def _cmd_claim(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
         if task is None:
             # Report why
@@ -1804,7 +1858,7 @@ def _cmd_comment(args: argparse.Namespace) -> int:
             suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
             body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
     author = args.author or _profile_author()
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         kb.add_comment(conn, args.task_id, author, body)
     print(f"Comment added to {args.task_id}")
     return 0
@@ -1851,7 +1905,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
     failed: list[str] = []
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         for tid in ids:
             if not kb.complete_task(
                 conn, tid,
@@ -1878,7 +1932,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         if not kb.edit_completed_task_result(
             conn,
             args.task_id,
@@ -1900,7 +1954,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
@@ -1922,7 +1976,7 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
@@ -1944,14 +1998,71 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        reason = reason.strip() or None
+    author = _profile_author() if reason else None
     failed: list[str] = []
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         for tid in ids:
+            if reason:
+                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
-                print(f"Unblocked {tid}")
+                print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
+    return 0 if not failed else 1
+
+
+def _cmd_promote(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip() if args.reason else None
+    author = _profile_author()
+    as_json = getattr(args, "json", False)
+    extra_ids = list(getattr(args, "ids", None) or [])
+    # Dedupe while preserving order; positional task_id always first.
+    ids: list[str] = []
+    seen: set[str] = set()
+    for tid in [args.task_id, *extra_ids]:
+        if tid not in seen:
+            ids.append(tid)
+            seen.add(tid)
+
+    results: list[dict[str, object]] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            ok, err = kb.promote_task(
+                conn,
+                tid,
+                actor=author,
+                reason=reason,
+                force=bool(args.force),
+                dry_run=bool(args.dry_run),
+            )
+            results.append({
+                "task_id": tid,
+                "promoted": ok,
+                "dry_run": bool(args.dry_run),
+                "forced": bool(args.force),
+                "reason": reason,
+                "error": err,
+            })
+
+    failed = [r for r in results if not r["promoted"]]
+    if as_json:
+        # Single-id stays a flat object for back-compat; bulk emits a list.
+        payload: object = results[0] if len(results) == 1 else results
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if not failed else 1
+
+    tag = " (dry)" if args.dry_run else ""
+    label = "Would promote" if args.dry_run else "Promoted"
+    for r in results:
+        if r["promoted"]:
+            suffix = f": {reason}" if reason else ""
+            print(f"{label} {r['task_id']} -> ready{tag}{suffix}")
+        else:
+            print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
     return 0 if not failed else 1
 
 
@@ -1965,7 +2076,7 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         print("at least one task_id is required", file=sys.stderr)
         return 1
     failed: list[str] = []
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         if purge_ids:
             for tid in purge_ids:
                 if not kb.delete_archived_task(conn, tid):
@@ -1988,7 +2099,7 @@ def _cmd_tail(args: argparse.Namespace) -> int:
     print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
     try:
         while True:
-            with kb.connect() as conn:
+            with kb.connect_closing() as conn:
                 events = kb.list_events(conn, args.task_id)
             for e in events:
                 if e.id > last_id:
@@ -2002,12 +2113,52 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    # Honour kanban.default_assignee as the fallback for unassigned ready
+    # tasks (#27145), kanban.max_in_progress as the global concurrency cap
+    # (#33488), kanban.max_in_progress_per_profile as the per-profile
+    # cap (#21582), and kanban.max_spawn as the per-tick spawn limit
+    # (#28805). Same semantics as the gateway dispatch path so behavior
+    # matches whether the user runs the CLI directly or relies on the
+    # gateway-embedded dispatcher.
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
+
+        def _coerce_positive_int(value):
+            if value is None:
+                return None
+            try:
+                ival = int(value)
+            except (TypeError, ValueError):
+                return None
+            return ival if ival >= 1 else None
+
+        max_in_progress_per_profile = _coerce_positive_int(
+            _kanban_cfg.get("max_in_progress_per_profile")
+        )
+        max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+        # CLI --max overrides config kanban.max_spawn when both are present;
+        # CLI is the more explicit signal so it wins.
+        cli_max = getattr(args, "max", None)
+        max_spawn = cli_max if cli_max is not None else _coerce_positive_int(
+            _kanban_cfg.get("max_spawn")
+        )
+    except Exception:
+        default_assignee = None
+        max_in_progress_per_profile = None
+        max_in_progress = None
+        max_spawn = getattr(args, "max", None)
+    with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
             dry_run=args.dry_run,
-            max_spawn=args.max,
+            max_spawn=max_spawn,
+            max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            default_assignee=default_assignee,
+            max_in_progress_per_profile=max_in_progress_per_profile,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2023,6 +2174,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_per_profile_capped": [
+                {"task_id": tid, "assignee": who, "current": current}
+                for (tid, who, current) in res.skipped_per_profile_capped
+            ],
+            "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2043,8 +2199,18 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     for tid, who, ws in res.spawned:
         tag = " (dry)" if args.dry_run else ""
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+    if res.auto_assigned_default:
+        print(
+            f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
+            f"{', '.join(res.auto_assigned_default)}"
+        )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.skipped_per_profile_capped:
+        for tid, who, current in res.skipped_per_profile_capped:
+            print(
+                f"Deferred ({who} at per-profile cap, {current} running): {tid}"
+            )
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
@@ -2172,7 +2338,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         from the dispatcher's perspective, not stuck.
         """
         try:
-            with kb.connect() as conn:
+            with kb.connect_closing() as conn:
                 return kb.has_spawnable_ready(conn)
         except Exception:
             return False
@@ -2203,7 +2369,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     cursor = 0
     print("Watching kanban events. Ctrl-C to stop.", flush=True)
     # Seed cursor at the latest id so we don't replay history.
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         row = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
         ).fetchone()
@@ -2211,7 +2377,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
     try:
         while True:
-            with kb.connect() as conn:
+            with kb.connect_closing() as conn:
                 rows = conn.execute(
                     "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, "
                     "       t.assignee, t.tenant "
@@ -2244,7 +2410,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         stats = kb.board_stats(conn)
     if getattr(args, "json", False):
         print(json.dumps(stats, indent=2, ensure_ascii=False))
@@ -2264,7 +2430,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             print(f"no such task: {args.task_id}", file=sys.stderr)
             return 1
@@ -2281,7 +2447,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_list(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         subs = kb.list_notify_subs(conn, args.task_id)
     if getattr(args, "json", False):
         print(json.dumps(subs, indent=2, ensure_ascii=False))
@@ -2298,7 +2464,7 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         ok = kb.remove_notify_sub(
             conn, task_id=args.task_id,
             platform=args.platform, chat_id=args.chat_id,
@@ -2332,7 +2498,7 @@ def _cmd_runs(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         runs = kb.list_runs(conn, args.task_id, **rsk)
     if getattr(args, "json", False):
         print(json.dumps([
@@ -2371,7 +2537,7 @@ def _cmd_runs(args: argparse.Namespace) -> int:
 
 
 def _cmd_context(args: argparse.Namespace) -> int:
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         text = kb.build_worker_context(conn, args.task_id)
     print(text)
     return 0
@@ -2537,7 +2703,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     import shutil
     scratch_root = kb.workspaces_root()
     removed_ws = 0
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         rows = conn.execute(
             "SELECT id, workspace_kind, workspace_path FROM tasks WHERE status = 'archived'"
         ).fetchall()
@@ -2560,7 +2726,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
 
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         removed_events = kb.gc_events(
             conn, older_than_seconds=event_days * 24 * 3600,
         )

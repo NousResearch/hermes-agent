@@ -25,23 +25,17 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import re
-import threading
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.message_sanitization import (
-    _repair_tool_call_arguments,
-    _sanitize_surrogates,
-)
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
-from agent.error_classifier import classify_api_error, FailoverReason
+from agent.credential_pool import STATUS_EXHAUSTED
+from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -132,7 +126,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
                     except json.JSONDecodeError:
                         # This shouldn't happen since we validate and retry during conversation,
                         # but if it does, log warning and use empty dict
-                        logging.warning(f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}")
+                        logger.warning(f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}")
                         arguments = {}
                     
                     tool_call_json = {
@@ -559,6 +553,24 @@ def recover_with_credential_pool(
     if pool is None:
         return False, has_retried_429
 
+    # Defensive guard: if a fallback provider is active and its provider name
+    # doesn't match the pool's provider, the pool belongs to the PRIMARY
+    # provider.  Mutating it based on fallback errors would corrupt the
+    # primary's credential state (see #33088) and, via _swap_credential,
+    # overwrite the agent's base_url back to the primary's endpoint — every
+    # subsequent request then goes to the wrong host and 404s (see #33163).
+    # The pool should only act when the agent is still on the same provider
+    # that seeded the pool.
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+    if current_provider and pool_provider and current_provider != pool_provider:
+        _ra().logger.warning(
+            "Credential pool provider mismatch: pool=%s, agent=%s — "
+            "skipping pool mutation to avoid cross-provider contamination",
+            pool_provider, current_provider,
+        )
+        return False, has_retried_429
+
     effective_reason = classified_reason
     if effective_reason is None:
         if status_code == 402:
@@ -582,12 +594,37 @@ def recover_with_credential_pool(
         return False, has_retried_429
 
     if effective_reason == FailoverReason.rate_limit:
+        # If current credential is already marked exhausted, skip retry and
+        # rotate immediately. This prevents the "cancel-between-429s" trap
+        # where has_retried_429 (a local var) gets reset on each new prompt,
+        # causing the pool to retry the same exhausted credential forever.
+        current_entry = pool.current()
+        current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
+        if current_last_status == STATUS_EXHAUSTED:
+            _ra().logger.info(
+                "Credential already exhausted (last_status=%s) — rotating immediately instead of retrying",
+                current_last_status,
+            )
+            rotate_status = status_code if status_code is not None else 429
+            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            if next_entry is not None:
+                _ra().logger.info(
+                    "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
+                    rotate_status,
+                    getattr(next_entry, "id", "?"),
+                )
+                agent._swap_credential(next_entry)
+                return True, False
+            return False, True
+
         usage_limit_reached = False
         if error_context:
             context_reason = str(error_context.get("reason") or "").lower()
             context_message = str(error_context.get("message") or "").lower()
             usage_limit_reached = (
                 "usage_limit_reached" in context_reason
+                or "gousagelimit" in context_reason
+                or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
             )
         if not has_retried_429 and not usage_limit_reached:
@@ -617,9 +654,28 @@ def recover_with_credential_pool(
         # existing entitlement keyword set in ``_is_entitlement_failure``.
         # Any 403 against ``xai-oauth`` is treated as entitlement here so
         # the refresh loop can't spin in those cases either.
+        #
+        # Exception (#29344): xAI's ``[WKE=unauthenticated:...]`` suffix and
+        # the ``OAuth2 access token could not be validated`` phrasing are
+        # xAI's authoritative "this is a stale token, not entitlement"
+        # signal.  When either fires we must NOT apply the catch-all
+        # override — refresh is the recoverable path for these bodies, and
+        # blanket-classifying them as entitlement was the bug that left
+        # long-running TUI sessions stuck on stale tokens until the user
+        # exited and reopened.
         is_entitlement = agent._is_entitlement_failure(error_context, status_code)
         if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
-            is_entitlement = True
+            _disambiguator_haystack = " ".join(
+                str(error_context.get(k) or "").lower()
+                for k in ("message", "reason", "code", "error")
+                if isinstance(error_context, dict)
+            )
+            _is_xai_auth_failure = (
+                "[wke=unauthenticated:" in _disambiguator_haystack
+                or "oauth2 access token could not be validated" in _disambiguator_haystack
+            )
+            if not _is_xai_auth_failure:
+                is_entitlement = True
         if is_entitlement:
             _ra().logger.info(
                 "Credential %s — entitlement-shaped 403 from %s; "
@@ -728,7 +784,7 @@ def try_recover_primary_transport(
         time.sleep(wait_time)
         return True
     except Exception as e:
-        logging.warning("Primary transport recovery failed: %s", e)
+        logger.warning("Primary transport recovery failed: %s", e)
         return False
 
 # ── End provider fallback ──────────────────────────────────────────────
@@ -891,19 +947,20 @@ def restore_primary_runtime(agent) -> bool:
             base_url=rt["compressor_base_url"],
             api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"],
+            api_mode=rt.get("compressor_api_mode", ""),
         )
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
 
-        logging.info(
+        logger.info(
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
         return True
     except Exception as e:
-        logging.warning("Failed to restore primary runtime: %s", e)
+        logger.warning("Failed to restore primary runtime: %s", e)
         return False
 
 # Which error types indicate a transient transport failure worth
@@ -1064,10 +1121,7 @@ def dump_api_request_debug(
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dump_file = agent.logs_dir / f"request_dump_{agent.session_id}_{timestamp}.json"
-        dump_file.write_text(
-            json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        atomic_json_write(dump_file, dump_payload, default=str)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
@@ -1077,7 +1131,7 @@ def dump_api_request_debug(
         return dump_file
     except Exception as dump_error:
         if agent.verbose_logging:
-            logging.warning(f"Failed to dump API request debug payload: {dump_error}")
+            logger.warning(f"Failed to dump API request debug payload: {dump_error}")
         return None
 
 
@@ -1318,65 +1372,129 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_model = agent.model
     old_provider = agent.provider
 
-    # Clear the per-config context_length override so the new model's
-    # actual context window is resolved via get_model_context_length()
-    # instead of inheriting the stale value from the previous model.
-    agent._config_context_length = None
+    # ── Snapshot all fields the swap+rebuild can mutate ──
+    # If the rebuild raises (bad API key, network error, build_anthropic_client
+    # failure, etc.) we restore these atomically so the agent isn't left with a
+    # new model/provider name paired with the OLD client — that mismatch causes
+    # HTTP 400s like "claude-sonnet-4-6 is not supported on openai-codex" on the
+    # next turn.  Callers in cli.py / gateway/run.py / tui_gateway/server.py
+    # catch the re-raised exception and show the user a warning; without this
+    # rollback the warning is misleading because the swap partially succeeded.
+    # Use a sentinel so we can distinguish "attribute was unset" from
+    # "attribute was None" and skip the restore for genuinely-missing
+    # attributes (tests construct bare agents via __new__ without all fields).
+    _MISSING = object()
+    _snapshot = {
+        name: getattr(agent, name, _MISSING)
+        for name in (
+            "model",
+            "provider",
+            "base_url",
+            "api_mode",
+            "api_key",
+            "client",
+            "_anthropic_client",
+            "_anthropic_api_key",
+            "_anthropic_base_url",
+            "_is_anthropic_oauth",
+            "_config_context_length",
+        )
+    }
+    # _client_kwargs is a dict — snapshot a shallow copy so mutating the
+    # live dict doesn't poison the rollback target.
+    _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
 
-    # ── Swap core runtime fields ──
-    agent.model = new_model
-    agent.provider = new_provider
-    # Use new base_url when provided; only fall back to current when the
-    # new provider genuinely has no endpoint (e.g. native SDK providers).
-    # Without this guard the old provider's URL (e.g. Ollama's localhost
-    # address) would persist silently after switching to a cloud provider
-    # that returns an empty base_url string.
-    if base_url:
-        agent.base_url = base_url
-    agent.api_mode = api_mode
-    # Invalidate transport cache — new api_mode may need a different transport
-    if hasattr(agent, "_transport_cache"):
-        agent._transport_cache.clear()
-    if api_key:
-        agent.api_key = api_key
+    try:
+        # Clear the per-config context_length override so the new model's
+        # actual context window is resolved via get_model_context_length()
+        # instead of inheriting the stale value from the previous model.
+        agent._config_context_length = None
 
-    # ── Build new client ──
-    if api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import (
-            build_anthropic_client,
-            resolve_anthropic_token,
-            _is_oauth_token,
-        )
-        # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-        # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
-        # API key — falling back would send Anthropic credentials to third-party endpoints.
-        _is_native_anthropic = new_provider == "anthropic"
-        effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
-        agent.api_key = effective_key
-        agent._anthropic_api_key = effective_key
-        agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-        agent._anthropic_client = build_anthropic_client(
-            effective_key, agent._anthropic_base_url,
-            timeout=get_provider_request_timeout(agent.provider, agent.model),
-        )
-        agent._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
-        agent.client = None
-        agent._client_kwargs = {}
-    else:
-        effective_key = api_key or agent.api_key
-        effective_base = base_url or agent.base_url
-        agent._client_kwargs = {
-            "api_key": effective_key,
-            "base_url": effective_base,
-        }
-        _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
-        if _sm_timeout is not None:
-            agent._client_kwargs["timeout"] = _sm_timeout
-        agent.client = agent._create_openai_client(
-            dict(agent._client_kwargs),
-            reason="switch_model",
-            shared=True,
-        )
+        # ── Swap core runtime fields ──
+        agent.model = new_model
+        agent.provider = new_provider
+        # Use new base_url when provided; only fall back to current when the
+        # new provider genuinely has no endpoint (e.g. native SDK providers).
+        # Without this guard the old provider's URL (e.g. Ollama's localhost
+        # address) would persist silently after switching to a cloud provider
+        # that returns an empty base_url string.
+        if base_url:
+            agent.base_url = base_url
+        agent.api_mode = api_mode
+        # Invalidate transport cache — new api_mode may need a different transport
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
+        if api_key:
+            agent.api_key = api_key
+
+        # ── Build new client ──
+        if api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import (
+                build_anthropic_client,
+                resolve_anthropic_token,
+                _is_oauth_token,
+            )
+            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
+            # API key — falling back would send Anthropic credentials to third-party endpoints.
+            _is_native_anthropic = new_provider == "anthropic"
+            effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
+
+            # MiniMax OAuth: swap static string for a per-request callable token
+            # provider so the rebuilt client survives 15-min token expiry. See
+            # the matching block in agent_init.py for the full rationale.
+            if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
+                try:
+                    from hermes_cli.auth import build_minimax_oauth_token_provider
+                    effective_key = build_minimax_oauth_token_provider()
+                except Exception as _mm_exc:  # noqa: BLE001
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "MiniMax OAuth: failed to install per-request token provider "
+                        "on switch (%s); using static bearer.",
+                        _mm_exc,
+                    )
+
+            agent.api_key = effective_key
+            agent._anthropic_api_key = effective_key
+            agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, agent._anthropic_base_url,
+                timeout=get_provider_request_timeout(agent.provider, agent.model),
+            )
+            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+            agent.client = None
+            agent._client_kwargs = {}
+        else:
+            effective_key = api_key or agent.api_key
+            effective_base = base_url or agent.base_url
+            agent._client_kwargs = {
+                "api_key": effective_key,
+                "base_url": effective_base,
+            }
+            _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
+            if _sm_timeout is not None:
+                agent._client_kwargs["timeout"] = _sm_timeout
+            agent.client = agent._create_openai_client(
+                dict(agent._client_kwargs),
+                reason="switch_model",
+                shared=True,
+            )
+    except Exception:
+        # Rollback every mutated field to the pre-swap snapshot so the agent
+        # is left consistent (old model + old provider + old client) and the
+        # caller's exception handler can surface a meaningful warning.  The
+        # exception is re-raised; cli.py / gateway/run.py / tui_gateway catch
+        # it and print "Agent swap failed; change applied to next session".
+        for _name, _value in _snapshot.items():
+            if _value is _MISSING:
+                # Attribute did not exist before the swap — don't fabricate it.
+                continue
+            try:
+                setattr(agent, _name, _value)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
 
     # ── Re-evaluate prompt caching ──
     agent._use_prompt_caching, agent._use_native_cache_layout = (
@@ -1446,6 +1564,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
         "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
         "compressor_context_length": _cc.context_length if _cc else 0,
+        "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }
     if api_mode == "anthropic_messages":
@@ -1477,7 +1596,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 
-    logging.info(
+    logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,
     )
@@ -1573,6 +1692,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             session_id=agent.session_id or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
         )
 
 
@@ -1868,6 +1989,107 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     api_msg.pop("reasoning_content", None)
 
 
+def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
+    """Re-pad assistant turns with reasoning_content for the active provider.
+
+    ``api_messages`` is built once, before the retry loop, while the *primary*
+    provider is active.  If a mid-conversation fallback then switches to a
+    require-side provider (DeepSeek / Kimi / MiMo thinking mode), assistant
+    turns that were built when the prior provider did NOT need the echo-back go
+    out without ``reasoning_content`` and the new provider rejects them with
+    HTTP 400 ("The reasoning_content in the thinking mode must be passed back").
+
+    Calling this immediately before building the request kwargs re-applies the
+    pad against the *current* provider.  It is idempotent and a no-op unless
+    ``_needs_thinking_reasoning_pad()`` is True for the active provider, so it
+    is safe to call every iteration and covers every fallback path.
+
+    Returns the number of assistant turns that gained reasoning_content.
+    """
+    if not agent._needs_thinking_reasoning_pad():
+        return 0
+    padded = 0
+    for api_msg in api_messages:
+        if api_msg.get("role") != "assistant":
+            continue
+        if api_msg.get("reasoning_content"):
+            continue
+        copy_reasoning_content_for_api(agent, api_msg, api_msg)
+        if api_msg.get("reasoning_content"):
+            padded += 1
+    return padded
+
+
+def _iter_pool_sockets(client: Any):
+    """Yield raw sockets reachable from an OpenAI/httpx client pool.
+
+    httpcore 1.x stores the concrete HTTP11/HTTP2 connection under
+    ``conn._connection``; older versions exposed stream attributes directly
+    on the pool entry. Keep the traversal defensive because these are private
+    transport internals and vary across httpx/httpcore releases.
+    """
+    try:
+        http_client = getattr(client, "_client", None)
+        if http_client is None:
+            return
+        transport = getattr(http_client, "_transport", None)
+        if transport is None:
+            return
+        pool = getattr(transport, "_pool", None)
+        if pool is None:
+            return
+        connections = (
+            getattr(pool, "_connections", None)
+            or getattr(pool, "_pool", None)
+            or []
+        )
+    except Exception:
+        return
+
+    seen: set[int] = set()
+    for conn in list(connections):
+        candidates = [conn]
+        inner = getattr(conn, "_connection", None)
+        if inner is not None:
+            candidates.append(inner)
+        for candidate in candidates:
+            stream = (
+                getattr(candidate, "_network_stream", None)
+                or getattr(candidate, "_stream", None)
+            )
+            if stream is None:
+                continue
+            sock = getattr(stream, "_sock", None)
+            if sock is None:
+                get_extra_info = getattr(stream, "get_extra_info", None)
+                if callable(get_extra_info):
+                    try:
+                        sock = get_extra_info("socket")
+                    except Exception:
+                        sock = None
+            if sock is None:
+                wrapped = getattr(stream, "stream", None)
+                if wrapped is not None:
+                    sock = getattr(wrapped, "_sock", None)
+            if sock is None:
+                # anyio-backed streams expose the raw socket through
+                # SocketAttribute.raw_socket when available.
+                wrapped = getattr(stream, "_stream", None)
+                extra = getattr(wrapped, "extra", None)
+                if callable(extra):
+                    try:
+                        from anyio.abc import SocketAttribute
+                        sock = extra(SocketAttribute.raw_socket)
+                    except Exception:
+                        sock = None
+            if sock is None:
+                continue
+            marker = id(sock)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            yield sock
+
 
 def cleanup_dead_connections(agent) -> bool:
     """Detect and clean up dead TCP connections on the primary client.
@@ -1882,36 +2104,8 @@ def cleanup_dead_connections(agent) -> bool:
     if client is None:
         return False
     try:
-        http_client = getattr(client, "_client", None)
-        if http_client is None:
-            return False
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return False
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return False
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
         dead_count = 0
-        for conn in list(connections):
-            # Check for connections that are idle but have closed sockets
-            stream = (
-                getattr(conn, "_network_stream", None)
-                or getattr(conn, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                sock = getattr(stream, "stream", None)
-                if sock is not None:
-                    sock = getattr(sock, "_sock", None)
-            if sock is None:
-                continue
+        for sock in _iter_pool_sockets(client):
             # Probe socket health with a non-blocking recv peek
             import socket as _socket
             try:
@@ -1989,19 +2183,33 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     if "reset_at" not in context:
         message = context.get("message") or ""
         if isinstance(message, str):
-            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
+            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
             if delay_match:
                 value = float(delay_match.group(1))
                 seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
                 context["reset_at"] = time.time() + seconds
             else:
-                sec_match = re.search(
-                    r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                resets_in_match = re.search(
+                    r"resets?\s+in\s+"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?",
                     message,
                     re.IGNORECASE,
                 )
-                if sec_match:
-                    context["reset_at"] = time.time() + float(sec_match.group(1))
+                if resets_in_match and any(resets_in_match.groups()):
+                    hours = float(resets_in_match.group(1) or 0)
+                    minutes = float(resets_in_match.group(2) or 0)
+                    seconds = float(resets_in_match.group(3) or 0)
+                    context["reset_at"] = time.time() + (hours * 3600) + (minutes * 60) + seconds
+                else:
+                    sec_match = re.search(
+                        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                        message,
+                        re.IGNORECASE,
+                    )
+                    if sec_match:
+                        context["reset_at"] = time.time() + float(sec_match.group(1))
 
     return context
 
@@ -2073,62 +2281,56 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
 
 
 def force_close_tcp_sockets(client: Any) -> int:
-    """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
+    """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
 
-    When a provider drops a connection mid-stream, httpx's ``client.close()``
-    performs a graceful shutdown which leaves sockets in CLOSE-WAIT until the
-    OS times them out (often minutes).  This method walks the httpx transport
-    pool and issues ``socket.shutdown(SHUT_RDWR)`` + ``socket.close()`` to
-    force an immediate TCP RST, freeing the file descriptors.
+    When a provider drops a connection mid-stream — or the user issues an
+    interrupt — we want to unblock httpx's reader/writer immediately rather
+    than waiting for the kernel's per-connection timeout. ``shutdown(SHUT_RDWR)``
+    achieves that: it sends FIN, breaks any pending ``recv``/``send`` with EOF
+    or ``EPIPE``, but does NOT release the file descriptor.
 
-    Returns the number of sockets force-closed.
+    Historically this helper also called ``socket.close()`` so the FD got
+    released immediately, but that's unsafe when (as is the case for both the
+    interrupt-abort path and stale-call kill path) the helper runs on a
+    different thread than the one driving the request:
+
+      * The Python ``socket.socket`` we close here is the SAME object held by
+        httpx's pool, so closing it via Python sets its ``_fd`` to -1 and
+        future operations on that Python object fail safely.
+      * BUT the SSL wrapper (``ssl.SSLSocket``'s underlying OpenSSL ``BIO``)
+        caches the raw integer FD. Once ``os.close(fd)`` runs, the kernel may
+        immediately recycle that integer to the next ``open()`` call — e.g.
+        the kanban dispatcher opening ``kanban.db``.
+      * The owning worker thread then unwinds httpx, the SSL layer flushes a
+        pending TLS record, and the encrypted bytes get written into the
+        wrong file (issue #29507: 24-byte TLS application-data record
+        clobbering SQLite header bytes 5..28).
+
+    The fix is to let the owning thread own the close. ``shutdown()`` from any
+    thread is FD-safe; ``close()`` is not. The httpx connection's own close
+    path — which runs from the worker thread when it unwinds — will release
+    the FD via the same ``socket.socket`` object, and because Python's socket
+    close atomically swaps ``_fd`` to -1 *before* issuing ``os.close``, there
+    is no FD-aliasing window when only one thread closes.
+
+    Returns the number of sockets shut down. (Field kept as
+    ``tcp_force_closed=N`` in the log line for backwards-compatible parsing.)
     """
     import socket as _socket
 
-    closed = 0
+    shutdown_count = 0
     try:
-        http_client = getattr(client, "_client", None)
-        if http_client is None:
-            return 0
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return 0
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return 0
-        # httpx uses httpcore connection pools; connections live in
-        # _connections (list) or _pool (list) depending on version.
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
-        for conn in list(connections):
-            stream = (
-                getattr(conn, "_network_stream", None)
-                or getattr(conn, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                sock = getattr(stream, "stream", None)
-                if sock is not None:
-                    sock = getattr(sock, "_sock", None)
-            if sock is None:
-                continue
+        for sock in _iter_pool_sockets(client):
             try:
                 sock.shutdown(_socket.SHUT_RDWR)
             except OSError:
+                # Already shut down / not connected / FD invalid — all benign.
                 pass
-            try:
-                sock.close()
-            except OSError:
-                pass
-            closed += 1
+            # IMPORTANT (#29507): do NOT call sock.close() here. See docstring.
+            shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)
-    return closed
+    return shutdown_count
 
 
 
@@ -2154,5 +2356,6 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

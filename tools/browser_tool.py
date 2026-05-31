@@ -33,8 +33,8 @@ Environment Variables:
   requires Scale Plan (default: "false")
 - BROWSERBASE_KEEP_ALIVE: Enable keepAlive for session reconnection after disconnects,
   requires paid plan (default: "true")
-- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
-  beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in seconds (max 21600 = 6h).
+  Set to extend beyond project default. Common values: 600 (10min), 1800 (30min) (default: none)
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
@@ -55,7 +55,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import shutil
 import sys
@@ -63,7 +62,7 @@ import tempfile
 import threading
 import time
 import requests
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
@@ -102,7 +101,6 @@ from plugins.browser.firecrawl.provider import (  # noqa: F401
     FirecrawlBrowserProvider as FirecrawlProvider,
 )
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
-
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
@@ -1386,8 +1384,11 @@ def _reap_orphaned_browser_sessions():
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
+        # Use the process-tree termination helper so Chromium children
+        # (renderer, GPU, etc.) are cleaned up, not just the daemon parent.
         try:
-            os.kill(daemon_pid, signal.SIGTERM)
+            from tools.process_registry import ProcessRegistry
+            ProcessRegistry._terminate_host_pid(daemon_pid)
             logger.info("Reaped orphaned browser daemon PID %d (session %s)",
                         daemon_pid, session_name)
             reaped += 1
@@ -1577,7 +1578,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2873,6 +2874,22 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 "error": f"JavaScript evaluation is not supported by this browser backend. {err}",
             }
             return json.dumps(_copy_fallback_warning(response, result))
+        # A live DOM node / NodeList / Window can't be JSON-serialized by CDP
+        # and fails the eval with "Object reference chain is too long".  The
+        # supervisor fast path retries with returnByValue=false, but the CLI
+        # subprocess can't, so turn the cryptic protocol error into actionable
+        # guidance instead of surfacing it raw.
+        if "reference chain is too long" in err.lower():
+            response = {
+                "success": False,
+                "error": (
+                    "Expression returned a live DOM node / NodeList / Window, "
+                    "which can't be serialized. Extract a primitive value "
+                    "(e.g. .innerText, .href, .src, .value) or use "
+                    "JSON.stringify() / a snapshot tool instead."
+                ),
+            }
+            return json.dumps(_copy_fallback_warning(response, result))
         response = {
             "success": False,
             "error": err,
@@ -3043,17 +3060,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
-    Take a screenshot of the current page and analyze it with vision AI.
+    Take a screenshot of the current page for visual inspection.
 
-    This tool captures what's visually displayed in the browser and sends it
-    to Gemini for analysis. Useful for understanding visual content that the
-    text-based snapshot may not capture (CAPTCHAs, verification challenges,
-    images, complex layouts, etc.).
+    Captures what's visually displayed in the browser. When the active model
+    supports native vision, the screenshot is attached directly to the
+    conversation so the model can inspect it on the next turn; otherwise Hermes
+    falls back to the auxiliary vision model and returns a text analysis. Useful
+    for visual content the text-based snapshot may not capture (CAPTCHAs,
+    verification challenges, images, complex layouts, etc.).
 
-    The screenshot is saved persistently and its file path is returned alongside
-    the analysis, so it can be shared with users via MEDIA:<path> in the response.
+    The screenshot is saved persistently and its file path is returned so it
+    can be shared with users via MEDIA:<path> in the response.
 
     Args:
         question: What you want to know about the page visually
@@ -3061,7 +3080,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         task_id: Task identifier for session isolation
 
     Returns:
-        JSON string with vision analysis results and screenshot_path
+        A JSON string with vision analysis results and screenshot_path, or a
+        multimodal tool-result envelope carrying the screenshot and metadata.
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
@@ -3185,6 +3205,34 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_bytes = screenshot_path.read_bytes()
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
+
+        # Fast path: when native image routing is in effect for the active main
+        # model, attach the screenshot directly instead of describing it through
+        # an auxiliary vision LLM. The model inspects the pixels on its next
+        # turn — no aux call, no information loss. Consistent with vision_analyze.
+        from tools.vision_tools import (
+            _build_native_vision_tool_result,
+            _should_use_native_vision_fast_path,
+        )
+
+        if _should_use_native_vision_fast_path():
+            native_result = _build_native_vision_tool_result(
+                image_url=str(screenshot_path),
+                question=question,
+                image_data_url=data_url,
+                image_size_bytes=len(_screenshot_bytes),
+            )
+            meta = native_result.setdefault("meta", {})
+            meta["screenshot_path"] = str(screenshot_path)
+            if _lp_fallback_warning:
+                meta["fallback_warning"] = _lp_fallback_warning
+            if annotate and result.get("data", {}).get("annotations"):
+                meta["annotations"] = result["data"]["annotations"]
+            native_result["text_summary"] = (
+                f"{native_result.get('text_summary', '')} "
+                f"Screenshot path: {screenshot_path}"
+            ).strip()
+            return native_result
 
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
@@ -3437,8 +3485,9 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
                 if os.path.isfile(pid_file):
                     try:
+                        from tools.process_registry import ProcessRegistry
                         daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
-                        os.kill(daemon_pid, signal.SIGTERM)
+                        ProcessRegistry._terminate_host_pid(daemon_pid)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
                         logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
@@ -3649,6 +3698,24 @@ def check_browser_requirements() -> bool:
     return True
 
 
+def check_browser_vision_requirements() -> bool:
+    """Whether ``browser_vision`` should be advertised to the model.
+
+    Requires BOTH a working browser (``check_browser_requirements``) AND a
+    resolvable vision backend. Without the vision check, the tool stays in
+    the model's tool list even when no vision provider is configured, then
+    fails at call time with a cryptic provider-side error like
+    ``unknown variant `image_url`, expected `text``` (issue #31179).
+    """
+    if not check_browser_requirements():
+        return False
+    try:
+        from tools.vision_tools import check_vision_requirements
+    except ImportError:
+        return False
+    return check_vision_requirements()
+
+
 # ============================================================================
 # Module Test
 # ============================================================================
@@ -3783,7 +3850,7 @@ registry.register(
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_vision_requirements,
     emoji="👁️",
 )
 registry.register(

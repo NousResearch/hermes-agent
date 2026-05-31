@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
 
 
@@ -36,16 +36,24 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if not default_block and not has_key:
         return False
 
-    new_host = f"{HOST}.{profile_name}"
+    new_host = profile_host_key(profile_name)
     if new_host in hosts:
         return False  # already exists
 
-    # Clone settings from default block, override identity fields
+    # Clone settings from default block, override identity fields.
+    # Identity-mapping keys (pinPeerName/pinUserPeer, userPeerAliases,
+    # runtimePeerPrefix) carry the operator's runtime-to-peer routing
+    # intent from #27371.  Both pin keys are inherited because
+    # HonchoClientConfig prefers pinUserPeer over pinPeerName — leaving
+    # the canonical key off this allowlist silently drops the pin on
+    # cloned profiles when the default uses the newer name.
     new_block = {}
     for key in ("recallMode", "writeFrequency", "sessionStrategy",
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
-                "dialecticMaxInputChars", "saveMessages", "observation"):
+                "dialecticMaxInputChars", "saveMessages", "observation",
+                "pinPeerName", "pinUserPeer", "userPeerAliases",
+                "runtimePeerPrefix"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val
@@ -184,7 +192,7 @@ def cmd_sync(args) -> None:
         if p.name == "default":
             continue
         if clone_honcho_for_profile(p.name):
-            print(f"  + {p.name} -> hermes.{p.name}")
+            print(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
             skipped += 1
@@ -235,7 +243,7 @@ def _host_key() -> str:
     if _profile_override:
         if _profile_override in {"default", "custom"}:
             return HOST
-        return f"{HOST}.{_profile_override}"
+        return profile_host_key(_profile_override)
     return resolve_active_host()
 
 
@@ -267,10 +275,8 @@ def _read_config() -> dict:
 def _write_config(cfg: dict, path: Path | None = None) -> None:
     path = path or _local_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    from utils import atomic_json_write
+    atomic_json_write(path, cfg, mode=0o600)
 
 
 def _resolve_api_key(cfg: dict) -> str:
@@ -284,7 +290,7 @@ def _resolve_api_key(cfg: dict) -> str:
     config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
     will reject them itself with a clearer error than ours.
     """
-    host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
+    host_key = _host_block(cfg, _host_key()).get("apiKey")
     key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if not key:
         base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
@@ -308,14 +314,80 @@ def _resolve_api_key(cfg: dict) -> str:
     return key
 
 
+_IDENTITY_MAPPING_KEYS = (
+    "pinPeerName",
+    "pinUserPeer",
+    "userPeerAliases",
+    "runtimePeerPrefix",
+)
+
+
+def _resolve_effective_identity_mapping(
+    cfg: dict, hermes_host: dict
+) -> tuple[bool, dict, str, bool, bool]:
+    """Resolve the effective identity-mapping state for the active host.
+
+    Matches the precedence used by ``HonchoClientConfig.from_global_config``
+    so the wizard reads the same shape the gateway will actually run with.
+    Without this, root-level overrides and ``pinUserPeer`` (which wins over
+    ``pinPeerName`` at the same level) are invisible to detection, letting
+    setup mis-classify the current shape and silently change effective
+    routing on the next save.
+
+    Returns ``(pin, aliases, prefix, aliases_from_root, prefix_from_root)``.
+    The ``*_from_root`` flags let the write step skip touching host keys
+    whose value is actually inherited.
+    """
+    pin = False
+    for val in (
+        hermes_host.get("pinUserPeer"),
+        hermes_host.get("pinPeerName"),
+        cfg.get("pinUserPeer"),
+        cfg.get("pinPeerName"),
+    ):
+        if val is not None:
+            pin = bool(val)
+            break
+
+    if "userPeerAliases" in hermes_host:
+        aliases_src = hermes_host.get("userPeerAliases")
+        aliases_from_root = False
+    else:
+        aliases_src = cfg.get("userPeerAliases")
+        aliases_from_root = aliases_src is not None
+    aliases = aliases_src if isinstance(aliases_src, dict) else {}
+
+    if "runtimePeerPrefix" in hermes_host:
+        prefix_src = hermes_host.get("runtimePeerPrefix")
+        prefix_from_root = False
+    else:
+        prefix_src = cfg.get("runtimePeerPrefix")
+        prefix_from_root = prefix_src is not None
+    prefix = str(prefix_src or "")
+
+    return pin, aliases, prefix, aliases_from_root, prefix_from_root
+
+
+def _scrub_identity_mapping(hermes_host: dict) -> None:
+    """Drop every peer-mapping key from the host block.
+
+    Called before the wizard writes a chosen shape so latent precedence
+    conflicts can't survive — e.g. a stray host ``pinUserPeer: false``
+    that would silently outrank a freshly written ``pinPeerName: true``
+    (host ``pinUserPeer`` is first in the resolver ladder).
+    """
+    for key in _IDENTITY_MAPPING_KEYS:
+        hermes_host.pop(key, None)
+
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     suffix = f" [{default}]" if default else ""
     sys.stdout.write(f"  {label}{suffix}: ")
     sys.stdout.flush()
     if secret:
         if sys.stdin.isatty():
-            import getpass
-            val = getpass.getpass(prompt="")
+            from hermes_cli.secret_prompt import masked_secret_prompt
+            val = masked_secret_prompt("")
         else:
             # Non-TTY (piped input, test runners) — read plaintext
             val = sys.stdin.readline().strip()
@@ -388,21 +460,58 @@ def cmd_setup(args) -> None:
     cfg.pop("base_url", None)
 
     if is_local:
-        # --- Local: ask for base URL, skip or clear API key ---
+        # --- Local: ask for base URL, optionally accept a JWT for auth ---
         current_url = cfg.get("baseUrl") or ""
         new_url = _prompt("Base URL", default=current_url or "http://localhost:8000")
         if new_url:
             cfg["baseUrl"] = new_url
 
-        # For local no-auth, the SDK must not send an API key.
-        # We keep the key in config (for cloud switching later) but
-        # the client should skip auth when baseUrl is local.
-        current_key = cfg.get("apiKey", "")
-        if current_key:
-            print(f"\n  API key present in config (kept for cloud/hybrid use).")
-            print("  Local connections will skip auth automatically.")
+        # Self-hosted Honcho can run with AUTH_USE_AUTH=true and an
+        # AUTH_JWT_SECRET on the server side. In that case clients must
+        # send a JWT signed with that secret as the bearer token (the
+        # Honcho SDK takes it via ``api_key=``). Cloud users got prompted
+        # for a key already; the local path historically skipped this and
+        # forced users to disable auth on the server. Offer the prompt
+        # here too. We store it under the host block (not the top-level
+        # apiKey) so ``get_honcho_client`` recognises it as an explicit
+        # local auth opt-in (see ``_host_has_key`` in client.py) and
+        # cloud/hybrid switching is unaffected.
+        current_host_key = hermes_host.get("apiKey", "")
+        masked = (
+            f"...{current_host_key[-8:]}"
+            if len(current_host_key) > 8
+            else ("set" if current_host_key else "not set")
+        )
+        print(
+            "\n  Local Honcho auth (JWT signed with the server's "
+            "AUTH_JWT_SECRET)."
+        )
+        print(
+            "  Leave blank if your server runs with AUTH_USE_AUTH=false. "
+            f"Current: {masked}"
+        )
+        new_local_key = _prompt(
+            "Local JWT / bearer token (blank to skip / keep current)",
+            secret=True,
+        )
+        if new_local_key:
+            hermes_host["apiKey"] = new_local_key
+        elif current_host_key:
+            print("  Keeping existing local JWT.")
         else:
-            print("\n  No API key set. Local no-auth ready.")
+            # Surface the top-level key situation for transparency.
+            top_key = cfg.get("apiKey", "")
+            if top_key:
+                print(
+                    "\n  Top-level API key present in config (kept for "
+                    "cloud/hybrid use)."
+                )
+                print(
+                    "  Local connections will skip auth automatically "
+                    "until a local JWT is set above."
+                )
+            else:
+                print("\n  No local JWT set. Local no-auth ready.")
     else:
         # --- Cloud: set default base URL, require API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
@@ -434,6 +543,131 @@ def cmd_setup(args) -> None:
     new_workspace = _prompt("Workspace ID", default=current_workspace)
     if new_workspace:
         hermes_host["workspace"] = new_workspace
+
+    # --- 3b. Deployment shape ---
+    # Determines how runtime user identities (Telegram UIDs, Discord
+    # snowflakes, etc.) map to Honcho peers in gateway sessions.  Three
+    # shapes cover the realistic deployments; each writes a different
+    # combination of pinPeerName / userPeerAliases / runtimePeerPrefix.
+    # See plugins/memory/honcho/README.md for the resolver ladder.
+    #
+    # Detection must mirror the gateway resolver: root-level config and
+    # ``pinUserPeer`` (which outranks ``pinPeerName`` at the same level)
+    # both affect effective routing, so reading host-only fields would
+    # mis-classify a profile that inherits its mapping from root or uses
+    # the newer canonical key.
+    (
+        current_pin,
+        current_aliases,
+        current_prefix,
+        aliases_from_root,
+        prefix_from_root,
+    ) = _resolve_effective_identity_mapping(cfg, hermes_host)
+
+    if current_pin:
+        current_shape = "single"
+    elif current_aliases:
+        current_shape = "hybrid"
+    else:
+        current_shape = "multi"
+
+    print("\n  Deployment shape (how gateway users map to peers):")
+    print("    single -- all platforms route to your peer (recommended for personal use)")
+    print("    multi  -- each platform user gets their own peer (multi-user bots)")
+    print("    hybrid -- multi-user, but YOUR runtime IDs alias to your peer")
+    print("    skip   -- don't touch identity-mapping config")
+    new_shape = _prompt("Deployment shape", default=current_shape).strip().lower()
+
+    # Transitioning single → multi orphans the peerName pool for runtime users
+    # (their resolved peers go from peerName to runtime-derived IDs with empty
+    # history).  Steer the operator toward hybrid so their own continuity is
+    # preserved via alias mappings.
+    if current_shape == "single" and new_shape == "multi":
+        peer_target = hermes_host.get("peerName") or current_peer or "user"
+        print(
+            f"\n  ⚠ Switching from single to multi will orphan memory accumulated\n"
+            f"    under peer '{peer_target}'.  Existing runtime users (Telegram,\n"
+            f"    Discord, etc.) will resolve to fresh, empty peers."
+        )
+        print("    To keep your own continuity, choose 'hybrid' and alias your\n"
+              "    runtime IDs back to peerName.")
+        confirm = _prompt("Continue with multi anyway? (yes/hybrid/no)", default="hybrid").strip().lower()
+        if confirm in {"hybrid", "h"}:
+            new_shape = "hybrid"
+        elif confirm not in {"yes", "y"}:
+            new_shape = "skip"
+
+    # Each shape branch scrubs every peer-mapping key before writing its own,
+    # so a stale ``pinUserPeer`` left behind by an earlier setup run can't
+    # outrank the freshly written ``pinPeerName`` via host-level precedence.
+    if new_shape == "single":
+        _scrub_identity_mapping(hermes_host)
+        hermes_host["pinPeerName"] = True
+        print(f"  pinPeerName=true → all gateway users route to '{hermes_host.get('peerName', '?')}'.")
+    elif new_shape == "multi":
+        # Preserve operator-curated, host-level aliases so multi → multi
+        # re-runs don't drop them.  Root-sourced aliases are left to
+        # cascade naturally and are NOT copied down into the host.
+        prior_aliases = (
+            dict(current_aliases)
+            if isinstance(current_aliases, dict) and not aliases_from_root
+            else {}
+        )
+        _scrub_identity_mapping(hermes_host)
+        hermes_host["pinPeerName"] = False
+        # Do NOT auto-write ``userPeerAliases: {}``: an empty host map
+        # would override any root-level ``userPeerAliases`` the operator
+        # set as a cross-host baseline, silently disabling those aliases.
+        # Absence is the right "no host opinion" signal.
+        if prior_aliases:
+            hermes_host["userPeerAliases"] = prior_aliases
+        _prefix_default = current_prefix or ""
+        _new_prefix = _prompt(
+            "Runtime peer prefix (e.g. 'telegram_', blank for none)",
+            default=_prefix_default,
+        ).strip()
+        # Only write a host-level prefix when the operator typed one that
+        # diverges from the inherited root value; otherwise let the root
+        # cascade continue unmodified.
+        if _new_prefix and not (prefix_from_root and _new_prefix == current_prefix):
+            hermes_host["runtimePeerPrefix"] = _new_prefix
+        print("  Multi-user mode: each runtime ID → own peer. Use 'hermes honcho status' to inspect.")
+    elif new_shape == "hybrid":
+        # Hybrid encodes operator intent at the host level: collect existing
+        # entries (host or root) so the wizard never silently drops a known
+        # alias, then write the combined map.  Materialising root entries
+        # into the host is the right move here — once the operator answers
+        # the alias prompts for a host, they're declaring "this host owns
+        # the mapping".
+        existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
+        _scrub_identity_mapping(hermes_host)
+        hermes_host["pinPeerName"] = False
+        peer_target = hermes_host.get("peerName") or current_peer or "user"
+        print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
+        print("  Leave blank to skip a platform.  Existing aliases are preserved.")
+        for platform_label, alias_hint in (
+            ("Telegram UID", "e.g. 86701400"),
+            ("Discord snowflake", "e.g. 491827364"),
+            ("Slack user ID", "e.g. U04ABCDEF"),
+            ("Matrix MXID", "e.g. @you:matrix.org"),
+        ):
+            entered = _prompt(f"  {platform_label} ({alias_hint})", default="").strip()
+            if entered:
+                existing_aliases[entered] = peer_target
+        if existing_aliases:
+            hermes_host["userPeerAliases"] = existing_aliases
+        _prefix_default = current_prefix or ""
+        _new_prefix = _prompt(
+            "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
+            default=_prefix_default,
+        ).strip()
+        if _new_prefix and not (prefix_from_root and _new_prefix == current_prefix):
+            hermes_host["runtimePeerPrefix"] = _new_prefix
+        print(f"  Hybrid mode: your runtime IDs → '{peer_target}', others → own peer.")
+    elif new_shape == "skip":
+        pass  # leave config untouched
+    else:
+        print(f"  Unknown shape '{new_shape}' — leaving identity-mapping config untouched.")
 
     # --- 4. Observation mode ---
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")

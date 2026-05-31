@@ -358,8 +358,10 @@ def build_session_context_prompt(
         lines.append(
             "**Platform notes:** You are responding via iMessage. "
             "Keep responses short and conversational — think texts, not essays. "
-            "Use blank lines sparingly to separate longer replies into a few "
-            "short thoughts; avoid many tiny one-line blocks. "
+            "Structure longer replies as separate short thoughts, each separated "
+            "by a blank line (double newline). Each block between blank lines "
+            "will be delivered as its own iMessage bubble, so write accordingly: "
+            "one idea per bubble, 1–3 sentences each. "
             "If the user needs a detailed answer, give the short version first "
             "and offer to elaborate."
         )
@@ -878,20 +880,18 @@ class SessionStore:
                 # still converge to a clean slate.
                 if entry.suspended:
                     reset_reason = "suspended"
-                else:
-                    reset_reason = self._should_reset(entry, source)
-
-                if entry.resume_pending and not reset_reason:
+                elif entry.resume_pending:
                     # Restart-interrupted session: preserve the session_id
                     # and return the existing entry so the transcript
                     # reloads intact.  ``resume_pending`` is cleared after
                     # the NEXT successful turn completes (not here), which
                     # means a re-interrupted retry keeps trying — the
                     # stuck-loop counter handles terminal escalation.
-                    # Reset policy still wins once the session becomes stale.
                     entry.updated_at = now
                     self._save()
                     return entry
+                else:
+                    reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()

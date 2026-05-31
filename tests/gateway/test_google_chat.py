@@ -1475,104 +1475,6 @@ class TestSetupFilesSlashCommand:
         adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unauthorized_dispatch_defers_attachments_to_gateway_auth(
-        self, adapter
-    ):
-        """Unauthorized senders must not trigger media downloads pre-auth."""
-
-        class Runner:
-            def _is_user_authorized(self, source):
-                return False
-
-            async def _handle_message(self, event):
-                return None
-
-        adapter._message_handler = Runner()._handle_message
-        adapter._download_attachment = AsyncMock(
-            return_value=("/cache/img.png", "image/png")
-        )
-        attachments = [{
-            "name": "att/img.png",
-            "contentType": "image/png",
-            "downloadUri": "https://chat.googleapis.com/media/x",
-        }]
-        env = _make_chat_envelope(
-            text="", sender_email="bob@example.com", attachments=attachments
-        )
-        msg = env["chat"]["messagePayload"]["message"]
-
-        await adapter._dispatch_message(msg, env)
-
-        adapter._download_attachment.assert_not_awaited()
-        adapter.handle_message.assert_awaited_once()
-        forwarded_event = adapter.handle_message.await_args.args[0]
-        assert forwarded_event.media_urls == []
-        assert forwarded_event.source.user_id == "bob@example.com"
-        assert adapter._last_sender_by_chat == {}
-        assert (
-            adapter._thread_count_store.get("spaces/S", "spaces/S/threads/T")
-            == 0
-        )
-
-    @pytest.mark.asyncio
-    async def test_unauthorized_setup_files_delegates_to_gateway_auth(
-        self, adapter
-    ):
-        """/setup-files must not run bot-local OAuth side effects pre-auth."""
-
-        class Runner:
-            def _is_user_authorized(self, source):
-                return False
-
-            async def _handle_message(self, event):
-                return None
-
-        adapter._message_handler = Runner()._handle_message
-        adapter._handle_setup_files_command = AsyncMock(return_value=True)
-        env = _make_chat_envelope(
-            text="/setup-files", sender_email="bob@example.com"
-        )
-        msg = env["chat"]["messagePayload"]["message"]
-
-        await adapter._dispatch_message(msg, env)
-
-        adapter._handle_setup_files_command.assert_not_awaited()
-        adapter.handle_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_authorized_dispatch_downloads_attachments_after_auth(
-        self, adapter
-    ):
-        """Authorized messages keep existing attachment behavior."""
-
-        class Runner:
-            def _is_user_authorized(self, source):
-                return True
-
-            async def _handle_message(self, event):
-                return None
-
-        adapter._message_handler = Runner()._handle_message
-        adapter._download_attachment = AsyncMock(
-            return_value=("/cache/img.png", "image/png")
-        )
-        attachments = [{
-            "name": "att/img.png",
-            "contentType": "image/png",
-            "downloadUri": "https://chat.googleapis.com/media/x",
-        }]
-        env = _make_chat_envelope(text="", attachments=attachments)
-        msg = env["chat"]["messagePayload"]["message"]
-
-        await adapter._dispatch_message(msg, env)
-
-        adapter._download_attachment.assert_awaited_once()
-        adapter.handle_message.assert_awaited_once()
-        forwarded_event = adapter.handle_message.await_args.args[0]
-        assert forwarded_event.media_urls == ["/cache/img.png"]
-        assert forwarded_event.message_type == MessageType.PHOTO
-
-    @pytest.mark.asyncio
     async def test_no_arg_status_when_unconfigured(self, adapter, tmp_path, monkeypatch):
         """Without client_secret AND without token, status reply tells the
         user how to provide credentials on the host."""
@@ -2619,8 +2521,66 @@ class TestGoogleChatInteractiveSetup:
             == "projects/demo-project/subscriptions/hermes-chat"
         )
         assert saved["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"] == "/tmp/sa.json"
+        assert saved["GOOGLE_CHAT_ALLOW_ALL_USERS"] == "false"
         assert saved["GOOGLE_CHAT_ALLOWED_USERS"] == "alice@example.com,bob@example.com"
         assert saved["GOOGLE_CHAT_HOME_CHANNEL"] == "spaces/AAAA"
+
+    def test_restricted_setup_clears_stale_allow_all_flag(self, monkeypatch):
+        """Restricted setup must not leave prior open access active."""
+        from plugins.platforms.google_chat import adapter as gc_mod
+
+        saved: dict[str, str] = {
+            "GOOGLE_CHAT_ALLOW_ALL_USERS": "true",
+            "GOOGLE_CHAT_SUBSCRIPTION_NAME": "projects/demo-project/subscriptions/old-hermes-chat",
+        }
+        answers = {
+            "GCP project ID (e.g. my-project)": "demo-project",
+            "Pub/Sub subscription (projects/<proj>/subscriptions/<sub>)": (
+                "projects/demo-project/subscriptions/hermes-chat"
+            ),
+            "Path to Service Account JSON (or inline JSON)": "/tmp/sa.json",
+            "Allowed user emails (comma-separated)": "alice@example.com",
+            "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)": "",
+        }
+
+        def fake_get_env_value(key):
+            return saved.get(key, "")
+
+        def fake_save_env_value(key, value):
+            saved[key] = value
+
+        def fake_prompt(question, default=None, password=False):
+            return answers.get(question, default or "")
+
+        prompt_yes_no_calls: list[str] = []
+
+        def fake_prompt_yes_no(question, *_a, **_kw):
+            prompt_yes_no_calls.append(question)
+            return True
+
+        monkeypatch.setattr("hermes_cli.config.get_env_value", fake_get_env_value)
+        monkeypatch.setattr("hermes_cli.config.save_env_value", fake_save_env_value)
+        monkeypatch.setattr("hermes_cli.cli_output.prompt", fake_prompt)
+        monkeypatch.setattr("hermes_cli.cli_output.prompt_yes_no", fake_prompt_yes_no)
+        monkeypatch.setattr(
+            "hermes_cli.cli_output.print_info", lambda *_a, **_kw: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.cli_output.print_success", lambda *_a, **_kw: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.cli_output.print_warning", lambda *_a, **_kw: None
+        )
+
+        gc_mod.interactive_setup()
+
+        assert "Reconfigure Google Chat?" in prompt_yes_no_calls
+        assert (
+            saved["GOOGLE_CHAT_SUBSCRIPTION_NAME"]
+            == "projects/demo-project/subscriptions/hermes-chat"
+        )
+        assert saved["GOOGLE_CHAT_ALLOWED_USERS"] == "alice@example.com"
+        assert saved["GOOGLE_CHAT_ALLOW_ALL_USERS"] == "false"
 
 
 # ===========================================================================

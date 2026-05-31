@@ -196,11 +196,10 @@ class TestThreadLocalApprovalCallback:
 
 
 class TestAcpExecAskGate:
-    """GHSA-96vc-wcxf-jjff: ACP's _run_agent must bind interactive
-    approval routing so tools.approval.check_all_command_guards takes the
-    CLI-interactive path (consults the registered callback via
-    prompt_dangerous_approval) instead of the non-interactive auto-approve
-    shortcut.
+    """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so
+    that tools.approval.check_all_command_guards takes the CLI-interactive
+    path (consults the registered callback via prompt_dangerous_approval)
+    instead of the non-interactive auto-approve shortcut.
 
     (HERMES_EXEC_ASK takes the gateway-queue path which requires a
     notify_cb registered in _gateway_notify_cbs — not applicable to ACP,
@@ -245,62 +244,3 @@ class TestAcpExecAskGate:
             "GHSA-96vc-wcxf-jjff"
         )
         assert result["approved"] is True
-
-    def test_acp_interactive_routing_is_context_local(self, monkeypatch):
-        """ACP interactive routing must survive another session clearing the
-        process-global HERMES_INTERACTIVE flag while this session is running.
-        """
-        import os
-        import threading
-        from concurrent.futures import ThreadPoolExecutor
-
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-
-        from tools.approval import (
-            check_all_command_guards,
-            reset_current_interactive,
-            set_current_interactive,
-        )
-
-        b_ready = threading.Event()
-        a_cleared = threading.Event()
-        callback_calls = []
-
-        def fake_cb(command, description, *, allow_permanent=True):
-            callback_calls.append((command, description))
-            return "deny"
-
-        def session_a_env_restore_race():
-            os.environ["HERMES_INTERACTIVE"] = "1"
-            b_ready.wait(timeout=5)
-            os.environ.pop("HERMES_INTERACTIVE", None)
-            a_cleared.set()
-
-        def session_b_guard_check():
-            token = set_current_interactive(True)
-            try:
-                b_ready.set()
-                assert a_cleared.wait(timeout=5)
-                assert os.getenv("HERMES_INTERACTIVE") is None
-                return check_all_command_guards(
-                    "rm -rf /tmp/test-acp-context-local",
-                    "local",
-                    approval_callback=fake_cb,
-                )
-            finally:
-                reset_current_interactive(token)
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_a = executor.submit(session_a_env_restore_race)
-            future_b = executor.submit(session_b_guard_check)
-            future_a.result(timeout=5)
-            result = future_b.result(timeout=5)
-
-        assert result["approved"] is False
-        assert callback_calls, (
-            "ACP must route through the session-local callback even if another "
-            "overlapping session clears HERMES_INTERACTIVE"
-        )

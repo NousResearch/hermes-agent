@@ -17,7 +17,7 @@ import logging
 import os
 import subprocess
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
 
@@ -247,47 +247,20 @@ def _powershell_save_image(exe: str, dest: Path, *, timeout: int, label: str) ->
 
 # ── Native Windows ────────────────────────────────────────────────────────
 
-# Native Windows uses Windows PowerShell 5.1 (always present) or PowerShell 7+
-# (optional). Discovery is cached per-process.
-
-
-def _candidate_powershell_paths() -> list[str]:
-    """Return trusted absolute PowerShell candidate paths for native Windows."""
-    candidates: list[str] = []
-
-    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
-    if system_root:
-        candidates.append(
-            str(
-                PureWindowsPath(
-                    system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
-                )
-            )
-        )
-
-    seen_program_dirs: set[str] = set()
-    for env_name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
-        program_dir = os.environ.get(env_name)
-        if not program_dir or program_dir in seen_program_dirs:
-            continue
-        seen_program_dirs.add(program_dir)
-        candidates.append(str(PureWindowsPath(program_dir, "PowerShell", "7", "pwsh.exe")))
-
-    return candidates
+# Native Windows uses ``powershell`` (Windows PowerShell 5.1, always present)
+# or ``pwsh`` (PowerShell 7+, optional).  Discovery is cached per-process.
 
 
 def _find_powershell() -> str | None:
-    """Return the first available trusted PowerShell executable, or None."""
-    for exe in _candidate_powershell_paths():
-        if not os.path.isfile(exe):
-            continue
+    """Return the first available PowerShell executable, or None."""
+    for name in ("powershell", "pwsh"):
         try:
             r = subprocess.run(
-                [exe, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
+                [name, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
                 capture_output=True, text=True, timeout=5,
             )
             if r.returncode == 0 and "ok" in r.stdout:
-                return exe
+                return name
         except FileNotFoundError:
             continue
         except Exception:

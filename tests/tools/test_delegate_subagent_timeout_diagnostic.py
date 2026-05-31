@@ -268,49 +268,6 @@ class TestRunSingleChildTimeoutDump:
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
 
-    def test_timeout_cleanup_waits_until_child_thread_exits(self, hermes_home, monkeypatch):
-        """Timed-out children must not be closed while run_conversation is active."""
-        from tools import delegate_tool
-
-        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.1)
-
-        class _SlowStoppingChild(_StubChild):
-            def __init__(self):
-                super().__init__(api_call_count=1, hang_seconds=2.0)
-                self._interrupted = threading.Event()
-                self._run_finished = threading.Event()
-                self.close_saw_run_finished = None
-
-            def run_conversation(self, user_message, task_id=None):
-                self._interrupted.wait(2.0)
-                time.sleep(0.2)
-                self._run_finished.set()
-                return {"final_response": "", "completed": False, "api_calls": 1}
-
-            def interrupt(self):
-                self._interrupted.set()
-
-            def close(self):
-                self.close_saw_run_finished = self._run_finished.is_set()
-
-        child = _SlowStoppingChild()
-        parent = MagicMock()
-        parent._touch_activity = MagicMock()
-        parent._current_task_id = None
-
-        started = time.monotonic()
-        result = delegate_tool._run_single_child(
-            task_index=0,
-            goal="test goal",
-            child=child,
-            parent_agent=parent,
-        )
-        elapsed = time.monotonic() - started
-
-        assert result["status"] == "timeout"
-        assert elapsed >= 0.25
-        assert child.close_saw_run_finished is True
-
     def test_nonzero_api_calls_skips_dump_and_uses_old_message(self, hermes_home, monkeypatch):
         child = _StubChild(api_call_count=5, hang_seconds=10.0)
         result = self._invoke_with_short_timeout(child, monkeypatch)

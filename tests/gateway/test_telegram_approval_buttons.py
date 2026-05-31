@@ -142,7 +142,7 @@ class TestTelegramExecApproval:
         assert kwargs.get("message_thread_id") == 999
 
     @pytest.mark.asyncio
-    async def test_does_not_retry_without_thread_for_forum_topics(self):
+    async def test_retries_without_thread_when_thread_not_found(self):
         adapter = _make_adapter()
         call_log = []
 
@@ -164,9 +164,10 @@ class TestTelegramExecApproval:
             metadata={"thread_id": "999"},
         )
 
-        assert result.success is False
-        assert len(call_log) == 1
+        assert result.success is True
+        assert len(call_log) == 2
         assert call_log[0]["message_thread_id"] == 999
+        assert "message_thread_id" not in call_log[1] or call_log[1]["message_thread_id"] is None
 
     @pytest.mark.asyncio
     async def test_not_connected(self):

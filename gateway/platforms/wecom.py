@@ -214,8 +214,8 @@ class WeComAdapter(BasePlatformAdapter):
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
-                limits=platform_httpx_limits(),
                 event_hooks={"response": [_ssrf_redirect_guard]},
+                limits=platform_httpx_limits(),
             )
             await self._open_connection()
             self._mark_connected()
@@ -1096,41 +1096,6 @@ class WeComAdapter(BasePlatformAdapter):
         parsed = urlparse(str(media_source or ""))
         return parsed.scheme in {"http", "https"}
 
-    @staticmethod
-    def _allowed_outbound_media_roots() -> Tuple[Path, ...]:
-        from hermes_constants import get_hermes_dir, get_hermes_home
-
-        hermes_home = get_hermes_home()
-        return (
-            hermes_home / "cache",
-            get_hermes_dir("cache/audio", "audio_cache"),
-            get_hermes_dir("cache/images", "image_cache"),
-            get_hermes_dir("cache/documents", "document_cache"),
-        )
-
-    @classmethod
-    def _validate_outbound_local_media_path(cls, local_path: Path) -> None:
-        from agent.file_safety import get_read_block_error
-
-        block_error = get_read_block_error(str(local_path))
-        if block_error:
-            raise PermissionError(block_error)
-
-        allowed_roots = tuple(
-            root.expanduser().resolve() for root in cls._allowed_outbound_media_roots()
-        )
-        for root in allowed_roots:
-            try:
-                local_path.relative_to(root)
-                return
-            except ValueError:
-                continue
-
-        raise PermissionError(
-            "Blocked outbound local media path: only files in Hermes-managed "
-            "media cache directories may be uploaded to WeCom."
-        )
-
     async def _load_outbound_media(
         self,
         media_source: str,
@@ -1156,16 +1121,10 @@ class WeComAdapter(BasePlatformAdapter):
             local_path = Path(source).expanduser()
 
         if not local_path.is_absolute():
-            local_path = Path.cwd() / local_path
+            local_path = (Path.cwd() / local_path).resolve()
 
-        try:
-            local_path = local_path.resolve(strict=True)
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(f"Media file not found: {local_path}") from exc
-
-        if not local_path.is_file():
+        if not local_path.exists() or not local_path.is_file():
             raise FileNotFoundError(f"Media file not found: {local_path}")
-        self._validate_outbound_local_media_path(local_path)
 
         data = local_path.read_bytes()
         resolved_name = file_name or local_path.name

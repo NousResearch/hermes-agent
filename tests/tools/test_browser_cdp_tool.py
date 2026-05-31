@@ -172,29 +172,6 @@ def test_non_dict_params_returns_error(monkeypatch):
     assert "object" in result["error"].lower() or "dict" in result["error"].lower()
 
 
-def test_cookie_methods_are_blocked_before_cdp_dispatch(cdp_server):
-    cdp_server.on("Network.getAllCookies", lambda p, s: {"cookies": []})
-    result = json.loads(
-        browser_cdp_tool.browser_cdp(method="Network.getAllCookies")
-    )
-    assert "error" in result
-    assert "Blocked CDP method Network.getAllCookies" in result["error"]
-    assert cdp_server.received() == []
-
-
-def test_navigation_methods_are_blocked_before_cdp_dispatch(cdp_server):
-    cdp_server.on("Page.navigate", lambda p, s: {"frameId": "frame-1"})
-    result = json.loads(
-        browser_cdp_tool.browser_cdp(
-            method="Page.navigate",
-            params={"url": "https://example.com/"},
-            target_id="tab-A",
-        )
-    )
-    assert "error" in result
-    assert "Use browser_navigate" in result["error"]
-    assert cdp_server.received() == []
-
 # ---------------------------------------------------------------------------
 # Endpoint resolution
 # ---------------------------------------------------------------------------

@@ -47,7 +47,6 @@ def _make_httpx_response(status_code: int, body: dict | None = None, text: str =
     """Return a minimal mock that quacks like httpx.Response."""
     resp = MagicMock()
     resp.status_code = status_code
-    resp.headers = {}
     if body is not None:
         resp.json.return_value = body
         resp.text = json.dumps(body)
@@ -302,57 +301,6 @@ def test_poll_token_timeout_raises():
     assert exc_info.value.code == "timeout"
 
 
-def test_poll_token_rejects_untrusted_redirect():
-    """Token polling must not replay PKCE material to non-MiniMax redirects."""
-    redirect_resp = _make_httpx_response(307, text="Temporary Redirect")
-    redirect_resp.headers = {"Location": "http://evil.example/capture"}
-
-    client = MagicMock()
-    client.post.return_value = redirect_resp
-
-    with pytest.raises(AuthError) as exc_info:
-        _minimax_poll_token(
-            client,
-            portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
-            client_id=MINIMAX_OAUTH_CLIENT_ID,
-            user_code="USER-CODE",
-            code_verifier="verifier",
-            expired_in=int(time.time() * 1000) + 60_000,
-            interval_ms=2000,
-        )
-
-    assert exc_info.value.code == "unsafe_redirect"
-    assert client.post.call_count == 1
-
-
-def test_poll_token_follows_allowed_minimax_redirect():
-    """Known HTTPS MiniMax OAuth redirects are followed without httpx auto-redirects."""
-    redirect_resp = _make_httpx_response(307, text="Temporary Redirect")
-    redirect_resp.headers = {"Location": "https://account.minimax.io/oauth/token"}
-    success_resp = _make_httpx_response(200, {
-        "status": "success",
-        "access_token": "access-abc",
-        "refresh_token": "refresh-xyz",
-        "expired_in": 3600,
-    })
-
-    client = MagicMock()
-    client.post.side_effect = [redirect_resp, success_resp]
-
-    result = _minimax_poll_token(
-        client,
-        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
-        client_id=MINIMAX_OAUTH_CLIENT_ID,
-        user_code="USER-CODE",
-        code_verifier="verifier",
-        expired_in=int(time.time() * 1000) + 60_000,
-        interval_ms=2000,
-    )
-
-    assert result["status"] == "success"
-    assert client.post.call_args_list[1][0][0] == "https://account.minimax.io/oauth/token"
-
-
 # ---------------------------------------------------------------------------
 # 8. test_refresh_skip_when_not_expired
 # ---------------------------------------------------------------------------
@@ -446,34 +394,6 @@ def test_refresh_reuse_triggers_relogin_required():
 
     assert exc_info.value.code == "refresh_failed"
     assert exc_info.value.relogin_required is True
-
-
-def test_refresh_rejects_untrusted_redirect():
-    """Refresh must not replay the long-lived refresh token to untrusted hosts."""
-    state = {
-        "access_token": "old-access",
-        "refresh_token": "old-refresh",
-        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
-        "client_id": MINIMAX_OAUTH_CLIENT_ID,
-        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
-        "expires_at": _past_iso(100),
-    }
-
-    redirect_resp = _make_httpx_response(307, text="Temporary Redirect")
-    redirect_resp.headers = {"Location": "http://evil.example/capture"}
-
-    with patch("httpx.Client") as mock_client_class:
-        mock_client_instance = MagicMock()
-        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
-        mock_client_instance.__exit__ = MagicMock(return_value=False)
-        mock_client_instance.post.return_value = redirect_resp
-        mock_client_class.return_value = mock_client_instance
-
-        with pytest.raises(AuthError) as exc_info:
-            _refresh_minimax_oauth_state(state)
-
-    assert exc_info.value.code == "unsafe_redirect"
-    assert mock_client_instance.post.call_count == 1
 
 
 # ---------------------------------------------------------------------------

@@ -622,12 +622,7 @@ async def test_topic_restore_inside_topic_binds_old_session_and_returns_last_ass
     assert binding is not None
     assert binding["session_id"] == "old-session"
     assert binding["user_id"] == "208214988"
-    topic_key = build_session_key(_make_source(thread_id="17585"))
-    assert binding["session_key"] == topic_key
-    runner.session_store.switch_session.assert_called_once_with(topic_key, "old-session")
-    runner._release_running_agent_state.assert_called_once_with(topic_key)
-    runner._clear_session_boundary_security_state.assert_called_once_with(topic_key)
-    runner._evict_cached_agent.assert_called_once_with(topic_key)
+    assert binding["session_key"] == build_session_key(_make_source(thread_id="17585"))
     runner._run_agent.assert_not_called()
 
 

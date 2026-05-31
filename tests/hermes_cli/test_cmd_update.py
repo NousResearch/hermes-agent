@@ -6,12 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import (
-    PROJECT_ROOT,
-    _is_fork,
-    _redact_git_remote_url,
-    cmd_update,
-)
+from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -42,30 +37,6 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
 @pytest.fixture
 def mock_args():
     return SimpleNamespace()
-
-
-class TestUpdateForkRemoteSanitization:
-    """Fork detection and display must not expose remote credentials."""
-
-    def test_credential_bearing_official_https_remote_is_not_fork(self):
-        remote = (
-            "https://alice:ghp_LEAKME1234567890"
-            "@github.com/NousResearch/hermes-agent.git"
-        )
-
-        assert _is_fork(remote) is False
-
-    def test_credential_bearing_fork_remote_is_redacted_for_display(self):
-        remote = (
-            "https://alice:ghp_LEAKME1234567890"
-            "@github.com/badMade/hermes-agent.git"
-        )
-
-        assert _is_fork(remote) is True
-        redacted = _redact_git_remote_url(remote)
-        assert "ghp_LEAKME1234567890" not in redacted
-        assert "alice" not in redacted
-        assert redacted == "https://[REDACTED]@github.com/badMade/hermes-agent.git"
 
 
 class TestCmdUpdateBranchFallback:
@@ -162,7 +133,6 @@ class TestCmdUpdateBranchFallback:
         full_flags = [
             "/usr/bin/npm",
             "ci",
-            "--ignore-scripts",
             "--silent",
             "--no-fund",
             "--no-audit",

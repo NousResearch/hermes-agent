@@ -51,7 +51,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
 
@@ -136,7 +136,6 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-CUSTOM_OPENAI_TTS_API_KEY_ENV = "VOICE_TOOLS_OPENAI_CUSTOM_KEY"
 DEFAULT_MINIMAX_MODEL = "speech-01"
 DEFAULT_MINIMAX_VOICE_ID = "female-shaonv"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.chat/v1/text_to_speech"
@@ -541,36 +540,19 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
         return
 
-    pgid = getattr(proc, "_hermes_pgid", None)
-    _killpg_ok = False
+    import psutil
     try:
-        if pgid is None:
-            pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — guarded by os.name above
-        _killpg_ok = True
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-
-    if not _killpg_ok:
-        import psutil as _psutil
-        try:
-            _parent = _psutil.Process(proc.pid)
-            for _child in _parent.children(recursive=True):
-                try:
-                    _child.terminate()
-                except _psutil.NoSuchProcess:
-                    pass
+        parent = psutil.Process(proc.pid)
+        for child in parent.children(recursive=True):
             try:
-                _parent.terminate()
-            except _psutil.NoSuchProcess:
+                child.terminate()
+            except psutil.NoSuchProcess:
                 pass
-        except _psutil.NoSuchProcess:
-            pass
-        except (PermissionError, OSError):
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        parent.terminate()
+    except psutil.NoSuchProcess:
+        return
+    except Exception:
+        proc.terminate()
 
     try:
         proc.wait(timeout=2)
@@ -578,36 +560,18 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         pass
 
-    _killpg_kill_ok = False
     try:
-        if pgid is None:
-            raise ProcessLookupError(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — guarded by os.name above
-        _killpg_kill_ok = True
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-
-    if not _killpg_kill_ok:
-        import psutil as _psutil
-        try:
-            _parent = _psutil.Process(proc.pid)
-            for _child in _parent.children(recursive=True):
-                try:
-                    _child.kill()
-                except _psutil.NoSuchProcess:
-                    pass
+        parent = psutil.Process(proc.pid)
+        for child in parent.children(recursive=True):
             try:
-                _parent.kill()
-            except _psutil.NoSuchProcess:
+                child.kill()
+            except psutil.NoSuchProcess:
                 pass
-        except _psutil.NoSuchProcess:
-            pass
-        except (PermissionError, OSError):
-            try:
-                proc.kill()
-            except Exception:
-                pass
-    return
+        parent.kill()
+    except psutil.NoSuchProcess:
+        return
+    except Exception:
+        proc.kill()
 
 
 def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProcess:
@@ -624,11 +588,6 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(command, **popen_kwargs)
-    if os.name != "nt":
-        try:
-            proc._hermes_pgid = os.getpgid(proc.pid)
-        except (ProcessLookupError, OSError):
-            pass
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -860,63 +819,6 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 # ===========================================================================
 # Provider: OpenAI TTS
 # ===========================================================================
-def _coerce_openai_tts_base_url(configured_base_url: Any, default_base_url: str) -> str:
-    """Return a validated OpenAI TTS base URL."""
-    default_base_url = default_base_url or DEFAULT_OPENAI_BASE_URL
-    base_url = str(configured_base_url or default_base_url).strip().rstrip("/")
-    parsed = urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("tts.openai.base_url must be an absolute http(s) URL")
-    if parsed.username or parsed.password:
-        raise ValueError("tts.openai.base_url must not include embedded credentials")
-    if parsed.scheme == "http" and not _is_local_openai_tts_host(parsed.hostname):
-        raise ValueError("tts.openai.base_url must use HTTPS unless it points to localhost")
-    return base_url
-
-
-def _is_local_openai_tts_host(hostname: Optional[str]) -> bool:
-    """Return True for loopback hostnames allowed to use plain HTTP."""
-    if not hostname:
-        return False
-    return hostname.lower().rstrip(".") in {"localhost", "127.0.0.1", "::1"}
-
-
-def _is_official_openai_tts_base_url(base_url: str) -> bool:
-    """Return True when the URL points at OpenAI's official API host."""
-    parsed = urlparse(base_url)
-    return (
-        parsed.scheme == "https"
-        and (parsed.hostname or "").lower().rstrip(".") == "api.openai.com"
-    )
-
-
-def _resolve_openai_tts_api_key_for_base_url(
-    default_api_key: str,
-    base_url: str,
-    default_base_url: str,
-) -> str:
-    """Use the shared OpenAI key only for trusted OpenAI/default endpoints."""
-    default_base_url = (default_base_url or DEFAULT_OPENAI_BASE_URL).strip().rstrip("/")
-    if base_url == default_base_url:
-        return default_api_key
-
-    if _is_official_openai_tts_base_url(base_url):
-        direct_key = resolve_openai_audio_api_key()
-        if direct_key:
-            return direct_key
-        raise ValueError("tts.openai.base_url points to OpenAI but no OpenAI API key is configured")
-
-    custom_api_key = (get_env_value(CUSTOM_OPENAI_TTS_API_KEY_ENV) or "").strip()
-    if custom_api_key:
-        return custom_api_key
-
-    raise ValueError(
-        "Custom tts.openai.base_url values require "
-        f"{CUSTOM_OPENAI_TTS_API_KEY_ENV}; refusing to send the shared "
-        "OpenAI voice API key to a non-OpenAI endpoint"
-    )
-
-
 def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using OpenAI TTS.
@@ -929,13 +831,12 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key, default_base_url = _resolve_openai_audio_client_config()
+    api_key, base_url = _resolve_openai_audio_client_config()
 
     oai_config = tts_config.get("openai", {})
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    base_url = _coerce_openai_tts_base_url(oai_config.get("base_url"), default_base_url)
-    api_key = _resolve_openai_tts_api_key_for_base_url(api_key, base_url, default_base_url)
+    base_url = oai_config.get("base_url", base_url)
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
     # Determine response format from extension

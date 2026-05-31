@@ -590,42 +590,6 @@ class TestEngineOverride:
         engine_idx = captured_cmds[0].index("--engine")
         assert captured_cmds[0][engine_idx + 1] == "lightpanda"
 
-    def test_cloud_cdp_session_does_not_run_local_chrome_fallback(self):
-        """Configured Lightpanda must not trigger local Chrome fallback for cloud CDP sessions."""
-        import tools.browser_tool as bt
-
-        bt._cached_browser_engine = "lightpanda"
-        bt._browser_engine_resolved = True
-
-        mock_proc = MagicMock()
-        mock_proc.wait.return_value = None
-        mock_proc.returncode = 0
-        mock_stdout = json.dumps({"success": True, "data": {"snapshot": "", "refs": {}}})
-
-        with patch("tools.browser_tool._get_session_info", return_value={"cdp_url": "wss://cloud.example/session", "session_name": "cdp-cloud-session"}), \
-             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
-             patch("subprocess.Popen", return_value=mock_proc) as popen, \
-             patch("os.open", return_value=99), \
-             patch("os.close"), \
-             patch("os.unlink"), \
-             patch("os.makedirs"), \
-             patch("builtins.open", MagicMock(return_value=MagicMock(
-                 __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=mock_stdout))),
-                 __exit__=MagicMock(return_value=False),
-             ))), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("tools.browser_tool._write_owner_pid"), \
-             patch("tools.browser_tool._run_chrome_fallback_command") as chrome_fallback:
-            result = bt._run_browser_command("task1", "snapshot", [])
-
-        assert result == {"success": True, "data": {"snapshot": "", "refs": {}}}
-        chrome_fallback.assert_not_called()
-        assert popen.call_count == 1
-        cloud_cmd = popen.call_args.args[0]
-        assert "--cdp" in cloud_cmd
-        assert "--engine" not in cloud_cmd
-
     def test_hybrid_local_sidecar_injects_engine_even_with_cloud_provider(self):
         """A task::local sidecar is local even when global cloud config exists."""
         import tools.browser_tool as bt

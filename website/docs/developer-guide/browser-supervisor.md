@@ -210,7 +210,7 @@ Issue planned against `jo-inc/camofox-browser` adding:
 - Streaming dialog/frame events live to the user (would require gateway hooks)
 - Persisting dialog history across sessions (in-memory only)
 - Per-iframe dialog policies (agent can express this via `dialog_id`)
-- Replacing `browser_cdp` — it stays as the opt-in escape hatch for the long tail (viewport, diagnostics, network throttling), while cookie and CDP navigation methods remain blocked
+- Replacing `browser_cdp` — it stays as the escape hatch for the long tail (cookies, viewport, network throttling)
 
 ## Testing
 

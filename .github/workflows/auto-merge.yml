@@ -25,7 +25,6 @@ on:
       - "OSV-Scanner"
       - "Docs Site Checks"
       - "uv.lock check"
-      - "Docker Build and Publish"
     types: [completed]
 
 # One evaluation per PR at a time; cancel any in-flight run when a
@@ -37,11 +36,9 @@ on:
 concurrency:
   group: >-
     auto-merge-pr-${{
-      (github.event_name == 'workflow_run' &&
-        (github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id)) ||
       github.event.pull_request.number ||
       github.event.issue.number ||
-      github.run_id
+      github.event.workflow_run.pull_requests[0].number
     }}-${{
       (github.event_name == 'pull_request' &&
        (github.event.action == 'synchronize' ||
@@ -66,7 +63,7 @@ jobs:
     # in the PR's checks list; the script short-circuits on those events.
     # issue_comment fires for all issues — gate to PRs only.
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.name != 'Auto-merge' && github.event.workflow_run.event == 'pull_request') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.name != 'Auto-merge') ||
       (github.event_name == 'pull_request_review' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'labeled' || github.event.label.name == 'reviewed')) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
@@ -193,13 +190,6 @@ jobs:
             const { data: pr } = await github.rest.pulls.get({
               owner, repo, pull_number: prNumber,
             });
-            // workflow_run and issue_comment events can resolve to fork PRs;
-            // event-level guards for these triggers don't carry full PR head metadata.
-            if ((context.eventName === 'workflow_run' || context.eventName === 'issue_comment')
-                && pr.head.repo.full_name !== `${owner}/${repo}`) {
-              core.info(`PR #${prNumber} is from fork '${pr.head.repo.full_name}' — skipping.`);
-              return;
-            }
             if (pr.state !== 'open') {
               core.info(`PR #${prNumber} is ${pr.state} — nothing to do.`);
               return;
@@ -387,108 +377,6 @@ jobs:
               `bot activity: ${reviewBotActivity}${botNames.length ? ` from ${botNames.join(', ')}` : ''})`);
             core.info(`'reviewed' label: ${hasReviewedLabel}`);
 
-            // ── 9b. Bot-implied approval (resolved threads = APPROVAL) ────────
-            // A known review bot with activity on this PR counts as an APPROVED
-            // review when none of its inline review threads remain unresolved.
-            // Resolving a bot's threads is itself an explicit human sign-off,
-            // so this implied approval also satisfies the `reviewed` label gate.
-            //   - Bot left inline threads, all resolved → implied approval.
-            //   - Bot left only summary comments / a review with no threads →
-            //     nothing to resolve, counts as implied approval.
-            //   - Bot has any unresolved thread → NOT an implied approval; the
-            //     label gate still applies until threads are addressed.
-            //   - Bot whose latest review is CHANGES_REQUESTED → handled by
-            //     step 8 above; never an implied approval.
-            const reviewThreads = [];
-            try {
-              const threadQuery = `
-                query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-                  repository(owner: $owner, name: $name) {
-                    pullRequest(number: $number) {
-                      reviewThreads(first: 100, after: $cursor) {
-                        pageInfo { hasNextPage endCursor }
-                        nodes {
-                          isResolved
-                          comments(first: 100) {
-                            nodes { author { login } }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              `;
-              let threadCursor = null;
-              while (true) {
-                const result = await github.graphql(threadQuery, {
-                  owner, name: repo, number: prNumber, cursor: threadCursor,
-                });
-                const rt = result.repository.pullRequest.reviewThreads;
-                reviewThreads.push(...rt.nodes);
-                if (!rt.pageInfo.hasNextPage) break;
-                threadCursor = rt.pageInfo.endCursor;
-              }
-            } catch (err) {
-              // GraphQL outages should not block merge — fall back to "no
-              // resolution info" which leaves the label gate active.
-              core.warning(`Failed to fetch review threads via GraphQL: ${err.message}`);
-            }
-
-            const botsWithActivity = new Set([
-              ...botIssueComments.map(c => c.user.login),
-              ...botReviews.map(r => r.user.login),
-            ]);
-            const botsRequestingChanges = new Set(
-              changesRequested
-                .filter(r => REVIEW_BOTS.has(r.user.login))
-                .map(r => r.user.login)
-            );
-            const botThreadStats = {};
-            for (const thread of reviewThreads) {
-              const authorsInThread = new Set(
-                thread.comments.nodes
-                  .map(c => c.author && c.author.login)
-                  .filter(Boolean)
-              );
-              for (const author of authorsInThread) {
-                if (!REVIEW_BOTS.has(author)) continue;
-                if (!botThreadStats[author]) {
-                  botThreadStats[author] = { total: 0, unresolved: 0 };
-                }
-                botThreadStats[author].total += 1;
-                if (!thread.isResolved) botThreadStats[author].unresolved += 1;
-              }
-            }
-
-            const impliedBotApprovals = [];
-            const botsWithUnresolved = [];
-            for (const botLogin of botsWithActivity) {
-              if (botsRequestingChanges.has(botLogin)) continue;
-              const stats = botThreadStats[botLogin];
-              if (stats && stats.unresolved === 0) {
-                impliedBotApprovals.push(botLogin);
-              } else if (stats) {
-                botsWithUnresolved.push(
-                  `${botLogin} (${stats.unresolved}/${stats.total} unresolved)`
-                );
-              } else {
-                botsWithUnresolved.push(`${botLogin} (thread status unavailable)`);
-              }
-            }
-            const hasImpliedBotApproval = impliedBotApprovals.length > 0;
-            if (hasImpliedBotApproval) {
-              core.info(
-                `Implied bot approval (no unresolved threads): ` +
-                impliedBotApprovals.join(', ')
-              );
-            }
-            if (botsWithUnresolved.length > 0) {
-              core.info(
-                `Bots with unresolved threads (no implied approval): ` +
-                botsWithUnresolved.join('; ')
-              );
-            }
-
             // ── 10. Guard: no qualifying review yet ───────────────────────────
             if (!reviewDetected) {
               await setStatus(headSha, 'pending',
@@ -498,43 +386,32 @@ jobs:
                 `### Auto-merge: pending review\n\n` +
                 `All CI checks have passed, but no qualifying review activity has been ` +
                 `detected yet.\n\n` +
-                `Auto-merge requires **one** of the following:\n` +
+                `Auto-merge requires **one** of the following, plus the \`reviewed\` label:\n` +
                 `- an **approved** review,\n` +
-                `- an inline review comment from someone other than the PR author plus the \`reviewed\` label, or\n` +
+                `- an inline review comment from someone other than the PR author, or\n` +
                 `- a comment or review from a recognised code-review bot ` +
-                `(e.g. \`@gemini-code-assist\`, \`@copilot-pull-request-reviewer\`, \`@coderabbitai\`) ` +
-                `with all of its threads resolved — resolution counts as an implicit APPROVAL.\n\n` +
+                `(e.g. \`@gemini-code-assist\`, \`@copilot-pull-request-reviewer\`, \`@coderabbitai\`) — ` +
+                `quota / rate-limit responses still count as an attempt.\n\n` +
                 `[View workflow run](${workflowRunUrl})`
               );
               return;
             }
 
-            // ── 11. Guard: review exists but no qualifying approval signal ─────
-            // Pass conditions (any one is enough):
-            //   - explicit APPROVED review, OR
-            //   - a bot has implied approval (all its threads resolved), OR
-            //   - the `reviewed` label is present (human sign-off on activity).
-            const approvalSignal = approvedReviews.length > 0
-              || hasImpliedBotApproval
-              || hasReviewedLabel;
-            if (!approvalSignal) {
+            // ── 11. Guard: review exists but 'reviewed' label missing ──────────
+            if (!hasReviewedLabel) {
               await setStatus(headSha, 'pending',
-                'Review received. Resolve bot threads or add `reviewed` label.');
+                'Review received. Add the `reviewed` label to proceed.');
               const parts = [
                 approvedReviews.length > 0   ? `${approvedReviews.length} approved review(s): ${approvedNames.join(', ')}` : null,
                 nonAuthorComments.length > 0 ? `${nonAuthorComments.length} inline comment(s) by non-author(s)` : null,
                 reviewBotActivity > 0        ? `${reviewBotActivity} comment(s)/review(s) from review bot(s): ${botNames.join(', ')}` : null,
               ].filter(Boolean);
-              const unresolvedNote = botsWithUnresolved.length > 0
-                ? `\nBot threads still unresolved: ${botsWithUnresolved.join('; ')}.\n`
-                : '';
               await upsertComment(
                 '<!-- auto-merge-needs-label -->',
                 `### Auto-merge: review received — action required\n\n` +
-                `Review activity detected (${parts.join('; ')}).${unresolvedNote}\n\n` +
-                `To proceed, **either**:\n` +
-                `- resolve all review-bot threads (counts as an implicit APPROVAL), or\n` +
-                `- add the \`reviewed\` label to this PR.\n\n` +
+                `Review activity detected (${parts.join('; ')}).\n\n` +
+                `To confirm you have reviewed and accepted the feedback, please add the ` +
+                `\`reviewed\` label to this PR. Auto-merge will then proceed.\n\n` +
                 `[View workflow run](${workflowRunUrl})`
               );
               return;

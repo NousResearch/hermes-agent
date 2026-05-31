@@ -263,7 +263,11 @@ class TestGatewayRuntimeStatus:
             (
                 target,
                 payload,
-                {"indent": None, "separators": (",", ":")},
+                {
+                    "indent": None,
+                    "preserve_symlink": True,
+                    "separators": (",", ":"),
+                },
             )
         ]
 
@@ -687,6 +691,23 @@ class TestTakeoverMarker:
         # Clear again — still no error
         status.clear_takeover_marker()
 
+    def test_write_marker_replaces_symlink_instead_of_clobbering_target(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        marker = tmp_path / ".gateway-takeover.json"
+        victim = tmp_path / "victim.json"
+        victim.write_text("do not overwrite", encoding="utf-8")
+        marker.symlink_to(victim)
+
+        ok = status.write_takeover_marker(target_pid=12345)
+
+        assert ok is True
+        assert not marker.is_symlink()
+        assert victim.read_text(encoding="utf-8") == "do not overwrite"
+        assert (marker.stat().st_mode & 0o777) == 0o644
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        assert payload["target_pid"] == 12345
+
     def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
         """write_takeover_marker is best-effort; returns False but doesn't raise."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -799,6 +820,23 @@ class TestPlannedStopMarker:
 
         assert not (tmp_path / ".gateway-planned-stop.json").exists()
         status.clear_planned_stop_marker()
+
+    def test_write_marker_replaces_symlink_instead_of_clobbering_target(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        marker = tmp_path / ".gateway-planned-stop.json"
+        victim = tmp_path / "victim.json"
+        victim.write_text("do not overwrite", encoding="utf-8")
+        marker.symlink_to(victim)
+
+        ok = status.write_planned_stop_marker(target_pid=12345)
+
+        assert ok is True
+        assert not marker.is_symlink()
+        assert victim.read_text(encoding="utf-8") == "do not overwrite"
+        assert (marker.stat().st_mode & 0o777) == 0o644
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        assert payload["target_pid"] == 12345
 
     def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

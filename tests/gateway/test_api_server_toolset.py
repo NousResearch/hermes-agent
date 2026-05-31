@@ -30,7 +30,7 @@ class TestHermesApiServerToolset:
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze", "image_generate",
             "execute_code", "delegate_task",
-            "todo", "memory", "cronjob",
+            "todo", "memory", "session_search", "cronjob",
         ]
         for tool in expected:
             assert tool in tools, f"Missing expected tool: {tool}"
@@ -46,16 +46,6 @@ class TestHermesApiServerToolset:
         tools = resolve_toolset("hermes-api-server")
         for tool in ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"]:
             assert tool in tools, f"Missing HA tool: {tool}"
-
-    def test_toolset_excludes_session_search(self):
-        tools = resolve_toolset("hermes-api-server")
-        assert "session_search" not in tools
-
-    def test_default_api_server_toolsets_exclude_session_search(self):
-        from hermes_cli.tools_config import _get_platform_tools
-
-        toolsets = _get_platform_tools({}, "api_server")
-        assert "session_search" not in toolsets
 
     def test_toolset_excludes_clarify(self):
         tools = resolve_toolset("hermes-api-server")
@@ -107,63 +97,6 @@ class TestApiServerAdapterToolset:
             assert isinstance(toolsets, list)
             assert len(toolsets) > 0
             assert call_kwargs.kwargs.get("platform") == "api_server"
-
-    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
-    def test_create_agent_uses_session_id_as_default_memory_scope(self):
-        """API requests without a session-key header still isolate memory per session."""
-        from gateway.platforms.api_server import APIServerAdapter
-        from gateway.config import PlatformConfig
-
-        adapter = APIServerAdapter(PlatformConfig())
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
-             patch("gateway.run._resolve_gateway_model") as mock_model, \
-             patch("gateway.run._load_gateway_config") as mock_config, \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-
-            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
-                                        "provider": None, "api_mode": None,
-                                        "command": None, "args": []}
-            mock_model.return_value = "test/model"
-            mock_config.return_value = {}
-            mock_agent_cls.return_value = MagicMock()
-
-            adapter._create_agent(session_id="api-session-1", gateway_session_key=None)
-
-            mock_agent_cls.assert_called_once()
-            call_kwargs = mock_agent_cls.call_args.kwargs
-            assert call_kwargs["session_id"] == "api-session-1"
-            assert call_kwargs["gateway_session_key"] == "api-session-1"
-
-    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
-    def test_create_agent_prefers_explicit_memory_scope(self):
-        """Caller-provided session keys remain the stable long-term memory scope."""
-        from gateway.platforms.api_server import APIServerAdapter
-        from gateway.config import PlatformConfig
-
-        adapter = APIServerAdapter(PlatformConfig())
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
-             patch("gateway.run._resolve_gateway_model") as mock_model, \
-             patch("gateway.run._load_gateway_config") as mock_config, \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-
-            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
-                                        "provider": None, "api_mode": None,
-                                        "command": None, "args": []}
-            mock_model.return_value = "test/model"
-            mock_config.return_value = {}
-            mock_agent_cls.return_value = MagicMock()
-
-            adapter._create_agent(
-                session_id="api-session-1",
-                gateway_session_key="client-channel-1",
-            )
-
-            mock_agent_cls.assert_called_once()
-            call_kwargs = mock_agent_cls.call_args.kwargs
-            assert call_kwargs["session_id"] == "api-session-1"
-            assert call_kwargs["gateway_session_key"] == "client-channel-1"
 
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_respects_config_override(self):

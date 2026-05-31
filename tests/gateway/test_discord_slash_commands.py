@@ -174,10 +174,9 @@ async def test_auto_registers_missing_gateway_commands(adapter):
 
     # These commands are gateway-available but were not in the original
     # hardcoded registration list — they should be auto-registered.
-    expected_auto = {"yolo", "profile"}
+    expected_auto = {"debug", "yolo", "profile"}
     for name in expected_auto:
         assert name in tree_names, f"/{name} should be auto-registered on Discord"
-    assert "debug" not in tree_names, "/debug is CLI-only and must not be registered on Discord"
 
 
 @pytest.mark.asyncio
@@ -186,12 +185,12 @@ async def test_auto_registered_command_dispatches_correctly(adapter):
     adapter._run_simple_slash = AsyncMock()
     adapter._register_slash_commands()
 
-    # /profile has no args — test parameterless dispatch
-    profile_cmd = adapter._client.tree.commands["profile"]
+    # /debug has no args — test parameterless dispatch
+    debug_cmd = adapter._client.tree.commands["debug"]
     interaction = SimpleNamespace()
     adapter._run_simple_slash.reset_mock()
-    await profile_cmd.callback(interaction)
-    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/profile")
+    await debug_cmd.callback(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/debug")
 
 
 @pytest.mark.asyncio

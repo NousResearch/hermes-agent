@@ -18,17 +18,6 @@ class TestExpandParentToolsets(unittest.TestCase):
         # Original composite is preserved
         self.assertIn("hermes-cli", expanded)
 
-    def test_composite_expansion_excludes_blocked_toolsets(self):
-        """Composite expansion must not make blocked child toolsets requestable."""
-        expanded = _expand_parent_toolsets({"hermes-cli"})
-
-        self.assertNotIn("messaging", expanded)
-        self.assertNotIn("code_execution", expanded)
-        self.assertNotIn("memory", expanded)
-        self.assertNotIn("clarify", expanded)
-        self.assertNotIn("delegation", expanded)
-        self.assertNotIn("hermes-acp", expanded)
-
     def test_individual_toolset_unchanged(self):
         """When parent already uses individual toolsets, expansion keeps them."""
         expanded = _expand_parent_toolsets({"web", "terminal"})

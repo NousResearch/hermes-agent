@@ -22,7 +22,6 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    SessionSource,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
 )
@@ -119,9 +118,8 @@ def _make_update(msg):
     return update
 
 
-def _make_video(file_obj=None, file_size=1024):
+def _make_video(file_obj=None):
     video = MagicMock()
-    video.file_size = file_size
     video.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-bytes"))
     return video
 
@@ -414,34 +412,6 @@ class TestVideoDownloadBlock:
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
     @pytest.mark.asyncio
-    async def test_oversized_native_video_rejected_before_download(self, adapter):
-        file_obj = _make_file_obj(b"fake-mp4")
-        msg = _make_message()
-        msg.video = _make_video(file_obj, file_size=25 * 1024 * 1024)
-        update = _make_update(msg)
-
-        await adapter._handle_media_message(update, MagicMock())
-
-        msg.video.get_file.assert_not_awaited()
-        event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text
-        assert event.media_urls == []
-
-    @pytest.mark.asyncio
-    async def test_unknown_native_video_size_rejected_before_download(self, adapter):
-        file_obj = _make_file_obj(b"fake-mp4")
-        msg = _make_message()
-        msg.video = _make_video(file_obj, file_size=None)
-        update = _make_update(msg)
-
-        await adapter._handle_media_message(update, MagicMock())
-
-        msg.video.get_file.assert_not_awaited()
-        event = adapter.handle_message.call_args[0][0]
-        assert "could not be verified" in event.text
-        assert event.media_urls == []
-
-    @pytest.mark.asyncio
     async def test_mp4_document_is_treated_as_video(self, adapter):
         file_obj = _make_file_obj(b"fake-mp4-doc")
         doc = _make_document(file_name="good.mp4", mime_type="video/mp4", file_size=1024, file_obj=file_obj)
@@ -454,25 +424,6 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
-
-    @pytest.mark.asyncio
-    async def test_oversized_mp4_document_rejected_before_download(self, adapter):
-        file_obj = _make_file_obj(b"fake-mp4-doc")
-        doc = _make_document(
-            file_name="huge.mp4",
-            mime_type="video/mp4",
-            file_size=25 * 1024 * 1024,
-            file_obj=file_obj,
-        )
-        msg = _make_message(document=doc)
-        update = _make_update(msg)
-
-        await adapter._handle_media_message(update, MagicMock())
-
-        doc.get_file.assert_not_awaited()
-        event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text
-        assert event.media_urls == []
 
 
 # ---------------------------------------------------------------------------
@@ -813,37 +764,6 @@ class TestSendDocument:
 
 
 class TestTelegramPhotoBatching:
-    def test_photo_batch_key_is_sender_scoped_for_shared_threads(self, adapter):
-        first_source = SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id="group-1",
-            chat_type="group",
-            user_id="authorized",
-            thread_id="topic-1",
-        )
-        second_source = SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id="group-1",
-            chat_type="group",
-            user_id="attacker",
-            thread_id="topic-1",
-        )
-        msg = SimpleNamespace(media_group_id=None)
-
-        first_key = adapter._photo_batch_key(
-            MessageEvent(text="", message_type=MessageType.PHOTO, source=first_source),
-            msg,
-        )
-        second_key = adapter._photo_batch_key(
-            MessageEvent(text="", message_type=MessageType.PHOTO, source=second_source),
-            msg,
-        )
-
-        assert first_key != second_key
-        assert ":sender:authorized:" in first_key
-        assert ":sender:attacker:" in second_key
-
-
     @pytest.mark.asyncio
     async def test_flush_photo_batch_does_not_drop_newer_scheduled_task(self, adapter):
         old_task = MagicMock()

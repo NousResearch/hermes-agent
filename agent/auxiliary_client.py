@@ -455,10 +455,9 @@ def _to_openai_base_url(base_url: str) -> str:
     """
     url = str(base_url or "").strip().rstrip("/")
     if url.endswith("/anthropic"):
-        # ZAI uses /api/anthropic for Anthropic wire but /api/paas/v4
-        # for OpenAI wire — the generic /v1 rewrite is wrong for both
-        # global (api.z.ai) and China (open.bigmodel.cn) endpoints.
-        if "open.bigmodel.cn" in url or "bigmodel" in url or "api.z.ai" in url:
+        # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire
+        # but /api/paas/v4 for OpenAI wire — the generic /v1 rewrite is wrong.
+        if "open.bigmodel.cn" in url or "bigmodel" in url:
             rewritten = url[: -len("/anthropic")] + "/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
@@ -3397,22 +3396,32 @@ def resolve_vision_provider_client(
         )
         return _finalize(requested, sync_client, default_model)
 
-    # ZAI vision models must use the OpenAI-compatible API mode, not the
-    # Anthropic-compatible wire. Let the normal provider credential resolver
-    # choose the configured/detected endpoint (GLM_BASE_URL, cached endpoint,
-    # or default) instead of overriding it with a hardcoded public URL.
+    # ZAI vision models must use the OpenAI-compatible endpoint, not the
+    # Anthropic-compatible one (which may be the main-runtime default).
+    # The Anthropic wire rejects max_tokens on multimodal calls (error 1210),
+    # while the OpenAI wire handles it correctly.
     if requested == "zai" and not resolved_base_url:
-        client, final_model = _get_cached_client(
-            requested,
-            resolved_model,
-            async_mode,
-            api_key=resolved_api_key or None,
-            api_mode="chat_completions",
-            is_vision=True,
-        )
+        zai_openai_urls = [
+            "https://open.bigmodel.cn/api/paas/v4",
+            "https://api.z.ai/api/paas/v4",
+        ]
+        for _zai_url in zai_openai_urls:
+            client, final_model = _get_cached_client(
+                requested, resolved_model, async_mode,
+                base_url=_zai_url,
+                api_key=resolved_api_key or None,
+                api_mode="chat_completions",
+                is_vision=True,
+            )
+            if client is not None:
+                return _finalize(requested, client, final_model)
+        # Fallback: try without explicit base_url (old behavior)
+        client, final_model = _get_cached_client(requested, resolved_model, async_mode,
+                                                 api_mode=resolved_api_mode,
+                                                 is_vision=True)
         if client is None:
             return requested, None, None
-        return _finalize(requested, client, final_model)
+        return requested, client, final_model
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                              api_mode=resolved_api_mode,

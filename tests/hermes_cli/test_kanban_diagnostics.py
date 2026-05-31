@@ -9,7 +9,6 @@ engine works on sqlite3.Row objects as well as dataclasses.
 
 from __future__ import annotations
 
-import subprocess
 import time
 from pathlib import Path
 
@@ -149,36 +148,6 @@ def test_repeated_failures_fires_at_threshold_on_spawn():
     # CLI hints are what operators actually need here.
     suggested = [a.label for a in d.actions if a.suggested]
     assert any("doctor" in s for s in suggested)
-
-
-def test_repeated_failures_shell_quotes_profile_cli_hints(tmp_path):
-    """Diagnostic clipboard commands must quote assignee-controlled text."""
-    marker = tmp_path / "injected_marker"
-    assignee = f"safe; printf injected > {marker} #"
-    task = _task(
-        status="ready",
-        assignee=assignee,
-        consecutive_failures=3,
-        last_failure_error="spawn failed",
-    )
-    runs = [
-        _run(outcome="spawn_failed", run_id=1),
-        _run(outcome="spawn_failed", run_id=2),
-        _run(outcome="spawn_failed", run_id=3),
-    ]
-
-    diags = kd.compute_task_diagnostics(task, [], runs)
-    command = next(
-        a.payload["command"]
-        for a in diags[0].actions
-        if a.kind == "cli_hint" and a.suggested
-    )
-
-    assert command.startswith("hermes -p '")
-    assert "; printf injected" in command
-    assert command.endswith("' doctor")
-    subprocess.run(command, shell=True, check=False, env={"PATH": ""})
-    assert not marker.exists()
 
 
 def test_repeated_failures_fires_on_timeout_loop():

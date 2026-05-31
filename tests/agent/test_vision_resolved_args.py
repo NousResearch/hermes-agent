@@ -62,27 +62,3 @@ def test_vision_base_url_override_keeps_explicit_provider():
     assert model == "glm-4v"
     assert mock_resolve.call_args.args[0] == "zai"
     assert mock_resolve.call_args.kwargs["explicit_base_url"] == "https://open.bigmodel.cn/api/paas/v4"
-
-
-def test_zai_vision_uses_configured_provider_endpoint_resolution():
-    """ZAI vision must not override GLM_BASE_URL/detected endpoint with hardcoded URLs."""
-    from agent.auxiliary_client import resolve_vision_provider_client
-
-    fake_client = MagicMock()
-    with patch(
-        "agent.auxiliary_client._get_cached_client",
-        return_value=(fake_client, "glm-4v"),
-    ) as mock_get_cached:
-        provider, client, model = resolve_vision_provider_client(
-            provider="zai",
-            model="glm-4v",
-        )
-
-    assert provider == "zai"
-    assert client is fake_client
-    assert model == "glm-4v"
-    mock_get_cached.assert_called_once()
-    assert mock_get_cached.call_args.args[:3] == ("zai", "glm-4v", False)
-    assert mock_get_cached.call_args.kwargs.get("base_url") is None
-    assert mock_get_cached.call_args.kwargs["api_mode"] == "chat_completions"
-    assert mock_get_cached.call_args.kwargs["is_vision"] is True

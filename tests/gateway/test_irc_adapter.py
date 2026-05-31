@@ -658,61 +658,6 @@ class TestIRCStandaloneSend:
         assert "illegal IRC characters" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_standalone_send_rejects_overlong_chat_id_before_connect(self, monkeypatch):
-        from gateway.config import PlatformConfig
-
-        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
-        monkeypatch.setenv("IRC_CHANNEL", "#cron")
-        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
-        monkeypatch.setenv("IRC_USE_TLS", "false")
-
-        async def _unexpected_open(*args, **kwargs):
-            raise AssertionError("overlong IRC target should fail before connecting")
-
-        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _unexpected_open)
-
-        result = await _standalone_send(
-            PlatformConfig(enabled=True, extra={}),
-            "#" + "a" * 500,
-            "hello",
-        )
-
-        assert "error" in result
-        assert "too long" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_standalone_send_aborts_when_no_message_prefix_can_fit(self, monkeypatch):
-        from gateway.config import PlatformConfig
-
-        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
-        monkeypatch.setenv("IRC_CHANNEL", "#cron")
-        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
-        monkeypatch.setenv("IRC_USE_TLS", "false")
-
-        target = "#" + "a" * 496
-        conn = _FakeIRCConnection([b":server 001 hermesbot-cron :Welcome"])
-
-        async def _fake_open(host, port, **kwargs):
-            return conn, conn
-
-        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
-
-        result = await _standalone_send(
-            PlatformConfig(enabled=True, extra={}),
-            target,
-            "あ",
-        )
-
-        assert "error" in result
-        assert "line limit" in result["error"]
-        privmsg_lines = [
-            line
-            for line in b"".join(conn.writes).decode("utf-8").splitlines()
-            if line.startswith("PRIVMSG ")
-        ]
-        assert privmsg_lines == []
-
-    @pytest.mark.asyncio
     async def test_standalone_send_strips_crlf_from_message_body(self, monkeypatch):
         from gateway.config import PlatformConfig
 

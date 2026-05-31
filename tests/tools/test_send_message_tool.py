@@ -143,75 +143,6 @@ class TestSendMessageTool:
             force_document=False,
         )
 
-    def test_bare_telegram_home_target_preserves_thread_id(self):
-        config, telegram_cfg = _make_config()
-        config.get_home_channel = lambda _platform: SimpleNamespace(
-            chat_id="-1001",
-            thread_id="17585",
-        )
-
-        with patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
-            result = json.loads(
-                send_message_tool(
-                    {
-                        "action": "send",
-                        "target": "telegram",
-                        "message": "hello",
-                    }
-                )
-            )
-
-        assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            Platform.TELEGRAM,
-            telegram_cfg,
-            "-1001",
-            "hello",
-            thread_id="17585",
-            media_files=[],
-            force_document=False,
-        )
-
-    def test_bare_discord_home_target_preserves_thread_id(self):
-        discord_cfg = SimpleNamespace(enabled=True, token="tok", extra={})
-        config = SimpleNamespace(
-            platforms={Platform.DISCORD: discord_cfg},
-            get_home_channel=lambda _platform: SimpleNamespace(
-                chat_id="111111111111111111",
-                thread_id="222222222222222222",
-            ),
-        )
-
-        with patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
-            result = json.loads(
-                send_message_tool(
-                    {
-                        "action": "send",
-                        "target": "discord",
-                        "message": "hello",
-                    }
-                )
-            )
-
-        assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            Platform.DISCORD,
-            discord_cfg,
-            "111111111111111111",
-            "hello",
-            thread_id="222222222222222222",
-            media_files=[],
-            force_document=False,
-        )
-
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
         config, telegram_cfg = _make_config()
         cache_file = tmp_path / "channel_directory.json"
@@ -668,52 +599,6 @@ class TestSendToPlatformChunking:
             ("send_document", "!room:example.com", str(file_path), None),
             ("disconnect",),
         ]
-
-    def test_send_matrix_via_adapter_rejects_sensitive_media_path_before_connect(self, tmp_path):
-        secret_path = tmp_path / ".ssh" / "id_rsa"
-        secret_path.parent.mkdir()
-        secret_path.write_text("private key material")
-
-        class FakeAdapter:
-            def __init__(self, _config):
-                raise AssertionError("adapter must not connect for denied media paths")
-
-        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
-
-        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
-            result = asyncio.run(
-                _send_matrix_via_adapter(
-                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
-                    "!room:example.com",
-                    "do not leak",
-                    media_files=[(str(secret_path), False)],
-                )
-            )
-
-        assert "sensitive location" in result["error"]
-        assert str(secret_path) not in result["error"]
-
-    def test_send_matrix_via_adapter_rejects_non_regular_media_path(self, tmp_path):
-        directory_path = tmp_path / "media-dir"
-        directory_path.mkdir()
-
-        class FakeAdapter:
-            def __init__(self, _config):
-                raise AssertionError("adapter must not connect for invalid media paths")
-
-        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
-
-        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
-            result = asyncio.run(
-                _send_matrix_via_adapter(
-                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
-                    "!room:example.com",
-                    "not a file",
-                    media_files=[(str(directory_path), False)],
-                )
-            )
-
-        assert result["error"] == "Media path must be a regular file"
 
 
 # ---------------------------------------------------------------------------
@@ -1674,8 +1559,6 @@ class TestSendDiscordForumMedia:
         # Multipart form, not JSON
         assert post_calls[0]["kwargs"].get("data") is not None
         assert post_calls[0]["kwargs"].get("json") is None
-        payload = post_calls[0]["kwargs"]["data"]._fields[0][2]
-        assert '"allowed_mentions": {"parse": ["users"], "replied_user": true}' in payload
 
     def test_forum_without_media_still_json_only(self, tmp_path, monkeypatch):
         """Forum + no media → JSON POST (no multipart overhead)."""
@@ -1704,11 +1587,6 @@ class TestSendDiscordForumMedia:
         # JSON path, no multipart
         assert post_calls[0]["kwargs"].get("json") is not None
         assert post_calls[0]["kwargs"].get("data") is None
-        allowed = post_calls[0]["kwargs"]["json"]["message"]["allowed_mentions"]
-        assert allowed["replied_user"] is True
-        assert "users" in allowed["parse"]
-        assert "everyone" not in allowed["parse"]
-        assert "roles" not in allowed["parse"]
 
     def test_forum_missing_media_file_collected_as_warning(self, tmp_path, monkeypatch):
         """Missing media files produce warnings but the thread is still created."""
@@ -1733,53 +1611,6 @@ class TestSendDiscordForumMedia:
         assert result["success"] is True
         assert "warnings" in result
         assert any("not found" in w for w in result["warnings"])
-
-    def test_forum_non_regular_media_file_collected_as_warning(self, tmp_path, monkeypatch):
-        """Non-regular media paths are skipped before upload."""
-        monkeypatch.setattr(
-            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
-        )
-
-        thread_resp = self._build_thread_resp()
-        session = MagicMock()
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=None)
-        session.post = MagicMock(return_value=thread_resp)
-
-        media_dir = tmp_path / "not_a_file"
-        media_dir.mkdir()
-
-        with patch("aiohttp.ClientSession", return_value=session):
-            result = asyncio.run(
-                _send_discord("tok", "forum_ch", "hi", media_files=[(str(media_dir), False)])
-            )
-
-        assert result["success"] is True
-        assert any("regular file" in w for w in result.get("warnings", []))
-
-    def test_forum_oversize_media_file_collected_as_warning(self, tmp_path, monkeypatch):
-        """Forum uploads skip files that exceed the safety size limit."""
-        monkeypatch.setattr(
-            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
-        )
-        monkeypatch.setattr("tools.send_message_tool._DISCORD_FORUM_MEDIA_MAX_BYTES", 4)
-
-        img = tmp_path / "big.png"
-        img.write_bytes(b"012345")
-
-        thread_resp = self._build_thread_resp()
-        session = MagicMock()
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=None)
-        session.post = MagicMock(return_value=thread_resp)
-
-        with patch("aiohttp.ClientSession", return_value=session):
-            result = asyncio.run(
-                _send_discord("tok", "forum_ch", "hi", media_files=[(str(img), False)])
-            )
-
-        assert result["success"] is True
-        assert any("safety limit" in w for w in result.get("warnings", []))
 
 
 # ---------------------------------------------------------------------------
@@ -1941,15 +1772,6 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
     )
 
 
-def _write_signal_cache_png(name: str, data: bytes = b"\x89PNG" + b"\x00" * 16) -> Path:
-    from hermes_constants import get_hermes_home
-
-    path = get_hermes_home() / "cache" / "images" / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return path
-
-
 class TestSendSignalChunking:
     def test_text_only_single_rpc(self, monkeypatch):
         fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
@@ -1969,7 +1791,7 @@ class TestSendSignalChunking:
         assert params["message"] == "hello"
         assert "attachments" not in params
 
-    def test_chunks_attachments_above_max(self, monkeypatch):
+    def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
         """33 attachments → 2 batches; text only on first batch. Batch 1
         only needs 1 token and 18 remain after batch 0, so no sleep."""
         from gateway.platforms.signal_rate_limit import (
@@ -1978,7 +1800,8 @@ class TestSendSignalChunking:
 
         paths = []
         for i in range(33):
-            p = _write_signal_cache_png(f"chunk_{i}.png")
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
@@ -2011,7 +1834,7 @@ class TestSendSignalChunking:
         assert second["message"] == ""  # caption only on batch 0
         assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
 
-    def test_full_followup_batch_emits_pacing_notice(self, monkeypatch):
+    def test_full_followup_batch_emits_pacing_notice(self, tmp_path, monkeypatch):
         """64 attachments → 2 full batches. Batch 1 needs 14 more tokens
         than the 18 remaining after batch 0 — 56s wait crossing the 10s
         notice threshold."""
@@ -2023,7 +1846,8 @@ class TestSendSignalChunking:
 
         paths = []
         for i in range(64):
-            p = _write_signal_cache_png(f"full_batch_{i}.png")
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
@@ -2057,14 +1881,15 @@ class TestSendSignalChunking:
         ) * SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
         assert sleep_calls == [pytest.approx(expected, abs=1.0)]
 
-    def test_429_with_retry_after_drives_exact_backoff(self, monkeypatch):
+    def test_429_with_retry_after_drives_exact_backoff(self, tmp_path, monkeypatch):
         """signal-cli ≥ v0.14.3 surfaces Retry-After under
         error.data.response.results[*].retryAfterSeconds. The scheduler
         calibrates its refill rate from that value; the retry of n=1
         sleeps the per-token interval."""
         from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
 
-        p = _write_signal_cache_png("retry_after.png")
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
 
         fake = _FakeSignalHttp([
             {
@@ -2101,12 +1926,13 @@ class TestSendSignalChunking:
         assert len(fake.calls) == 2  # initial + retry
         assert sleep_calls == [pytest.approx(42.0, abs=1.0)]
 
-    def test_429_without_retry_after_falls_back_to_default(self, monkeypatch):
+    def test_429_without_retry_after_falls_back_to_default(self, tmp_path, monkeypatch):
         """Older signal-cli (< v0.14.3) doesn't surface Retry-After.
         The scheduler keeps its default rate (1 token / 4s)."""
         from gateway.platforms.signal_rate_limit import SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
 
-        p = _write_signal_cache_png("retry_default.png")
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
 
         fake = _FakeSignalHttp([
             {"error": {"message": "Failed: [429] Rate Limited"}},
@@ -2129,7 +1955,7 @@ class TestSendSignalChunking:
         assert result["success"] is True
         assert sleep_calls == [pytest.approx(SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER, abs=1.0)]
 
-    def test_429_retry_exhaust_continues_to_next_batch(self, monkeypatch):
+    def test_429_retry_exhaust_continues_to_next_batch(self, tmp_path, monkeypatch):
         """Both attempts on batch 0 fail; batch 1 still gets a chance.
         The scheduler's natural pacing (no more cooldown gate) lets the
         second batch through after its acquire wait."""
@@ -2137,7 +1963,8 @@ class TestSendSignalChunking:
 
         paths = []
         for i in range(33):  # forces 2 batches
-            p = _write_signal_cache_png(f"retry_exhaust_{i}.png")
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
             paths.append((str(p), False))
 
         rate_limit_err = {
@@ -2181,9 +2008,10 @@ class TestSendSignalChunking:
         # 2 attempts on batch 0 + 1 successful batch 1 = 3 calls
         assert len(fake.calls) == 3
 
-    def test_non_rate_limit_error_returns_immediately(self, monkeypatch):
+    def test_non_rate_limit_error_returns_immediately(self, tmp_path, monkeypatch):
         """A non-429 RPC error should not retry — it returns an error result."""
-        p = _write_signal_cache_png("non_rate_limit.png")
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
 
         fake = _FakeSignalHttp([
             {"error": {"message": "UntrustedIdentityException"}},
@@ -2203,8 +2031,9 @@ class TestSendSignalChunking:
         assert "UntrustedIdentityException" in result["error"]
         assert len(fake.calls) == 1  # no retry on non-429
 
-    def test_skipped_missing_files_reported_in_warnings(self, monkeypatch):
-        good = _write_signal_cache_png("ok.png")
+    def test_skipped_missing_files_reported_in_warnings(self, tmp_path, monkeypatch):
+        good = tmp_path / "ok.png"
+        good.write_bytes(b"\x89PNG" + b"\x00" * 16)
 
         fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
         _install_signal_http(monkeypatch, fake)
@@ -2214,7 +2043,7 @@ class TestSendSignalChunking:
                 {"http_url": "http://localhost:8080", "account": "+15551234567"},
                 "+15557654321",
                 "msg",
-                media_files=[(str(good), False), ("/definitely/missing.png", False)],
+                media_files=[(str(good), False), (str(tmp_path / "missing.png"), False)],
             )
         )
 

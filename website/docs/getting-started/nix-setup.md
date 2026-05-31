@@ -554,7 +554,6 @@ Host                                    Container
 ────                                    ─────────
 /nix/store/...-hermes-agent-0.1.0  ──►  /nix/store/... (ro)
 ~/.hermes -> /var/lib/hermes/.hermes       (symlink bridge, per hostUsers)
-/etc/hermes-agent/container-mode         (root-owned CLI routing metadata)
 /var/lib/hermes/                    ──►  /data/          (rw)
   ├── current-package -> /nix/store/...    (symlink, updated each rebuild)
   ├── .gc-root -> /nix/store/...           (prevents nix-collect-garbage)
@@ -563,6 +562,7 @@ Host                                    Container
   │   ├── .env                             (merged from environment + environmentFiles)
   │   ├── config.yaml                      (Nix-generated, deep-merged by activation)
   │   ├── .managed                         (marker file)
+  │   ├── .container-mode                  (routing metadata: backend, exec_user, etc.)
   │   ├── state.db, sessions/, memories/   (runtime state)
   │   └── mcp-tokens/                      (OAuth tokens for MCP servers)
   ├── home/                                ──►  /home/hermes    (rw)

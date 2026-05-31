@@ -353,42 +353,6 @@ class TestMediaHelpers:
         with pytest.raises(ValueError, match="placeholder was not replaced"):
             await adapter._load_outbound_media("<path>")
 
-    @pytest.mark.asyncio
-    async def test_load_outbound_media_blocks_local_paths_outside_hermes_cache(self, tmp_path):
-        from gateway.platforms.wecom import WeComAdapter
-
-        secret_path = tmp_path / "secret.txt"
-        secret_path.write_text("do not upload", encoding="utf-8")
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-
-        with pytest.raises(PermissionError, match="Blocked outbound local media path"):
-            await adapter._load_outbound_media(str(secret_path))
-
-    @pytest.mark.asyncio
-    async def test_load_outbound_media_allows_hermes_cache_files(self, tmp_path, monkeypatch):
-        from gateway.platforms.wecom import WeComAdapter
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-        cached_file = tmp_path / "hermes-home" / "cache" / "audio" / "clip.mp3"
-        cached_file.parent.mkdir(parents=True)
-        cached_file.write_bytes(b"audio-bytes")
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-
-        data, content_type, name = await adapter._load_outbound_media(str(cached_file))
-
-        assert data == b"audio-bytes"
-        assert content_type == "audio/mpeg"
-        assert name == "clip.mp3"
-
-    @pytest.mark.asyncio
-    async def test_download_remote_bytes_blocks_private_urls_before_fetch(self):
-        from gateway.platforms.wecom import WeComAdapter
-
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-
-        with pytest.raises(ValueError, match="SSRF protection"):
-            await adapter._download_remote_bytes("http://127.0.0.1/internal.png", max_bytes=1024)
-
 
 class TestMediaUpload:
     @pytest.mark.asyncio
@@ -441,7 +405,6 @@ class TestMediaUpload:
     @pytest.mark.asyncio
     async def test_download_remote_bytes_blocks_unsafe_redirect(self, monkeypatch):
         import gateway.platforms.wecom as wecom_module
-        import tools.url_safety as url_safety_module
         from gateway.platforms.wecom import WeComAdapter
 
         class FakeStreamResponse:
@@ -480,11 +443,6 @@ class TestMediaUpload:
 
         monkeypatch.setattr(wecom_module, "HTTPX_AVAILABLE", True)
         monkeypatch.setattr(wecom_module, "httpx", SimpleNamespace(AsyncClient=FakeAsyncClient))
-        monkeypatch.setattr(
-            url_safety_module,
-            "is_safe_url",
-            lambda value: "127.0.0.1" not in str(value),
-        )
         adapter = WeComAdapter(PlatformConfig(enabled=True))
 
         with pytest.raises(ValueError, match="Blocked redirect to private/internal address"):

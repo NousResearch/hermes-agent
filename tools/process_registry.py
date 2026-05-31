@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from tools.approval import check_all_command_guards
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+MAX_STDIN_GUARD_CHARS = 200_000   # Max pending stdin bytes mirrored for EOF approval checks
 
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
@@ -93,7 +95,6 @@ class ProcessSession:
     task_id: str = ""                           # Task/sandbox isolation key
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
-    pgid: Optional[int] = None                  # POSIX process group ID for local sessions
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
@@ -131,6 +132,7 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    _pending_stdin_guard: str = field(default="", repr=False)
 
 
 class ProcessRegistry:
@@ -430,18 +432,11 @@ class ProcessRegistry:
         return session
 
     @staticmethod
-    def _terminate_host_pid(pid: int, pgid: Optional[int] = None) -> None:
+    def _terminate_host_pid(pid: int) -> None:
         """Terminate a host-visible PID without requiring the original process handle."""
         if _IS_WINDOWS:
             os.kill(pid, signal.SIGTERM)
             return
-
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — guarded by _IS_WINDOWS above
-                return
-            except (OSError, ProcessLookupError, PermissionError):
-                pass
 
         import psutil
         try:
@@ -569,11 +564,6 @@ class ProcessRegistry:
 
         session.process = proc
         session.pid = proc.pid
-        if not _IS_WINDOWS:
-            try:
-                session.pgid = os.getpgid(proc.pid)
-            except (ProcessLookupError, OSError):
-                pass
 
         try:
             # Start output reader thread
@@ -596,19 +586,40 @@ class ProcessRegistry:
             # descendants spawned via setsid) before re-raising so they do not
             # leak as untracked background processes.
             try:
-                if not _IS_WINDOWS:
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS above
-                    except (ProcessLookupError, PermissionError, OSError):
-                        proc.kill()
-                else:
+                if proc.poll() is None:
                     proc.kill()
+            except Exception:
+                pass
+            try:
+                self._terminate_host_pid(proc.pid)
+            except Exception:
+                pass
+            try:
+                # On POSIX, local background processes are started in their own
+                # session/process group; kill the whole group so setup-failure
+                # cleanup cannot leave behind descendants that ignore SIGTERM.
+                if not _IS_WINDOWS and proc.poll() is None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok
             except Exception:
                 pass
             try:
                 proc.wait(timeout=5)
             except Exception:
-                pass
+                try:
+                    # Preserve existing test/behavior contract: best-effort direct
+                    # kill on the original Popen handle as part of cleanup.
+                    if proc.poll() is None:
+                        proc.kill()
+                except Exception:
+                    try:
+                        if proc.poll() is None:
+                            proc.terminate()
+                    except Exception:
+                        pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
             raise
 
         return session
@@ -857,11 +868,10 @@ class ProcessRegistry:
         7 minutes on Feishu).
 
         This helper closes that window: when `session.exited` is still False
-        but the direct child's `Popen.poll()` reports an exit code, flip
-        `session.exited` immediately. We intentionally do *not* read from
-        `proc.stdout` here: the reader thread may already be blocked in
-        `stdout.read()`, and concurrent reads on the same buffered stream can
-        block callers (poll/wait) behind the stream lock.
+        but the direct child's `Popen.poll()` reports an exit code, drain any
+        readable bytes non-blocking and flip `session.exited`. The orphaned
+        reader thread remains stuck on its blocking `read()` but is a daemon
+        thread and will be reaped with the process.
 
         Safe no-op on sessions without a local `Popen` (env/PTY), already-
         exited sessions, and detached-recovered sessions.
@@ -878,7 +888,37 @@ class ProcessRegistry:
         if rc is None:
             return  # Direct child still running — reader block is legitimate.
 
+        # Direct child exited. Try to drain any bytes the reader hasn't
+        # consumed yet. This is best-effort: if the pipe is held open by a
+        # descendant, the non-blocking read returns what's immediately
+        # available and we stop.
+        drained = ""
+        stdout = getattr(proc, "stdout", None)
+        if stdout is not None and not _IS_WINDOWS:
+            try:
+                import fcntl
+                fd = stdout.fileno()
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                try:
+                    chunk = stdout.read()
+                    if chunk:
+                        drained = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
+                except (BlockingIOError, OSError, ValueError):
+                    pass
+                finally:
+                    try:
+                        fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
+
         with session._lock:
+            if drained:
+                session.output_buffer += drained
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
             session.exit_code = rc
         logger.info(
@@ -1049,19 +1089,22 @@ class ProcessRegistry:
                     if session.pid:
                         os.kill(session.pid, signal.SIGTERM)
             elif session.process:
-                # Local process -- kill the POSIX process group created at spawn,
-                # so double-forked descendants cannot outlive explicit cleanup.
+                # Local process -- kill the process tree
                 try:
                     if _IS_WINDOWS:
                         session.process.terminate()
                     else:
+                        import psutil
                         try:
-                            pgid = session.pgid
-                            if pgid is None:
-                                pgid = os.getpgid(session.process.pid)
-                            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — guarded by _IS_WINDOWS above
-                        except (ProcessLookupError, PermissionError, OSError):
-                            session.process.terminate()
+                            parent = psutil.Process(session.process.pid)
+                            for child in parent.children(recursive=True):
+                                try:
+                                    child.terminate()
+                                except psutil.NoSuchProcess:
+                                    pass
+                            parent.terminate()
+                        except psutil.NoSuchProcess:
+                            pass
                 except (ProcessLookupError, PermissionError):
                     session.process.kill()
             elif session.env_ref and session.pid:
@@ -1077,7 +1120,7 @@ class ProcessRegistry:
                         "status": "already_exited",
                         "exit_code": session.exit_code,
                     }
-                self._terminate_host_pid(session.pid, session.pgid)
+                self._terminate_host_pid(session.pid)
             else:
                 return {
                     "status": "error",
@@ -1094,6 +1137,35 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+
+    @staticmethod
+    def _stdin_guard_command(session: ProcessSession, payload: str) -> str:
+        """Build a command-equivalent view of stdin payload for approval guards."""
+        try:
+            argv = shlex.split(session.command or "")
+        except ValueError:
+            argv = []
+        executable = os.path.basename(argv[0]) if argv else "sh"
+        quoted_payload = shlex.quote(payload)
+
+        # EOF-driven interpreters commonly execute stdin as code.  Reframe the
+        # buffered stdin as an equivalent one-shot command so existing terminal
+        # approval rules see the same risky surface they would see pre-spawn.
+        if executable.startswith("python"):
+            return f"{executable} -c {quoted_payload}"
+        if executable in {"node", "ruby", "perl", "php", "sh", "bash", "zsh", "fish"}:
+            return f"{executable} -c {quoted_payload}"
+        return f"{session.command} <<'HERMES_STDIN_EOF'\n{payload}\nHERMES_STDIN_EOF"
+
+    def _check_stdin_guards(self, session: ProcessSession, payload: str) -> Optional[dict]:
+        """Run terminal approval guards against stdin that may execute on EOF."""
+        if not payload:
+            return None
+        approval = check_all_command_guards(self._stdin_guard_command(session, payload), "local")
+        if approval.get("approved"):
+            return None
+        return approval
+
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
         session = self.get(session_id)
@@ -1102,11 +1174,17 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
+        pending_payload = (session._pending_stdin_guard + data)[-MAX_STDIN_GUARD_CHARS:]
+        approval = self._check_stdin_guards(session, pending_payload)
+        if approval is not None:
+            return approval
+
         # PTY mode -- write through pty handle (expects bytes)
         if hasattr(session, '_pty') and session._pty:
             try:
                 pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
+                session._pending_stdin_guard = pending_payload
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
                 return {"status": "error", "error": str(e)}
@@ -1117,6 +1195,7 @@ class ProcessRegistry:
         try:
             session.process.stdin.write(data)
             session.process.stdin.flush()
+            session._pending_stdin_guard = pending_payload
             return {"status": "ok", "bytes_written": len(data)}
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -1133,9 +1212,14 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
+        approval = self._check_stdin_guards(session, session._pending_stdin_guard)
+        if approval is not None:
+            return approval
+
         if hasattr(session, '_pty') and session._pty:
             try:
                 session._pty.sendeof()
+                session._pending_stdin_guard = ""
                 return {"status": "ok", "message": "EOF sent"}
             except Exception as e:
                 return {"status": "error", "error": str(e)}
@@ -1144,6 +1228,7 @@ class ProcessRegistry:
             return {"status": "error", "error": "Process stdin not available (non-local backend or stdin closed)"}
         try:
             session.process.stdin.close()
+            session._pending_stdin_guard = ""
             return {"status": "ok", "message": "stdin closed"}
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -1264,7 +1349,6 @@ class ProcessRegistry:
                             "session_id": s.id,
                             "command": s.command,
                             "pid": s.pid,
-                            "pgid": s.pgid,
                             "pid_scope": s.pid_scope,
                             "cwd": s.cwd,
                             "started_at": s.started_at,
@@ -1329,7 +1413,6 @@ class ProcessRegistry:
                     task_id=entry.get("task_id", ""),
                     session_key=entry.get("session_key", ""),
                     pid=pid,
-                    pgid=entry.get("pgid"),
                     pid_scope=pid_scope,
                     cwd=entry.get("cwd"),
                     started_at=entry.get("started_at", time.time()),

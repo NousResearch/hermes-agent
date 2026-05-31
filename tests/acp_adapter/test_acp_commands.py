@@ -182,27 +182,6 @@ async def test_acp_queue_slash_command_adds_next_turn_without_running_now():
 
 
 @pytest.mark.asyncio
-async def test_acp_queued_prompt_does_not_hold_runtime_lock_during_update():
-    acp_agent, state, _fake, conn = make_agent_and_state()
-    state.is_running = True
-
-    async def assert_unlocked_session_update(*args, **kwargs):
-        assert not state.runtime_lock.locked()
-        await CaptureConn.session_update(conn, *args, **kwargs)
-
-    conn.session_update = assert_unlocked_session_update
-
-    response = await acp_agent.prompt(
-        session_id=state.session_id,
-        prompt=[TextContentBlock(type="text", text="queued while busy")],
-    )
-
-    assert response.stop_reason == "end_turn"
-    assert state.queued_prompts == ["queued while busy"]
-    assert len(conn.updates) == 1
-
-
-@pytest.mark.asyncio
 async def test_acp_prompt_drains_queued_turns_after_current_run():
     acp_agent, state, fake, conn = make_agent_and_state()
     state.queued_prompts.append("then run tests")

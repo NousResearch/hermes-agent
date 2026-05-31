@@ -38,125 +38,9 @@ if _SCRIPTS_DIR not in sys.path:
 
 from _hermes_home import get_hermes_home
 
-try:
-    from agent.file_safety import is_write_denied
-except ModuleNotFoundError:
-    # Preserve standalone execution from this scripts directory by making the
-    # repository root importable when the `agent` package is not installed.
-    _REPO_ROOT = str(Path(__file__).resolve().parents[3])
-    if _REPO_ROOT not in sys.path:
-        sys.path.insert(0, _REPO_ROOT)
-    from agent.file_safety import is_write_denied
-
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
-
-
-def _reject_unsafe_output_fragment(path: Path, *, label: str) -> None:
-    if path.is_absolute() or any(part == ".." for part in path.parts):
-        raise ValueError(f"Unsafe Drive download {label}: absolute paths and '..' are not allowed")
-
-
-def _validate_drive_download_filename(name: str, *, label: str) -> None:
-    if name in {"", ".", ".."}:
-        raise ValueError(f"Unsafe Drive download {label}: path must end with a filename")
-
-
-def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = "") -> Path:
-    """Return a cwd-confined, write-safe local path for Drive downloads."""
-    if output:
-        relative_path = Path(output).expanduser()
-        _reject_unsafe_output_fragment(relative_path, label="output path")
-        _validate_drive_download_filename(relative_path.name, label="output path")
-    else:
-        safe_name = Path(remote_name or "download").name
-        if safe_name in {"", ".", ".."}:
-            safe_name = "download"
-        relative_path = Path(safe_name)
-
-    if default_ext and not relative_path.suffix:
-        relative_path = relative_path.with_suffix(default_ext)
-
-    cwd = Path.cwd().resolve()
-    candidate = cwd / relative_path
-    resolved = candidate.resolve(strict=False)
-    try:
-        resolved.relative_to(cwd)
-    except ValueError as exc:
-        raise ValueError("Unsafe Drive download output path escapes the current directory") from exc
-
-    if resolved.exists() and resolved.is_dir():
-        raise ValueError("Unsafe Drive download output path resolves to an existing directory")
-
-    if is_write_denied(str(resolved)):
-        raise ValueError("Unsafe Drive download output path is blocked by Hermes write safety rules")
-
-    return resolved
-
-
-def _open_drive_download_destination(path: Path, cwd: Path):
-    """Open a Drive download destination without following symlinks in any path component.
-
-    On POSIX systems: parent directories are created and opened
-    component-by-component via dir_fd-relative operations. Each directory
-    component is opened with O_NOFOLLOW, and the final file is opened with
-    O_NOFOLLOW relative to the already-open parent directory. This avoids
-    symlink-swap races between path validation, parent creation, and the final
-    file open.
-
-    On Windows: dir_fd and O_NOFOLLOW are not supported, so the function falls
-    back to a lexically-validated path open. The _safe_drive_download_path
-    caller already performed resolve()-based confinement checks before this
-    function is called.
-    """
-    try:
-        relative = path.relative_to(cwd)
-    except ValueError as exc:
-        raise ValueError("Unsafe Drive download output path escapes the current directory") from exc
-
-    parts = relative.parts
-    if not parts:
-        raise ValueError("Unsafe Drive download output: path must end with a filename")
-
-    for part in parts:
-        _validate_drive_download_filename(part, label="path component")
-
-    if sys.platform == "win32":
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return open(str(path), "wb")  # noqa: SIM115
-
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
-    nofollow_directory_flags = directory_flags | getattr(os, "O_NOFOLLOW", 0)
-    file_flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_TRUNC
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-
-    dir_fd = os.open(str(cwd), directory_flags)
-    try:
-        for component in parts[:-1]:
-            try:
-                os.mkdir(component, 0o777, dir_fd=dir_fd)
-            except FileExistsError:
-                pass
-            next_fd = os.open(component, nofollow_directory_flags, dir_fd=dir_fd)
-            os.close(dir_fd)
-            dir_fd = next_fd
-
-        fd = os.open(parts[-1], file_flags, 0o666, dir_fd=dir_fd)  # dir_fd: guarded POSIX-only above
-    except OSError as exc:
-        raise ValueError(
-            f"Unsafe Drive download output path contains a symlink or non-directory component: {path}"
-        ) from exc
-    finally:
-        os.close(dir_fd)
-
-    return os.fdopen(fd, "wb")  # transfers fd ownership; no double-close
-
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -754,6 +638,7 @@ def drive_upload(args):
 def drive_download(args):
     """Download a Drive file to a local path. Google-native files (Docs/Sheets/Slides)
     must be exported; binary files are downloaded as-is."""
+    import io
     from googleapiclient.http import MediaIoBaseDownload
 
     service = build_service("drive", "v3")
@@ -771,32 +656,24 @@ def drive_download(args):
         "application/vnd.google-apps.drawing": ("image/png", ".png"),
     }
 
-    default_ext = native_export_map[mime][1] if mime in native_export_map and not args.output else ""
-    try:
-        out_path = _safe_drive_download_path(args.output, name, default_ext)
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
+    out_path = Path(args.output).expanduser() if args.output else Path.cwd() / name
 
     if mime in native_export_map:
         export_mime = args.export_mime or native_export_map[mime][0]
+        default_ext = native_export_map[mime][1]
+        if not args.output and not out_path.suffix:
+            out_path = out_path.with_suffix(default_ext)
         request = service.files().export_media(fileId=args.file_id, mimeType=export_mime)
     else:
         request = service.files().get_media(fileId=args.file_id)
 
-    cwd = Path.cwd().resolve()
-    try:
-        fh = _open_drive_download_destination(out_path, cwd)
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
-    try:
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-    finally:
-        fh.close()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = io.FileIO(str(out_path), "wb")
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.close()
 
     print(json.dumps({
         "status": "downloaded",

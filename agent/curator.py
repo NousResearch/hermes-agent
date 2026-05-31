@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
+from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -327,23 +328,6 @@ CURATOR_DRY_RUN_BANNER = (
 )
 
 
-CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT = 100
-CURATOR_REVIEW_MAX_ITERATIONS_HARD_CAP = 100
-
-
-def _curator_review_max_iterations(cfg: Dict[str, Any]) -> int:
-    """Return the bounded LLM/tool iteration budget for curator reviews."""
-    raw = (cfg.get("curator") or {}).get(
-        "review_max_iterations",
-        CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT,
-    )
-    try:
-        requested = int(raw)
-    except (TypeError, ValueError):
-        requested = CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT
-    return max(1, min(requested, CURATOR_REVIEW_MAX_ITERATIONS_HARD_CAP))
-
-
 CURATOR_REVIEW_PROMPT = (
     "You are running as Hermes' background skill CURATOR. This is an "
     "UMBRELLA-BUILDING consolidation pass, not a passive audit and not a "
@@ -405,8 +389,9 @@ CURATOR_REVIEW_PROMPT = (
     "copied and modified\n"
     "      • `scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification scripts, fixture generators, probes)\n"
-    "      Then archive the old sibling with `skill_manage action=delete` "
-    "after preserving any needed content with `skill_manage action=write_file`.\n"
+    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
+    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
+    "references/<topic>.md` (or templates/ / scripts/).\n"
     "4. Also flag skills whose NAME is too narrow (contains a PR number, "
     "a feature codename, a specific error string, an 'audit' / "
     "'diagnosis' / 'salvage' session artifact). These almost always "
@@ -426,18 +411,17 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "Do not use terminal, file, network, browser, messaging, delegation, "
-    "or cron tools; the curator review is intentionally restricted to "
-    "the skills toolset.\n\n"
+    "  - terminal                       — mv a sibling into the archive "
+    "OR move its content into a support subfile\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
     "is NOT a reason to keep — it's a reason to move it under an "
     "umbrella as a subsection or support file.\n\n"
-    "Expected output: real umbrella-ification within the bounded curator "
-    "review budget. Process the highest-value obvious clusters first, "
-    "then stop when there are no clear consolidation candidates left or "
-    "the review budget is exhausted.\n\n"
+    "Expected output: real umbrella-ification. Process every obvious "
+    "cluster. If you end the pass with fewer than 10 archives, you "
+    "stopped too early — go back and look at the clusters you left "
+    "alone.\n\n"
     "When done, write a human summary AND a structured machine-readable "
     "block so downstream tooling can distinguish consolidation from "
     "pruning. Format EXACTLY:\n\n"
@@ -482,11 +466,51 @@ def _reports_root() -> Path:
     """
     root = get_hermes_home() / "logs" / "curator"
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        _secure_report_dir(root)
     except OSError as e:
         logger.debug("Curator reports dir create failed: %s", e)
     return root
 
+
+
+def _secure_report_dir(path: Path, *, exist_ok: bool = True) -> None:
+    """Create a curator report directory with owner-only permissions."""
+    path.mkdir(parents=True, mode=0o700, exist_ok=exist_ok)
+    try:
+        path.chmod(0o700)
+    except OSError as e:
+        logger.debug("Curator report chmod failed for %s: %s", path, e)
+
+
+def _redact_report_value(value: Any) -> Any:
+    """Redact secret-looking strings before persisting curator telemetry."""
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, list):
+        return [_redact_report_value(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_report_value(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _redact_report_value(v) for k, v in value.items()}
+    return value
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    """Write text with 0600 permissions, independent of process umask.
+
+    Uses a sibling temp file + ``os.replace`` so concurrent readers never
+    observe a partially-written file.
+    """
+    tmp_path = path.parent / (path.name + ".tmp")
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            f.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
+    os.replace(str(tmp_path), str(path))
 
 def _needle_in_path_component(needle: str, path: str) -> bool:
     """Check if *needle* is a complete filename stem or directory name in *path*.
@@ -894,27 +918,6 @@ def _reconcile_classification(
     return {"consolidated": consolidated, "pruned": pruned}
 
 
-def _cron_rewrite_consolidations_from_audit(
-    heuristic: Dict[str, List[Dict[str, Any]]],
-) -> Dict[str, str]:
-    """Return cron-safe consolidation targets backed by tool-call audit evidence.
-
-    Curator report classification can include model-only summary claims for
-    human-readable reporting. Persistent cron job mutation must be stricter:
-    only rewrite a skill to an umbrella when deterministic tool-call evidence
-    links the removed skill to that target.
-    """
-    safe_map: Dict[str, str] = {}
-    for entry in heuristic.get("consolidated", []) or []:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        target = entry.get("into")
-        if isinstance(name, str) and name and isinstance(target, str) and target:
-            safe_map[name] = target
-    return safe_map
-
-
 def _build_rename_summary(
     *,
     before_names: Set[str],
@@ -1023,7 +1026,7 @@ def _write_run_report(
     """
     root = _reports_root()
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        _secure_report_dir(root)
     except Exception as e:
         logger.debug("Curator report dir create failed: %s", e)
         return None
@@ -1036,7 +1039,7 @@ def _write_run_report(
         suffix += 1
         run_dir = root / f"{stamp}-{suffix}"
     try:
-        run_dir.mkdir(parents=True, exist_ok=False)
+        _secure_report_dir(run_dir, exist_ok=False)
     except Exception as e:
         logger.debug("Curator run dir create failed: %s", e)
         return None
@@ -1111,12 +1114,15 @@ def _write_run_report(
     # break the curator.
     cron_rewrites: Dict[str, Any] = {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
     try:
-        consolidated_map = _cron_rewrite_consolidations_from_audit(heuristic)
-        # Dropping references to removed skills is based on the before/after
-        # filesystem diff, not on model-declared pruning intent. This keeps
-        # cron jobs from loading archived skills without letting the LLM
-        # choose a replacement skill persistently.
-        pruned_names = [name for name in removed if name not in consolidated_map]
+        consolidated_map = {
+            e["name"]: e["into"]
+            for e in consolidated
+            if isinstance(e, dict) and e.get("name") and e.get("into")
+        }
+        pruned_names = [
+            e["name"] for e in pruned
+            if isinstance(e, dict) and e.get("name")
+        ]
         if consolidated_map or pruned_names:
             from cron.jobs import rewrite_skill_refs as _rewrite_cron_refs
             cron_rewrites = _rewrite_cron_refs(
@@ -1132,7 +1138,7 @@ def _write_run_report(
             "error": str(e),
         }
 
-    payload = {
+    payload = _redact_report_value({
         "started_at": started_at.isoformat(),
         "duration_seconds": round(elapsed_seconds, 2),
         "model": llm_meta.get("model", ""),
@@ -1162,13 +1168,13 @@ def _write_run_report(
         "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"),
         "tool_calls": llm_meta.get("tool_calls", []),
-    }
+    })
 
     # run.json — machine-readable, full fidelity
     try:
-        (run_dir / "run.json").write_text(
+        _write_private_text(
+            run_dir / "run.json",
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
         )
     except Exception as e:
         logger.debug("Curator run.json write failed: %s", e)
@@ -1176,7 +1182,7 @@ def _write_run_report(
     # REPORT.md — human-readable
     try:
         md = _render_report_markdown(payload)
-        (run_dir / "REPORT.md").write_text(md, encoding="utf-8")
+        _write_private_text(run_dir / "REPORT.md", md)
     except Exception as e:
         logger.debug("Curator REPORT.md write failed: %s", e)
 
@@ -1184,9 +1190,12 @@ def _write_run_report(
     # keep run dirs uncluttered for the common no-op case.
     try:
         if int(cron_rewrites.get("jobs_updated", 0)) > 0:
-            (run_dir / "cron_rewrites.json").write_text(
-                json.dumps(cron_rewrites, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
+            _write_private_text(
+                run_dir / "cron_rewrites.json",
+                (
+                    json.dumps(_redact_report_value(cron_rewrites), indent=2, ensure_ascii=False)
+                    + "\n"
+                ),
             )
     except Exception as e:
         logger.debug("Curator cron_rewrites.json write failed: %s", e)
@@ -1699,12 +1708,10 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _api_mode = None
     _resolved_provider = None
     _model_name = ""
-    _max_iterations = CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT
     try:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
-        _max_iterations = _curator_review_max_iterations(_cfg)
         _binding = _resolve_review_runtime(_cfg)
         _provider, _model_name = _binding.provider, _binding.model
         _rp = resolve_runtime_provider(
@@ -1725,18 +1732,18 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
-        dry_run = prompt.startswith(CURATOR_DRY_RUN_BANNER)
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
-            # Background curator runs must stay cost-bounded. A malicious or
-            # prompt-injected agent-created skill can otherwise keep the
-            # reviewer iterating through model/tool calls until exhaustion.
-            max_iterations=_max_iterations,
-            enabled_toolsets=["curator_readonly" if dry_run else "curator"],
+            # Umbrella-building over a large skill collection is worth a
+            # high iteration ceiling — the pass typically takes 50-100
+            # API calls against hundreds of candidate skills. The
+            # single-session review path caps itself at a much smaller
+            # number because it's not doing a curation sweep.
+            max_iterations=9999,
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

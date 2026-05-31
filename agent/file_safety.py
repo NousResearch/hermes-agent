@@ -421,6 +421,8 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
         target_profile = parts[1]
         area = parts[2]
 
+    else:
+        return None
     active_profile = _resolve_active_profile_name()
     if target_profile == active_profile:
         # In-profile write — not a cross-profile event.

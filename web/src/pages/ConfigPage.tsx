@@ -718,14 +718,15 @@ export default function ConfigPage() {
                       </div>
                     </>
                   ) : (
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <code className="min-w-0 flex-1 break-all text-xs text-foreground">
-                        {pattern}
-                      </code>
-                      <div className="flex flex-wrap items-center justify-end gap-2 sm:shrink-0">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
+                      <div className="flex min-h-9 min-w-0 items-center border border-border/60 bg-muted/10 px-3 font-mono text-xs text-foreground">
+                        <span className="min-w-0 break-all">{pattern}</span>
+                      </div>
+                      <div className="flex flex-wrap items-stretch justify-end gap-2 lg:shrink-0">
                         <Button
-                          ghost
+                          outlined
                           size="sm"
+                          className="h-9 min-w-[96px] justify-center"
                           prefix={<Copy className="h-3.5 w-3.5" />}
                           onClick={() => void handleCopyToClipboard(pattern, "Pattern copied.")}
                           disabled={allowlistBusy}
@@ -733,8 +734,9 @@ export default function ConfigPage() {
                           Copy
                         </Button>
                         <Button
-                          ghost
+                          outlined
                           size="sm"
+                          className="h-9 min-w-[96px] justify-center"
                           prefix={<Pencil className="h-3.5 w-3.5" />}
                           onClick={() => startAllowlistEdit(pattern)}
                           disabled={allowlistBusy}
@@ -742,9 +744,9 @@ export default function ConfigPage() {
                           Edit
                         </Button>
                         <Button
-                          ghost
+                          outlined
                           size="sm"
-                          className="text-destructive"
+                          className="h-9 min-w-[96px] justify-center text-destructive"
                           prefix={<Trash2 className="h-3.5 w-3.5" />}
                           title="Delete pattern"
                           aria-label={`Delete pattern ${pattern}`}
@@ -774,6 +776,7 @@ export default function ConfigPage() {
               <Button
                 size="sm"
                 outlined
+                className="h-9 min-w-[140px] justify-center"
                 onClick={() => void handleCopyToClipboard("/restart", "Restart command copied.")}
                 disabled={allowlistBusy}
               >
@@ -781,6 +784,7 @@ export default function ConfigPage() {
               </Button>
               <Button
                 size="sm"
+                className="h-9 min-w-[140px] justify-center"
                 onClick={() => void handleRestartGateway()}
                 disabled={allowlistRestartingGateway}
               >
@@ -802,7 +806,7 @@ export default function ConfigPage() {
               size="sm"
               outlined
               prefix={<Trash2 />}
-              className="text-destructive"
+              className="h-9 min-w-[140px] justify-center text-destructive"
               onClick={() => setAllowlistConfirm({ type: "clear" })}
               disabled={allowlistBusy || allowlistPatterns.length === 0}
             >

@@ -167,6 +167,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_WEBHOOK_HOST": "127.0.0.1",
         "FEISHU_WEBHOOK_PORT": "9001",
         "FEISHU_WEBHOOK_PATH": "/hook",
+        "FEISHU_VERIFICATION_TOKEN": "vtok",
     }, clear=True)
     def test_connect_webhook_mode_starts_local_server(self):
         from gateway.config import PlatformConfig
@@ -1538,6 +1539,34 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(response.status, 200)
         adapter._on_message_event.assert_called_once()
 
+    @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
+    def test_url_verification_requires_configured_verification_token(self):
+        """url_verification must be rejected when token is set but mismatched.
+
+        Regression: previously the challenge was reflected before the token
+        check, so an unauthenticated remote could prove endpoint control by
+        sending an attacker-controlled challenge string.
+        """
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        body = json.dumps({
+            "type": "url_verification",
+            "token": "wrong-token",
+            "challenge": "attacker-controlled-challenge",
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="203.0.113.10",
+            content_length=None,
+            headers={},
+            read=AsyncMock(return_value=body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 401)
+
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_uses_event_sender_identity_only(self):
         from gateway.config import PlatformConfig
@@ -1960,6 +1989,45 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_reply")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="status update",
+                    metadata={
+                        "thread_id": "omt-thread",
+                        "reply_to_message_id": "om_trigger",
+                    },
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_trigger")
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2817,20 +2885,32 @@ class TestHydrateBotIdentity(unittest.TestCase):
         },
         clear=True,
     )
-    def test_hydration_skipped_when_env_vars_supply_both_fields(self):
+    def test_hydration_refreshes_env_values_when_bot_info_available(self):
         adapter = self._make_adapter()
         adapter._client = Mock()
-        adapter._client.request = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hydrated Hermes",
+                    "open_id": "ou_hydrated",
+                },
+            }
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
 
         asyncio.run(adapter._hydrate_bot_identity())
 
-        adapter._client.request.assert_not_called()
-        self.assertEqual(adapter._bot_open_id, "ou_env")
-        self.assertEqual(adapter._bot_name, "Env Hermes")
+        # PR #16993 semantics: /bot/v3/info probe runs unconditionally
+        # and hydrated values win over env vars so a stale FEISHU_BOT_*
+        # from an old app registration doesn't break @mention gating.
+        adapter._client.request.assert_called_once()
+        self.assertEqual(adapter._bot_open_id, "ou_hydrated")
+        self.assertEqual(adapter._bot_name, "Hydrated Hermes")
 
     @patch.dict(os.environ, {"FEISHU_BOT_OPEN_ID": "ou_env"}, clear=True)
-    def test_hydration_fills_only_missing_fields(self):
-        """Env-var open_id must NOT be overwritten by a different probe value."""
+    def test_hydration_overwrites_stale_env_open_id(self):
+        """A stale env open_id should not break group mention gating after app migration."""
         adapter = self._make_adapter()
         adapter._client = Mock()
         payload = json.dumps(
@@ -2846,8 +2926,26 @@ class TestHydrateBotIdentity(unittest.TestCase):
 
         asyncio.run(adapter._hydrate_bot_identity())
 
-        self.assertEqual(adapter._bot_open_id, "ou_env")  # preserved
+        self.assertEqual(adapter._bot_open_id, "ou_probe_DIFFERENT")
         self.assertEqual(adapter._bot_name, "Hermes Bot")  # filled in
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_env",
+            "FEISHU_BOT_NAME": "Env Hermes",
+        },
+        clear=True,
+    )
+    def test_hydration_preserves_env_values_when_bot_info_probe_fails(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock(side_effect=RuntimeError("network down"))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_env")
+        self.assertEqual(adapter._bot_name, "Env Hermes")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_hydration_tolerates_probe_failure_and_falls_back_to_app_info(self):
@@ -3123,6 +3221,39 @@ class TestWebhookSecurity(unittest.TestCase):
         self.assertEqual(response.status, 401)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_connect_requires_inbound_auth_secret(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"app_id": "cli_app", "app_secret": "secret_app", "connection_mode": "webhook"},
+            )
+        )
+        self.assertFalse(asyncio.run(adapter.connect()))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_loads_auth_secrets_from_platform_extra(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "app_id": "cli_app",
+                    "app_secret": "secret_app",
+                    "connection_mode": "webhook",
+                    "verification_token": "token_from_extra",
+                    "encrypt_key": "encrypt_from_extra",
+                },
+            )
+        )
+        self.assertEqual(adapter._verification_token, "token_from_extra")
+        self.assertEqual(adapter._encrypt_key, "encrypt_from_extra")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_webhook_url_verification_challenge_passes_without_signature(self):
         """Challenge requests must succeed even when no encrypt_key is set."""
         from gateway.config import PlatformConfig
@@ -3166,6 +3297,37 @@ class TestDedupTTL(unittest.TestCase):
         adapter._seen_message_order = ["om_old"]
         with patch.object(adapter, "_persist_seen_message_ids"):
             self.assertFalse(adapter._is_duplicate("om_old"))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_load_tolerates_malformed_timestamp_values(self):
+        """Regression #13632 — a non-numeric timestamp in the persisted
+        dedup state must not crash adapter startup.  The bad key is
+        skipped; the rest of the state loads.
+        """
+        import tempfile
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with tempfile.TemporaryDirectory() as temp_home:
+            with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+                adapter = FeishuAdapter(PlatformConfig())
+                adapter._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
+                adapter._dedup_state_path.write_text(
+                    json.dumps(
+                        {
+                            "message_ids": {
+                                "om_good": time.time(),
+                                "om_bad_str": "not-a-timestamp",
+                                "om_bad_null": None,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                adapter._load_seen_message_ids()
+                assert "om_good" in adapter._seen_message_ids
+                assert "om_bad_str" not in adapter._seen_message_ids
+                assert "om_bad_null" not in adapter._seen_message_ids
 
     @patch.dict(os.environ, {}, clear=True)
     def test_persist_saves_timestamps_as_dict(self):

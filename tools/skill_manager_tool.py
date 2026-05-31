@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
@@ -137,14 +137,12 @@ def _containing_skills_root(skill_path: Path) -> Path:
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
-    Pinned skills are off-limits to the agent's skill_manage tool.  The only
-    way to modify one is for the user to unpin it via
-    ``hermes curator unpin <name>`` (or edit it directly by hand).  This
-    mirrors the curator's own pinned-skip behavior but extends the guard
-    to tool-driven writes as well, giving users a hard fence against
-    accidental agent edits.
+    Pin protects a skill from **deletion** — both the curator's auto-archive
+    passes and the agent's ``skill_manage(action="delete")`` tool call. The
+    agent can still patch/edit pinned skills; pin only guards against
+    irrecoverable loss, not against content evolution.
 
-    Best-effort: if the sidecar is unreadable we let the write through
+    Best-effort: if the sidecar is unreadable we let the delete through
     rather than block on a broken telemetry file.
     """
     try:
@@ -152,9 +150,11 @@ def _pinned_guard(name: str) -> Optional[str]:
         rec = skill_usage.get_record(name)
         if rec.get("pinned"):
             return (
-                f"Skill '{name}' is pinned and cannot be modified by "
+                f"Skill '{name}' is pinned and cannot be deleted by "
                 f"skill_manage. Ask the user to run "
-                f"`hermes curator unpin {name}` if they want the change."
+                f"`hermes curator unpin {name}` if they want to delete it. "
+                f"Patches and edits are allowed on pinned skills; only "
+                f"deletion is blocked."
             )
     except Exception:
         logger.debug("pinned-guard lookup failed for %s", name, exc_info=True)
@@ -283,14 +283,119 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
     """
-    from agent.skill_utils import get_all_skills_dirs
+    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
     return None
+
+
+def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
+    """Look for ``name`` under SKILL.md across OTHER Hermes profiles.
+
+    Returns a list of ``(profile_name, skill_dir)`` pairs. Used to make
+    the "Skill X not found" error explain when the user is editing the
+    wrong profile. Empty list when no other profile has the skill (or
+    when profile discovery fails — fail-quiet, the caller falls back to
+    the plain "not found" error).
+    """
+    matches: List[Tuple[str, Path]] = []
+    try:
+        from hermes_constants import get_default_hermes_root
+        from agent.skill_utils import is_excluded_skill_path
+    except Exception:
+        return matches
+
+    try:
+        root = get_default_hermes_root()
+    except Exception:
+        return matches
+
+    # Collect (profile_name, skills_dir) for every profile EXCEPT the
+    # one whose SKILLS_DIR we already searched in _find_skill().
+    active_dir = SKILLS_DIR.resolve() if SKILLS_DIR.exists() else SKILLS_DIR
+    candidates: List[Tuple[str, Path]] = []
+
+    # Default profile (~/.hermes/skills) — only consider when active is non-default.
+    default_skills = root / "skills"
+    try:
+        if default_skills.resolve() != active_dir:
+            candidates.append(("default", default_skills))
+    except (OSError, RuntimeError):
+        pass
+
+    # All named profiles (~/.hermes/profiles/*/skills)
+    profiles_root = root / "profiles"
+    if profiles_root.is_dir():
+        try:
+            for entry in profiles_root.iterdir():
+                if not entry.is_dir():
+                    continue
+                pskills = entry / "skills"
+                try:
+                    if pskills.resolve() == active_dir:
+                        continue
+                except (OSError, RuntimeError):
+                    continue
+                candidates.append((entry.name, pskills))
+        except OSError:
+            pass
+
+    for profile_name, skills_dir in candidates:
+        if not skills_dir.is_dir():
+            continue
+        try:
+            for skill_md in skills_dir.rglob("SKILL.md"):
+                if is_excluded_skill_path(skill_md):
+                    continue
+                if skill_md.parent.name == name:
+                    matches.append((profile_name, skill_md.parent))
+                    break  # one match per profile is enough
+        except OSError:
+            continue
+    return matches
+
+
+def _skill_not_found_error(name: str, suffix: str = "") -> str:
+    """Build a "skill not found" error that names other profiles holding
+    the same skill, so the agent can recognize a profile-scoping mistake.
+
+    ``suffix`` is appended after the cross-profile hint if present
+    (e.g. ``" Create it first with action='create'."``).
+    """
+    from agent.file_safety import _resolve_active_profile_name
+    active = _resolve_active_profile_name()
+    base = f"Skill '{name}' not found in active profile '{active}'."
+
+    others = _find_skill_in_other_profiles(name)
+    if others:
+        if len(others) == 1:
+            other_profile, other_path = others[0]
+            base += (
+                f" A skill by that name exists in profile "
+                f"'{other_profile}' ({other_path}). To edit a skill in "
+                f"another profile, switch profiles (`hermes -p "
+                f"{other_profile}`) or operate via explicit file tools "
+                f"with ``cross_profile=True``."
+            )
+        else:
+            names = ", ".join(f"'{p}'" for p, _ in others)
+            base += (
+                f" Skills by that name exist in other profiles: {names}. "
+                f"Switch profiles (`hermes -p <name>`) to edit there, or "
+                f"operate via explicit file tools with ``cross_profile=True``."
+            )
+    else:
+        base += " Use skills_list() to see available skills."
+
+    if suffix:
+        base += suffix
+    return base
 
 
 def _validate_file_path(file_path: str) -> Optional[str]:
@@ -437,11 +542,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
-
-    pinned_err = _pinned_guard(name)
-    if pinned_err:
-        return {"success": False, "error": pinned_err}
+        return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
@@ -481,11 +582,7 @@ def _patch_skill(
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
-
-    pinned_err = _pinned_guard(name)
-    if pinned_err:
-        return {"success": False, "error": pinned_err}
+        return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
 
@@ -574,7 +671,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     """
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
+        return {"success": False, "error": _skill_not_found_error(name)}
 
     pinned_err = _pinned_guard(name)
     if pinned_err:
@@ -643,11 +740,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
-
-    pinned_err = _pinned_guard(name)
-    if pinned_err:
-        return {"success": False, "error": pinned_err}
+        return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
 
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
@@ -681,11 +774,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
-
-    pinned_err = _pinned_guard(name)
-    if pinned_err:
-        return {"success": False, "error": pinned_err}
+        return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
 
@@ -784,10 +873,17 @@ def skill_manage(
             pass
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
         # that mutate an existing skill's guidance), drop the record on delete.
-        # Best-effort; telemetry failures never break the tool.
+        # Only mark a skill as agent-created when the background self-improvement
+        # review fork creates it — foreground `skill_manage(create)` calls are
+        # user-directed, and those skills belong to the user (the curator must
+        # not touch them). Best-effort; telemetry failures never break the tool.
         try:
-            from tools.skill_usage import bump_patch, forget
-            if action in ("patch", "edit", "write_file", "remove_file"):
+            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            from tools.skill_provenance import is_background_review
+            if action == "create":
+                if is_background_review():
+                    mark_agent_created(name)
+            elif action in {"patch", "edit", "write_file", "remove_file"}:
                 bump_patch(name)
             elif action == "delete":
                 forget(name)
@@ -828,9 +924,10 @@ SKILL_MANAGE_SCHEMA = {
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
-        "Pinned skills are off-limits — all write actions refuse with a message "
-        "pointing the user to `hermes curator unpin <name>`. Don't try to route "
-        "around this by renaming or recreating."
+        "Pinned skills are protected from deletion only — skill_manage(action='delete') "
+        "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
+        "Patches and edits go through on pinned skills so you can still improve them as "
+        "pitfalls come up; pin only guards against irrecoverable loss."
     ),
     "parameters": {
         "type": "object",

@@ -30,7 +30,7 @@ Usage (gateway side):
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,54 @@ class PlatformEntry:
     # Platform hint injected into the system prompt (e.g. "You are on IRC.
     # Do not use markdown.").  Empty string = no hint.
     platform_hint: str = ""
+
+    # ── Env-driven auto-configuration ──
+    # Optional: read env vars, return a dict of ``PlatformConfig.extra`` fields
+    # to seed when the platform is auto-enabled.  Called during
+    # ``_apply_env_overrides`` BEFORE the adapter is constructed, so
+    # ``gateway status`` etc. can reflect env-only configuration without
+    # instantiating the adapter.  Return ``None`` (or an empty dict) to skip.
+    # Signature: () -> Optional[dict[str, Any]]
+    env_enablement_fn: Optional[Callable[[], Optional[dict]]] = None
+
+    # ── YAML→env config bridge ──
+    # Optional: translate this platform's ``config.yaml`` keys into env vars
+    # and/or seed ``PlatformConfig.extra`` directly.  Lets a plugin own its
+    # YAML config translation instead of forcing core ``gateway/config.py``
+    # to know every platform's schema.
+    #
+    # Signature: (yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]
+    # Called from ``load_gateway_config()`` after the generic shared-key loop
+    # and before ``_apply_env_overrides``.  Mutating ``os.environ`` is allowed
+    # (use ``not os.getenv(...)`` guards to preserve env > YAML precedence);
+    # any returned dict is merged into ``PlatformConfig.extra``.  Exceptions
+    # are caught and logged at debug level.
+    # See website/docs/developer-guide/adding-platform-adapters.md for the
+    # full contract and a worked example.
+    apply_yaml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None
+
+    # Optional: home-channel env var name for cron/notification delivery
+    # (e.g. ``"IRC_HOME_CHANNEL"``).  When set, ``cron.scheduler`` treats this
+    # platform as a valid ``deliver=<name>`` target and reads the env var to
+    # resolve the default chat/room ID.  Empty = no cron home-channel support.
+    cron_deliver_env_var: str = ""
+
+    # ── Standalone (out-of-process) sending ──
+    # Optional: async coroutine that delivers a message without a live
+    # gateway adapter.  Called by ``tools/send_message_tool._send_via_adapter``
+    # when ``cron`` runs in a separate process from the gateway and the
+    # in-process adapter weakref is therefore ``None``.
+    #
+    # Signature:
+    #     async (pconfig, chat_id, message, *, thread_id=None,
+    #            media_files=None, force_document=False) -> dict
+    #
+    # Returns ``{"success": True, "message_id": ...}`` on success or
+    # ``{"error": str}`` on failure.  Plugin authors typically open an
+    # ephemeral connection / acquire a fresh OAuth token, send, and close.
+    # Without this hook, plugin platforms cannot serve as cron ``deliver=``
+    # targets when the gateway is not co-resident with the cron process.
+    standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
 
 
 class PlatformRegistry:

@@ -15,6 +15,7 @@ Covers:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -100,6 +101,18 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> str:
+    """Compute a Svix v1 signature header for *body* using *secret*."""
+    key = (
+        base64.b64decode(secret.removeprefix("whsec_"))
+        if secret.startswith("whsec_")
+        else secret.encode()
+    )
+    signed = msg_id.encode() + b"." + timestamp.encode() + b"." + body
+    digest = hmac.new(key, signed, hashlib.sha256).digest()
+    return "v1," + base64.b64encode(digest).decode()
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -168,6 +181,134 @@ class TestValidateSignature:
         secret = "generic-secret"
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_valid(self):
+        """Valid Svix/AgentMail v1 signature headers are accepted."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_wrong_body_rejects(self):
+        """Svix/AgentMail signatures are bound to the exact raw request body."""
+        adapter = _make_adapter()
+        signed_body = b'{"event_type":"message.received"}'
+        received_body = b'{"event_type":"message.sent"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(signed_body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, received_body, secret) is False
+
+    def test_validate_svix_signature_old_timestamp_rejects(self):
+        """Svix/AgentMail signatures outside the replay window are rejected."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()) - 301)
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_svix_signature_multiple_entries_accepts_matching_v1(self):
+        """Svix rotation headers may contain multiple space-separated signatures."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": "v1,wrong " + sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_missing_signature_rejects(self):
+        """Partial Svix headers reject instead of falling through to another scheme."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"svix-id": "msg_123"})
+        assert adapter._validate_signature(req, b"{}", "secret") is False
+
+    def test_validate_svix_signature_unsupported_version_rejects(self):
+        """Only Svix v1 signatures are accepted."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp).replace("v1,", "v2,")
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_svix_signature_invalid_whsec_rejects(self):
+        """Malformed whsec_ secrets are rejected, not silently treated as raw secrets."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        malformed_secret = "whsec_not-valid-base64!"
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        raw_sig = _svix_signature(
+            body, malformed_secret.removeprefix("whsec_"), msg_id, timestamp
+        )
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": raw_sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, malformed_secret) is False
+
+    def test_validate_svix_signature_raw_secret_valid(self):
+        """Raw shared secrets are accepted for Svix-style senders without whsec_ secrets."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "raw-agentmail-secret"
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
         assert adapter._validate_signature(req, body, secret) is True
 
 
@@ -304,6 +445,27 @@ class TestEventFilter:
             )
             assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_payload_type_field(self):
+        """Svix-style payloads often use a top-level `type` event field."""
+        routes = {
+            "svix": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["message.received"],
+                "prompt": "got it",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/svix",
+                json={"type": "message.received"},
+            )
+            assert resp.status == 202
+
 
 # ===================================================================
 # HTTP handling
@@ -337,6 +499,22 @@ class TestHTTPHandling:
             assert data["route"] == "test"
 
     @pytest.mark.asyncio
+    async def test_route_without_secret_rejects_unsigned_request(self):
+        """Missing HMAC secret must fail closed even if connect() was bypassed."""
+        routes = {"test": {"prompt": "hi"}}
+        adapter = _make_adapter(routes=routes, secret="")
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/test", json={"data": "value"})
+            assert resp.status == 403
+            data = await resp.json()
+            assert data["error"] == "Webhook route is missing an HMAC secret"
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_health_endpoint(self):
         """GET /health returns 200 with status=ok."""
         adapter = _make_adapter()
@@ -352,7 +530,7 @@ class TestHTTPHandling:
     async def test_connect_starts_server(self):
         """connect() starts the HTTP listener and marks adapter as connected."""
         routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
-        adapter = _make_adapter(routes=routes, port=0)
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
         # Use port 0 — the OS picks a free port, but aiohttp requires a real bind.
         # We just test that the method completes and marks connected.
         # Need to mock TCPSite to avoid actual binding.
@@ -431,6 +609,25 @@ class TestIdempotency:
 
             resp2 = await cli.post("/webhooks/idem", json={"x": 1}, headers=headers)
             assert resp2.status == 202  # re-accepted
+
+    @pytest.mark.asyncio
+    async def test_svix_id_used_as_delivery_id_for_deduplication(self):
+        """Svix retries reuse svix-id, so use it as the delivery ID when present."""
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"svix-id": "msg_duplicate"}
+            resp1 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+
+            resp2 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp2.status == 200
+            data = await resp2.json()
+            assert data["status"] == "duplicate"
+            assert data["delivery_id"] == "msg_duplicate"
 
 
 # ===================================================================
@@ -758,3 +955,80 @@ class TestDeliverCrossPlatformThreadId:
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata=None
         )
+
+
+class TestInsecureNoAuthSafetyRail:
+    """connect() refuses to start when INSECURE_NO_AUTH is combined with a
+    non-loopback bind. Guards against accidentally exposing an unauthenticated
+    webhook endpoint on a public interface."""
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_public_bind(self):
+        """INSECURE_NO_AUTH + 0.0.0.0 is refused before the server starts."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        with pytest.raises(ValueError, match="INSECURE_NO_AUTH"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_lan_ip(self):
+        """A LAN IP is treated as public."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="192.168.1.50", port=0)
+        with pytest.raises(ValueError, match="non-loopback"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_empty_host(self):
+        """Empty host is conservatively treated as non-loopback."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="", port=0)
+        with pytest.raises(ValueError, match="INSECURE_NO_AUTH"):
+            await adapter.connect()
+
+    @pytest.mark.parametrize(
+        "host",
+        ["127.0.0.1", "localhost"],
+    )
+    @pytest.mark.asyncio
+    async def test_connect_allows_insecure_no_auth_on_loopback(self, host):
+        """Recognised loopback hosts are permitted with INSECURE_NO_AUTH."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host=host, port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.parametrize(
+        "host",
+        ["127.0.0.1", "localhost", "Localhost", "::1", "ip6-localhost", "ip6-loopback"],
+    )
+    def test_is_loopback_host_accepts(self, host):
+        """_is_loopback_host covers all documented loopback spellings."""
+        from gateway.platforms.webhook import _is_loopback_host
+        assert _is_loopback_host(host) is True
+
+    @pytest.mark.parametrize(
+        "host",
+        ["0.0.0.0", "192.168.1.5", "10.0.0.1", "example.com", "", None],
+    )
+    def test_is_loopback_host_rejects(self, host):
+        """_is_loopback_host treats public/LAN/empty as non-loopback."""
+        from gateway.platforms.webhook import _is_loopback_host
+        assert _is_loopback_host(host) is False
+
+    @pytest.mark.asyncio
+    async def test_connect_allows_real_secret_on_public_bind(self):
+        """A real HMAC secret bound to 0.0.0.0 is the normal production case."""
+        routes = {"r1": {"secret": "real-secret-abc123", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+

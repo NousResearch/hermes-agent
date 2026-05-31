@@ -127,21 +127,40 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     return p.resolve()
 
 
-def _is_blocked_device(filepath: str) -> bool:
-    """Return True if the path would hang the process (infinite output or blocking input).
-
-    Uses the *literal* path — no symlink resolution — because the model
-    specifies paths directly and realpath follows symlinks all the way
-    through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
-    the check.
-    """
-    normalized = os.path.expanduser(filepath)
+def _is_blocked_device_path(path: str) -> bool:
+    """Return True for concrete device/fd paths that can hang reads."""
+    normalized = os.path.expanduser(path)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
     if normalized.startswith("/proc/") and normalized.endswith(
         ("/fd/0", "/fd/1", "/fd/2")
     ):
+        return True
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
+    # command-line args, and memory layout from the host process (issue #4427)
+    if normalized.startswith("/proc/") and normalized.endswith(
+        ("/environ", "/cmdline", "/maps")
+    ):
+        return True
+    return False
+
+
+def _is_blocked_device(filepath: str) -> bool:
+    """Return True if the path would hang the process (infinite output or blocking input).
+
+    Check the literal path first so aliases like /dev/stdin are caught before
+    they resolve to terminal-specific paths. Then check the resolved path so a
+    workspace symlink to /dev/zero cannot bypass the guard.
+    """
+    normalized = os.path.expanduser(filepath)
+    if _is_blocked_device_path(normalized):
+        return True
+    try:
+        resolved = os.path.realpath(normalized)
+    except (OSError, ValueError):
+        return False
+    if resolved != normalized and _is_blocked_device_path(resolved):
         return True
     return False
 
@@ -174,6 +193,37 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return a cross-profile warning string when ``filepath`` lands in
+    another Hermes profile's skills/plugins/cron/memories directory.
+
+    Returns ``None`` when the write is in-scope (same profile) or outside
+    Hermes scope entirely. Soft guard — the agent can override by passing
+    ``cross_profile=True`` to its write tool after explicit user direction.
+
+    Defense-in-depth, NOT a security boundary — the terminal tool runs
+    as the same OS user and can write any of these paths directly.
+    See ``agent/file_safety.classify_cross_profile_target`` for the
+    detection rules.
+    """
+    try:
+        from agent.file_safety import get_cross_profile_warning
+    except Exception:
+        # Fail open on import error — the existing sensitive-path guard
+        # plus the write_denied list still apply.
+        return None
+
+    # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
+    # in a session that cd'd into ``~/.hermes/profiles/other/`` is
+    # classified against the right base.
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = filepath
+
+    return get_cross_profile_warning(resolved)
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -203,6 +253,43 @@ _file_ops_cache: dict = {}
 #                      by the same task don't trigger false warnings.
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
+
+# Track consecutive patch failures per (task_id, resolved_path).  Used to
+# escalate the hint when the model repeatedly fails to patch the same file
+# (typical cause: stale view of file contents, ambiguous old_string, or
+# the file was modified externally between the agent's read and patch
+# attempt).  Reset on a successful patch to that path.
+_patch_failure_lock = threading.Lock()
+_patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
+
+
+def _record_patch_failure(task_id: str, resolved_path: str) -> int:
+    """Increment and return the consecutive-failure count for this path."""
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.setdefault(task_id, {})
+        # Cap dict size per task to avoid unbounded growth in long sessions
+        # where the agent fails on many distinct files.  64 distinct
+        # failing files per task is generous; older entries get evicted.
+        if len(task_failures) >= 64 and resolved_path not in task_failures:
+            try:
+                first_key = next(iter(task_failures))
+                del task_failures[first_key]
+            except StopIteration:
+                pass
+        task_failures[resolved_path] = task_failures.get(resolved_path, 0) + 1
+        return task_failures[resolved_path]
+
+
+def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
+    """Clear consecutive-failure counts for the given paths."""
+    if not resolved_paths:
+        return
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.get(task_id)
+        if not task_failures:
+            return
+        for rp in resolved_paths:
+            task_failures.pop(rp, None)
 
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
@@ -380,13 +467,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+            if env_type in {"docker", "singularity", "modal", "daytona"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
-                    "vercel_runtime": config.get("vercel_runtime", ""),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
@@ -474,8 +560,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         # ── Hermes internal path guard ────────────────────────────────
-        # Prevent prompt injection via catalog or hub metadata files.
-        block_error = get_read_block_error(path)
+        # Prevent prompt injection via catalog or hub metadata files,
+        # and block credential stores under HERMES_HOME.  Pass the
+        # already-resolved path so a relative-path read against
+        # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
+        # denylist — get_read_block_error's own resolve() runs against
+        # the Python process cwd, which can differ.
+        block_error = get_read_block_error(str(_resolved))
         if block_error:
             return json.dumps({"error": block_error})
 
@@ -570,7 +661,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            result.content = redact_sensitive_text(result.content, code_file=True)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -790,11 +881,23 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
-def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
-    """Write content to a file."""
+def write_file_tool(path: str, content: str, task_id: str = "default",
+                    cross_profile: bool = False) -> str:
+    """Write content to a file.
+
+    ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
+    guard fires only on writes that land in another profile's
+    skills/plugins/cron/memories directory; everything else is unaffected.
+    Pass ``True`` after explicit user direction — same shape as ``force``
+    on the terminal tool.
+    """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    if not cross_profile:
+        cross_warning = _check_cross_profile_path(path, task_id)
+        if cross_warning:
+            return tool_error(cross_warning)
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -849,20 +952,45 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default") -> str:
-    """Patch a file using replace mode or V4A patch format."""
+               task_id: str = "default", cross_profile: bool = False) -> str:
+    """Patch a file using replace mode or V4A patch format.
+
+    ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
+    targets under another profile's skills/plugins/cron/memories
+    directory. Same shape as ``write_file``'s flag.
+    """
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
         _paths_to_check.append(path)
     if mode == "patch" and patch:
         import re as _re
+        from tools.path_security import has_traversal_component
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
+            v4a_path = _m.group(1).strip()
+            # V4A path headers come from patch CONTENT, not the explicit
+            # ``path=`` arg — so they're more attacker-influenceable (skill
+            # content, web extract, prompt injection). Reject ``..`` traversal
+            # in V4A headers: a legitimate multi-file patch from a single cwd
+            # can always emit absolute paths or paths relative to the agent's
+            # cwd without ``..``. The explicit ``path=`` arg is unchanged
+            # because the agent uses relative ``..`` paths legitimately
+            # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
+            if has_traversal_component(v4a_path):
+                return tool_error(
+                    f"V4A patch header contains '..' traversal: {v4a_path!r}. "
+                    "Use the agent's cwd-relative path (no '..') or an absolute "
+                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                )
+            _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        if not cross_profile:
+            cross_warning = _check_cross_profile_path(_p, task_id)
+            if cross_warning:
+                return tool_error(cross_warning)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -928,12 +1056,43 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = _path_to_resolved.get(_p)
                     if _r:
                         file_state.note_write(task_id, _r)
+                # Successful patch: clear any prior consecutive-failure
+                # counters for the touched paths so a future failure on
+                # the same path starts the escalation cycle fresh.
+                _reset_patch_failures(task_id, [
+                    _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
+                ])
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"
         # snippet (which is strictly more useful than the generic hint).
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            if "Did you mean one of these sections?" not in str(result_dict["error"]):
+            # Track per-file consecutive failures for replace mode.  The
+            # ``path`` arg only exists for replace mode; for V4A patches
+            # we'd need to walk the headers, but in practice V4A failures
+            # are far rarer and the existing _hint covers them adequately.
+            failure_count = 0
+            if mode == "replace" and path:
+                resolved = _path_to_resolved.get(path) or path
+                failure_count = _record_patch_failure(task_id, resolved)
+
+            if failure_count >= 3:
+                # Escalating hint after multiple consecutive failures on the
+                # same path.  Most common cause is a stale view of the file —
+                # the model is retrying with the same old_string against
+                # content that has since changed.  Surface the failure count
+                # so the model recognises it's in a loop and breaks out by
+                # re-reading or falling back to write_file.
+                result_dict["_hint"] = (
+                    f"This is failure #{failure_count} patching {path!r}. "
+                    "Stop retrying with variations of the same old_string. "
+                    "Either: (1) re-read the file fresh to verify current "
+                    "content, (2) use a longer / more unique old_string with "
+                    "surrounding context lines, or (3) use write_file to "
+                    "replace the entire file if the targeted region is hard "
+                    "to anchor."
+                )
+            elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."
@@ -993,7 +1152,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content)
+                    m.content = redact_sensitive_text(m.content, code_file=True)
         result_dict = result.to_dict()
 
         if count >= 3:
@@ -1042,12 +1201,17 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
-            "content": {"type": "string", "description": "Complete content to write to the file"}
+            "content": {"type": "string", "description": "Complete content to write to the file"},
+            "cross_profile": {
+                "type": "boolean",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
+                "default": False,
+            },
         },
         "required": ["path", "content"]
     }
@@ -1055,19 +1219,53 @@ WRITE_FILE_SCHEMA = {
 
 PATCH_SCHEMA = {
     "name": "patch",
-    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "description": (
+        "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
+        "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
+        "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
+        "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
+        "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
+        "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
+        "REQUIRED PARAMETERS: mode, patch."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "mode": {"type": "string", "enum": ["replace", "patch"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches", "default": "replace"},
-            "path": {"type": "string", "description": "File path to edit (required for 'replace' mode)"},
-            "old_string": {"type": "string", "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
-            "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
-            "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
-            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "patch"],
+                "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+                "default": "replace",
+            },
+            "path": {
+                "type": "string",
+                "description": "REQUIRED when mode='replace'. File path to edit.",
+            },
+            "old_string": {
+                "type": "string",
+                "description": "REQUIRED when mode='replace'. Exact text to find and replace. Must be unique in the file unless replace_all=true. Include surrounding context lines to ensure uniqueness.",
+            },
+            "new_string": {
+                "type": "string",
+                "description": "REQUIRED when mode='replace'. Replacement text. Pass empty string '' to delete the matched text.",
+            },
+            "replace_all": {
+                "type": "boolean",
+                "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+                "default": False,
+            },
+            "patch": {
+                "type": "string",
+                "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+            },
+            "cross_profile": {
+                "type": "boolean",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories.",
+                "default": False,
+            },
         },
-        "required": ["mode"]
-    }
+        "required": ["mode"],
+    },
 }
 
 SEARCH_FILES_SCHEMA = {
@@ -1097,7 +1295,28 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+    if not args.get("path") or not isinstance(args.get("path"), str):
+        return tool_error(
+            "write_file: missing required field 'path'. Re-emit the tool call with "
+            "both 'path' and 'content' set."
+        )
+    if "content" not in args:
+        return tool_error(
+            "write_file: missing required field 'content'. The tool call included a "
+            "path but no content argument — this is almost always a dropped-arg bug "
+            "under context pressure. Re-emit the tool call with the full content "
+            "payload, or use execute_code with hermes_tools.write_file() for very "
+            "large files."
+        )
+    if not isinstance(args["content"], str):
+        return tool_error(
+            f"write_file: 'content' must be a string, got "
+            f"{type(args['content']).__name__}."
+        )
+    return write_file_tool(
+        path=args["path"], content=args["content"], task_id=tid,
+        cross_profile=bool(args.get("cross_profile", False)),
+    )
 
 
 def _handle_patch(args, **kw):
@@ -1105,7 +1324,9 @@ def _handle_patch(args, **kw):
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
+        cross_profile=bool(args.get("cross_profile", False)),
+    )
 
 
 def _handle_search_files(args, **kw):
@@ -1119,7 +1340,7 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)

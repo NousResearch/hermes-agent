@@ -148,12 +148,14 @@ def find_docker() -> Optional[str]:
 # We drop all capabilities then add back the minimum needed:
 #   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
 #   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
-#   SETUID/SETGID - the image entrypoint drops from root to the 'hermes'
-#       user via `gosu`, which requires these caps. Combined with
-#       `no-new-privileges`, gosu still cannot escalate back to root after
-#       the drop, so the security posture is preserved. Omitted entirely
-#       when the container starts as a non-root user via --user, since
-#       no gosu drop is needed in that mode.
+#   SETUID/SETGID - the image's init drops from root to the 'hermes'
+#       user (via `s6-setuidgid` in the bundled image, or whatever
+#       privilege-drop helper a user image uses), which requires these
+#       caps. Combined with `no-new-privileges`, the dropped process
+#       still cannot escalate back to root, so the security posture is
+#       preserved. Omitted entirely when the container starts as a
+#       non-root user via --user, since no privilege drop is needed
+#       in that mode.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _BASE_SECURITY_ARGS = [
@@ -168,10 +170,11 @@ _BASE_SECURITY_ARGS = [
     "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
 
-# Extra caps needed when the container starts as root and an entrypoint
-# must drop privileges via gosu/su. Skipped when --user is passed because
-# the container already starts unprivileged and never needs to switch.
-_GOSU_CAP_ARGS = [
+# Extra caps needed when the container starts as root and an init/entrypoint
+# must drop privileges (via `s6-setuidgid`, `gosu`, `su`, or similar).
+# Skipped when --user is passed because the container already starts
+# unprivileged and never needs to switch.
+_PRIVDROP_CAP_ARGS = [
     "--cap-add", "SETUID",
     "--cap-add", "SETGID",
 ]
@@ -181,7 +184,7 @@ def _build_security_args(run_as_host_user: bool) -> list[str]:
     """Return the security/cap/tmpfs args tailored to the privilege mode."""
     if run_as_host_user:
         return list(_BASE_SECURITY_ARGS)
-    return list(_BASE_SECURITY_ARGS) + list(_GOSU_CAP_ARGS)
+    return list(_BASE_SECURITY_ARGS) + list(_PRIVDROP_CAP_ARGS)
 
 
 def _resolve_host_user_spec() -> Optional[str]:
@@ -300,6 +303,7 @@ class DockerEnvironment(BaseEnvironment):
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
+        extra_args: list = None,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -472,10 +476,19 @@ class DockerEnvironment(BaseEnvironment):
                     "image default user."
                 )
                 # Fall back to the full cap set — without --user, an image's
-                # entrypoint may still need gosu/su to drop privileges.
+                # init may still need s6-setuidgid/gosu/su to drop privileges.
         security_args = _build_security_args(run_as_host_user and bool(user_args))
 
         logger.info(f"Docker volume_args: {volume_args}")
+        # User-supplied extra docker run flags (docker_extra_args in config.yaml).
+        # Appended last so they can override defaults if needed.
+        validated_extra = []
+        for arg in (extra_args or []):
+            if not isinstance(arg, str):
+                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+                continue
+            validated_extra.append(arg)
+
         all_run_args = (
             security_args
             + user_args
@@ -483,6 +496,7 @@ class DockerEnvironment(BaseEnvironment):
             + resource_args
             + volume_args
             + env_args
+            + validated_extra
         )
         logger.info(f"Docker run_args: {all_run_args}")
 

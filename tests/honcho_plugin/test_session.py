@@ -212,6 +212,39 @@ class TestPeerLookupHelpers:
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
 
+    def test_get_peer_card_falls_back_to_target_peer_own_card(self):
+        # When the observer-target card slot is empty (returns None/[]), fall
+        # back to the target peer's own card. Self-hosted Honcho v3 stores the
+        # peer card on the peer itself; the observer-target slot is only
+        # populated when writes also go through that path.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.get_card.return_value = None  # observer-target slot empty
+        user_peer = MagicMock()
+        user_peer.get_card.return_value = ["Prefers: dark mode"]
+
+        def _peer(peer_id: str) -> MagicMock:
+            return assistant_peer if peer_id == session.assistant_peer_id else user_peer
+
+        mgr._get_or_create_peer = MagicMock(side_effect=_peer)
+
+        assert mgr.get_peer_card(session.key) == ["Prefers: dark mode"]
+        assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
+        user_peer.get_card.assert_called_once_with()
+
+    def test_set_peer_card_uses_observer_target_in_ai_observe_others_mode(self):
+        # Writes must go to the same observer-target slot that reads check,
+        # so that a subsequent honcho_profile read returns what was written.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.set_card.return_value = ["Role: user"]
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        result = mgr.set_peer_card(session.key, ["Role: user"])
+
+        assert result == ["Role: user"]
+        assistant_peer.set_card.assert_called_once_with(["Role: user"], target=session.user_peer_id)
+
     def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()
@@ -573,7 +606,7 @@ class TestToolsModeInitBehavior:
     """Verify initOnSessionStart controls session init timing in tools mode."""
 
     def _make_provider_with_config(self, recall_mode="tools", init_on_session_start=False,
-                                    peer_name=None, user_id=None):
+                                    peer_name=None, user_id=None, user_id_alt=None):
         """Create a HonchoMemoryProvider with mocked config and dependencies."""
         from plugins.memory.honcho.client import HonchoClientConfig
 
@@ -598,6 +631,8 @@ class TestToolsModeInitBehavior:
         init_kwargs = {}
         if user_id:
             init_kwargs["user_id"] = user_id
+        if user_id_alt:
+            init_kwargs["user_id_alt"] = user_id_alt
 
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
@@ -654,6 +689,15 @@ class TestToolsModeInitBehavior:
         )
         assert cfg.peer_name is None
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
+
+    def test_user_id_alt_is_passed_to_session_manager(self):
+        """Gateway alternate user IDs are available for Honcho alias matching."""
+        _, _, mock_manager_cls = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=True,
+            peer_name=None, user_id="open-id", user_id_alt="union-id",
+        )
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "open-id"
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name_alt"] == "union-id"
 
 
 class TestPerSessionMigrateGuard:
@@ -1570,7 +1614,7 @@ class TestDialecticLifecycleSmoke:
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 2, "turn 4 cadence fire"
         _, kwargs = mgr.dialectic_query.call_args
-        assert kwargs.get("reasoning_level") in ("medium", "high"), \
+        assert kwargs.get("reasoning_level") in {"medium", "high"}, \
             f"long query must bump reasoning level above 'low'; got {kwargs.get('reasoning_level')}"
         assert provider._last_dialectic_turn == 4, "cadence tracker advances on success"
 

@@ -118,6 +118,7 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
+_pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
@@ -157,7 +158,9 @@ _LONG_HANDLERS = frozenset(
 )
 
 try:
-    _rpc_pool_workers = max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4"))
+    _rpc_pool_workers = max(
+        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+    )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4
 _pool = concurrent.futures.ThreadPoolExecutor(
@@ -285,6 +288,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    stop_event = session.get("_notif_stop")
+    if stop_event is not None:
+        stop_event.set()
 
     agent = session.get("agent")
     lock = session.get("history_lock")
@@ -304,12 +310,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     _notify_session_boundary("on_session_finalize", session_id)
 
     # Mark session ended in DB so it doesn't linger as a ghost row in /resume.
-    # Adapted from #18283 (luyao618) and #18299 (Bartok9).
-    if session_key:
+    # Use session_id (from agent.session_id) not session_key — after compression,
+    # session_key may be stale (the ended parent) while session_id is the live
+    # continuation. Fix for #20001.
+    if session_id:
         try:
             db = _get_db()
             if db is not None:
-                db.end_session(session_key, end_reason)
+                db.end_session(session_id, end_reason)
         except Exception:
             pass
 
@@ -565,13 +573,17 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     register_gateway_notify,
                     load_permanent_allowlist,
                 )
-                register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+
+                register_gateway_notify(
+                    key, lambda data: _emit("approval.request", sid, data)
+                )
                 notify_registered = True
                 load_permanent_allowlist()
             except Exception:
                 pass
 
             _wire_callbacks(sid)
+            _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent)
@@ -596,6 +608,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 if notify_registered:
                     try:
                         from tools.approval import unregister_gateway_notify
+
                         unregister_gateway_notify(key)
                     except Exception:
                         pass
@@ -652,7 +665,7 @@ def _load_cfg() -> dict:
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         else:
             data = {}
@@ -671,7 +684,7 @@ def _save_cfg(cfg: dict):
     import yaml
 
     path = _hermes_home / "config.yaml"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
@@ -717,9 +730,13 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     ev = threading.Event()
     _pending[rid] = (sid, ev)
     payload["request_id"] = rid
-    _emit(event, sid, payload)
-    ev.wait(timeout=timeout)
-    _pending.pop(rid, None)
+    _pending_prompt_payloads[rid] = (event, dict(payload))
+    try:
+        _emit(event, sid, payload)
+        ev.wait(timeout=timeout)
+    finally:
+        _pending.pop(rid, None)
+        _pending_prompt_payloads.pop(rid, None)
     return _answers.pop(rid, "")
 
 
@@ -833,19 +850,50 @@ def _coerce_statusbar(raw) -> str:
     return "top"
 
 
-def _display_mouse_tracking(display: dict) -> bool:
-    """Return canonical display.mouse_tracking with legacy tui_mouse fallback."""
+_MOUSE_TRACKING_ALIASES = {
+    "0": "off",
+    "1": "all",
+    "all": "all",
+    "any": "all",
+    "button": "buttons",
+    "buttons": "buttons",
+    "click": "buttons",
+    "false": "off",
+    "full": "all",
+    "no": "off",
+    "off": "off",
+    "on": "all",
+    "scroll": "wheel",
+    "true": "all",
+    "wheel": "wheel",
+    "yes": "all",
+}
+
+
+def _display_mouse_tracking(display: dict) -> str:
+    """Resolve display.mouse_tracking to one of ``off|wheel|buttons|all``.
+
+    Boolean values keep their legacy meaning (``True`` → ``all``, ``False`` →
+    ``off``). The ``wheel`` preset (DEC 1000+1006) is the tmux-friendly
+    subset — wheel + click only, no hover events to trigger prompt-row
+    clipboard probes. Legacy ``tui_mouse`` is honored only when
+    ``mouse_tracking`` is absent.
+    """
     if not isinstance(display, dict):
-        return True
+        return "all"
     if "mouse_tracking" in display:
         raw = display.get("mouse_tracking")
     else:
         raw = display.get("tui_mouse", True)
     if raw is False or raw == 0:
-        return False
+        return "off"
+    if raw is True or raw is None:
+        return "all"
+    if isinstance(raw, (int, float)):
+        return "all"
     if isinstance(raw, str):
-        return raw.strip().lower() not in {"0", "false", "no", "off"}
-    return True
+        return _MOUSE_TRACKING_ALIASES.get(raw.strip().lower(), "all")
+    return "all"
 
 
 def _load_reasoning_config() -> dict | None:
@@ -875,6 +923,9 @@ def _load_show_reasoning() -> bool:
 
 
 def _load_tool_progress_mode() -> str:
+    env = os.environ.get("HERMES_TUI_TOOL_PROGRESS", "").strip().lower()
+    if env in {"off", "new", "all", "verbose"}:
+        return env
     raw = (_load_cfg().get("display") or {}).get("tool_progress", "all")
     if raw is False:
         return "off"
@@ -936,7 +987,11 @@ def _load_enabled_toolsets() -> list[str] | None:
             from hermes_cli.tools_config import _parse_enabled_flag
 
             raw_cfg = read_raw_config()
-            mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
+            mcp_servers = (
+                raw_cfg.get("mcp_servers")
+                if isinstance(raw_cfg.get("mcp_servers"), dict)
+                else {}
+            )
             for name, server_cfg in mcp_servers.items():
                 if not isinstance(server_cfg, dict):
                     continue
@@ -950,7 +1005,11 @@ def _load_enabled_toolsets() -> list[str] | None:
 
         mcp_valid = [name for name in unresolved if name in mcp_names]
         disabled = [name for name in unresolved if name in mcp_disabled]
-        unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+        unknown = [
+            name
+            for name in unresolved
+            if name not in mcp_names and name not in mcp_disabled
+        ]
         valid = built_in + mcp_valid
 
         if unknown:
@@ -971,7 +1030,9 @@ def _load_enabled_toolsets() -> list[str] | None:
         if valid:
             return valid
 
-        fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
+        fallback_notice = (
+            "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
+        )
 
     try:
         from hermes_cli.config import load_config
@@ -1003,6 +1064,10 @@ def _load_enabled_toolsets() -> list[str] | None:
 
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
+
+
+def _session_verbose(sid: str) -> bool:
+    return _session_tool_progress_mode(sid) == "verbose"
 
 
 def _tool_progress_enabled(sid: str) -> bool:
@@ -1047,7 +1112,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global = parse_model_flags(raw_input)
+    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(raw_input)
     if not model_input:
         raise ValueError("model value required")
 
@@ -1062,7 +1127,16 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         current_provider = str(runtime.get("provider", "") or "")
         current_model = _resolve_model()
         current_base_url = str(runtime.get("base_url", "") or "")
-        current_api_key = str(runtime.get("api_key", "") or "")
+        # Preserve a callable api_key (Azure Foundry Entra ID bearer
+        # provider) unchanged — ``str(...)`` would produce
+        # ``"<function ...>"`` and poison downstream switch_model
+        # validation. Match the agent-present branch's behavior at the
+        # top of this block.
+        _runtime_key = runtime.get("api_key", "")
+        if callable(_runtime_key) and not isinstance(_runtime_key, str):
+            current_api_key = _runtime_key
+        else:
+            current_api_key = str(_runtime_key or "")
 
     # Load user-defined providers so switch_model can resolve named custom
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
@@ -1175,7 +1249,13 @@ def _compress_session_history(
     return len(history) - len(compressed), usage
 
 
-def _sync_session_key_after_compress(sid: str, session: dict) -> None:
+def _sync_session_key_after_compress(
+    sid: str,
+    session: dict,
+    *,
+    clear_pending_title: bool = True,
+    restart_slash_worker: bool = True,
+) -> None:
     """Re-anchor session_key when AIAgent._compress_context rotates session_id.
 
     AIAgent._compress_context ends the current SessionDB session and creates
@@ -1184,7 +1264,14 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
     approval routing, slash worker init, DB title/history lookups, yolo
     state).  Without this sync, those operations would target the ended
     parent session while the agent writes to the new continuation session.
-    Mirrors HermesCLI._manual_compress's session_id sync.
+
+    Policy flags:
+        clear_pending_title: True for manual /compress (title belongs to old
+            session). False for post-turn auto-compression (preserve user
+            intent so pending_title can be applied to the continuation).
+        restart_slash_worker: True for manual /compress and post-turn
+            auto-compression (worker holds stale session key). False only
+            if the caller manages the worker lifecycle separately.
     """
     agent = session.get("agent")
     new_session_id = getattr(agent, "session_id", None) or ""
@@ -1229,11 +1316,13 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
         # don't keep targeting the ended row.
         session["session_key"] = new_session_id
 
-    session["pending_title"] = None
-    try:
-        _restart_slash_worker(session)
-    except Exception:
-        pass
+    if clear_pending_title:
+        session["pending_title"] = None
+    if restart_slash_worker:
+        try:
+            _restart_slash_worker(session)
+        except Exception:
+            pass
 
 
 def _get_usage(agent) -> dict:
@@ -1244,6 +1333,7 @@ def _get_usage(agent) -> dict:
         "output": g("session_output_tokens", "session_completion_tokens"),
         "cache_read": g("session_cache_read_tokens"),
         "cache_write": g("session_cache_write_tokens"),
+        "reasoning": g("session_reasoning_tokens"),
         "prompt": g("session_prompt_tokens"),
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
@@ -1325,6 +1415,15 @@ def _probe_config_health(cfg: dict) -> str:
     return " ".join(warnings).strip()
 
 
+def _current_profile_name() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def _session_info(agent) -> dict:
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
@@ -1341,12 +1440,13 @@ def _session_info(agent) -> dict:
         "fast": service_tier == "priority",
         "tools": {},
         "skills": {},
-        "cwd": os.getcwd(),
+        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         "version": "",
         "release_date": "",
         "update_behind": None,
         "update_command": "",
         "usage": _get_usage(agent),
+        "profile_name": _current_profile_name(),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -1378,6 +1478,10 @@ def _session_info(agent) -> dict:
     except Exception:
         info["mcp_servers"] = []
     try:
+        info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
+    except Exception:
+        pass
+    try:
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command
 
@@ -1395,6 +1499,74 @@ def _tool_ctx(name: str, args: dict) -> str:
         return build_tool_preview(name, args, max_len=80) or ""
     except Exception:
         return ""
+
+
+_TUI_VERBOSE_TEXT_MAX_CHARS = 16_000
+_TUI_VERBOSE_TEXT_MAX_LINES = 240
+
+
+def _cap_tui_verbose_text(text: str) -> str:
+    if (
+        len(text) <= _TUI_VERBOSE_TEXT_MAX_CHARS
+        and text.count("\n") < _TUI_VERBOSE_TEXT_MAX_LINES
+    ):
+        return text
+
+    idx = len(text)
+    start = 0
+    for _ in range(_TUI_VERBOSE_TEXT_MAX_LINES):
+        idx = text.rfind("\n", 0, idx)
+        if idx < 0:
+            start = 0
+            break
+        start = idx + 1
+
+    line_start = start
+    start = max(line_start, len(text) - _TUI_VERBOSE_TEXT_MAX_CHARS)
+    if start > line_start:
+        next_break = text.find("\n", start)
+        if 0 <= next_break < len(text) - 1:
+            start = next_break + 1
+
+    tail = text[start:].lstrip()
+    omitted_chars = max(0, len(text) - len(tail))
+    omitted_lines = text[:start].count("\n")
+    if omitted_lines:
+        label = (
+            "[showing verbose tail; omitted "
+            f"{omitted_lines} lines / {omitted_chars} chars]\n"
+        )
+    else:
+        label = f"[showing verbose tail; omitted {omitted_chars} chars]\n"
+    return f"{label}{tail}"
+
+
+def _redact_tui_verbose_text(text: str) -> str:
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(str(text), force=True)
+    except Exception:
+        return ""
+    return _cap_tui_verbose_text(redacted)
+
+
+def _tool_args_text(args: dict) -> str:
+    try:
+        raw = json.dumps(args or {}, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        raw = str(args or {})
+    return _redact_tui_verbose_text(raw)
+
+
+def _tool_result_text(result: object) -> str:
+    try:
+        from agent.tool_dispatch_helpers import _multimodal_text_summary
+
+        raw = _multimodal_text_summary(result)
+    except Exception:
+        raw = str(result)
+    return _redact_tui_verbose_text(raw)
 
 
 def _fmt_tool_duration(seconds: float | None) -> str:
@@ -1437,6 +1609,11 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
         if n is not None:
             text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
 
+    if isinstance(data, dict) and data.get("fallback_warning"):
+        warning = str(data.get("fallback_warning") or "").strip()
+        if warning:
+            return f"{warning}{suffix}"
+
     return f"{text}{suffix}" if text else None
 
 
@@ -1453,13 +1630,18 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
+        payload = {
+            "tool_id": tool_call_id,
+            "name": name,
+            "context": _tool_ctx(name, args),
+        }
+        if _session_verbose(sid):
+            args_text = _tool_args_text(args)
+            if args_text:
+                payload["args_text"] = args_text
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
-        _emit(
-            "tool.start",
-            sid,
-            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
-        )
+        _emit("tool.start", sid, payload)
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -1476,6 +1658,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if _session_verbose(sid):
+        result_text = _tool_result_text(result)
+        if result_text:
+            payload["result_text"] = result_text
     if name == "todo":
         try:
             data = json.loads(result)
@@ -1515,7 +1701,10 @@ def _on_tool_progress(
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
         return
     if event_type == "reasoning.available" and preview:
-        _emit("reasoning.available", sid, {"text": str(preview)})
+        payload: dict[str, object] = {"text": str(preview)}
+        if _session_verbose(sid):
+            payload["verbose"] = True
+        _emit("reasoning.available", sid, payload)
         return
     if event_type.startswith("subagent."):
         payload = {
@@ -1578,27 +1767,31 @@ def _on_tool_progress(
 
 
 def _agent_cbs(sid: str) -> dict:
-    return dict(
-        tool_start_callback=lambda tc_id, name, args: _on_tool_start(
+    return {
+        "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
-        tool_complete_callback=lambda tc_id, name, args, result: _on_tool_complete(
+        "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(
             sid, tc_id, name, args, result
         ),
-        tool_progress_callback=lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
+        "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs
         ),
-        tool_gen_callback=lambda name: _tool_progress_enabled(sid)
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
-        status_callback=lambda kind, text=None: _status_update(
+        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "reasoning_callback": lambda text: _emit(
+            "reasoning.delta",
+            sid,
+            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        ),
+        "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
-        clarify_callback=lambda q, c: _block(
+        "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),
-    )
+    }
 
 
 def _wire_callbacks(sid: str):
@@ -1660,7 +1853,7 @@ def _available_personalities(cfg: dict | None = None) -> dict:
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
     raw = str(value or "").strip()
     name = raw.lower()
-    if not name or name in ("none", "default", "neutral"):
+    if not name or name in {"none", "default", "neutral"}:
         return "", ""
 
     personalities = _available_personalities(cfg)
@@ -1680,26 +1873,69 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
 def _apply_personality_to_session(
     sid: str, session: dict, new_prompt: str
 ) -> tuple[bool, dict | None]:
+    """Apply a personality change to an existing session without resetting history.
+
+    Updates the agent's ephemeral system prompt in-place so the new personality
+    takes effect on the next turn.  The cached base system prompt is left intact
+    (ephemeral_system_prompt is appended at API-call time, not baked into the
+    cache), which preserves prompt-cache hits.
+
+    Also injects a system-role marker into the conversation history so the model
+    knows to pivot its style from this point forward (without this, LLMs tend to
+    continue the tone established by earlier messages in the transcript).
+
+    Returns (history_reset, info) — history_reset is always False since we
+    preserve the conversation.
+    """
     if not session:
         return False, None
 
-    try:
-        info = _reset_session_agent(sid, session)
-        return True, info
-    except Exception:
-        if session.get("agent"):
-            agent = session["agent"]
-            agent.ephemeral_system_prompt = new_prompt or None
-            agent._cached_system_prompt = None
-            info = _session_info(agent)
-            _emit("session.info", sid, info)
-            return False, info
-        return False, None
+    agent = session.get("agent")
+    if agent:
+        agent.ephemeral_system_prompt = new_prompt or None
+        # Inject a pivot marker into history so the model sees the change point.
+        # This prevents it from pattern-matching its prior style.
+        if new_prompt:
+            marker = (
+                "[System: The user has changed the assistant's personality. "
+                "From this point forward, adopt the following persona and respond "
+                f"accordingly: {new_prompt}]"
+            )
+        else:
+            marker = (
+                "[System: The user has cleared the personality overlay. "
+                "From this point forward, respond in your normal default style.]"
+            )
+        with session["history_lock"]:
+            session["history"].append({"role": "user", "content": marker})
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        info = _session_info(agent)
+        _emit("session.info", sid, info)
+        return False, info
+    return False, None
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
+    try:
+        env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
+        if env_max > 0:
+            return env_max
+    except (TypeError, ValueError):
+        pass
     agent_cfg = cfg.get("agent") or {}
     return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+
+
+def _parse_tui_skills_env() -> list[str]:
+    raw = os.environ.get("HERMES_TUI_SKILLS", "")
+    skills: list[str] = []
+    seen: set[str] = set()
+    for part in raw.replace("\n", ",").split(","):
+        item = part.strip()
+        if item and item not in seen:
+            seen.add(item)
+            skills.append(item)
+    return skills
 
 
 def _background_agent_kwargs(agent, task_id: str) -> dict:
@@ -1728,6 +1964,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
             agent, "provider_require_parameters", False
         ),
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
+        "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
@@ -1771,6 +2008,20 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
+    startup_skills = _parse_tui_skills_env()
+    if startup_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+            startup_skills,
+            task_id=session_id or key,
+        )
+        if missing_skills:
+            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+        if skills_prompt:
+            system_prompt = "\n\n".join(
+                part for part in (system_prompt, skills_prompt) if part
+            ).strip()
     model, requested_provider = _resolve_startup_runtime()
     runtime = resolve_runtime_provider(
         requested=requested_provider,
@@ -1787,7 +2038,11 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
         quiet_mode=True,
-        verbose_logging=_load_tool_progress_mode() == "verbose",
+        # verbose_logging controls DEBUG-level agent logging; it is intentionally
+        # independent of tool_progress_mode (which only controls per-tool
+        # display detail).  See cli.py PR (decoupling fix) for the matching
+        # change on the classic CLI side.
+        verbose_logging=False,
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(),
@@ -1795,17 +2050,25 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         session_id=session_id or key,
         session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
+        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         **_agent_cbs(sid),
     )
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+    now = time.time()
     _sessions[sid] = {
         "agent": agent,
         "session_key": key,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
+        "inflight_turn": None,
+        "created_at": now,
+        "last_active": now,
         "running": False,
         "attached_images": [],
         "image_counter": 0,
@@ -1839,16 +2102,15 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     # prompt_toolkit; the TUI has no equivalent print surface, so without
     # this callback the review would write the skill/memory change silently.
     try:
-        agent.background_review_callback = (
-            lambda message, _sid=sid: _emit(
-                "review.summary", _sid, {"text": str(message)}
-            )
+        agent.background_review_callback = lambda message, _sid=sid: _emit(
+            "review.summary", _sid, {"text": str(message)}
         )
     except Exception:
         # Bare AIAgents that don't expose the attribute (unlikely, but keep
         # session startup resilient).
         pass
     _wire_callbacks(sid)
+    _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent))
 
@@ -1909,6 +2171,36 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     return text or "What do you see in this image?"
 
 
+def _content_display_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (int, float)):
+        return str(content)
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            text = _content_display_text(part).strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        kind = content.get("type")
+        if kind in {"text", "input_text", "output_text"}:
+            return str(content.get("text") or content.get("content") or "")
+        if kind in {"image_url", "input_image", "image"}:
+            return "[image]"
+        if kind in {"input_audio", "audio"}:
+            return "[audio]"
+        if kind:
+            return f"[{kind}]"
+        if "text" in content:
+            return str(content.get("text") or "")
+        return "[structured content]"
+    return str(content)
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -1917,8 +2209,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not isinstance(m, dict):
             continue
         role = m.get("role")
-        if role not in ("user", "assistant", "tool", "system"):
+        if role not in {"user", "assistant", "tool", "system"}:
             continue
+        content_text = _content_display_text(m.get("content"))
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {})
@@ -1929,7 +2222,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not (m.get("content") or "").strip():
+            if not content_text.strip():
                 continue
         if role == "tool":
             tc_id = m.get("tool_call_id", "")
@@ -1940,11 +2233,59 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                 {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
             )
             continue
-        if not (m.get("content") or "").strip():
+        if not content_text.strip():
             continue
-        messages.append({"role": role, "text": m.get("content") or ""})
+        messages.append({"role": role, "text": content_text})
 
     return messages
+
+
+def _inflight_text(value: Any) -> str:
+    return _content_display_text(value).strip()
+
+
+def _start_inflight_turn(session: dict, text: Any) -> None:
+    now = time.time()
+    session["inflight_turn"] = {
+        "assistant": "",
+        "started_at": now,
+        "streaming": True,
+        "updated_at": now,
+        "user": _inflight_text(text),
+    }
+
+
+def _append_inflight_delta(session: dict, delta: Any) -> None:
+    text = "" if delta is None else str(delta)
+    if not text:
+        return
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        turn = {"assistant": "", "streaming": True, "user": ""}
+    turn["assistant"] = f"{turn.get('assistant') or ''}{text}"
+    turn["streaming"] = True
+    turn["updated_at"] = time.time()
+    session["inflight_turn"] = turn
+
+
+def _clear_inflight_turn(session: dict) -> None:
+    session["inflight_turn"] = None
+
+
+def _inflight_snapshot(session: dict) -> dict | None:
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return None
+    user = str(turn.get("user") or "").strip()
+    assistant = str(turn.get("assistant") or "")
+    streaming = bool(turn.get("streaming"))
+    if not user and not assistant and not streaming:
+        return None
+    return {
+        "assistant": assistant,
+        "streaming": streaming,
+        "user": user,
+    }
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -1958,6 +2299,7 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
 
     ready = threading.Event()
+    now = time.time()
 
     _sessions[sid] = {
         "agent": None,
@@ -1965,11 +2307,14 @@ def _(rid, params: dict) -> dict:
         "agent_ready": ready,
         "attached_images": [],
         "cols": cols,
+        "created_at": now,
         "edit_snapshots": {},
         "history": [],
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
+        "inflight_turn": None,
+        "last_active": now,
         "pending_title": None,
         "running": False,
         "session_key": key,
@@ -2003,6 +2348,7 @@ def _(rid, params: dict) -> dict:
                 "skills": {},
                 "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
                 "lazy": True,
+                "profile_name": _current_profile_name(),
             },
         },
     )
@@ -2142,6 +2488,140 @@ def _(rid, params: dict) -> dict:
     )
 
 
+def _session_pending_kind(sid: str) -> str:
+    for rid, (owner_sid, _ev) in list(_pending.items()):
+        if owner_sid != sid:
+            continue
+        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+        return str(event).removesuffix(".request")
+    return ""
+
+
+def _session_live_status(sid: str, session: dict) -> str:
+    if _session_pending_kind(sid):
+        return "waiting"
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set():
+        return "starting"
+    if session.get("running"):
+        return "working"
+    return "idle"
+
+
+def _message_preview(history: list) -> str:
+    for msg in reversed(history or []):
+        text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()
+        if text:
+            return " ".join(text.split())[:160]
+    return ""
+
+
+def _session_live_title(session: dict, key: str) -> str:
+    title = str(session.get("pending_title") or "").strip()
+    db = _get_db()
+    if db is not None:
+        try:
+            title = str(db.get_session_title(key) or title or "").strip()
+        except Exception:
+            pass
+    return title
+
+
+def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
+    key = str(session.get("session_key") or sid)
+    agent = session.get("agent")
+    history = list(session.get("history") or [])
+    status = _session_live_status(sid, session)
+    inflight = _inflight_snapshot(session)
+    preview = _message_preview(history)
+    if inflight:
+        preview = inflight.get("assistant") or inflight.get("user") or preview
+        preview = " ".join(str(preview).split())[:160]
+    now = time.time()
+    return {
+        "current": sid == current_sid,
+        "id": sid,
+        "last_active": float(session.get("last_active") or session.get("created_at") or now),
+        "message_count": len(history),
+        "model": str(getattr(agent, "model", "") or _resolve_model()),
+        "preview": preview,
+        "session_key": key,
+        "started_at": float(session.get("created_at") or now),
+        "status": status,
+        "title": _session_live_title(session, key),
+    }
+
+
+def _fallback_session_info(session: dict) -> dict:
+    agent = session.get("agent")
+    if agent is not None:
+        return _session_info(agent)
+    return {
+        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+        "lazy": True,
+        "model": _resolve_model(),
+        "skills": {},
+        "tools": {},
+    }
+
+
+@method("session.active_list")
+def _(rid, params: dict) -> dict:
+    """Return live TUI sessions in this gateway process.
+
+    Unlike ``session.list`` this is not a historical DB browser: it reports only
+    sessions with in-memory agents/workers that the current TUI can switch to
+    without closing siblings.
+    """
+    current = str(params.get("current_session_id") or "")
+    try:
+        snapshot = list(_sessions.items())
+    except Exception as e:
+        return _err(rid, 5036, f"could not enumerate active sessions: {e}")
+
+    # Keep the natural creation/insertion order from ``_sessions``.  The
+    # frontend marks the focused session with ``current``; it should not jump to
+    # the top just because the user switched to it.
+    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    return _ok(rid, {"sessions": rows})
+
+
+@method("session.activate")
+def _(rid, params: dict) -> dict:
+    """Attach the frontend to an already-live TUI session.
+
+    This intentionally does not close the previously focused session; it merely
+    returns enough state for Ink to redraw around another live session id.
+    """
+    sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait({"session_id": sid}, rid)
+    if err:
+        return err
+
+    with session["history_lock"]:
+        session["last_active"] = time.time()
+        history = list(session.get("display_history") or session.get("history") or [])
+        inflight = _inflight_snapshot(session)
+        running = bool(session.get("running"))
+    status = _session_live_status(sid, session)
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(history),
+        "messages": _history_to_messages(history),
+        "running": running,
+        "session_id": sid,
+        "session_key": session.get("session_key") or sid,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": status,
+    }
+    if inflight:
+        payload["inflight"] = inflight
+    return _ok(
+        rid,
+        payload,
+    )
+
+
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session and its on-disk transcript files.
@@ -2252,7 +2732,71 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     agent = session.get("agent")
-    return _ok(rid, _get_usage(agent) if agent is not None else {"calls": 0, "input": 0, "output": 0, "total": 0})
+    return _ok(
+        rid,
+        (
+            _get_usage(agent)
+            if agent is not None
+            else {"calls": 0, "input": 0, "output": 0, "total": 0}
+        ),
+    )
+
+
+@method("session.status")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    from hermes_constants import display_hermes_home
+
+    key = session.get("session_key") or params.get("session_id") or ""
+    agent = session.get("agent")
+    meta = {}
+    db = _get_db()
+    if db and key:
+        try:
+            meta = db.get_session(key) or {}
+        except Exception:
+            meta = {}
+
+    def _dt(value, fallback: datetime | None = None) -> datetime:
+        if value:
+            try:
+                return datetime.fromtimestamp(float(value))
+            except Exception:
+                pass
+        return fallback or datetime.now()
+
+    created = _dt(meta.get("started_at"))
+    updated = created
+    for field in ("updated_at", "last_updated_at", "last_activity_at"):
+        if meta.get(field):
+            updated = _dt(meta.get(field), created)
+            break
+
+    usage = _get_usage(agent) if agent is not None else {}
+    provider = getattr(agent, "provider", None) or "unknown"
+    model = getattr(agent, "model", None) or "(unknown)"
+    lines = [
+        "Hermes TUI Status",
+        "",
+        f"Session ID: {key}",
+        f"Path: {display_hermes_home()}",
+    ]
+    title = (meta.get("title") or "").strip()
+    if title:
+        lines.append(f"Title: {title}")
+    lines.extend(
+        [
+            f"Model: {model} ({provider})",
+            f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
+            f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
+            f"Tokens: {int(usage.get('total') or 0):,}",
+            f"Agent Running: {'Yes' if session.get('running') else 'No'}",
+        ]
+    )
+    return _ok(rid, {"output": "\n".join(lines)})
 
 
 @method("session.history")
@@ -2295,7 +2839,7 @@ def _(rid, params: dict) -> dict:
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
-        while history and history[-1].get("role") in ("assistant", "tool"):
+        while history and history[-1].get("role") in {"assistant", "tool"}:
             history.pop()
             removed += 1
         if history and history[-1].get("role") == "user":
@@ -2358,7 +2902,9 @@ def _(rid, params: dict) -> dict:
             after_count = len(messages)
             # Re-read system prompt + tools after compression — _compress_context
             # may have rebuilt the system prompt (_cached_system_prompt=None).
-            _sys_prompt_after = getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            _sys_prompt_after = (
+                getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            )
             _tools_after = getattr(_agent, "tools", None) or _tools
             after_tokens = (
                 estimate_request_tokens_rough(
@@ -2411,7 +2957,7 @@ def _(rid, params: dict) -> dict:
         f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json"
     )
     try:
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "model": getattr(session["agent"], "model", ""),
@@ -2437,6 +2983,12 @@ def _(rid, params: dict) -> dict:
         from tools.approval import unregister_gateway_notify
 
         unregister_gateway_notify(session["session_key"])
+    except Exception:
+        pass
+    try:
+        agent = session.get("agent")
+        if agent and hasattr(agent, "close"):
+            agent.close()
     except Exception:
         pass
     try:
@@ -2794,20 +3346,130 @@ def _(rid, params: dict) -> dict:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
         session["running"] = True
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
 
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
-            _emit("error", sid, {"message": err.get("error", {}).get("message", "agent initialization failed")})
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
             with session["history_lock"]:
                 session["running"] = False
+                _clear_inflight_turn(session)
             return
         _run_prompt_submit(rid, sid, session, text)
 
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
     return _ok(rid, {"status": "streaming"})
+
+
+def _notification_poller_loop(
+    stop_event: threading.Event, sid: str, session: dict
+) -> None:
+    """Poll completion_queue and dispatch notifications autonomously.
+
+    Runs in a daemon thread started by _init_session(). Emits a
+    status.update (kind=process) for user visibility, then chains an
+    agent turn via _run_prompt_submit if the session is idle.
+
+    NOTE: The completion_queue is global (one per process). If multiple
+    TUI sessions coexist, whichever poller wakes first grabs the event,
+    even if the process was started by a different session. This matches
+    CLI/gateway behavior (single session per process).
+    """
+    from tools.process_registry import process_registry, format_process_notification
+
+    while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+        except Exception:
+            continue
+
+        _evt_sid = evt.get("session_id", "")
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+
+        text = format_process_notification(evt)
+        if not text:
+            continue
+
+        _emit("status.update", sid, {"kind": "process", "text": text})
+
+        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                continue
+            session["running"] = True
+
+        rid = f"__notif__{int(time.time() * 1000)}"
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            print(
+                f"[tui_gateway] notification poller dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+    # Drain any remaining events after stop signal (process all pending
+    # before exiting so nothing is lost on shutdown).
+    while not process_registry.completion_queue.empty():
+        try:
+            evt = process_registry.completion_queue.get_nowait()
+        except Exception:
+            break
+        _evt_sid = evt.get("session_id", "")
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        text = format_process_notification(evt)
+        if not text:
+            continue
+
+        _emit("status.update", sid, {"kind": "process", "text": text})
+
+        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                break
+            session["running"] = True
+
+        rid = f"__notif__{int(time.time() * 1000)}"
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            print(
+                f"[tui_gateway] notification poller dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+
+def _start_notification_poller(sid: str, session: dict) -> threading.Event:
+    """Start the background notification poller for a TUI session."""
+    stop = threading.Event()
+    t = threading.Thread(
+        target=_notification_poller_loop,
+        args=(stop, sid, session),
+        daemon=True,
+    )
+    t.start()
+    return stop
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
@@ -2816,12 +3478,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        if not isinstance(session.get("inflight_turn"), dict):
+            _start_inflight_turn(session, text)
     agent = session["agent"]
     _emit("message.start", sid)
 
     def run():
         approval_token = None
         session_tokens = []
+        goal_followup = None  # set by the post-turn goal hook below
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -2843,7 +3508,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     base_url=getattr(agent, "base_url", "") or "",
                     api_key=getattr(agent, "api_key", "") or "",
                     provider=getattr(agent, "provider", "") or "",
-                    config_context_length=getattr(agent, "_config_context_length", None),
+                    config_context_length=getattr(
+                        agent, "_config_context_length", None
+                    ),
                 )
                 ctx = preprocess_context_references(
                     prompt,
@@ -2887,6 +3554,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         _read_main_model(),
                         _cfg,
                     )
+                    if getattr(agent, "api_mode", "") == "codex_app_server":
+                        _mode = "text"
                 except Exception as _img_exc:
                     print(
                         f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
@@ -2919,6 +3588,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_message = _enrich_with_attached_images(prompt, images)
 
             def _stream(delta):
+                with session["history_lock"]:
+                    _append_inflight_delta(session, delta)
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
@@ -2958,12 +3629,35 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                 "History changed during this turn — the response above is visible "
                                 "but was not saved to session history."
                             )
+
+                # If auto-compression fired inside run_conversation(), agent.session_id
+                # may have rotated. Sync session_key before downstream title/goal/finalize
+                # handling uses it. Preserve pending_title (user intent) so it can be
+                # applied to the continuation. Restart slash worker so subsequent
+                # worker-backed commands (/title etc.) target the live session.
+                # Fix for #20001.
+                _sync_session_key_after_compress(
+                    sid, session, clear_pending_title=False, restart_slash_worker=True,
+                )
+
                 raw = result.get("final_response", "")
                 status = (
                     "interrupted"
                     if result.get("interrupted")
                     else "error" if result.get("error") else "complete"
                 )
+                # When the backend produced no visible response AND reported a
+                # real error (e.g. invalid model slug → provider 4xx), surface
+                # that error as the visible text instead of shipping an empty
+                # turn to Ink. Mirrors classic CLI behavior at cli.py where
+                # (failed|partial) + no final_response → "Error: <detail>".
+                # Leaves the None-with-no-error path untouched: an empty
+                # successful turn still renders as empty, and the existing
+                # "(empty)" sentinel handling stays in its own lane.
+                if (not raw) and result.get("error") and (
+                    result.get("failed") or result.get("partial")
+                ):
+                    raw = f"Error: {result.get('error')}"
                 lr = result.get("last_reasoning")
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
@@ -2979,18 +3673,76 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            with session["history_lock"]:
+                _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
+
+            # ── /goal continuation (Ralph-style loop) ─────────────────
+            # After every TUI turn, if a /goal is active, ask the judge
+            # whether the goal is done and — if not and we're still under
+            # budget — queue a continuation prompt to run after this
+            # thread releases session["running"]. The verdict message
+            # ("✓ Goal achieved" / "⏸ budget exhausted") is surfaced as
+            # a system line so the user sees progress regardless of
+            # outcome. Mirrors gateway/run._post_turn_goal_continuation.
+            if status == "complete" and isinstance(raw, str) and raw.strip():
+                try:
+                    from hermes_cli.goals import GoalManager
+
+                    sid_key = session.get("session_key") or ""
+                    if sid_key:
+                        try:
+                            goals_cfg = _load_cfg().get("goals") or {}
+                            goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                        except Exception:
+                            goal_max_turns = 20
+                        goal_mgr = GoalManager(
+                            session_id=sid_key,
+                            default_max_turns=goal_max_turns,
+                        )
+                        if goal_mgr.is_active():
+                            decision = goal_mgr.evaluate_after_turn(
+                                raw,
+                                user_initiated=True,
+                            )
+                            verdict_msg = decision.get("message") or ""
+                            if verdict_msg:
+                                _emit(
+                                    "status.update",
+                                    sid,
+                                    {"kind": "goal", "text": verdict_msg},
+                                )
+                            if decision.get("should_continue"):
+                                cont_prompt = decision.get("continuation_prompt") or ""
+                                if cont_prompt:
+                                    goal_followup = cont_prompt
+                except Exception as _goal_exc:
+                    print(
+                        f"[tui_gateway] goal continuation hook failed: "
+                        f"{type(_goal_exc).__name__}: {_goal_exc}",
+                        file=sys.stderr,
+                    )
 
             # Apply pending_title now that the DB row exists.
             _pending = session.get("pending_title")
             if _pending and status == "complete":
                 _pdb = _get_db()
                 if _pdb:
+                    _session_key = session.get("session_key") or sid
                     try:
-                        if _pdb.set_session_title(session.get("session_key") or sid, _pending):
+                        if _pdb.set_session_title(_session_key, _pending):
                             session["pending_title"] = None
+                    except ValueError as exc:
+                        # Invalid/duplicate title — non-retryable, drop it.
+                        # Auto-title will take over. Fix for #19029.
+                        session["pending_title"] = None
+                        logger.info(
+                            "Dropping pending title for session %s: %s",
+                            _session_key, exc,
+                        )
                     except Exception:
-                        pass  # Best effort — auto-title will handle it below
+                        # Transient DB failure — keep pending_title for retry.
+                        pass
 
             if (
                 status == "complete"
@@ -3060,6 +3812,63 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
+                session["last_active"] = time.time()
+                _clear_inflight_turn(session)
+
+        # Chain a goal-continuation turn if the judge said so. We do
+        # this AFTER the finally releases session["running"], so the
+        # nested _run_prompt_submit doesn't deadlock on the busy
+        # guard. A real user prompt that races us wins because
+        # prompt.submit sets running=True under the history_lock and
+        # we check that guard before re-firing.
+        if goal_followup:
+            with session["history_lock"]:
+                if session.get("running"):
+                    # User already sent something — their turn wins,
+                    # the judge will re-run on the next turn anyway.
+                    return
+                session["running"] = True
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, goal_followup)
+            except Exception as _cont_exc:
+                print(
+                    f"[tui_gateway] goal continuation dispatch failed: "
+                    f"{type(_cont_exc).__name__}: {_cont_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+
+        # Drain completion notifications that arrived during this turn.
+        # The background poller handles between-turn delivery; this is
+        # the safety net for events that arrived mid-turn.
+        try:
+            from tools.process_registry import process_registry
+
+            for _evt, synth in process_registry.drain_notifications():
+                with session["history_lock"]:
+                    if session.get("running"):
+                        process_registry.completion_queue.put(_evt)
+                        break
+                    session["running"] = True
+                try:
+                    _emit("message.start", sid)
+                    _run_prompt_submit(rid, sid, session, synth)
+                except Exception as _n_exc:
+                    print(
+                        f"[tui_gateway] completion notification dispatch failed: "
+                        f"{type(_n_exc).__name__}: {_n_exc}",
+                        file=sys.stderr,
+                    )
+                    with session["history_lock"]:
+                        session["running"] = False
+        except Exception as _drain_exc:
+            print(
+                f"[tui_gateway] completion queue drain failed: "
+                f"{type(_drain_exc).__name__}: {_drain_exc}",
+                file=sys.stderr,
+            )
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -3318,6 +4127,14 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
+                if session.get("agent") is None:
+                    session_id = params.get("session_id", "")
+                    _start_agent_build(session_id, session)
+                    init_err = _wait_agent(session, rid)
+                    if init_err:
+                        return init_err
+                    if session.get("agent") is None:
+                        return _err(rid, 5032, "agent initialization failed")
                 result = _apply_model_switch(
                     params.get("session_id", ""), session, value
                 )
@@ -3344,7 +4161,7 @@ def _(rid, params: dict) -> dict:
                 {"key": key, "value": "fast" if current_fast else "normal"},
             )
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "normal" if current_fast else "fast"
         elif raw in {"fast", "on"}:
             nv = "fast"
@@ -3392,7 +4209,7 @@ def _(rid, params: dict) -> dict:
 
     if key == "busy":
         raw = str(value or "").strip().lower()
-        if raw in ("", "status"):
+        if raw in {"", "status"}:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
         if raw not in {"queue", "steer", "interrupt"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
@@ -3457,9 +4274,11 @@ def _(rid, params: dict) -> dict:
             from hermes_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
-            if arg in ("show", "on"):
+            if arg in {"show", "on"}:
                 cfg = _load_cfg()
-                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
                 sections = (
                     display.get("sections")
                     if isinstance(display.get("sections"), dict)
@@ -3473,9 +4292,11 @@ def _(rid, params: dict) -> dict:
                 if session:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
-            if arg in ("hide", "off"):
+            if arg in {"hide", "off"}:
                 cfg = _load_cfg()
-                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
                 sections = (
                     display.get("sections")
                     if isinstance(display.get("sections"), dict)
@@ -3506,7 +4327,9 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4002, f"unknown details_mode: {value}")
         cfg = _load_cfg()
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
-        sections = display.get("sections") if isinstance(display.get("sections"), dict) else {}
+        sections = (
+            display.get("sections") if isinstance(display.get("sections"), dict) else {}
+        )
         display["details_mode"] = nv
         for section in _DETAIL_SECTION_NAMES:
             sections[section] = nv
@@ -3564,7 +4387,7 @@ def _(rid, params: dict) -> dict:
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
         cur_b = bool(d0.get("tui_compact", False))
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv_b = not cur_b
         elif raw == "on":
             nv_b = True
@@ -3581,7 +4404,7 @@ def _(rid, params: dict) -> dict:
         d0 = display if isinstance(display, dict) else {}
         current = _coerce_statusbar(d0.get("tui_statusbar", "top"))
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "top" if current == "off" else "off"
         elif raw == "on":
             nv = "top"
@@ -3594,22 +4417,25 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "mouse":
-        raw = str(value or "").strip().lower()
+        # Explicit None check rather than `value or ""` so falsy non-string
+        # inputs (0, False) reach the alias map as themselves — both map to
+        # 'off' via _MOUSE_TRACKING_ALIASES — instead of being collapsed to
+        # '' and triggering the toggle path. The slash command always passes
+        # a string, but programmatic JSON-RPC callers may send booleans.
+        raw = ("" if value is None else str(value)).strip().lower()
         cfg = _load_cfg()
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         current = _display_mouse_tracking(display)
 
-        if raw in ("", "toggle"):
-            nv = not current
-        elif raw == "on":
-            nv = True
-        elif raw == "off":
-            nv = False
+        if raw in {"", "toggle"}:
+            nv = "all" if current == "off" else "off"
+        elif raw in _MOUSE_TRACKING_ALIASES:
+            nv = _MOUSE_TRACKING_ALIASES[raw]
         else:
             return _err(rid, 4002, f"unknown mouse value: {value}")
 
         _write_config_key("display.mouse_tracking", nv)
-        return _ok(rid, {"key": key, "value": "on" if nv else "off"})
+        return _ok(rid, {"key": key, "value": nv})
 
     if key == "indicator":
         # Use an explicit None check rather than `value or ""` so falsy
@@ -3625,7 +4451,7 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
 
-    if key in ("prompt", "personality", "skin"):
+    if key in {"prompt", "personality", "skin"}:
         try:
             cfg = _load_cfg()
             if key == "prompt":
@@ -3782,8 +4608,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "mouse":
         display = _load_cfg().get("display")
-        on = _display_mouse_tracking(display)
-        return _ok(rid, {"value": "on" if on else "off"})
+        return _ok(rid, {"value": _display_mouse_tracking(display)})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
@@ -3833,6 +4658,7 @@ def _(rid, params: dict) -> dict:
         if not user_confirm:
             try:
                 from hermes_cli.config import load_config as _load_config
+
                 _cfg = _load_config()
                 _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
                 _confirm_required = True
@@ -3846,15 +4672,18 @@ def _(rid, params: dict) -> dict:
                 # Ink's ops.ts reads ``status`` and prints ``message`` to
                 # the transcript; a follow-up invocation with confirm=true
                 # (or an `always` choice that flips the config) proceeds.
-                return _ok(rid, {
-                    "status": "confirm_required",
-                    "message": (
-                        "⚠️  /reload-mcp invalidates the prompt cache (next "
-                        "message re-sends full input tokens). Reply `/reload-mcp "
-                        "now` to proceed, or `/reload-mcp always` to proceed and "
-                        "silence this prompt permanently."
-                    ),
-                })
+                return _ok(
+                    rid,
+                    {
+                        "status": "confirm_required",
+                        "message": (
+                            "⚠️  /reload-mcp invalidates the prompt cache (next "
+                            "message re-sends full input tokens). Reply `/reload-mcp "
+                            "now` to proceed, or `/reload-mcp always` to proceed and "
+                            "silence this prompt permanently."
+                        ),
+                    },
+                )
 
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
@@ -3870,6 +4699,7 @@ def _(rid, params: dict) -> dict:
         if bool(params.get("always", False)):
             try:
                 from cli import save_config_value as _save_cfg
+
                 _save_cfg("approvals.mcp_reload_confirm", False)
             except Exception as _exc:
                 logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
@@ -3904,9 +4734,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
     {
         "sethome",
         "set-home",
-        "update",
         "commands",
-        "status",
         "approve",
         "deny",
     }
@@ -3915,7 +4743,12 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
-    ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
+    (
+        "/mouse",
+        "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
+        "TUI",
+    ),
+    ("/sessions", "Switch between live TUI sessions", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -3928,8 +4761,11 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "q",
         "steer",
         "plan",
+        "goal",
     }
 )
+
+_WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
 
 @method("commands.catalog")
@@ -3949,13 +4785,13 @@ def _(rid, params: dict) -> dict:
         cat_order: list[str] = []
 
         for cmd in COMMAND_REGISTRY:
+            if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
+                continue
+
             c = f"/{cmd.name}"
             canon[c.lower()] = c
             for a in cmd.aliases:
                 canon[f"/{a}".lower()] = c
-
-            if cmd.name in _TUI_HIDDEN:
-                continue
 
             desc = _build_description(cmd)
             all_pairs.append([c, desc])
@@ -4181,7 +5017,7 @@ def _(rid, params: dict) -> dict:
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
 
-    if name in ("queue", "q"):
+    if name in {"queue", "q"}:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
@@ -4239,6 +5075,92 @@ def _(rid, params: dict) -> dict:
                 pass
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "goal":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            return _err(rid, 5030, f"goals unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        try:
+            goals_cfg = _load_cfg().get("goals") or {}
+            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+        except Exception:
+            max_turns = 20
+        mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
+
+        lower = arg.strip().lower()
+        if not arg.strip() or lower == "status":
+            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "pause":
+            state = mgr.pause(reason="user-paused")
+            out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
+            return _ok(rid, {"type": "exec", "output": out})
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        f"▶ Goal resumed: {state.goal}\n"
+                        "Send any message to continue, or wait — I'll take the next step on the next turn."
+                    ),
+                },
+            )
+        if lower in {"clear", "stop", "done"}:
+            had = mgr.has_goal()
+            mgr.clear()
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": "✓ Goal cleared." if had else "No active goal.",
+                },
+            )
+
+        # Otherwise — treat the remaining text as the new goal.
+        try:
+            state = mgr.set(arg)
+        except ValueError as exc:
+            return _err(rid, 4004, f"invalid goal: {exc}")
+
+        notice = (
+            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
+            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            "Controls: /goal status · /goal pause · /goal resume · /goal clear"
+        )
+        # Send the goal text as the kickoff prompt. The TUI client sees
+        # {type: send, notice, message} → renders `notice` as a sys line,
+        # then submits `message` as a user turn. The post-turn judge
+        # wired in _run_prompt_submit takes over from there.
+        return _ok(
+            rid,
+            {"type": "send", "notice": notice, "message": state.goal},
+        )
+
+    if name in {"snapshot", "snap"}:
+        subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""
+        if subcommand in {"restore", "rewind"}:
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        "/snapshot restore is blocked in the TUI because it changes "
+                        "config/state on disk while the live agent has cached settings. "
+                        "Run it in the classic CLI, then restart the TUI."
+                    ),
+                },
+            )
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
@@ -4470,7 +5392,7 @@ def _(rid, params: dict) -> dict:
         # Accept both `@folder:path` and the bare `@folder` form so the user
         # sees directory listings as soon as they finish typing the keyword,
         # without first accepting the static `@folder:` hint.
-        if is_context and query in ("file", "folder"):
+        if is_context and query in {"file", "folder"}:
             prefix_tag, path_part = query, ""
         elif is_context and query.startswith(("file:", "folder:")):
             prefix_tag, _, tail = query.partition(":")
@@ -4669,15 +5591,22 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.formatted_text import to_plain_text
 
         from agent.skill_commands import get_skill_commands
+        from agent.skill_bundles import get_skill_bundles
 
         completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands()
+            skill_commands_provider=lambda: get_skill_commands(),
+            skill_bundles_provider=lambda: get_skill_bundles(),
         )
         doc = Document(text, len(text))
         items = [
             {
                 "text": c.text,
-                "display": c.display or c.text,
+                # prompt_toolkit gives us FormattedText (a list of (style,
+                # text) tuples) for display/display_meta. Serialize both as
+                # plain strings — the TUI's CompletionItem.display contract
+                # is a string, and sending the raw list trips Ink's row
+                # layout into 1-char truncation of the next column.
+                "display": to_plain_text(c.display) if c.display else c.text,
                 "meta": to_plain_text(c.display_meta) if c.display_meta else "",
             }
             for c in completer.get_completions(doc, None)
@@ -4702,7 +5631,7 @@ def _(rid, params: dict) -> dict:
             {
                 "text": "/mouse",
                 "display": "/mouse",
-                "meta": "Toggle mouse/wheel tracking [on|off|toggle]",
+                "meta": "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
             },
         ]
         for extra in extras:
@@ -4732,87 +5661,37 @@ def _(rid, params: dict) -> dict:
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
-        cfg = _load_cfg()
-        current_provider = getattr(agent, "provider", "") or ""
-        current_model = getattr(agent, "model", "") or _resolve_model()
-        current_base_url = getattr(agent, "base_url", "") or ""
-        # list_authenticated_providers already populates each provider's
-        # "models" with the curated list (same source as `hermes model` and
-        # classic CLI's /model picker). Do NOT overwrite with live
-        # provider_model_ids() — that bypasses curation and pulls in
-        # non-agentic models (e.g. Nous /models returns ~400 IDs including
-        # TTS, embeddings, rerankers, image/video generators).
-        user_provs = (
-            cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        # Layer agent-session state on top of disk config — once an agent
+        # is spawned, IT owns the live provider/model/base_url. Empty
+        # agent attributes must NOT clobber disk config (with_overrides
+        # is truthy-only).
+        ctx = load_picker_context().with_overrides(
+            current_provider=getattr(agent, "provider", "") if agent else "",
+            current_model=(
+                (getattr(agent, "model", "") if agent else "") or _resolve_model()
+            ),
+            current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
-        custom_provs = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
-        authenticated = list_authenticated_providers(
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-            current_model=current_model,
-            user_providers=user_provs,
-            custom_providers=custom_provs,
+        # picker_hints + canonical_order produce the TUI's required shape:
+        # `authenticated`/`auth_type`/`key_env`/`warning` per row, in
+        # CANONICAL_PROVIDERS declaration order. include_unconfigured=True
+        # so the picker can show the full provider universe (with the
+        # setup-hint warning attached) instead of only authed rows.
+        # Curated model lists are preserved — list_authenticated_providers
+        # populates `models` from the curated catalog, not provider_model_ids
+        # (which would pull non-agentic models like TTS/embeddings/etc.).
+        payload = build_models_payload(
+            ctx,
+            include_unconfigured=True,
+            picker_hints=True,
+            canonical_order=True,
             max_models=50,
         )
-
-        # Mark authenticated providers and build lookup by slug
-        authed_map: dict = {}
-        authed_extra: list = []  # user-defined/custom not in CANONICAL_PROVIDERS
-        canonical_slugs = {e.slug for e in CANONICAL_PROVIDERS}
-        for p in authenticated:
-            p["authenticated"] = True
-            authed_map[p["slug"]] = p
-            if p["slug"] not in canonical_slugs:
-                authed_extra.append(p)
-
-        # Build final list in CANONICAL_PROVIDERS order, merging auth data
-        from hermes_cli.auth import PROVIDER_REGISTRY as _auth_reg
-        ordered: list = []
-        for entry in CANONICAL_PROVIDERS:
-            if entry.slug in authed_map:
-                ordered.append(authed_map[entry.slug])
-            else:
-                pconfig = _auth_reg.get(entry.slug)
-                auth_type = pconfig.auth_type if pconfig else "api_key"
-                key_env = pconfig.api_key_env_vars[0] if (pconfig and pconfig.api_key_env_vars) else ""
-                if auth_type == "api_key" and key_env:
-                    warning = f"paste {key_env} to activate"
-                else:
-                    warning = f"run `hermes model` to configure ({auth_type})"
-                ordered.append({
-                    "slug": entry.slug,
-                    "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
-                    "is_current": entry.slug == current_provider,
-                    "is_user_defined": False,
-                    "models": [],
-                    "total_models": 0,
-                    "source": "built-in",
-                    "authenticated": False,
-                    "auth_type": auth_type,
-                    "key_env": key_env,
-                    "warning": warning,
-                })
-
-        # Append user-defined/custom providers not in canonical list
-        ordered.extend(authed_extra)
-
-        return _ok(
-            rid,
-            {
-                "providers": ordered,
-                "model": current_model,
-                "provider": current_provider,
-            },
-        )
+        return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5033, str(e))
 
@@ -4831,7 +5710,7 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         from hermes_cli.config import is_managed, save_env_value
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
         slug = (params.get("slug") or "").strip()
         api_key = (params.get("api_key") or "").strip()
@@ -4846,9 +5725,10 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4002, f"unknown provider: {slug}")
         if pconfig.auth_type != "api_key":
             return _err(
-                rid, 4003,
+                rid,
+                4003,
                 f"{pconfig.name} uses {pconfig.auth_type} auth — "
-                f"run `hermes model` to configure"
+                f"run `hermes model` to configure",
             )
         if not pconfig.api_key_env_vars:
             return _err(rid, 4004, f"no env var defined for {pconfig.name}")
@@ -4856,42 +5736,32 @@ def _(rid, params: dict) -> dict:
         # Save the key to ~/.hermes/.env
         env_var = pconfig.api_key_env_vars[0]
         save_env_value(env_var, api_key)
-        # Also set in current process so list_authenticated_providers sees it
+        # Also set in current process so the refreshed inventory sees it.
         import os
+
         os.environ[env_var] = api_key
 
-        # Refresh provider data
-        cfg = _load_cfg()
+        # Refresh provider data via the shared inventory builder so this
+        # surface stays in lock-step with model.options + dashboard
+        # /api/model/options. picker_hints=True ensures the returned row
+        # carries `authenticated` for the TUI frontend.
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
-        current_provider = getattr(agent, "provider", "") or ""
-        current_model = getattr(agent, "model", "") or _resolve_model()
-        current_base_url = getattr(agent, "base_url", "") or ""
-
-        providers = list_authenticated_providers(
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-            current_model=current_model,
-            user_providers=(
-                cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        ctx = load_picker_context().with_overrides(
+            current_provider=getattr(agent, "provider", "") if agent else "",
+            current_model=(
+                (getattr(agent, "model", "") if agent else "") or _resolve_model()
             ),
-            custom_providers=(
-                cfg.get("custom_providers")
-                if isinstance(cfg.get("custom_providers"), list)
-                else []
-            ),
-            max_models=50,
+            current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
-
-        # Find the newly-authenticated provider
-        provider_data = None
-        for p in providers:
-            if p["slug"] == slug:
-                provider_data = p
-                break
-
-        if not provider_data:
-            # Key was saved but provider didn't appear — still return success
+        payload = build_models_payload(
+            ctx, picker_hints=True, max_models=50,
+        )
+        provider_data = next(
+            (p for p in payload["providers"] if p["slug"] == slug), None
+        )
+        if provider_data is None:
+            # Key was saved but provider didn't appear — still return success.
             provider_data = {
                 "slug": slug,
                 "name": pconfig.name,
@@ -4900,7 +5770,8 @@ def _(rid, params: dict) -> dict:
                 "total_models": 0,
                 "authenticated": True,
             }
-
+        # picker_hints sets `authenticated` from the row state, but the
+        # synthetic fallback above doesn't go through that path.
         provider_data["authenticated"] = True
         return _ok(rid, {"provider": provider_data})
     except Exception as e:
@@ -4941,11 +5812,14 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4005, f"no credentials found for {slug}")
 
         provider_name = pconfig.name if pconfig else slug
-        return _ok(rid, {
-            "slug": slug,
-            "name": provider_name,
-            "disconnected": True,
-        })
+        return _ok(
+            rid,
+            {
+                "slug": slug,
+                "name": provider_name,
+                "disconnected": True,
+            },
+        )
     except Exception as e:
         return _err(rid, 5035, str(e))
 
@@ -5018,14 +5892,27 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "empty command")
 
     # Skill slash commands and _pending_input commands must NOT go through the
-    # slash worker — see _PENDING_INPUT_COMMANDS definition above.
-    _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
-    _cmd_base = _cmd_parts[0] if _cmd_parts else ""
+    # slash worker — see _PENDING_INPUT_COMMANDS definition above. Plugin
+    # commands must also avoid the worker, but unlike skills/pending-input they
+    # still return normal slash.exec output so the TUI keeps the pager path.
+    _cmd_text = cmd.lstrip("/") if cmd.startswith("/") else cmd
+    _cmd_parts = _cmd_text.split(maxsplit=1)
+    _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
+    _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
     if _cmd_base in _PENDING_INPUT_COMMANDS:
         return _err(
             rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}"
         )
+
+    if _cmd_base in _WORKER_BLOCKED_COMMANDS:
+        subcommand = _cmd_arg.split(maxsplit=1)[0].lower() if _cmd_arg else ""
+        if subcommand in {"restore", "rewind"}:
+            return _err(
+                rid,
+                4018,
+                "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
+            )
 
     try:
         from agent.skill_commands import get_skill_commands
@@ -5037,6 +5924,27 @@ def _(rid, params: dict) -> dict:
             )
     except Exception:
         pass
+
+    plugin_handler = None
+    resolve_plugin_command_result = None
+    if _cmd_base:
+        try:
+            from hermes_cli.plugins import (
+                get_plugin_command_handler,
+                resolve_plugin_command_result,
+            )
+
+            plugin_handler = get_plugin_command_handler(_cmd_base)
+        except Exception:
+            plugin_handler = None
+            resolve_plugin_command_result = None
+
+    if plugin_handler and resolve_plugin_command_result:
+        try:
+            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            return _ok(rid, {"output": str(result or "(no output)")})
+        except Exception as e:
+            return _ok(rid, {"output": f"Plugin command error: {e}"})
 
     worker = session.get("slash_worker")
     if not worker:
@@ -5100,6 +6008,30 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
+def _voice_cfg_dict() -> dict:
+    """Shape-safe accessor for the ``voice:`` block in config.yaml.
+
+    ``_load_cfg()`` returns raw ``yaml.safe_load()`` output, so both the
+    root AND ``voice`` may be any YAML scalar / list / None. A hand-edit
+    like ``voice: true`` or a malformed top-level config that parses to
+    a scalar would otherwise break ``.get("…")`` and take every
+    ``voice.*`` branch down with it (Copilot round-3..7 review on
+    #19835). Coerce through ``isinstance`` at every level so malformed
+    config falls back to an empty dict instead of crashing /voice.
+    """
+    cfg = _load_cfg()
+    voice_cfg = cfg.get("voice") if isinstance(cfg, dict) else None
+
+    return voice_cfg if isinstance(voice_cfg, dict) else {}
+
+
+def _voice_record_key() -> str:
+    """Current ``voice.record_key`` value, documented default on error."""
+    record_key = _voice_cfg_dict().get("record_key")
+
+    return str(record_key) if isinstance(record_key, str) and record_key else "ctrl+b"
+
+
 @method("voice.toggle")
 def _(rid, params: dict) -> dict:
     """CLI parity for the ``/voice`` slash command.
@@ -5120,8 +6052,13 @@ def _(rid, params: dict) -> dict:
         # Mirror CLI's _show_voice_status: include STT/TTS provider
         # availability so the user can tell at a glance *why* voice mode
         # isn't working ("STT provider: MISSING ..." is the common case).
+        # ``record_key`` mirrors the configured ``voice.record_key`` so the
+        # TUI can both bind it (frontend ``isVoiceToggleKey``) and display
+        # it in /voice status — previously the TUI hardcoded Ctrl+B and
+        # ignored the config (#18994).
         payload: dict = {
             "enabled": _voice_mode_enabled(),
+            "record_key": _voice_record_key(),
             "tts": _voice_tts_enabled(),
         }
         try:
@@ -5139,7 +6076,7 @@ def _(rid, params: dict) -> dict:
 
         return _ok(rid, payload)
 
-    if action in ("on", "off"):
+    if action in {"on", "off"}:
         enabled = action == "on"
         # Runtime-only flag (CLI parity) — no _write_config_key, so the
         # next TUI launch starts with voice OFF instead of auto-REC from a
@@ -5158,7 +6095,17 @@ def _(rid, params: dict) -> dict:
             except Exception as e:
                 logger.warning("voice: stop_continuous failed during toggle off: %s", e)
 
-        return _ok(rid, {"enabled": enabled, "tts": _voice_tts_enabled()})
+            # Clear TTS so it can be toggled independently after voice is off.
+            os.environ["HERMES_VOICE_TTS"] = "0"
+
+        return _ok(
+            rid,
+            {
+                "enabled": enabled,
+                "record_key": _voice_record_key(),
+                "tts": _voice_tts_enabled(),
+            },
+        )
 
     if action == "tts":
         if not _voice_mode_enabled():
@@ -5166,21 +6113,31 @@ def _(rid, params: dict) -> dict:
         new_value = not _voice_tts_enabled()
         # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
         os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
-        return _ok(rid, {"enabled": True, "tts": new_value})
+        # Include ``record_key`` on every branch so a /voice tts toggle
+        # doesn't reset the TUI's cached shortcut to the default when a
+        # user has a custom binding configured (Copilot review, round 2
+        # on #19835). Keeps parity with the status/on/off branches above.
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "record_key": _voice_record_key(),
+                "tts": new_value,
+            },
+        )
 
     return _err(rid, 4013, f"unknown voice action: {action}")
 
 
 @method("voice.record")
 def _(rid, params: dict) -> dict:
-    """VAD-driven continuous record loop, CLI-parity.
+    """VAD-bounded push-to-talk capture, CLI-parity.
 
-    ``start`` turns on a VAD loop that emits ``voice.transcript`` events
-    for each detected utterance and auto-restarts for the next turn.
-    ``stop`` halts the loop (manual stop; matches cli.py's Ctrl+B-while-
-    recording branch clearing ``_voice_continuous``). Three consecutive
-    silent cycles stop the loop automatically and emit a
-    ``voice.transcript`` with ``no_speech_limit=True``.
+    ``start`` begins one VAD-bounded capture and emits ``voice.transcript``
+    after silence stops the recorder. ``stop`` forces transcription of the
+    active buffer, matching classic CLI push-to-talk. The voice wrapper retains
+    no-speech counts across single-shot starts, so three consecutive silent
+    captures emit ``voice.transcript`` with ``no_speech_limit=True``.
     """
     action = params.get("action", "start")
 
@@ -5198,22 +6155,48 @@ def _(rid, params: dict) -> dict:
 
             from hermes_cli.voice import start_continuous
 
-            voice_cfg = _load_cfg().get("voice", {})
-            start_continuous(
+            # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)
+            # must not crash /voice with a 5025 — fall back to VAD defaults.
+            #
+            # Exclude ``bool`` from the numeric check since Python's bool is
+            # a subclass of int — a hand-edit like ``silence_threshold: true``
+            # would otherwise forward as ``1`` instead of falling back to
+            # the documented 200 / 3.0 defaults (Copilot round-12 on #19835).
+            voice_cfg = _voice_cfg_dict()
+            threshold = voice_cfg.get("silence_threshold")
+            duration = voice_cfg.get("silence_duration")
+            safe_threshold = (
+                threshold
+                if isinstance(threshold, (int, float))
+                and not isinstance(threshold, bool)
+                else 200
+            )
+            safe_duration = (
+                duration
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                else 3.0
+            )
+            started = start_continuous(
                 on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
                     "voice.transcript", {"no_speech_limit": True}
                 ),
-                silence_threshold=voice_cfg.get("silence_threshold", 200),
-                silence_duration=voice_cfg.get("silence_duration", 3.0),
+                silence_threshold=safe_threshold,
+                silence_duration=safe_duration,
+                auto_restart=False,
             )
+            if started is False:
+                return _ok(rid, {"status": "busy"})
             return _ok(rid, {"status": "recording"})
 
         # action == "stop"
+        with _voice_sid_lock:
+            _voice_event_sid = params.get("session_id") or _voice_event_sid
+
         from hermes_cli.voice import stop_continuous
 
-        stop_continuous()
+        stop_continuous(force_transcribe=True)
         return _ok(rid, {"status": "stopped"})
     except ImportError:
         return _err(
@@ -5329,7 +6312,7 @@ def _(rid, params: dict) -> dict:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
-                    while history and history[-1].get("role") in ("assistant", "tool"):
+                    while history and history[-1].get("role") in {"assistant", "tool"}:
                         history.pop()
                         removed += 1
                     if history and history[-1].get("role") == "user":
@@ -5458,17 +6441,17 @@ def _failure_messages(url: str, port: int, system: str) -> list[str]:
 
     command = manual_chrome_debug_command(port, system)
     hint = (
-        ["Start Chrome with remote debugging, then retry /browser connect:", command]
+        ["Start a Chromium-family browser with remote debugging, then retry /browser connect:", command]
         if command
         else [
-            "No Chrome/Chromium executable was found in this environment.",
-            f"Install one or start Chrome with --remote-debugging-port={port}, then retry /browser connect.",
+            "No supported Chromium-family browser executable was found in this environment.",
+            f"Install one or start a Chromium-family browser with --remote-debugging-port={port}, then retry /browser connect.",
         ]
     )
     return [
-        f"Chrome is not reachable at {url}.",
+        f"Browser CDP is not reachable at {url}.",
         *hint,
-        "Browser not connected — start Chrome with remote debugging and retry /browser connect",
+        "Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect",
     ]
 
 
@@ -5498,7 +6481,9 @@ def _browser_connect(rid, params: dict) -> dict:
 
     raw_url = params.get("url")
     if raw_url is not None and not isinstance(raw_url, str):
-        return _err(rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}")
+        return _err(
+            rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}"
+        )
     url = (raw_url or "").strip() or DEFAULT_BROWSER_CDP_URL
 
     sid = params.get("session_id") or ""
@@ -5552,7 +6537,7 @@ def _browser_connect(rid, params: dict) -> dict:
                 from hermes_cli.browser_connect import try_launch_chrome_debug
 
                 announce(
-                    "Chrome isn't running with remote debugging — attempting to launch..."
+                    "Chromium-family browser isn't running with remote debugging — attempting to launch..."
                 )
 
                 if try_launch_chrome_debug(port, system):
@@ -5563,7 +6548,7 @@ def _browser_connect(rid, params: dict) -> dict:
                             break
 
                 if ok:
-                    announce(f"Chrome launched and listening on port {port}")
+                    announce(f"Chromium-family browser launched and listening on port {port}")
                 else:
                     for line in _failure_messages(url, port, system)[1:]:
                         announce(line, level="error")
@@ -5573,7 +6558,7 @@ def _browser_connect(rid, params: dict) -> dict:
             elif not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
             elif _is_default_local_cdp(parsed):
-                announce(f"Chrome is already listening on port {port}")
+                announce(f"Chromium-family browser is already listening on port {port}")
 
         normalized = _normalize_cdp_url(parsed)
 
@@ -5885,7 +6870,7 @@ def _(rid, params: dict) -> dict:
                     )
                 ),
             )
-        if action in ("remove", "pause", "resume"):
+        if action in {"remove", "pause", "resume"}:
             return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
@@ -5949,6 +6934,31 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4017, f"unknown skills action: {action}")
     except Exception as e:
         return _err(rid, 5024, str(e))
+
+
+@method("skills.reload")
+def _(rid, params: dict) -> dict:
+    try:
+        from agent.skill_commands import reload_skills
+
+        result = reload_skills()
+        added = result.get("added") or []
+        removed = result.get("removed") or []
+        total = int(result.get("total") or 0)
+
+        lines = ["Reloading skills..."]
+        if not added and not removed:
+            lines.append("No new skills detected.")
+        if added:
+            lines.append("Added skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in added)
+        if removed:
+            lines.append("Removed skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in removed)
+        lines.append(f"{total} skill(s) available")
+        return _ok(rid, {"output": "\n".join(lines), "result": result})
+    except Exception as e:
+        return _err(rid, 5025, str(e))
 
 
 # ── Methods: shell ───────────────────────────────────────────────────

@@ -197,9 +197,31 @@ class TestConfig:
         assert provider._recall_max_input_chars == 800
         assert provider._tags is None
         assert provider._recall_tags is None
+        # Default recall narrowed to observation-only; world/experience are
+        # aggregate facts that often crowd out concrete-event signal during
+        # auto-recall. Users opt back in via the recall_types config key.
+        assert provider._recall_types == ["observation"]
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
         assert provider._retain_context == "conversation between Hermes Agent and the User"
+
+    def test_recall_types_default_is_observation_only(self, provider):
+        """Auto-recall must filter to observation by default."""
+        assert provider._recall_types == ["observation"]
+
+    def test_recall_types_explicit_list_overrides_default(self, provider_with_config):
+        p = provider_with_config(recall_types=["world", "experience", "observation"])
+        assert p._recall_types == ["world", "experience", "observation"]
+
+    def test_recall_types_csv_string_accepted(self, provider_with_config):
+        """For parity with recall_tags, comma-separated strings work too."""
+        p = provider_with_config(recall_types="observation, world")
+        assert p._recall_types == ["observation", "world"]
+
+    def test_recall_types_empty_list_falls_back_to_default(self, provider_with_config):
+        """An empty list shouldn't disable the filter (would be wider than default)."""
+        p = provider_with_config(recall_types=[])
+        assert p._recall_types == ["observation"]
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
@@ -1070,6 +1092,110 @@ class TestSessionSwitchBufferFlush:
         # switch time (3 turns accumulated, _turn_index was set to 3
         # by the last sync_turn).
         assert call_order[1] == "3"
+
+
+# ---------------------------------------------------------------------------
+# update_mode='append' capability probe + retain dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateModeAppendCapability:
+    def _clear_capability_cache(self):
+        from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
+        with _append_capability_lock:
+            _append_capability_cache.clear()
+
+    def test_legacy_api_falls_back_to_per_process_doc_id(self, provider, monkeypatch):
+        """API returns no /version (or pre-0.5.0) — sync_turn must use the
+        per-process unique doc_id and NOT pass update_mode."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: None,
+        )
+        old_doc = provider._document_id
+        provider.sync_turn("hello", "hi")
+        provider._retain_queue.join()
+
+        kw = provider._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        assert kw["document_id"].startswith("test-session-")
+        item = kw["items"][0]
+        assert "update_mode" not in item
+
+    def test_modern_api_uses_stable_doc_id_with_append(self, provider, monkeypatch):
+        """API on >=0.5.0 — retain uses stable session_id and sets update_mode='append'."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        provider.sync_turn("hello", "hi")
+        provider._retain_queue.join()
+
+        kw = provider._client.aretain_batch.call_args.kwargs
+        # Stable: just the session id, no per-process timestamp suffix.
+        assert kw["document_id"] == "test-session"
+        item = kw["items"][0]
+        assert item["update_mode"] == "append"
+
+    def test_capability_cached_per_url(self, provider, monkeypatch):
+        """The /version probe must run at most once per (process, api_url)."""
+        self._clear_capability_cache()
+        calls = {"n": 0}
+
+        def _spy(*a, **kw):
+            calls["n"] += 1
+            return "0.5.6"
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version", _spy
+        )
+        provider.sync_turn("a", "b")
+        provider._retain_queue.join()
+        provider.sync_turn("c", "d")
+        provider._retain_queue.join()
+        assert calls["n"] == 1
+
+    def test_legacy_warning_emitted_once(self, provider, monkeypatch, caplog):
+        """One-time WARN nudges users to upgrade Hindsight."""
+        import logging
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.4.22",
+        )
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            provider.sync_turn("a", "b")
+            provider._retain_queue.join()
+            provider.sync_turn("c", "d")
+            provider._retain_queue.join()
+        warns = [r for r in caplog.records
+                 if r.levelno == logging.WARNING
+                 and "older than 0.5.0" in r.getMessage()]
+        # Cache hit on the second call → no second warn.
+        assert len(warns) == 1
+
+    def test_session_switch_flush_picks_capability_against_old_session(
+        self, provider_with_config, monkeypatch
+    ):
+        """When the API supports append, the flush on /reset must land
+        in the OLD session's stable document, not a per-process id."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        # Flush goes to the OLD session's stable doc, not new-sid's.
+        assert kw["document_id"] == "test-session"
+        assert kw["items"][0]["update_mode"] == "append"
 
 
 # ---------------------------------------------------------------------------

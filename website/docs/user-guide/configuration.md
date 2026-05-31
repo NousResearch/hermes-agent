@@ -8,6 +8,10 @@ description: "Configure Hermes Agent — config.yaml, providers, models, API key
 
 All settings are stored in the `~/.hermes/` directory for easy access.
 
+:::tip Easiest path to a working `config.yaml`
+Run `hermes setup --portal` — one OAuth gets you a model provider and all four Tool Gateway tools without hand-editing YAML. Portal subscribers also get 10% off token-billed providers. See [Nous Portal](/integrations/nous-portal).
+:::
+
 ## Directory Structure
 
 ```text
@@ -71,7 +75,7 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is). Only the `${VAR}` syntax is supported — bare `$VAR` is not expanded.
 
-For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/docs/integrations/providers).
+For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
 ### Provider Timeouts
 
@@ -83,12 +87,12 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
-  cwd: "."          # Working directory ("." = current dir for local, "/root" for containers)
+  backend: local    # local | docker | ssh | modal | daytona | singularity
+  cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
@@ -96,18 +100,17 @@ terminal:
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
 | Backend | Where commands run | Isolation | Best for |
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
-| **docker** | Docker container | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
+| **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
-| **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -127,6 +130,8 @@ The agent has the same filesystem access as your user account. Use `hermes tools
 
 Runs commands inside a Docker container with security hardening (all capabilities dropped, no privilege escalation, PID limits).
 
+**Single persistent container, not per-command.** Hermes starts ONE long-lived container on first use and routes every terminal, file, and `execute_code` call through `docker exec` into that same container — across sessions, `/new`, `/reset`, and `delegate_task` subagents — for the lifetime of the Hermes process. Working-directory changes, installed packages, and files in `/workspace` carry over from one tool call to the next, just like a local shell. The container is stopped and removed on shutdown. See **Container lifecycle** below for details.
+
 ```yaml
 terminal:
   backend: docker
@@ -138,6 +143,9 @@ terminal:
   docker_volumes:                  # Host directory mounts
     - "/home/user/projects:/workspace/projects"
     - "/home/user/data:/data:ro"   # :ro for read-only
+  docker_extra_args:               # Extra flags appended verbatim to `docker run`
+    - "--gpus=all"
+    - "--network=host"
 
   # Resource limits
   container_cpu: 1                 # CPU cores (0 = unlimited)
@@ -145,6 +153,8 @@ terminal:
   container_disk: 51200            # MB (requires overlay2 on XFS+pquota)
   container_persistent: true       # Persist /workspace and /root across sessions
 ```
+
+**`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
@@ -224,49 +234,6 @@ terminal:
 **Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
-
-### Vercel Sandbox Backend
-
-Runs commands in a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) cloud microVM. Hermes uses the normal terminal and file tool surfaces; there are no Vercel-specific model-facing tools.
-
-```yaml
-terminal:
-  backend: vercel_sandbox
-  vercel_runtime: node24          # node24 | node22 | python3.13
-  cwd: /vercel/sandbox            # default workspace root
-  container_persistent: true      # Snapshot/restore filesystem
-  container_disk: 51200           # Shared default only; custom disk is unsupported
-```
-
-**Required install:** Install the optional SDK extra:
-
-```bash
-pip install 'hermes-agent[vercel]'
-```
-
-**Required authentication:** Configure access-token auth with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This is the supported setup for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts.
-
-For one-off local development, Hermes also accepts short-lived Vercel OIDC tokens:
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
-```
-
-From a linked Vercel project directory, you can omit the project name:
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
-```
-
-OIDC tokens are short-lived and should not be used as the documented deployment path.
-
-**Runtime:** `terminal.vercel_runtime` supports `node24`, `node22`, and `python3.13`. If unset, Hermes defaults to `node24`.
-
-**Persistence:** When `container_persistent: true`, Hermes snapshots the sandbox filesystem during cleanup and restores a later sandbox for the same task from that snapshot. Snapshot contents can include Hermes-synced credentials, skills, and cache files that were copied into the sandbox. This preserves filesystem state only; it does not preserve live sandbox identity, PID space, shell state, or running background processes.
-
-**Background commands:** `terminal(background=true)` uses Hermes' generic non-local background process flow. You can spawn, poll, wait, view logs, and kill processes through the normal process tool while the sandbox is alive. Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
-
-**Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
 ### Singularity/Apptainer Backend
 
@@ -477,7 +444,7 @@ skills:
 hermes config set skills.config.myplugin.path ~/myplugin-data
 ```
 
-For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml).
+For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
 
 ### Guard on agent-created skill writes
 
@@ -603,12 +570,13 @@ compression:
   threshold: 0.50                                   # Compress at this % of context limit
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
+  protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
   compression:
-    model: "google/gemini-3-flash-preview"          # Model for summarization
+    model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```
@@ -618,6 +586,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. Runaway sessions with thousands of messages can hit model context limits before the normal percent-of-context threshold fires; when message count crosses this ceiling, Hermes forces compression regardless of token usage. Default `400` — raise it for platforms where very long sessions are normal, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+
+`protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
@@ -665,7 +635,7 @@ The summary model **must** have a context window at least as large as your main 
 
 ## Context Engine
 
-The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](/docs/developer-guide/context-compression-and-caching)). Plugin engines can replace it with alternative strategies.
+The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](/developer-guide/context-compression-and-caching)). Plugin engines can replace it with alternative strategies.
 
 ```yaml
 context:
@@ -681,7 +651,7 @@ context:
 
 Plugin engines are **never auto-activated** — you must explicitly set `context.engine` to the plugin name. Available engines can be browsed and selected via `hermes plugins` → Provider Plugins → Context Engine.
 
-See [Memory Providers](/docs/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
+See [Memory Providers](/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
 
 ## Iteration Budget Pressure
 
@@ -697,14 +667,14 @@ Warnings are injected into the last tool result's JSON (as a `_budget_warning` f
 ```yaml
 agent:
   max_turns: 90                # Max iterations per conversation turn (default: 90)
-  api_max_retries: 2           # Retries per provider before fallback engages (default: 2)
+  api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
 Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
 
-`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `2` — three attempts total, matching the OpenAI SDK default. If you have [fallback providers](/docs/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
 ### API Timeouts
 
@@ -758,7 +728,17 @@ credential_pool_strategies:
   anthropic: least_used      # always pick the least-used key
 ```
 
-Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
+
+## Prompt caching
+
+Hermes turns on cross-session prompt caching automatically when the active provider supports it — no user config needed.
+
+For Claude on **native Anthropic**, **OpenRouter**, and **Nous Portal**, Hermes attaches `cache_control` breakpoints with the 1-hour TTL (`ttl: "1h"`) on the system prompt and skill blocks. The first send within a fresh hour pays full input rates; subsequent sends across any session within the same hour pull from the cache at the discounted cached-read rate. This means the system prompt, loaded skill content, and the early portion of any long-context include get reused across `hermes` sessions and across forked subagents for the first hour.
+
+The Qwen Cloud (Alibaba DashScope) upstream caps cache TTL at 5 minutes, so Hermes uses the 5-minute breakpoint TTL there instead. Other Claude-via-third-party paths (AWS Bedrock, Azure Foundry) fall back to the provider's own caching defaults. xAI Grok uses a separate session-pinned conversation-id mechanism — see [xAI prompt caching](/integrations/providers#xai-grok--responses-api--prompt-caching).
+
+No knob exists to disable this — caching is always-on and saves money even on single-turn conversations because the system prompt alone is a meaningful fraction of the input token count.
 
 ## Auxiliary Models
 
@@ -778,10 +758,12 @@ $ hermes model
 
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
-[ ] session_search       currently: openrouter / google/gemini-2.5-flash
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
+[ ] triage_specifier     currently: auto / main model
+[ ] kanban_decomposer    currently: auto / main model
+[ ] profile_describer    currently: auto / main model
 ```
 
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
@@ -810,14 +792,18 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/docs/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
 
 :::tip MiniMax OAuth
 `minimax-oauth` logs in via browser OAuth (no API key needed). Run `hermes model` and select **MiniMax (OAuth)** to authenticate. Auxiliary tasks use `MiniMax-M2.7-highspeed` automatically. See the [MiniMax OAuth guide](../guides/minimax-oauth.md).
 :::
 
+:::tip xAI Grok OAuth
+`xai-oauth` logs in via browser OAuth for SuperGrok and X Premium+ subscribers (no API key needed). Run `hermes model` and select **xAI Grok OAuth (SuperGrok / Premium+)** to authenticate. The same OAuth token is reused for every direct-to-xAI surface (chat, auxiliary tasks, TTS, image gen, video gen, transcription). See the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md), and if Hermes is on a remote host see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md).
+:::
+
 :::warning `"main"` is for auxiliary tasks only
-The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/docs/integrations/providers) for all main model provider options.
+The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/integrations/providers) for all main model provider options.
 :::
 
 ### Full auxiliary config reference
@@ -853,16 +839,6 @@ auxiliary:
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
 
-  # Session search — summarizes past session matches
-  session_search:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
-    max_concurrency: 3       # Limit parallel summaries to reduce request-burst 429s
-    extra_body: {}           # Provider-specific OpenAI-compatible request fields
-
   # Skills hub — skill matching and search
   skills_hub:
     provider: "auto"
@@ -878,6 +854,18 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30
+
+  # Kanban triage specifier — `hermes kanban specify <id>` (or the
+  # dashboard's ✨ Specify button on Triage-column cards) uses this
+  # slot to expand a one-liner into a concrete spec and promote the
+  # task to `todo`. Cheap fast models work well here; spec expansion
+  # is short and doesn't need reasoning depth.
+  triage_specifier:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 120
 ```
 
 :::tip
@@ -885,36 +873,30 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/docs/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
+Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
 
-### Session Search Tuning
+### OpenRouter routing & Pareto Code for auxiliary tasks
 
-If you use a reasoning-heavy model for `auxiliary.session_search`, Hermes now gives you two built-in controls:
-
-- `auxiliary.session_search.max_concurrency`: limits how many matched sessions Hermes summarizes at once
-- `auxiliary.session_search.extra_body`: forwards provider-specific OpenAI-compatible request fields on the summarization calls
-
-Example:
+When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](/integrations/providers#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
 
 ```yaml
 auxiliary:
-  session_search:
-    provider: "main"
-    model: "glm-4.5-air"
-    timeout: 60
-    max_concurrency: 2
+  compression:
+    provider: openrouter
+    model: openrouter/pareto-code         # use the Pareto Code router for this task
     extra_body:
-      enable_thinking: false
+      provider:                            # OpenRouter provider routing prefs
+        order: [anthropic, google]         # try these providers in order
+        sort: throughput                   # or "price" | "latency"
+        # only: [anthropic]                # restrict to a specific provider
+        # ignore: [deepinfra]              # exclude specific providers
+      plugins:                             # OpenRouter Pareto Code router knob
+        - id: pareto-router
+          min_coding_score: 0.5            # 0.0–1.0; higher = stronger coders
 ```
 
-Use `max_concurrency` when your provider rate-limits request bursts and you want `session_search` to trade some parallelism for stability.
-
-Use `extra_body` only when your provider documents OpenAI-compatible request-body fields you want Hermes to pass through for that task. Hermes forwards the object as-is.
-
-:::warning
-`extra_body` is only effective when your provider actually supports the field you send. If the provider does not expose a native OpenAI-compatible reasoning-off flag, Hermes cannot synthesize one on its behalf.
-:::
+The shape mirrors what OpenRouter accepts in the chat completions request body. Hermes forwards the entire `extra_body` verbatim, so any other OpenRouter request-body field documented at [openrouter.ai/docs](https://openrouter.ai/docs) works the same way.
 
 ### Changing the Vision Model
 
@@ -943,6 +925,7 @@ These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`,
 | `"nous"` | Force Nous Portal | `hermes auth` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
 | `"minimax-oauth"` | Force MiniMax OAuth (browser login, no API key). Uses MiniMax-M2.7-highspeed for auxiliary tasks. | `hermes model` → MiniMax (OAuth) |
+| `"xai-oauth"` | Force xAI Grok OAuth (browser login for SuperGrok or X Premium+ subscribers, no API key). Same OAuth token covers chat, TTS, image, video, and transcription. | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
 Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. `gmi` is valid once `GMI_API_KEY` is configured:
@@ -1163,8 +1146,41 @@ display:
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
+  timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
-  runtime_metadata_footer: false  # Gateway: append a runtime-context footer to final replies
+  runtime_footer:         # Gateway: append a runtime-context footer to final replies
+    enabled: false
+    fields: ["model", "context_pct", "cwd"]
+  file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
+  language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
+```
+
+### File-mutation verifier
+
+When `display.file_mutation_verifier` is `true` (default), Hermes appends a one-line advisory to the assistant's final response whenever a `write_file` or `patch` call failed during the turn and was never superseded by a successful write to the same path. This catches the "batch of parallel patches, half silently fail, model summarises success" class of over-claim without requiring you to manually run `git status` after every edit.
+
+Example footer:
+
+```
+⚠️ File-mutation verifier: 3 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+  • concepts/automatic-organization.md — [patch] Could not find match for old_string
+  • concepts/lora.md — [patch] Could not find match for old_string
+  • concepts/rag-pipeline.md — [patch] Could not find match for old_string
+```
+
+Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to suppress the footer. The verifier only fires when real failures are outstanding at turn end — a model that retries a failed patch and succeeds within the same turn will not trigger it for that file.
+
+### UI language for static messages
+
+The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
+
+Supported values: `en` (default), `zh` (Simplified Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian). Unknown values fall back to English.
+
+You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
+
+```yaml
+display:
+  language: zh   # CLI approval prompts appear in Chinese
 ```
 
 | Mode | What you see |
@@ -1178,12 +1194,16 @@ In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in mess
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_metadata_footer: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn — same info the CLI shows in its status bar (model, session duration, tokens, cost). Off by default; opt in per-gateway if your team wants every reply to include the provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn — same info the CLI shows in its status bar (model, context %, cwd, session duration, tokens, cost). Off by default; opt in per-gateway if your team wants every reply to include the provenance.
 
 ```yaml
 display:
-  runtime_metadata_footer: true
+  runtime_footer:
+    enabled: true
+    fields: ["model", "context_pct", "cwd"]   # any of: model, context_pct, cwd, duration, tokens, cost
 ```
+
+The `/footer` slash command toggles this at runtime in any session.
 
 Example footer appended to a Telegram/Discord/Slack reply:
 
@@ -1275,7 +1295,7 @@ voice:
   silence_duration: 3.0         # Seconds of silence before auto-stop
 ```
 
-Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/docs/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
+Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
 
 ## Streaming
 
@@ -1328,7 +1348,7 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 - Direct messages are unaffected. Hermes still keys DMs by chat/DM ID as usual.
 - Threads stay isolated from their parent channel either way; with `true`, each participant also gets their own session inside the thread.
 
-For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
+For the behavior details and examples, see [Sessions](/user-guide/sessions) and the [Discord guide](/user-guide/messaging/discord).
 
 ## Unauthorized DM Behavior
 
@@ -1409,23 +1429,30 @@ Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, 
 
 ## Web Search Backends
 
-The `web_search`, `web_extract`, and `web_crawl` tools support four backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+The `web_search` and `web_extract` tools support five backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | searxng | parallel | tavily | exa
+
+  # Or use per-capability keys to mix providers (e.g. free search + paid extract):
+  search_backend: "searxng"
+  extract_backend: "firecrawl"
 ```
 
-| Backend | Env Var | Search | Extract | Crawl |
-|---------|---------|--------|---------|-------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
+| Backend | Env Var | Search | Extract |
+|---------|---------|--------|---------|
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ |
+| **SearXNG** | `SEARXNG_URL` | ✔ | — |
+| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ |
+| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ |
+| **Exa** | `EXA_API_KEY` | ✔ | ✔ |
 
-**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `SEARXNG_URL` is set, SearXNG is used. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
 
-**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
+**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
+
+**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
@@ -1441,15 +1468,18 @@ browser:
   command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
   # Optional CDP override — when set, Hermes attaches directly to your own
-  # Chrome (via /browser connect) rather than starting a headless browser.
+  # Chromium-family browser (via /browser connect) rather than starting a headless browser.
   cdp_url: ""
   # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
-  # are handled when a CDP backend is attached (Browserbase, local Chrome via
-  # /browser connect). Ignored on Camofox and default local agent-browser mode.
+  # are handled when a CDP backend is attached (Browserbase, local Chromium-family
+  # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
   camofox:
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
+    user_id: ""                  # Optional externally managed Camofox userId
+    session_key: ""              # Optional session key sent when Hermes creates a tab
+    adopt_existing_tab: false    # Reuse an existing tab for this identity before creating one
 ```
 
 **Dialog policies:**
@@ -1460,7 +1490,7 @@ browser:
 
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
-The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
+The browser toolset supports multiple providers. See the [Browser feature page](/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
 
 ## Timezone
 
@@ -1505,7 +1535,7 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **Off by default** — enable if you commonly work with real credentials in tool output and want a safety net. Set to `true` explicitly to turn on.
-- `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/StackGuardian/tirith) before execution to detect potentially dangerous operations.
+- `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
 - `tirith_fail_open` — when `true` (default), commands are allowed to execute if tirith is unavailable or fails. Set to `false` to block commands when tirith cannot verify them.
@@ -1560,12 +1590,12 @@ Setting `approvals.mode: off` disables all safety checks for terminal commands. 
 
 ## Checkpoints
 
-Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/docs/user-guide/checkpoints-and-rollback) for details.
+Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/user-guide/checkpoints-and-rollback) for details.
 
 ```yaml
 checkpoints:
-  enabled: true                  # Enable automatic checkpoints (also: hermes --checkpoints)
-  max_snapshots: 50              # Max checkpoints to keep per directory
+  enabled: false                 # Enable automatic checkpoints (also: hermes chat --checkpoints). Default: false (opt-in).
+  max_snapshots: 20              # Max checkpoints to keep per directory (default: 20)
 ```
 
 
@@ -1579,6 +1609,7 @@ delegation:
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
+  # api_mode: ""                            # Wire protocol for base_url: "chat_completions", "codex_responses", or "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix → anthropic_messages). Set explicitly for non-standard endpoints the heuristic can't detect.
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
@@ -1587,6 +1618,8 @@ delegation:
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
+
+**Wire protocol (`api_mode`):** Hermes auto-detects the wire protocol from `delegation.base_url` (e.g. paths ending in `/anthropic` → `anthropic_messages`; Codex / native Anthropic / Kimi-coding hostnames keep their existing detection). For endpoints the heuristic can't classify — for example Azure AI Foundry, MiniMax, Zhipu GLM, or LiteLLM proxies fronting an Anthropic-shaped backend — set `delegation.api_mode` explicitly to one of `chat_completions`, `codex_responses`, or `anthropic_messages`. Leave it empty (the default) to keep auto-detection.
 
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
@@ -1624,8 +1657,8 @@ Hermes uses two different context scopes:
 - All loaded context files are capped at 20,000 characters with smart truncation.
 
 See also:
-- [Personality & SOUL.md](/docs/user-guide/features/personality)
-- [Context Files](/docs/user-guide/features/context-files)
+- [Personality & SOUL.md](/user-guide/features/personality)
+- [Context Files](/user-guide/features/context-files)
 
 ## Working Directory
 

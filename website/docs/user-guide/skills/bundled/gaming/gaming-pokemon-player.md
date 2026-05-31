@@ -16,6 +16,7 @@ Play Pokemon via headless emulator + RAM reads.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/gaming/pokemon-player` |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

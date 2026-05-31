@@ -11,6 +11,7 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+import cli as cli_mod
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -154,13 +155,33 @@ class TestDisplayResumedHistory:
         assert "Page content" not in output
 
     def test_tool_calls_shown_as_summary(self):
-        cli = _make_cli()
+        # Disable tool-only skip so the summary line is rendered for this fixture.
+        cli = _make_cli(config_overrides={"display": {"resume_skip_tool_only": False}})
         cli.conversation_history = _tool_call_history()
-        output = self._capture_display(cli)
+        import cli as _cli_mod
+        # CLI_CONFIG is read at call-time inside _display_resumed_history, so
+        # apply the override for the duration of the capture, not just at init.
+        with patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": {
+            "display": {"resume_skip_tool_only": False, "resume_display": "full"}
+        }}):
+            output = self._capture_display(cli)
 
         assert "2 tool calls" in output
         assert "web_search" in output
         assert "web_extract" in output
+
+    def test_tool_only_message_skipped_by_default(self):
+        """Assistant messages with only tool_calls (no text) are skipped when
+        resume_skip_tool_only=True (the default). The summary line is hidden.
+        """
+        cli = _make_cli()
+        cli.conversation_history = _tool_call_history()
+        output = self._capture_display(cli)
+
+        # The tool-only assistant entry should be skipped
+        assert "2 tool calls" not in output
+        # The final text reply should still appear
+        assert "Here are some great Python tutorials" in output
 
     def test_long_user_message_truncated(self):
         cli = _make_cli()
@@ -285,6 +306,21 @@ class TestDisplayResumedHistory:
         output = self._capture_display(cli)
 
         assert "Previous Conversation" in output
+
+    def test_panel_is_stored_as_resize_aware_history_entry(self):
+        cli = _make_cli()
+        cli.conversation_history = _simple_history()
+        cli_mod._configure_output_history(True, 10)
+        cli_mod._clear_output_history()
+
+        try:
+            output = self._capture_display(cli)
+
+            assert "Previous Conversation" in output
+            assert len(cli_mod._OUTPUT_HISTORY) == 1
+            assert callable(cli_mod._OUTPUT_HISTORY[0])
+        finally:
+            cli_mod._configure_output_history(True, 200)
 
     def test_assistant_with_no_content_no_tools_skipped(self):
         """Assistant messages with no visible output (e.g. pure reasoning)
@@ -593,6 +629,55 @@ class TestPreloadResumedSession:
         output = buf.getvalue()
         assert "1 user message," in output
         assert "1 user messages" not in output
+
+
+# ── Tests for _handle_resume_command recap display ───────────────────
+
+
+class TestHandleResumeCommandRecap:
+    """In-session /resume should show the same recap panel as startup resume."""
+
+    def test_resume_command_displays_recap_when_messages_restored(self):
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        messages = _simple_history()
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "target_session", "title": "Test Session"}
+        mock_db.get_messages_as_conversation.return_value = messages
+        # resolve_resume_session_id passes the id through when no compression chain.
+        mock_db.resolve_resume_session_id.return_value = "target_session"
+        cli._session_db = mock_db
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch.object(cli, "_display_resumed_history") as display_mock,
+        ):
+            cli._handle_resume_command("/resume test session")
+
+        assert cli.session_id == "target_session"
+        assert cli.conversation_history == messages
+        mock_db.end_session.assert_called_once_with("current_session", "resumed_other")
+        mock_db.reopen_session.assert_called_once_with("target_session")
+        display_mock.assert_called_once_with()
+
+    def test_resume_command_skips_recap_when_session_has_no_messages(self):
+        cli = _make_cli()
+        cli.session_id = "current_session"
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "target_session", "title": None}
+        mock_db.get_messages_as_conversation.return_value = []
+        mock_db.resolve_resume_session_id.return_value = "target_session"
+        cli._session_db = mock_db
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch.object(cli, "_display_resumed_history") as display_mock,
+        ):
+            cli._handle_resume_command("/resume target_session")
+
+        display_mock.assert_not_called()
 
 
 # ── Integration: _init_agent skips when preloaded ────────────────────

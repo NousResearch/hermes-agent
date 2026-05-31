@@ -169,9 +169,9 @@ class TestSmsRequirements:
 class TestWebhookHostConfig:
     """Verify SMS_WEBHOOK_HOST env var and default."""
 
-    def test_default_host_is_all_interfaces(self):
+    def test_default_host_is_localhost(self):
         from gateway.platforms.sms import DEFAULT_WEBHOOK_HOST
-        assert DEFAULT_WEBHOOK_HOST == "0.0.0.0"
+        assert DEFAULT_WEBHOOK_HOST == "127.0.0.1"
 
     def test_host_from_env(self):
         from gateway.platforms.sms import SmsAdapter
@@ -241,6 +241,48 @@ class TestStartupGuard:
         adapter = self._make_adapter()
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_missing_webhook_url_is_non_retryable(self):
+        adapter = self._make_adapter()
+        await adapter.connect()
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert "sms_missing_webhook_url" == adapter.fatal_error_code
+
+    @pytest.mark.asyncio
+    async def test_missing_phone_number_is_non_retryable(self):
+        from gateway.platforms.sms import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "",
+            "SMS_WEBHOOK_URL": "",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+        await adapter.connect()
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter.fatal_error_code == "sms_missing_phone_number"
+
+    @pytest.mark.asyncio
+    async def test_insecure_flag_does_not_set_fatal_error(self):
+        mock_session = AsyncMock()
+        with patch.dict(os.environ, {"SMS_INSECURE_NO_SIGNATURE": "true"}), \
+             patch("aiohttp.web.AppRunner") as mock_runner_cls, \
+             patch("aiohttp.web.TCPSite") as mock_site_cls, \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
+            adapter = self._make_adapter()
+            result = await adapter.connect()
+            assert result is True
+            assert adapter.has_fatal_error is False
+            await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_insecure_flag_allows_start_without_url(self):

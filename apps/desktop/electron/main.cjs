@@ -3148,6 +3148,23 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   }
   return { ok: true }
 })
+ipcMain.handle('hermes:bootstrap:repair', async () => {
+  // Forceful repair: drop the bootstrap-complete marker so the next
+  // startHermes() re-runs the full installer (refreshing a broken/partial
+  // venv), and clear any latched failure + live connection. The renderer
+  // reloads afterwards to re-drive the boot flow from scratch.
+  rememberLog('[bootstrap] repair requested by renderer; clearing marker + latched failure')
+  try {
+    if (fileExists(BOOTSTRAP_COMPLETE_MARKER)) {
+      fs.rmSync(BOOTSTRAP_COMPLETE_MARKER, { force: true })
+    }
+  } catch (error) {
+    rememberLog(`[bootstrap] failed to remove marker during repair: ${error.message}`)
+  }
+  bootstrapFailure = null
+  resetHermesConnection()
+  return { ok: true }
+})
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async () => sanitizeDesktopConnectionConfig())
@@ -3302,6 +3319,21 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
 })
 
 ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
+
+ipcMain.handle('hermes:logs:reveal', async () => {
+  try {
+    await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+    if (!fileExists(DESKTOP_LOG_PATH)) {
+      await fs.promises.appendFile(DESKTOP_LOG_PATH, '')
+    }
+    shell.showItemInFolder(DESKTOP_LOG_PATH)
+    return { ok: true, path: DESKTOP_LOG_PATH }
+  } catch (error) {
+    return { ok: false, path: DESKTOP_LOG_PATH, error: error.message }
+  }
+})
+
+ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 
 // Always-hidden noise (covers non-git projects too — gitignore would catch
 // these anyway when present, but we want the same hygiene without one).

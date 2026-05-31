@@ -2851,3 +2851,81 @@ class TestDashboardPluginStaticAssetAllowlist:
         # — never 200.
         assert resp.status_code in (403, 404)
 
+
+def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
+    """Build a drop-in for httpx.Client whose .get() returns a canned status
+    (or raises a transport error). Patched in for the credential-validate probe
+    so tests never touch the network."""
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+        @property
+        def is_success(self):
+            return 200 <= self.status_code < 300
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            if raise_exc:
+                raise RuntimeError("connection refused")
+            return _Resp(status)
+
+    return _Client
+
+
+class TestValidateProviderCredential:
+    """Live-probe credential validation (/api/providers/validate)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _post(self, key, value):
+        return self.client.post("/api/providers/validate", json={"key": key, "value": value})
+
+    def test_rejected_key_blocks(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=401))
+        data = self._post("OPENROUTER_API_KEY", "sk-bogus").json()
+        assert data["ok"] is False and data["reachable"] is True
+
+    def test_valid_key_passes(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        data = self._post("OPENAI_API_KEY", "sk-real").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_rate_limited_counts_as_valid(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=429))
+        data = self._post("XAI_API_KEY", "xai-real").json()
+        assert data["ok"] is True
+
+    def test_network_error_is_unreachable_not_blocking(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        data = self._post("OPENROUTER_API_KEY", "sk-real").json()
+        assert data["ok"] is False and data["reachable"] is False
+
+    def test_unknown_provider_is_not_validated(self):
+        # No probe for this key → don't block (ok True, reachable False).
+        data = self._post("SOME_OTHER_API_KEY", "whatever-value").json()
+        assert data["ok"] is True and data["reachable"] is False
+
+    def test_empty_value_rejected(self):
+        data = self._post("OPENAI_API_KEY", "   ").json()
+        assert data["ok"] is False
+

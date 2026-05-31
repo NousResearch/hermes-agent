@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { AlertCircle, Check, Globe, Loader2, Monitor } from '@/lib/icons'
+import { AlertCircle, Check, FileText, Globe, Loader2, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -288,6 +288,19 @@ export function GatewaySettings() {
           {saving ? <Loader2 className="size-4 animate-spin" /> : null}
           Save and reconnect
         </Button>
+      </div>
+
+      <div className="mt-6 divide-y divide-border/40">
+        <ListRow
+          action={
+            <Button onClick={() => void window.hermesDesktop?.revealLogs()} variant="outline">
+              <FileText className="size-4" />
+              Open logs
+            </Button>
+          }
+          description="Reveal desktop.log in your file manager — useful when the gateway fails to start."
+          title="Diagnostics"
+        />
       </div>
     </SettingsContent>
   )

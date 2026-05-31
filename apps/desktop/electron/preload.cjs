@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
+  revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
+  getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   terminal: {
@@ -88,6 +90,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // reload mid-bootstrap.
   getBootstrapState: () => ipcRenderer.invoke('hermes:bootstrap:get'),
   resetBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:reset'),
+  repairBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:repair'),
   onBootstrapEvent: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:bootstrap:event', listener)

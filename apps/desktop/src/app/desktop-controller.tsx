@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
+import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
@@ -484,6 +485,7 @@ export function DesktopController() {
       />
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
       <UpdatesOverlay />
+      <BootFailureOverlay />
 
       {settingsOpen && (
         <Suspense fallback={null}>

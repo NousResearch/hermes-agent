@@ -237,6 +237,17 @@ export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> 
   })
 }
 
+export function validateProviderCredential(
+  key: string,
+  value: string
+): Promise<{ ok: boolean; reachable: boolean; message: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string }>({
+    path: '/api/providers/validate',
+    method: 'POST',
+    body: { key, value }
+  })
+}
+
 export function deleteEnvVar(key: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: '/api/env',

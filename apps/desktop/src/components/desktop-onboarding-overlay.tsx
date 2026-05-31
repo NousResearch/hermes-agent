@@ -200,10 +200,6 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
   const hasError = Boolean(boot.error)
   const installing = boot.phase.startsWith('runtime.')
 
-  const resetToLocalGateway = async () => {
-    await window.hermesDesktop?.applyConnectionConfig({ mode: 'local' })
-  }
-
   return (
     <div className="grid gap-3" role="status">
       <p className="text-sm text-muted-foreground">
@@ -224,16 +220,7 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
         <span className="truncate">{boot.message}</span>
         <span>{progress}%</span>
       </div>
-      {hasError ? (
-        <div className="grid gap-3">
-          <p className="text-xs text-destructive">{boot.error}</p>
-          <div>
-            <Button onClick={() => void resetToLocalGateway()} size="sm" variant="outline">
-              Use local gateway
-            </Button>
-          </div>
-        </div>
-      ) : null}
+      {hasError ? <p className="text-xs text-destructive">{boot.error}</p> : null}
     </div>
   )
 }

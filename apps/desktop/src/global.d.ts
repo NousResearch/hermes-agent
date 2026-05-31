@@ -27,6 +27,8 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
+      getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       terminal: {
@@ -45,6 +47,7 @@ declare global {
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       resetBootstrap: () => Promise<{ ok: boolean }>
+      repairBootstrap: () => Promise<{ ok: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
       updates: {

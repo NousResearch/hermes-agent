@@ -1654,6 +1654,74 @@ async def set_env_var(body: EnvVarUpdate):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# Live credential probes keyed by env var. Each entry is (method, url, auth)
+# where auth is "bearer" (Authorization header) or "query" (?key=). A cheap
+# read-only models/key call that 401s on a bad token — enough to catch a
+# mistyped key before it's persisted. Providers absent from this map (or local
+# endpoints) are not network-validated; the client treats those as "unknown".
+_CREDENTIAL_PROBES: dict[str, tuple[str, str]] = {
+    "OPENROUTER_API_KEY": ("https://openrouter.ai/api/v1/key", "bearer"),
+    "OPENAI_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
+    "XAI_API_KEY": ("https://api.x.ai/v1/models", "bearer"),
+    "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "query"),
+}
+
+
+@app.post("/api/providers/validate")
+async def validate_provider_credential(body: EnvVarUpdate, request: Request):
+    """Live-probe a provider credential before it's saved.
+
+    Returns {ok, reachable, message}. ok=True means the provider accepted the
+    key; ok=False + reachable=True means the key is bad (caller should block);
+    reachable=False means the network probe couldn't run (caller may save with
+    a warning rather than hard-blocking offline users).
+    """
+    _require_token(request)
+    import httpx
+
+    key = (body.key or "").strip()
+    value = (body.value or "").strip()
+    if not value:
+        return {"ok": False, "reachable": True, "message": "Enter a value first."}
+
+    # Local / custom endpoint: validate connectivity, not auth — any HTTP
+    # response (even 401) proves the endpoint is up.
+    if key == "OPENAI_BASE_URL":
+        url = value.rstrip("/") + "/models"
+        try:
+            with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+                client.get(url)
+            return {"ok": True, "reachable": True, "message": ""}
+        except Exception:
+            return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+
+    probe = _CREDENTIAL_PROBES.get(key)
+    if not probe:
+        # No probe for this provider — can't validate, don't block.
+        return {"ok": True, "reachable": False, "message": ""}
+
+    url, auth = probe
+    headers = {"Accept": "application/json"}
+    params = {}
+    if auth == "bearer":
+        headers["Authorization"] = f"Bearer {value}"
+    else:
+        params["key"] = value
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(10.0)) as client:
+            resp = client.get(url, headers=headers, params=params)
+    except Exception:
+        return {"ok": False, "reachable": False, "message": "Could not reach the provider to verify the key."}
+
+    if resp.status_code in (401, 403):
+        return {"ok": False, "reachable": True, "message": "That API key was rejected. Double-check it and try again."}
+    if resp.status_code == 429 or resp.is_success:
+        # 429 = key is valid but rate-limited; success = valid.
+        return {"ok": True, "reachable": True, "message": ""}
+    return {"ok": False, "reachable": True, "message": f"Provider returned HTTP {resp.status_code} for this key."}
+
+
 @app.delete("/api/env")
 async def remove_env_var(body: EnvVarDelete):
     try:

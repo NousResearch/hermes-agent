@@ -9,7 +9,8 @@ import {
   setEnvVar,
   setModelAssignment,
   startOAuthLogin,
-  submitOAuthCode
+  submitOAuthCode,
+  validateProviderCredential
 } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
@@ -575,6 +576,19 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
 
   if (!trimmed) {
     return { ok: false, message: 'Enter a value first.' }
+  }
+
+  // Live-probe the credential BEFORE persisting so a mistyped key never lands
+  // in .env. A rejected key (reachable && !ok) hard-blocks; an unreachable
+  // probe (offline / provider down) falls through and saves with the usual
+  // runtime check, so we don't strand offline users.
+  try {
+    const probe = await validateProviderCredential(envKey, trimmed)
+    if (!probe.ok && probe.reachable) {
+      return { ok: false, message: probe.message || `That ${label} key was rejected.` }
+    }
+  } catch {
+    // Validation endpoint unavailable — don't block; fall through to save.
   }
 
   try {

@@ -43,7 +43,6 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only model metadata (context windows, etc.) — same shape as
     # provider catalogs already exposed on the public internet.
     "/api/model/info",
-    # Read-only theme + plugin manifests for the dashboard skin engine.
+    # Read-only theme manifests for the dashboard skin engine.
     "/api/dashboard/themes",
-    "/api/dashboard/plugins",
 })

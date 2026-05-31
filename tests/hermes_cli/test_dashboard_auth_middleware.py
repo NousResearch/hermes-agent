@@ -89,7 +89,6 @@ def test_gated_status_is_public(gated_app):
     "/api/config/schema",
     "/api/model/info",
     "/api/dashboard/themes",
-    "/api/dashboard/plugins",
 ])
 def test_other_public_api_paths_are_public_under_gate(gated_app, path):
     """The remaining ``PUBLIC_API_PATHS`` entries must also bypass the
@@ -112,6 +111,29 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
             f"{path} redirected to {location} — should be public, "
             "not bounced to /login"
         )
+
+
+def test_dashboard_plugins_requires_gate_session(gated_app):
+    """Dashboard plugin inventory is sensitive enough to require login."""
+    r = gated_app.get("/api/dashboard/plugins", follow_redirects=False)
+    assert r.status_code == 401
+
+
+def test_dashboard_plugins_allows_cookie_authenticated_gate_session(gated_app):
+    """Cookie-authenticated dashboard users can still load plugin manifests."""
+    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
+    assert r1.status_code == 302
+    state = r1.headers["location"].split("state=")[1]
+
+    r2 = gated_app.get(
+        f"/auth/callback?code=stub_code&state={state}",
+        follow_redirects=False,
+    )
+    assert r2.status_code == 302
+
+    r3 = gated_app.get("/api/dashboard/plugins")
+    assert r3.status_code == 200, r3.text
+    assert isinstance(r3.json(), list)
 
 
 def test_gated_html_redirects_to_login(gated_app):

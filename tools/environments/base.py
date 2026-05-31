@@ -359,27 +359,31 @@ class BaseEnvironment(ABC):
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        _quoted_cwd = shlex.quote(self.cwd)
-        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
-        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
-        # tripping on drive letters.  On POSIX this is a no-op (no colons /
-        # special chars in a /tmp path).  Previously unquoted interpolation
-        # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
-        # errors on Windows, leaking via stderr (merged into stdout on Linux
-        # backends) into every terminal-tool response.
+        import re as _re
+        _is_windows_cwd = bool(_re.match(r'^[A-Za-z]:[/\\]', self.cwd))
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
-        bootstrap = (
-            f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
-            f"alias -p >> {_quoted_snap}\n"
-            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
-            f"echo 'set +e' >> {_quoted_snap}\n"
-            f"echo 'set +u' >> {_quoted_snap}\n"
-            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
-            f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
-            f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
-        )
+        bootstrap_parts = [
+            f"export -p > {_quoted_snap}\n",
+            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n",
+            f"alias -p >> {_quoted_snap}\n",
+            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n",
+            f"echo 'set +e' >> {_quoted_snap}\n",
+            f"echo 'set +u' >> {_quoted_snap}\n",
+        ]
+        if _is_windows_cwd:
+            # WSL bash: Popen cwd= already sets /mnt/c/..., skip explicit cd
+            bootstrap_parts.append(
+                f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
+            )
+        else:
+            _quoted_cwd = shlex.quote(self.cwd)
+            bootstrap_parts.append(f"builtin cd {_quoted_cwd} 2>/dev/null || true\n")
+            bootstrap_parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n")
+            bootstrap_parts.append(
+                f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
+            )
+        bootstrap = "".join(bootstrap_parts)
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
@@ -441,9 +445,23 @@ class BaseEnvironment(ABC):
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
-        quoted_cwd = self._quote_cwd_for_cd(cwd)
-        # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
-        parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
+        # On Windows with WSL bash, subprocess.Popen(cwd=...) already sets the
+        # correct working directory (/mnt/c/...).  A second explicit `builtin cd` to a
+        # Windows-shaped path inside the bash session fails because WSL bash cannot
+        # resolve `C:/...` paths.  We work around this by:
+        #   1. Checking if cwd looks like a Windows absolute path
+        #   2. If so, skip the explicit cd; Popen's cwd= is sufficient
+        #   3. Otherwise use the normal quoted cd as before
+        import re as _re
+        _is_windows_cwd = bool(_re.match(r'^[A-Za-z]:[/\\]', cwd))
+        if _is_windows_cwd:
+            # Skip cd — Popen cwd= already put WSL bash in the right place.
+            # Still emit a cwd marker so _update_cwd can confirm the path.
+            parts.append(f"printf '\n{self._cwd_marker}%s{self._cwd_marker}\n' \"$(pwd -P)\"")
+        else:
+            quoted_cwd = self._quote_cwd_for_cd(cwd)
+            # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
+            parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")

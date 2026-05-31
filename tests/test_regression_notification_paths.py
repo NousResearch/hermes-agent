@@ -51,18 +51,17 @@ def _make_session(
 # ========================================================================
 
 class TestTuiNotificationPath:
-    """Verify TUI poller loop dispatches completions and marks consumed."""
+    """Verify TUI event-driven callback dispatches completions."""
 
-    def test_tui_poller_loop_exists_and_has_key_lines(self):
-        """Source guard: _notification_poller_loop must contain the expected logic."""
+    def test_tui_callback_exists_and_has_key_lines(self):
+        """Source guard: _on_process_event must contain the expected logic."""
         src = Path("tui_gateway/server.py").read_text()
-        assert "def _notification_poller_loop(" in src
-        assert "process_registry.completion_queue.get(timeout=0.5)" in src
-        assert "process_registry.is_completion_consumed(_evt_sid)" in src
-        assert "process_registry.mark_completion_consumed(_evt_sid)" in src
+        assert "def _on_process_event(" in src
+        assert "format_process_notification" in src
+        assert "def push_kanban_event(" in src
 
-    def test_tui_poller_marks_consumed_after_dispatch(self, monkeypatch):
-        """After dispatching a completion, the TUI poller marks it consumed."""
+    def test_tui_callback_dispatches_completion(self, monkeypatch):
+        """After dispatching a completion, the callback triggers an agent turn."""
         import tui_gateway.server as server
 
         turns = []
@@ -77,7 +76,7 @@ class TestTuiNotificationPath:
                 }
 
         class _ImmediateThread:
-            def __init__(self, target=None, daemon=None):
+            def __init__(self, target=None, daemon=None, **kw):
                 self._target = target
             def start(self):
                 self._target()
@@ -102,29 +101,17 @@ class TestTuiNotificationPath:
         monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
         monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-        while not process_registry.completion_queue.empty():
-            process_registry.completion_queue.get_nowait()
-        process_registry._completion_consumed.discard("proc_tui_guard")
-
-        stop = threading.Event()
-        process_registry.completion_queue.put({
-            "type": "completion",
-            "session_id": "proc_tui_guard",
-            "command": "echo hello",
-            "exit_code": 0,
-            "output": "hello",
-        })
-        stop.set()
-
         try:
-            server._notification_poller_loop(stop, "sid_tui_guard", sess)
+            server._on_process_event({
+                "type": "completion",
+                "session_id": "proc_tui_guard",
+                "command": "echo hello",
+                "exit_code": 0,
+                "output": "hello",
+            })
             assert len(turns) == 1
-            assert process_registry.is_completion_consumed("proc_tui_guard")
         finally:
             server._sessions.pop("sid_tui_guard", None)
-            process_registry._completion_consumed.discard("proc_tui_guard")
-            while not process_registry.completion_queue.empty():
-                process_registry.completion_queue.get_nowait()
 
 
 # ========================================================================

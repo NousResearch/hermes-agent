@@ -2736,7 +2736,7 @@ def _notify_kanban_event(
 
     The completion_queue is the same one used by
     ``process_registry`` for background-process notifications.
-    TUI's ``_notification_poller_loop`` and CLI's
+    The TUI adapter and CLI's
     ``drain_notifications()`` already drain it, so kanban events
     are delivered with zero additional polling.
     """

@@ -4464,6 +4464,28 @@ class GatewayRunner:
         # Start background kanban notifier — delivers `completed`, `blocked`,
         # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
         # so human-in-the-loop workflows hear back without polling.
+        #
+        # Register TUI platform adapter so the notifier can deliver to
+        # connected TUI/CLI sessions via push_kanban_event.
+        try:
+            from gateway.platforms.tui_adapter import TUIAdapter
+            from gateway.config import PlatformConfig
+            _tui_cfg = PlatformConfig(enabled=True)
+            _tui_adapter = TUIAdapter(_tui_cfg, Platform("tui"))
+            from tui_gateway.server import push_kanban_event
+            _tui_adapter.set_delivery_callback(
+                lambda chat_id, content, meta: push_kanban_event(
+                    meta.get("task_id", chat_id),
+                    meta.get("kind", "completed"),
+                    meta.get("payload", {"summary": content}),
+                )
+            )
+            await _tui_adapter.start()
+            self.adapters[Platform("tui")] = _tui_adapter
+            logger.info("TUI platform adapter registered for kanban delivery")
+        except Exception as _tui_exc:
+            logger.debug("TUI adapter registration failed (non-fatal): %s", _tui_exc)
+
         asyncio.create_task(self._kanban_notifier_watcher())
 
         # Start background kanban dispatcher — spawns workers for ready
@@ -5122,6 +5144,9 @@ class GatewayRunner:
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
+                        metadata["task_id"] = sub["task_id"]
+                        metadata["kind"] = kind
+                        metadata["payload"] = getattr(ev, "payload", None) or {}
                         sub_key = (
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
@@ -6402,6 +6427,10 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
         # Fall through to built-in adapters below
+
+        if platform.value == "tui":
+            from gateway.platforms.tui_adapter import TUIAdapter
+            return TUIAdapter(config, platform)
 
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
@@ -9914,6 +9943,23 @@ class GatewayRunner:
                             finally:
                                 conn.close()
                         await asyncio.to_thread(_sub)
+                        # Also subscribe TUI platform so the TUI adapter
+                        # receives terminal events via push_kanban_event.
+                        try:
+                            def _sub_tui():
+                                from hermes_cli import kanban_db as _kb
+                                conn2 = _kb.connect(board=requested_board)
+                                try:
+                                    _kb.add_notify_sub(
+                                        conn2, task_id=task_id,
+                                        platform="tui", chat_id="tui",
+                                        notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    )
+                                finally:
+                                    conn2.close()
+                            await asyncio.to_thread(_sub_tui)
+                        except Exception:
+                            pass
                         output = (
                             output.rstrip()
                             + "\n"

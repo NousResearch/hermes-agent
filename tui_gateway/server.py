@@ -135,11 +135,10 @@ except (ValueError, TypeError):
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
-# ── Kanban→TUI notification bridge (subscription-aware) ─────────────
-# Uses upstream's ``claim_unseen_events_for_sub`` for atomic cursor
-# advancement.  No separate DB poller thread — the per-session
-# notification poller loop receives events via completion_queue
-# (pushed by _notify_kanban_event in kanban_db.py).
+# ── Kanban→TUI notification bridge (event-driven) ──────────────
+# Gateway's _kanban_notifier_watcher delivers terminal kanban events
+# via the TUI platform adapter. push_kanban_event dispatches directly
+# to active sessions. No DB polling, no queues, no threads.
 
 
 def _format_kanban_event(ev, task_id: str) -> "str | None":
@@ -227,25 +226,62 @@ def _format_kanban_event_from_payload(
     return None
 
 
-def get_kanban_fifo_metrics() -> dict:
-    """Return operational metrics for the kanban FIFO notification bridge."""
-    return {
-        "queue_depth": _kanban_fifo_queue.qsize(),
-        "queue_maxsize": _kanban_fifo_queue.maxsize,
-        "dropped_count": _kanban_fifo_dropped_count,
-        "received_count": _kanban_fifo_received_count,
-        "dispatch_failures": _kanban_fifo_dispatch_failures,
-        "reader_alive": (
-            _kanban_global_reader_thread.is_alive()
-            if _kanban_global_reader_thread is not None
-            else False
-        ),
-        "reader_name": (
-            _kanban_global_reader_thread.name
-            if _kanban_global_reader_thread is not None
-            else None
-        ),
-    }
+# Kanban→TUI delivery bridge: events from the gateway's TUI adapter
+# are dispatched directly to active sessions via push_kanban_event.
+
+
+def push_kanban_event(task_id: str, kind: str, payload: dict) -> None:
+    """Receive a kanban event from the gateway's TUI adapter.
+
+    Called by TUIAdapter delivery callback when the gateway's
+    _kanban_notifier_watcher delivers a terminal kanban event.
+    Dispatches directly to all active TUI sessions (event-driven,
+    no polling, no queues).
+    """
+    for _sid, _session in list(_sessions.items()):
+        try:
+            _dispatch_kanban_to_session(_sid, _session, task_id, kind, payload)
+        except Exception:
+            pass
+
+
+def _on_process_event(evt: dict) -> None:
+    """Event-driven handler for process_registry completion events.
+
+    Registered as process_registry._completion_callback at session init.
+    Dispatches completion/watch events directly to active sessions.
+    """
+    evt_type = evt.get("type", "")
+    if evt_type == "kanban_event":
+        push_kanban_event(
+            evt.get("task_id", ""),
+            evt.get("kind", ""),
+            evt.get("payload") or {},
+        )
+        return
+    # For non-kanban events (completion, watch_match, etc.), dispatch
+    # to all active sessions as status updates.
+    from tools.process_registry import format_process_notification
+    text = format_process_notification(evt)
+    if not text:
+        return
+    for _sid, _session in list(_sessions.items()):
+        try:
+            with _session["history_lock"]:
+                if _session.get("running"):
+                    _session.setdefault("_pending_kanban", []).append(text)
+                    _emit("status.update", _sid, {"kind": "process", "text": text})
+                    continue
+                _session["running"] = True
+            _rid = f"__notif__{int(time.time() * 1000)}"
+            try:
+                _emit("message.start", _sid)
+                _run_prompt_submit(_rid, _sid, _session, text)
+            except Exception:
+                with _session["history_lock"]:
+                    _session["running"] = False
+        except Exception:
+            pass
 
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
@@ -712,7 +748,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
-            _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+            _sessions[sid]["_notif_stop"] = threading.Event()
+            # Register event-driven callback for process completions
+            from tools.process_registry import process_registry
+            process_registry._completion_callback = _on_process_event
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent, current)
@@ -2563,7 +2602,10 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # session startup resilient).
         pass
     _wire_callbacks(sid)
-    _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+    _sessions[sid]["_notif_stop"] = threading.Event()
+    # Register event-driven callback for process completions
+    from tools.process_registry import process_registry
+    process_registry._completion_callback = _on_process_event
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent, _sessions[sid]))
 
@@ -4054,150 +4096,24 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
-def _notification_poller_loop(
-    stop_event: threading.Event, sid: str, session: dict
-) -> None:
-    """Poll completion_queue and dispatch notifications autonomously.
-
-    Runs in a daemon thread started by _init_session(). Emits a
-    status.update (kind=process) for user visibility, then chains an
-    agent turn via _run_prompt_submit if the session is idle.
-
-    NOTE: The completion_queue is global (one per process). If multiple
-    TUI sessions coexist, whichever poller wakes first grabs the event,
-    even if the process was started by a different session. This matches
-    CLI/gateway behavior (single session per process).
-    """
-    from tools.process_registry import process_registry, format_process_notification
-
-    while not stop_event.is_set() and not session.get("_finalized"):
-        try:
-            evt = process_registry.completion_queue.get(timeout=0.5)
-        except queue.Empty:
-            continue
-
-        # Handle kanban events (pushed by _notify_kanban_event in kanban_db.py)
-        if evt.get("type") == "kanban_event":
-            _task_id = evt.get("task_id", "")
-            _kind = evt.get("kind", "")
-            _payload = evt.get("payload") or {}
-            _msg = _format_kanban_event_from_payload(_kind, _task_id, _payload)
-            if _msg:
-                with session["history_lock"]:
-                    if session.get("running"):
-                        session.setdefault("_pending_kanban", []).append(_msg)
-                        _emit("status.update", sid,
-                              {"kind": "process", "text": _msg})
-                        continue
-                    session["running"] = True
-                _rid = f"__kanban__{int(time.time() * 1000)}"
-                try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(_rid, sid, session, _msg)
-                except Exception:
-                    with session["history_lock"]:
-                        session["running"] = False
-            continue
-
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-            continue
-
-        text = format_process_notification(evt)
-        if not text:
-            continue
-
-        _emit("status.update", sid, {"kind": "process", "text": text})
-
+def _dispatch_kanban_to_session(sid: str, session: dict, task_id: str, kind: str, payload: dict) -> None:
+    """Dispatch a kanban event to a TUI session (event-driven, no polling)."""
+    _msg = _format_kanban_event_from_payload(kind, task_id, payload or {})
+    if not _msg:
+        return
+    with session["history_lock"]:
+        if session.get("running"):
+            session.setdefault("_pending_kanban", []).append(_msg)
+            _emit("status.update", sid, {"kind": "process", "text": _msg})
+            return
+        session["running"] = True
+    _rid = f"__kanban__{int(time.time() * 1000)}"
+    try:
+        _emit("message.start", sid)
+        _run_prompt_submit(_rid, sid, session, _msg)
+    except Exception:
         with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                continue
-            session["running"] = True
-
-        rid = f"__notif__{int(time.time() * 1000)}"
-        try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
-            process_registry.mark_completion_consumed(_evt_sid)
-        except Exception as exc:
-            print(
-                f"[tui_gateway] notification poller dispatch failed: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-            with session["history_lock"]:
-                session["running"] = False
-
-    # Drain any remaining events after stop signal (process all pending
-    # before exiting so nothing is lost on shutdown).
-    while not process_registry.completion_queue.empty():
-        try:
-            evt = process_registry.completion_queue.get_nowait()
-        except queue.Empty:
-            break
-
-        # Handle kanban events in drain too
-        if evt.get("type") == "kanban_event":
-            _task_id = evt.get("task_id", "")
-            _kind = evt.get("kind", "")
-            _payload = evt.get("payload") or {}
-            _msg = _format_kanban_event_from_payload(_kind, _task_id, _payload)
-            if _msg:
-                with session["history_lock"]:
-                    if session.get("running"):
-                        session.setdefault("_pending_kanban", []).append(_msg)
-                        break
-                    session["running"] = True
-                _rid = f"__kanban__{int(time.time() * 1000)}"
-                try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(_rid, sid, session, _msg)
-                except Exception:
-                    with session["history_lock"]:
-                        session["running"] = False
-            continue
-
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-            continue
-        text = format_process_notification(evt)
-        if not text:
-            continue
-
-        _emit("status.update", sid, {"kind": "process", "text": text})
-
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                break
-            session["running"] = True
-
-        rid = f"__notif__{int(time.time() * 1000)}"
-        try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
-            process_registry.mark_completion_consumed(_evt_sid)
-        except Exception as exc:
-            print(
-                f"[tui_gateway] notification poller dispatch failed: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-            with session["history_lock"]:
-                session["running"] = False
-
-
-def _start_notification_poller(sid: str, session: dict) -> threading.Event:
-    """Start the background notification poller for a TUI session."""
-    stop = threading.Event()
-    t = threading.Thread(
-        target=_notification_poller_loop,
-        args=(stop, sid, session),
-        daemon=True,
-    )
-    t.start()
-    return stop
+            session["running"] = False
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:

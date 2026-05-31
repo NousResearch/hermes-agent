@@ -2220,15 +2220,16 @@ class GatewayRunner:
             )
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
-        """Call adapter.disconnect() defensively, swallowing any error.
+        """Bounded, never-raising adapter.disconnect() — the shared resolver.
 
-        Used when adapter.connect() failed or raised — the adapter may
-        have allocated partial resources (aiohttp.ClientSession, poll
-        tasks, child subprocesses) that would otherwise leak and surface
-        as "Unclosed client session" warnings at process exit.
+        Used after a failed connect (partial resources — aiohttp sessions,
+        poll tasks, subprocesses — would otherwise leak as "Unclosed client
+        session" warnings) and on the fatal-error path, where the same
+        network failure that killed the adapter can wedge its disconnect.
 
-        Must tolerate partial-init state and never raise, since callers
-        use it inside error-handling blocks.
+        Must tolerate partial-init state and never raise, since callers use
+        it inside error-handling blocks and rely on reaching the cleanup
+        that follows.
         """
         timeout = self._adapter_disconnect_timeout_secs()
         try:
@@ -2244,7 +2245,7 @@ class GatewayRunner:
             )
         except Exception as e:
             logger.debug(
-                "Defensive %s disconnect after failed connect raised: %s",
+                "Defensive %s disconnect raised: %s",
                 platform.value if platform is not None else "adapter",
                 e,
             )
@@ -2753,8 +2754,10 @@ class GatewayRunner:
 
         existing = self.adapters.get(adapter.platform)
         if existing is adapter:
+            # finally so a teardown-time cancellation still drops the dead
+            # adapter; _safe_adapter_disconnect itself never raises.
             try:
-                await adapter.disconnect()
+                await self._safe_adapter_disconnect(adapter, adapter.platform)
             finally:
                 self.adapters.pop(adapter.platform, None)
                 self.delivery_router.adapters = self.adapters

@@ -11,6 +11,7 @@ import types
 
 import pytest
 
+from gateway.config import Platform
 from gateway.run import GatewayRunner
 
 
@@ -59,3 +60,35 @@ async def test_hung_notify_send_is_bounded(monkeypatch):
     )
     # A timed-out send yields None (no structured result); shutdown continues.
     assert result is None
+
+
+class _FatalHangingAdapter:
+    """disconnect() hangs; the adapter reports a non-retryable fatal error."""
+
+    fatal_error_code = "boom"
+    fatal_error_message = "unrecoverable"
+    fatal_error_retryable = False
+
+    def __init__(self, platform):
+        self.platform = platform
+
+    async def disconnect(self):
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_fatal_error_disconnect_is_bounded(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.1")
+    runner = _runner()
+    pf = Platform.TELEGRAM
+    other = Platform.DISCORD  # second adapter keeps shutdown off the all-gone path
+    adapter = _FatalHangingAdapter(pf)
+    runner.adapters = {pf: adapter, other: object()}
+    runner.delivery_router = types.SimpleNamespace(adapters=runner.adapters)
+    runner._failed_platforms = {}
+    monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda *a, **k: None)
+
+    # A hung disconnect must not block popping the dead adapter so the
+    # reconnection bookkeeping that follows still runs.
+    await asyncio.wait_for(runner._handle_adapter_fatal_error(adapter), timeout=2.0)
+    assert pf not in runner.adapters

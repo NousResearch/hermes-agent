@@ -7,6 +7,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -30,10 +31,12 @@ class FactRetriever:
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
         hrr_dim: int = 1024,
+        query_log_sample_rate: float = 0.0,
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
         self.hrr_dim = hrr_dim
+        self.query_log_sample_rate = max(0.0, min(1.0, float(query_log_sample_rate)))
 
         # Auto-redistribute weights if numpy unavailable
         if hrr_weight > 0 and not hrr._HAS_NUMPY:
@@ -62,11 +65,21 @@ class FactRetriever:
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
-        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
+        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom).
+        # Plain FTS5 whitespace uses AND semantics, which is precise but brittle
+        # for user questions like "where is the Codex CLI path fix?". If that
+        # strict pass returns nothing, retry with an OR query over informative
+        # tokens before giving up.
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+        if not candidates:
+            relaxed_query = self._relaxed_fts_query(query)
+            if relaxed_query:
+                candidates = self._fts_candidates(relaxed_query, category, min_trust, limit * 3)
 
         if not candidates:
-            return []
+            results = self._hrr_fallback_candidates(query, category, min_trust, limit)
+            self._record_retrievals(results, query=query, category=category)
+            return results
 
         # Stage 2: Rerank with Jaccard + trust + optional decay
         query_tokens = self._tokenize(query)
@@ -83,7 +96,8 @@ class FactRetriever:
             # HRR similarity
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
-                query_vec = hrr.encode_text(query, self.hrr_dim)
+                role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+                query_vec = hrr.bind(hrr.encode_text(query, self.hrr_dim), role_content)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
             else:
                 hrr_sim = 0.5  # neutral
@@ -106,6 +120,11 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
+
+        # FactRetriever bypasses MemoryStore.search_facts(), so it must record
+        # telemetry itself; otherwise fact_store(search) leaves retrieval_count
+        # at zero even when facts are actively used.
+        self._record_retrievals(results, query=query, category=category)
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
@@ -540,6 +559,103 @@ class FactRetriever:
             results.append(fact)
 
         return results
+
+    def _record_retrievals(
+        self,
+        facts: list[dict],
+        query: str | None = None,
+        category: str | None = None,
+    ) -> None:
+        """Record retrieval_count and sampled query telemetry."""
+        if query and self.query_log_sample_rate > 0 and random.random() < self.query_log_sample_rate:
+            top_fact_id = None
+            if facts and facts[0].get("fact_id") is not None:
+                top_fact_id = int(facts[0]["fact_id"])
+            self.store.record_query_log(
+                query=query,
+                category=category,
+                result_count=len(facts),
+                top_fact_id=top_fact_id,
+            )
+
+        fact_ids = [int(f["fact_id"]) for f in facts if f.get("fact_id") is not None]
+        if not fact_ids:
+            return
+
+        self.store.increment_retrieval_counts(fact_ids)
+        for fact in facts:
+            fact["retrieval_count"] = int(fact.get("retrieval_count") or 0) + 1
+
+    def _hrr_fallback_candidates(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """Score all vectorized facts when FTS5 cannot produce candidates."""
+        if self.hrr_weight <= 0 or not hrr._HAS_NUMPY:
+            return []
+
+        conn = self.store._conn
+        query_tokens = self._tokenize(query)
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+        query_vec = hrr.bind(hrr.encode_text(query, self.hrr_dim), role_content)
+
+        where = ["hrr_vector IS NOT NULL", "trust_score >= ?"]
+        params: list = [min_trust]
+        if category:
+            where.append("category = ?")
+            params.append(category)
+
+        rows = conn.execute(
+            f"""
+            SELECT fact_id, content, category, tags, trust_score,
+                   retrieval_count, helpful_count, created_at, updated_at,
+                   hrr_vector
+            FROM facts
+            WHERE {' AND '.join(where)}
+            """,
+            params,
+        ).fetchall()
+
+        scored = []
+        for row in rows:
+            fact = dict(row)
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            content_tokens = self._tokenize(fact["content"])
+            tag_tokens = self._tokenize(fact.get("tags", ""))
+            all_tokens = content_tokens | tag_tokens
+            jaccard = self._jaccard_similarity(query_tokens, all_tokens)
+            hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0
+            relevance = self.jaccard_weight * jaccard + self.hrr_weight * hrr_sim
+            fact["fts_rank"] = 0.0
+            fact["score"] = relevance * fact["trust_score"]
+            scored.append(fact)
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:limit]
+
+    @classmethod
+    def _relaxed_fts_query(cls, query: str) -> str:
+        """Build a conservative OR fallback query for natural-language input."""
+        # This aggressive stopword set is fallback-only: strict FTS gets the
+        # first chance, then HRR scoring remains available if relaxed FTS drops
+        # too much context. Keep store/stored/storing here to avoid generic
+        # memory-management phrasing over-ranking unrelated facts.
+        stopwords = {
+            "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+            "could", "did", "do", "does", "find", "give", "how", "i", "in",
+            "is", "it", "look", "lookup", "me", "my", "of", "on", "or",
+            "our", "please", "remember", "should", "show", "store", "stored",
+            "storing", "tell", "the", "to", "we", "what", "when", "where",
+            "which", "who", "why", "with", "would", "you", "your",
+        }
+        tokens = sorted(t for t in cls._tokenize(query) if len(t) > 1 and t not in stopwords)
+        if len(tokens) < 2:
+            return ""
+
+        return " OR ".join(f'"{token.replace(chr(34), chr(34) + chr(34))}"' for token in tokens)
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:

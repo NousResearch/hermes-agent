@@ -153,6 +153,7 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
+            {"key": "query_log_sample_rate", "description": "Fraction of searches to record in query_log", "default": "0.0"},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -170,13 +171,16 @@ class HolographicMemoryProvider(MemoryProvider):
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
+        query_log_sample_rate = float(self._config.get("query_log_sample_rate", 0.0))
 
         self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
+        self._store.repair_missing_hrr_vectors(dim=hrr_dim)
         self._retriever = FactRetriever(
             store=self._store,
             temporal_decay_half_life=temporal_decay,
             hrr_weight=hrr_weight,
             hrr_dim=hrr_dim,
+            query_log_sample_rate=query_log_sample_rate,
         )
         self._session_id = session_id
 
@@ -235,7 +239,10 @@ class HolographicMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._config.get("auto_extract", False):
+        auto_extract = self._config.get("auto_extract", False)
+        # Hard governance guard: only boolean True or string "true" enables
+        # extraction. Values like 1, "yes", and "false" deliberately do not.
+        if auto_extract is not True and str(auto_extract).lower() != "true":
             return
         if not self._store or not messages:
             return

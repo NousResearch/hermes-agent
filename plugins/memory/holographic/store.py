@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS query_log (
+    query_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    query        TEXT NOT NULL,
+    category     TEXT,
+    result_count INTEGER DEFAULT 0,
+    top_fact_id  INTEGER REFERENCES facts(fact_id),
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # Trust adjustment constants
@@ -97,6 +106,11 @@ def _clamp_trust(value: float) -> float:
 
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
+
+    @staticmethod
+    def _escape_like_literal(value: str) -> str:
+        """Escape a string for literal matching inside a SQLite LIKE pattern."""
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def __init__(
         self,
@@ -237,6 +251,88 @@ class MemoryStore:
                 )
                 self._conn.commit()
 
+            return results
+
+    def increment_retrieval_counts(self, fact_ids: list[int]) -> None:
+        """Increment retrieval telemetry for the given fact ids."""
+        ids = sorted({int(fact_id) for fact_id in fact_ids if fact_id is not None})
+        if not ids:
+            return
+
+        with self._lock:
+            placeholders = ",".join("?" * len(ids))
+            self._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                ids,
+            )
+            self._conn.commit()
+
+    def record_query_log(
+        self,
+        query: str,
+        category: str | None = None,
+        result_count: int = 0,
+        top_fact_id: int | None = None,
+    ) -> int:
+        """Record sampled retrieval telemetry and return query_id."""
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO query_log (query, category, result_count, top_fact_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (query, category, int(result_count), top_fact_id),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def find_stale_fact_candidates(
+        self,
+        fragments: tuple[str, ...] | list[str],
+        stale_days: int = 60,
+        min_trust: float = 0.3,
+        categories: tuple[str, ...] | list[str] = ("project", "tool"),
+        limit: int = 50,
+    ) -> list[dict]:
+        """Find actionable stale-fact candidates using explicit governance filters."""
+        needles = [fragment.strip() for fragment in fragments if fragment and fragment.strip()]
+        if not needles:
+            return []
+
+        with self._lock:
+            where = ["trust_score >= ?", "updated_at <= datetime('now', ?)"]
+            params: list = [float(min_trust), f"-{int(stale_days)} days"]
+
+            if categories:
+                placeholders = ",".join("?" * len(categories))
+                where.append(f"category IN ({placeholders})")
+                params.extend(categories)
+
+            content_clauses = []
+            for fragment in needles:
+                content_clauses.append("content LIKE ? ESCAPE '\\'")
+                params.append(f"%{self._escape_like_literal(fragment)}%")
+            where.append("(" + " OR ".join(content_clauses) + ")")
+
+            params.append(int(limit))
+            rows = self._conn.execute(
+                f"""
+                SELECT fact_id, content, category, tags, trust_score,
+                       retrieval_count, helpful_count, created_at, updated_at
+                FROM facts
+                WHERE {' AND '.join(where)}
+                ORDER BY updated_at ASC, fact_id ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+            results = [self._row_to_dict(row) for row in rows]
+            for result in results:
+                content = result.get("content", "").casefold()
+                result["matched_fragments"] = [
+                    fragment for fragment in needles if fragment.casefold() in content
+                ]
             return results
 
     def update_fact(
@@ -548,6 +644,36 @@ class MemoryStore:
             rows = self._conn.execute(
                 "SELECT fact_id, content, category FROM facts"
             ).fetchall()
+
+            categories: set[str] = set()
+            for row in rows:
+                self._compute_hrr_vector(row["fact_id"], row["content"])
+                categories.add(row["category"])
+
+            for category in categories:
+                self._rebuild_bank(category)
+
+            return len(rows)
+
+    def repair_missing_hrr_vectors(self, dim: int | None = None) -> int:
+        """Compute HRR vectors only for rows that are missing them.
+
+        This keeps startup repair cheap while fixing migrated/imported facts that
+        predate the hrr_vector column or were inserted before NumPy was available.
+        Returns the number of repaired facts.
+        """
+        with self._lock:
+            if not self._hrr_available:
+                return 0
+
+            if dim is not None:
+                self.hrr_dim = dim
+
+            rows = self._conn.execute(
+                "SELECT fact_id, content, category FROM facts WHERE hrr_vector IS NULL"
+            ).fetchall()
+            if not rows:
+                return 0
 
             categories: set[str] = set()
             for row in rows:

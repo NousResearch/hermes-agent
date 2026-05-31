@@ -14261,12 +14261,22 @@ class GatewayRunner:
             return False
         if chat_type == "dm":
             return True
-        get_dm_topic_info = getattr(adapter, "_get_dm_topic_info", None)
-        if callable(get_dm_topic_info) and chat_id:
-            try:
-                return bool(get_dm_topic_info(str(chat_id), str(thread_id)))
-            except Exception:
-                logger.debug("Failed to inspect Telegram DM topic metadata", exc_info=True)
+        # Inspect operator-declared DM topics via the adapter's lookup. Resolve
+        # the method on the CLASS, not the instance: getattr() on a MagicMock
+        # auto-creates a callable child for any attribute, so an instance-level
+        # lookup would report a DM topic for every test double. Only a
+        # dict-shaped return counts as an operator-declared topic — a bare
+        # MagicMock or other sentinel must not. Mirrors the guard in
+        # _rename_telegram_topic_for_session_title.
+        if adapter is not None and chat_id:
+            get_dm_topic_info = getattr(type(adapter), "_get_dm_topic_info", None)
+            if callable(get_dm_topic_info):
+                try:
+                    topic_info = get_dm_topic_info(adapter, str(chat_id), str(thread_id))
+                except Exception:
+                    logger.debug("Failed to inspect Telegram DM topic metadata", exc_info=True)
+                else:
+                    return isinstance(topic_info, dict)
         return False
 
     @staticmethod

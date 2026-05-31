@@ -11,7 +11,7 @@ The API server exposes hermes-agent as an OpenAI-compatible HTTP endpoint. Any f
 Your agent handles requests with its full toolset (terminal, file operations, web search, memory, skills) and returns the final response. When streaming, tool progress indicators appear inline so frontends can show what the agent is doing.
 
 :::tip One backend covers models + tools
-Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](/docs/user-guide/features/tool-gateway) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `hermes setup --portal` once before starting the API server and frontends like Open WebUI or LobeChat get a fully tool-equipped backend.
+Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](/user-guide/features/tool-gateway) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `hermes setup --portal` once before starting the API server and frontends like Open WebUI or LobeChat get a fully tool-equipped backend.
 :::
 
 ## Quick Start
@@ -51,7 +51,7 @@ curl http://localhost:8642/v1/chat/completions \
   -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/docs/user-guide/messaging/open-webui) for step-by-step instructions.
+Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/user-guide/messaging/open-webui) for step-by-step instructions.
 
 ## Endpoints
 
@@ -196,7 +196,7 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
+Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
 ### GET /v1/capabilities
 
@@ -308,6 +308,66 @@ Resume a previously paused job.
 
 Trigger the job to run immediately, out of schedule.
 
+## Sessions API (session control over REST)
+
+External UIs can manage Hermes sessions over REST without standing up the dashboard. All endpoints are gated by `API_SERVER_KEY` and live under `/api/sessions/*`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
+| `POST` | `/api/sessions` | Create an empty session |
+| `GET` | `/api/sessions/{id}` | Read session metadata |
+| `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
+| `DELETE` | `/api/sessions/{id}` | Delete a session |
+| `GET` | `/api/sessions/{id}/messages` | Message history for a session |
+| `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
+| `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
+
+`/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+```bash
+# fork a session and run one turn
+curl -X POST http://localhost:8642/api/sessions/$ID/fork \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"title": "explore alt path"}'
+
+# stream a turn over SSE
+curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"input": "what files changed in the last hour?"}'
+```
+
+## Skills and toolsets discovery
+
+`GET /v1/skills` and `GET /v1/toolsets` let external clients enumerate the agent's capabilities deterministically over REST instead of asking the model. Both are read-only and gated by `API_SERVER_KEY`.
+
+```bash
+curl http://localhost:8642/v1/skills \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+# → [{"name": "github-pr-workflow", "description": "...", "category": "..."}, ...]
+
+curl http://localhost:8642/v1/toolsets \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+# → [{"name": "core", "label": "...", "description": "...", "enabled": true,
+#     "configured": true, "tools": ["read_file", "write_file", ...]}, ...]
+```
+
+`/v1/skills` returns the same metadata the skills hub uses internally. `/v1/toolsets` returns toolsets resolved for the `api_server` platform with the concrete `tools` list each one expands to. Both are advertised under `endpoints.*` in `/v1/capabilities`.
+
+## Long-term memory scoping (`X-Hermes-Session-Key`)
+
+Multi-user frontends like Open WebUI need a stable per-channel identifier for long-term memory (Honcho, etc.) that is **independent** of the transcript-scoped `X-Hermes-Session-Id` (which rotates on `/new`). Pass `X-Hermes-Session-Key` on `/v1/chat/completions`, `/v1/responses`, or `/v1/runs` and Hermes threads it through to `AIAgent(gateway_session_key=...)`, where the Honcho memory provider uses it to derive a stable scope.
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Authorization: Bearer ***
+X-Hermes-Session-Id: transcript-alpha
+X-Hermes-Session-Key: agent:main:webui:dm:user-42
+```
+
+Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.
@@ -327,9 +387,7 @@ Authorization: Bearer ***
 Configure the key via `API_SERVER_KEY` env var. If you need a browser to call Hermes directly, also set `API_SERVER_CORS_ORIGINS` to an explicit allowlist.
 
 :::warning Security
-The API server gives full access to hermes-agent's toolset, **including terminal commands**. When binding to a non-loopback address like `0.0.0.0`, `API_SERVER_KEY` is **required**. Also keep `API_SERVER_CORS_ORIGINS` narrow to control browser access.
-
-The default bind address (`127.0.0.1`) is for local-only use. Browser access is disabled by default; enable it only for explicit trusted origins.
+The API server gives full access to hermes-agent's toolset, **including terminal commands**. `API_SERVER_KEY` is **required for every deployment**, including the default loopback bind on `127.0.0.1`. Keep `API_SERVER_CORS_ORIGINS` narrow to control browser access when you explicitly allow browser callers.
 :::
 
 ## Configuration
@@ -341,7 +399,7 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 | `API_SERVER_ENABLED` | `false` | Enable the API server |
 | `API_SERVER_PORT` | `8642` | HTTP server port |
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address (localhost only by default) |
-| `API_SERVER_KEY` | _(none)_ | Bearer token for auth |
+| `API_SERVER_KEY` | _(required)_ | Bearer token for auth |
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
 | `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |
 
@@ -381,7 +439,7 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 
 | Frontend | Stars | Connection |
 |----------|-------|------------|
-| [Open WebUI](/docs/user-guide/messaging/open-webui) | 126k | Full guide available |
+| [Open WebUI](/user-guide/messaging/open-webui) | 126k | Full guide available |
 | LobeChat | 73k | Custom provider endpoint |
 | LibreChat | 34k | Custom endpoint in librechat.yaml |
 | AnythingLLM | 56k | Generic OpenAI provider |
@@ -395,7 +453,7 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 
 ## Multi-User Setup with Profiles
 
-To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/docs/user-guide/profiles):
+To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/user-guide/profiles):
 
 ```bash
 # Create a profile per user
@@ -426,7 +484,7 @@ Each profile's API server automatically advertises the profile name as the model
 - `http://localhost:8643/v1/models` → model `alice`
 - `http://localhost:8644/v1/models` → model `bob`
 
-In Open WebUI, add each as a separate connection. The model dropdown shows `alice` and `bob` as distinct models, each backed by a fully isolated Hermes instance. See the [Open WebUI guide](/docs/user-guide/messaging/open-webui#multi-user-setup-with-profiles) for details.
+In Open WebUI, add each as a separate connection. The model dropdown shows `alice` and `bob` as distinct models, each backed by a fully isolated Hermes instance. See the [Open WebUI guide](/user-guide/messaging/open-webui#multi-user-setup-with-profiles) for details.
 
 ## Limitations
 
@@ -438,4 +496,4 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 
 The API server also serves as the backend for **gateway proxy mode**. When another Hermes gateway instance is configured with `GATEWAY_PROXY_URL` pointing at this API server, it forwards all messages here instead of running its own agent. This enables split deployments — for example, a Docker container handling Matrix E2EE that relays to a host-side agent.
 
-See [Matrix Proxy Mode](/docs/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos) for the full setup guide.
+See [Matrix Proxy Mode](/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos) for the full setup guide.

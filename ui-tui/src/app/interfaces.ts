@@ -3,7 +3,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ImageAttachResponse } from '../gatewayTypes.js'
+import type { ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -79,6 +79,7 @@ export interface OverlayState {
   pager: null | PagerState
   picker: boolean
   secret: null | SecretReq
+  sessions: boolean
   skillsHub: boolean
   sudo: null | SudoReq
 }
@@ -103,8 +104,12 @@ export interface UiState {
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   info: null | SessionInfo
+  liveSessionCount: number
   inlineDiffs: boolean
   mouseTracking: MouseTrackingMode
+  pasteCollapseLines: number
+  pasteCollapseChars: number
+
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
@@ -216,6 +221,7 @@ export interface InputHandlerContext {
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
   wheelStep: number
 }
@@ -233,6 +239,10 @@ export interface GatewayEventHandlerContext {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string) => void
+    // Set by useMainApp's exit handler to the session that was live when the
+    // gateway died unexpectedly; consumed once by the next `gateway.ready` so a
+    // respawn resumes that session instead of forging a fresh one.
+    recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
@@ -254,6 +264,7 @@ export interface GatewayEventHandlerContext {
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -279,6 +290,7 @@ export interface SlashHandlerContext {
     die: () => void
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
+    newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
@@ -296,6 +308,7 @@ export interface SlashHandlerContext {
   voice: {
     setVoiceEnabled: StateSetter<boolean>
     setVoiceRecordKey: (v: ParsedVoiceRecordKey) => void
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -305,6 +318,10 @@ export interface AppLayoutActions {
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
+  activateLiveSession: (id: string) => void
+  closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
+  newLiveSession: () => void
+  newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
@@ -363,7 +380,11 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
+  onActiveSessionSelect: (sessionId: string) => void
+  onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void
+  onNewLiveSession: () => void
+  onNewPromptSession: (prompt: string, modelArg?: string) => void
   onPickerSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void

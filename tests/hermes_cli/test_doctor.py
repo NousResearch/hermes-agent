@@ -253,38 +253,6 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     assert issues == []
 
 
-def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
-    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
-    monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "2048")
-    monkeypatch.setenv("VERCEL_TOKEN", "super-secret-value")
-    monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
-    monkeypatch.setenv("VERCEL_TEAM_ID", "team")
-    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
-
-    fake_model_tools = types.SimpleNamespace(
-        check_tool_availability=lambda *a, **kw: ([], []),
-        TOOLSET_REQUIREMENTS={},
-    )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        doctor_mod.run_doctor(Namespace(fix=False))
-
-    out = buf.getvalue()
-    assert "Vercel runtime" in out
-    assert "python3.13" in out
-    assert "Vercel custom disk unsupported" in out
-    assert "Vercel auth incomplete" in out
-    assert "VERCEL_PROJECT_ID" in out
-    assert "Vercel auth mode: incomplete access token" in out
-    assert "Vercel auth present env: VERCEL_TOKEN, VERCEL_TEAM_ID" in out
-    assert "Vercel auth missing env: VERCEL_PROJECT_ID" in out
-    assert "super-secret-value" not in out
-    assert "snapshot filesystem only" in out
-
-
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 
@@ -522,7 +490,6 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
 @pytest.mark.parametrize(
     ("provider", "default_model"),
     [
-        ("ai-gateway", "anthropic/claude-sonnet-4.6"),
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
@@ -566,7 +533,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode"}:
+    if provider in {"opencode-zen", "kilocode"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
@@ -825,7 +792,7 @@ class TestGitHubTokenCheck:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
-        from hermes_cli.doctor import run_doctor, _DHH
+        from hermes_cli.doctor import run_doctor
         import io, contextlib
 
         buf = io.StringIO()

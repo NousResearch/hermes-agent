@@ -1,15 +1,13 @@
 """Tests for the QQ Bot platform adapter."""
 
 import asyncio
-import json
 import os
-import sys
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -1233,14 +1231,14 @@ class TestAdapterInteractionDispatch:
             "user_openid": "user-1",
             "data": {
                 "type": 11,
-                "resolved": {"button_data": "approve:s:deny", "button_id": "deny"},
+                "resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:deny", "button_id": "deny"},
             },
         })
 
         assert len(ack_calls) == 1
         assert ack_calls[0][0] == "i-1"
         assert len(received) == 1
-        assert received[0].button_data == "approve:s:deny"
+        assert received[0].button_data == "approve:agent:main:qqbot:c2c:u:deny"
         assert received[0].scene == "c2c"
 
     @pytest.mark.asyncio
@@ -1262,7 +1260,7 @@ class TestAdapterInteractionDispatch:
         adapter.set_interaction_callback(cb)
         await adapter._on_interaction({
             "chat_type": 2,  # no id
-            "data": {"resolved": {"button_data": "approve:s:deny"}},
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:deny"}},
         })
 
         assert ack_calls == []
@@ -1286,7 +1284,7 @@ class TestAdapterInteractionDispatch:
             "id": "i-2",
             "chat_type": 2,
             "user_openid": "u",
-            "data": {"resolved": {"button_data": "approve:s:deny"}},
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:deny"}},
         })
 
     @pytest.mark.asyncio
@@ -1304,7 +1302,7 @@ class TestAdapterInteractionDispatch:
             "id": "i-3",
             "chat_type": 2,
             "user_openid": "u",
-            "data": {"resolved": {"button_data": "approve:s:deny"}},
+            "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:deny"}},
         })
 
 
@@ -1570,13 +1568,13 @@ class TestDefaultInteractionDispatch:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:sess-abc:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u-42:allow-once"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("sess-abc", "once", False)]
+        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", False)]
 
     @pytest.mark.asyncio
     async def test_approval_click_always_maps_to_always(self):
@@ -1594,13 +1592,13 @@ class TestDefaultInteractionDispatch:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i", "chat_type": 2, "user_openid": "u",
-                "data": {"resolved": {"button_data": "approve:s:allow-always"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:allow-always"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("s", "always", False)]
+        assert resolve_calls == [("agent:main:qqbot:c2c:u", "always", False)]
 
     @pytest.mark.asyncio
     async def test_approval_click_deny_maps_to_deny(self):
@@ -1618,13 +1616,40 @@ class TestDefaultInteractionDispatch:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i", "chat_type": 2, "user_openid": "u",
-                "data": {"resolved": {"button_data": "approve:s:deny"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:deny"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("s", "deny", False)]
+        assert resolve_calls == [("agent:main:qqbot:c2c:u", "deny", False)]
+
+
+    @pytest.mark.asyncio
+    async def test_approval_click_rejects_unauthorized_operator(self):
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 1,
+                "group_openid": "g-1",
+                "group_member_openid": "attacker",
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:group:g-1:owner:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == []
 
     @pytest.mark.asyncio
     async def test_update_prompt_click_writes_response_file(self, tmp_path, monkeypatch):
@@ -1700,7 +1725,7 @@ class TestDefaultInteractionDispatch:
             from gateway.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i", "chat_type": 2, "user_openid": "u",
-                "data": {"resolved": {"button_data": "approve:s:deny"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:deny"}},
             })
             # Must not raise.
             await adapter._default_interaction_dispatch(event)

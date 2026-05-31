@@ -7,13 +7,13 @@ the provider's config schema. Writes config to config.yaml + .env.
 
 from __future__ import annotations
 
-import getpass
 import os
 import sys
 import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -39,12 +39,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
     if secret:
-        sys.stdout.write(f"  {label}{suffix}: ")
-        sys.stdout.flush()
-        if sys.stdin.isatty():
-            val = getpass.getpass(prompt="")
-        else:
-            val = sys.stdin.readline().strip()
+        val = masked_secret_prompt(f"  {label}{suffix}: ")
     else:
         sys.stdout.write(f"  {label}{suffix}: ")
         sys.stdout.flush()
@@ -457,7 +452,11 @@ def memory_command(args) -> None:
     """Route memory subcommands."""
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
-        cmd_setup(args)
+        provider = getattr(args, "provider", None)
+        if provider:
+            cmd_setup_provider(provider)
+        else:
+            cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
     else:

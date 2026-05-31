@@ -121,6 +121,19 @@ class DashboardAuthProvider(ABC):
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
 
+    def get_end_session_url(self) -> Optional[str]:
+        """Return the IdP end-session URL for RP-initiated logout, or None.
+
+        Providers that support OIDC ``end_session_endpoint`` override this
+        to return the URL. The ``auth_logout`` handler redirects there
+        after revoking tokens locally, so the IdP session is also terminated.
+
+        The default returns ``None`` — providers that don't support
+        RP-initiated logout (e.g. the bundled Nous provider) skip the
+        redirect and keep the current behaviour.
+        """
+        return None
+
 
 def assert_protocol_compliance(cls: type) -> None:
     """Raise ``TypeError`` if ``cls`` doesn't fully implement the provider protocol.

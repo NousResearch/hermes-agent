@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -396,6 +397,17 @@ async def auth_logout(request: Request):
     resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
     clear_session_cookies(resp, prefix=prefix)
     clear_pkce_cookie(resp, prefix=prefix)
+
+    # If any provider supports RP-initiated OIDC logout, redirect the
+    # browser to the IdP's end-session endpoint so the IdP session
+    # cookie is also terminated — not just the dashboard session.
+    for provider in list_providers():
+        end_url = provider.get_end_session_url()
+        if end_url:
+            params = urlencode({"post_logout_redirect_uri": f"{prefix}/login"})
+            resp = RedirectResponse(url=f"{end_url}?{params}", status_code=302)
+            break
+
     return resp
 
 

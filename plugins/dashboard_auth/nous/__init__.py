@@ -290,6 +290,15 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         _ = refresh_token
         return None
 
+    def get_end_session_url(self) -> Optional[str]:
+        """Nous Portal doesn't currently expose an OIDC end-session endpoint.
+
+        Dashboard logout clears cookies and revokes locally without
+        an IdP redirect. Override this in a subclass when the Portal
+        adds RP-initiated logout support.
+        """
+        return None
+
     # ---- internals --------------------------------------------------------
 
     def _validate_redirect_uri(self, redirect_uri: str) -> None:

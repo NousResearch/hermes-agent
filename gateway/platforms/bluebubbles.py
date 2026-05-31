@@ -67,11 +67,12 @@ _TAPBACK_REMOVED = {
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
-# Subscribe to update events too, but classify receipt/status updates below
-# instead of treating them as conversational messages. This preserves
-# BlueBubbles delivery/read-receipt visibility without reintroducing duplicate
-# agent replies for metadata-only updated-message webhooks.
-_DEFAULT_WEBHOOK_EVENTS = ["new-message", "updated-message"]
+# Register only new user messages by default. BlueBubbles also emits
+# updated-message for receipt/status metadata, and some deployments dispatch
+# the same inbound iMessage through both paths. Advanced users can explicitly
+# opt into updated-message via webhook_events / BLUEBUBBLES_WEBHOOK_EVENTS; the
+# handler below still ACKs status-only updates without starting an agent turn.
+_DEFAULT_WEBHOOK_EVENTS = ["new-message"]
 _VALID_WEBHOOK_EVENTS = {
     "new-message",
     "updated-message",
@@ -268,9 +269,29 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or chat_guid
         )
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
-        canonical_chat = chat_guid if is_group else (chat_identifier or sender or chat_guid or "")
+        canonical_chat = chat_guid if is_group else BlueBubblesAdapter._canonical_dm_chat_identifier(
+            chat_guid,
+            chat_identifier,
+            sender,
+        )
         text_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
         return f"recent:{'group' if is_group else 'dm'}:{canonical_chat}:{sender or ''}:{text_hash}"
+
+    @staticmethod
+    def _canonical_dm_chat_identifier(
+        chat_guid: Optional[str],
+        chat_identifier: Optional[str],
+        sender: Optional[str],
+    ) -> str:
+        """Normalize BlueBubbles DM variants to one session/dedup identity."""
+        for candidate in (chat_identifier, sender):
+            if candidate and ";" not in candidate:
+                return candidate
+        if chat_guid and ";-;" in chat_guid:
+            suffix = chat_guid.rsplit(";-;", 1)[-1].strip()
+            if suffix:
+                return suffix
+        return chat_identifier or sender or chat_guid or ""
 
     def _is_duplicate_inbound_message(self, *keys: str) -> bool:
         now = time.monotonic()
@@ -1210,8 +1231,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        if is_group:
+            session_chat_id = chat_guid or chat_identifier
+        else:
+            session_chat_id = self._canonical_dm_chat_identifier(
+                chat_guid,
+                chat_identifier,
+                sender,
+            )
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(

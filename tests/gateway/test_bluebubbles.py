@@ -186,9 +186,9 @@ class TestBlueBubblesHelpers:
         assert adapter._clean_mention_text("Hermes agent: summarize this") == "summarize this"
         assert adapter._clean_mention_text("please ask Hermes about this") == "please ask Hermes about this"
 
-    def test_webhook_events_default_to_new_and_updated_message(self, monkeypatch):
+    def test_webhook_events_default_to_new_message_only(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        assert adapter.webhook_events == ["new-message", "updated-message"]
+        assert adapter.webhook_events == ["new-message"]
 
     def test_webhook_events_can_opt_in_to_updated_message(self, monkeypatch):
         adapter = _make_adapter(
@@ -424,8 +424,8 @@ class TestBlueBubblesWebhookHandling:
         assert handled == []
 
     @pytest.mark.asyncio
-    async def test_updated_message_edit_is_processed_once(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
+    async def test_updated_message_edit_is_processed_once_when_opted_in(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_events=["new-message", "updated-message"])
         handled = []
 
         async def fake_handle_message(event):
@@ -494,9 +494,9 @@ class TestBlueBubblesWebhookHandling:
             "data": {
                 "guid": "msg-guid-a",
                 "text": "same text",
-                "handle": {"address": "+15551234567"},
+                "handle": {"address": "user@example.com"},
                 "isFromMe": False,
-                "chats": [{"guid": "any;-;+15551234567", "chatIdentifier": "+15551234567"}],
+                "chats": [{"guid": "any;-;user@example.com"}],
             },
         }
         second_payload = {
@@ -504,9 +504,9 @@ class TestBlueBubblesWebhookHandling:
             "data": {
                 "guid": "msg-guid-b",
                 "text": "same text",
-                "handle": {"address": "+15551234567"},
+                "handle": {"address": "user@example.com"},
                 "isFromMe": False,
-                "chatIdentifier": "+15551234567",
+                "chatIdentifier": "user@example.com",
             },
         }
 
@@ -516,7 +516,7 @@ class TestBlueBubblesWebhookHandling:
 
         assert first.text == "ok"
         assert second.text == "ok"
-        assert handled == [("same text", "any;-;+15551234567")]
+        assert handled == [("same text", "user@example.com")]
 
 
 class TestBlueBubblesWebhookParsing:
@@ -976,7 +976,7 @@ class TestBlueBubblesWebhookRegistration:
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
-                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
+                {"id": 7, "url": url, "events": ["new-message"]},
             ]},
         )
 

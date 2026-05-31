@@ -782,11 +782,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    allow_bots = self.config.extra.get("allow_bots", "")
+                    if not allow_bots:
+                        allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none")
+                    allow_bots = str(allow_bots).lower().strip()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._message_mentions_self(message):
+                        if not self._message_mentions_self(
+                            message,
+                            allow_fallback=self._discord_bot_mention_fallback(),
+                        ):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -2224,13 +2230,13 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
-    def _message_mentions_self(self, message) -> bool:
+    def _message_mentions_self(self, message, *, allow_fallback: bool = False) -> bool:
         """Return True when a Discord message mentions this bot.
 
-        discord.py can miss ``message.mentions`` for bot-authored messages in
-        some gateway/message-content configurations, while ``raw_mentions`` and
-        the literal ``<@id>`` token are still present. Bot admission for
-        DISCORD_ALLOW_BOTS=mentions must therefore check all three sources.
+        The primary check uses discord.py's resolved ``message.mentions``.
+        ``allow_fallback`` enables the Discord-platform compatibility fallback
+        for bot-authored messages where Discord preserves ``raw_mentions`` or
+        literal ``<@id>`` text but omits resolved mentions.
         """
         client_user = getattr(self._client, "user", None)
         self_id = str(getattr(client_user, "id", "")) if client_user else ""
@@ -2244,6 +2250,8 @@ class DiscordAdapter(BasePlatformAdapter):
         }
         if self_id in mentioned_ids:
             return True
+        if not allow_fallback:
+            return False
 
         raw_mentions = {
             str(user_id)
@@ -3641,6 +3649,15 @@ class DiscordAdapter(BasePlatformAdapter):
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+
+    def _discord_bot_mention_fallback(self) -> bool:
+        """Return whether bot-authored mention checks may use raw/text fallbacks."""
+        configured = self.config.extra.get("bot_mention_fallback")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_BOT_MENTION_FALLBACK", "false").lower() in {"true", "1", "yes", "on"}
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""

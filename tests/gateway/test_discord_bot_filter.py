@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 def setUpModule():
     os.environ.pop("DISCORD_ALLOW_BOTS", None)
+    os.environ.pop("DISCORD_BOT_MENTION_FALLBACK", None)
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -45,7 +46,7 @@ def _make_message(*, author=None, content="hello", mentions=None, raw_mentions=N
 class TestDiscordBotFilter(unittest.TestCase):
     """Test the DISCORD_ALLOW_BOTS filtering logic."""
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
+    def _run_filter(self, message, allow_bots="none", client_user=None, *, bot_mention_fallback=False):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
@@ -61,7 +62,7 @@ class TestDiscordBotFilter(unittest.TestCase):
 
                 adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
                 adapter._client = MagicMock(user=client_user)
-                if not adapter._message_mentions_self(message):
+                if not adapter._message_mentions_self(message, allow_fallback=bot_mention_fallback):
                     return False
             # "all" falls through
         
@@ -112,28 +113,66 @@ class TestDiscordBotFilter(unittest.TestCase):
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[], raw_mentions=[our_user.id])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        self.assertTrue(self._run_filter(msg, "mentions", our_user, bot_mention_fallback=True))
 
     def test_allow_bots_mentions_accepts_literal_mention_without_resolved_mentions(self):
         """Bot-authored messages can preserve literal <@id> text even if mentions is empty."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, content=f"ping <@{our_user.id}>", mentions=[], raw_mentions=[])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        self.assertTrue(self._run_filter(msg, "mentions", our_user, bot_mention_fallback=True))
 
     def test_allow_bots_mentions_accepts_nickname_literal_mention(self):
         """Discord nickname mention syntax (<@!id>) should also count."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, content=f"ping <@!{our_user.id}>", mentions=[], raw_mentions=[])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        self.assertTrue(self._run_filter(msg, "mentions", our_user, bot_mention_fallback=True))
 
     def test_allow_bots_mentions_rejects_literal_mention_for_another_bot(self):
         """Literal mention fallback must still require this bot's ID."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, content="ping <@111111>", mentions=[], raw_mentions=[111111])
-        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        self.assertFalse(self._run_filter(msg, "mentions", our_user, bot_mention_fallback=True))
+
+    def test_discord_bot_mention_fallback_defaults_false(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+        self.assertFalse(adapter._discord_bot_mention_fallback())
+
+    def test_discord_bot_mention_fallback_reads_platform_config(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={"bot_mention_fallback": True},
+            )
+        )
+        self.assertTrue(adapter._discord_bot_mention_fallback())
+
+    def test_discord_bot_mention_fallback_reads_env_when_config_unset(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        old = os.environ.get("DISCORD_BOT_MENTION_FALLBACK")
+        os.environ["DISCORD_BOT_MENTION_FALLBACK"] = "true"
+        try:
+            adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+            self.assertTrue(adapter._discord_bot_mention_fallback())
+        finally:
+            if old is None:
+                os.environ.pop("DISCORD_BOT_MENTION_FALLBACK", None)
+            else:
+                os.environ["DISCORD_BOT_MENTION_FALLBACK"] = old
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""

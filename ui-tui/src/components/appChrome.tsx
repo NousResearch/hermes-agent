@@ -370,7 +370,6 @@ export function StatusRule({
             </Text>
           ) : null}
           <SpawnHud t={t} />
-          {sessionCountNode}
           {voiceLabel ? (
             <Text
               color={
@@ -386,6 +385,7 @@ export function StatusRule({
             <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
           ) : null}
         </Text>
+        {sessionCountNode}
       </Box>
 
       {rightWidth > 0 ? (

@@ -42,11 +42,14 @@ def test_default_config_warns_and_redirects_without_hard_stop():
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
     assert cfg.low_information_warn_after == 3
+    assert cfg.terminal_usage_error_warn_after == 2
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
     assert cfg.low_information_redirect_after == 4
     assert cfg.low_information_halt_after == 6
+    assert cfg.terminal_usage_error_redirect_after == 3
+    assert cfg.terminal_usage_error_halt_after == 5
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -59,6 +62,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
                 "same_tool_failure": 4,
                 "idempotent_no_progress": 5,
                 "low_information": 6,
+                "terminal_usage_error": 7,
             },
             "hard_stop_after": {
                 "exact_failure": 6,
@@ -66,6 +70,8 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
                 "idempotent_no_progress": 8,
                 "low_information_redirect": 9,
                 "low_information": 10,
+                "terminal_usage_error_redirect": 11,
+                "terminal_usage_error": 12,
             },
         }
     )
@@ -76,11 +82,14 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.same_tool_failure_warn_after == 4
     assert cfg.no_progress_warn_after == 5
     assert cfg.low_information_warn_after == 6
+    assert cfg.terminal_usage_error_warn_after == 7
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
     assert cfg.low_information_redirect_after == 9
     assert cfg.low_information_halt_after == 10
+    assert cfg.terminal_usage_error_redirect_after == 11
+    assert cfg.terminal_usage_error_halt_after == 12
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
@@ -202,6 +211,122 @@ def test_same_tool_varying_args_warns_by_default_without_halting():
     assert "verify the commit/PR state" in second.message
     assert "python3.11" in second.message
     assert controller.halt_decision is None
+
+
+def test_terminal_usage_errors_redirect_same_command_family_to_help():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            same_tool_failure_warn_after=99,
+            terminal_usage_error_warn_after=2,
+            terminal_usage_error_redirect_after=3,
+        )
+    )
+    usage_error = json.dumps(
+        {
+            "exit_code": 2,
+            "stderr": (
+                "usage: meshctl task [-h] {list,show}\n"
+                "meshctl task: error: argument command: invalid choice: 'view'"
+            ),
+        }
+    )
+    commands = [
+        "python3 .mesh/tools/meshctl.py task view foo",
+        "meshctl task status foo --bad-flag",
+        "cd ~/Workspaces && meshctl task changes foo 2>&1 | head -20",
+    ]
+
+    decisions = [
+        controller.after_call("terminal", {"command": command}, usage_error, failed=True)
+        for command in commands
+    ]
+
+    assert [decision.action for decision in decisions] == ["allow", "warn", "redirect"]
+    assert decisions[1].code == "terminal_usage_error_warning"
+    assert decisions[2].code == "terminal_usage_error_redirect"
+    assert "`meshctl task --help`" in decisions[2].message
+
+    blocked = controller.before_call(
+        "terminal",
+        {"command": "meshctl task view foo --another-guess"},
+    )
+
+    assert blocked.action == "redirect"
+    assert blocked.code == "terminal_usage_error_redirect"
+    assert blocked.should_halt is False
+    assert "Stop guessing new argument variants" in blocked.message
+
+    help_call = controller.before_call("terminal", {"command": "meshctl task --help"})
+    assert help_call.action == "allow"
+    controller.after_call(
+        "terminal",
+        {"command": "meshctl task --help"},
+        json.dumps({"exit_code": 0, "stdout": "usage: meshctl task [-h] {list,show}"}),
+        failed=False,
+    )
+
+    assert controller.before_call("terminal", {"command": "meshctl task show foo"}).action == "allow"
+
+
+def test_terminal_usage_availability_probe_clears_redirected_command_family():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            same_tool_failure_warn_after=99,
+            terminal_usage_error_redirect_after=2,
+        )
+    )
+    usage_error = json.dumps(
+        {
+            "exit_code": 2,
+            "stderr": "usage: meshctl task [-h]\nerror: unrecognized arguments",
+        }
+    )
+
+    controller.after_call("terminal", {"command": "meshctl task bogus foo"}, usage_error, failed=True)
+    controller.after_call("terminal", {"command": "meshctl task nope foo"}, usage_error, failed=True)
+    assert controller.before_call("terminal", {"command": "meshctl task bogus foo"}).action == "redirect"
+
+    controller.after_call(
+        "terminal",
+        {"command": "command -v meshctl"},
+        json.dumps({"exit_code": 0, "stdout": "/usr/local/bin/meshctl"}),
+        failed=False,
+    )
+
+    assert controller.before_call("terminal", {"command": "meshctl task show foo"}).action == "allow"
+
+
+def test_terminal_usage_classifier_ignores_non_cli_failures_with_usage_text():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            same_tool_failure_warn_after=99,
+            terminal_usage_error_warn_after=2,
+            terminal_usage_error_redirect_after=3,
+        )
+    )
+    pytest_failure = json.dumps(
+        {
+            "exit_code": 1,
+            "stdout": "FAILED tests/test_cli.py::test_usage_banner\nusage: helper text in assertion",
+        }
+    )
+
+    decisions = [
+        controller.after_call(
+            "terminal",
+            {"command": f"pytest tests/test_cli.py -k usage_variant_{i}"},
+            pytest_failure,
+            failed=True,
+        )
+        for i in range(4)
+    ]
+
+    assert all(decision.code != "terminal_usage_error_redirect" for decision in decisions)
+    assert all(decision.action == "allow" for decision in decisions)
+    assert controller.before_call(
+        "terminal",
+        {"command": "pytest tests/test_cli.py -k another_usage_variant"},
+    ).action == "allow"
 
 
 def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():

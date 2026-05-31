@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -80,8 +81,11 @@ class ToolCallGuardrailConfig:
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
     low_information_warn_after: int = 3
+    terminal_usage_error_warn_after: int = 2
     low_information_redirect_after: int = 4
     low_information_halt_after: int = 6
+    terminal_usage_error_redirect_after: int = 3
+    terminal_usage_error_halt_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -118,6 +122,10 @@ class ToolCallGuardrailConfig:
                 warn_after.get("low_information", data.get("low_information_warn_after")),
                 defaults.low_information_warn_after,
             ),
+            terminal_usage_error_warn_after=_positive_int(
+                warn_after.get("terminal_usage_error", data.get("terminal_usage_error_warn_after")),
+                defaults.terminal_usage_error_warn_after,
+            ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
                 defaults.exact_failure_block_after,
@@ -137,6 +145,17 @@ class ToolCallGuardrailConfig:
             low_information_halt_after=_positive_int(
                 hard_stop_after.get("low_information", data.get("low_information_halt_after")),
                 defaults.low_information_halt_after,
+            ),
+            terminal_usage_error_redirect_after=_positive_int(
+                hard_stop_after.get(
+                    "terminal_usage_error_redirect",
+                    data.get("terminal_usage_error_redirect_after"),
+                ),
+                defaults.terminal_usage_error_redirect_after,
+            ),
+            terminal_usage_error_halt_after=_positive_int(
+                hard_stop_after.get("terminal_usage_error", data.get("terminal_usage_error_halt_after")),
+                defaults.terminal_usage_error_halt_after,
             ),
         )
 
@@ -251,6 +270,8 @@ class ToolCallGuardrailController:
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._low_information_counts: dict[tuple[str, str], int] = {}
         self._tool_redirects: dict[str, ToolGuardrailDecision] = {}
+        self._terminal_usage_error_counts: dict[str, int] = {}
+        self._terminal_usage_redirects: dict[str, ToolGuardrailDecision] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -260,6 +281,38 @@ class ToolCallGuardrailController:
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
+        if tool_name == "terminal":
+            usage_family = _terminal_command_family(args)
+            if usage_family:
+                usage_redirect = self._terminal_usage_redirects.get(usage_family)
+                if usage_redirect is not None:
+                    if _is_terminal_usage_diagnostic_command(args, usage_family):
+                        return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+                    redirected_count = usage_redirect.count + 1
+                    action = (
+                        "halt"
+                        if self.config.hard_stop_enabled
+                        and redirected_count >= self.config.terminal_usage_error_halt_after
+                        else "redirect"
+                    )
+                    code = (
+                        "terminal_usage_error_halt"
+                        if action == "halt"
+                        else "terminal_usage_error_redirect"
+                    )
+                    decision = ToolGuardrailDecision(
+                        action=action,
+                        code=code,
+                        message=_terminal_usage_error_recovery_hint(usage_family, redirected_count),
+                        tool_name=tool_name,
+                        count=redirected_count,
+                        signature=signature,
+                    )
+                    self._terminal_usage_redirects[usage_family] = decision
+                    if decision.should_halt:
+                        self._halt_decision = decision
+                    return decision
+
         redirect = self._tool_redirects.get(tool_name)
         if redirect is not None:
             if tool_name == "terminal" and _terminal_probe_family(args) != "filter_probe":
@@ -372,6 +425,52 @@ class ToolCallGuardrailController:
                 self._halt_decision = decision
                 return decision
 
+            terminal_usage_family = _terminal_usage_error_family(tool_name, args, result)
+            if terminal_usage_family:
+                usage_count = self._terminal_usage_error_counts.get(terminal_usage_family, 0) + 1
+                self._terminal_usage_error_counts[terminal_usage_family] = usage_count
+
+                if (
+                    self.config.hard_stop_enabled
+                    and usage_count >= self.config.terminal_usage_error_halt_after
+                ):
+                    decision = ToolGuardrailDecision(
+                        action="halt",
+                        code="terminal_usage_error_halt",
+                        message=_terminal_usage_error_recovery_hint(terminal_usage_family, usage_count),
+                        tool_name=tool_name,
+                        count=usage_count,
+                        signature=signature,
+                    )
+                    self._terminal_usage_redirects[terminal_usage_family] = decision
+                    self._halt_decision = decision
+                    return decision
+
+                if usage_count >= self.config.terminal_usage_error_redirect_after:
+                    decision = ToolGuardrailDecision(
+                        action="redirect",
+                        code="terminal_usage_error_redirect",
+                        message=_terminal_usage_error_recovery_hint(terminal_usage_family, usage_count),
+                        tool_name=tool_name,
+                        count=usage_count,
+                        signature=signature,
+                    )
+                    self._terminal_usage_redirects[terminal_usage_family] = decision
+                    return decision
+
+                if (
+                    self.config.warnings_enabled
+                    and usage_count >= self.config.terminal_usage_error_warn_after
+                ):
+                    return ToolGuardrailDecision(
+                        action="warn",
+                        code="terminal_usage_error_warning",
+                        message=_terminal_usage_error_recovery_hint(terminal_usage_family, usage_count),
+                        tool_name=tool_name,
+                        count=usage_count,
+                        signature=signature,
+                    )
+
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
                     action="halt",
@@ -415,6 +514,14 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        if tool_name == "terminal":
+            terminal_family = _terminal_command_family(args)
+            if terminal_family:
+                clear_family, include_children = _terminal_usage_clear_target(args, terminal_family)
+                self._clear_terminal_usage_state(
+                    clear_family,
+                    include_children=include_children,
+                )
 
         if not self._is_idempotent_call(tool_name, args):
             self._no_progress.pop(signature, None)
@@ -499,6 +606,23 @@ class ToolCallGuardrailController:
                 self._low_information_counts.pop(key, None)
         self._tool_redirects.pop(tool_name, None)
 
+    def _clear_terminal_usage_state(self, family: str | None = None, *, include_children: bool = False) -> None:
+        if family is None:
+            self._terminal_usage_error_counts.clear()
+            self._terminal_usage_redirects.clear()
+            return
+        families = {family}
+        if include_children:
+            prefix = f"{family} "
+            families.update(
+                candidate
+                for candidate in set(self._terminal_usage_error_counts) | set(self._terminal_usage_redirects)
+                if candidate.startswith(prefix)
+            )
+        for candidate in families:
+            self._terminal_usage_error_counts.pop(candidate, None)
+            self._terminal_usage_redirects.pop(candidate, None)
+
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
@@ -548,6 +672,19 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "Try different arguments, a narrower query/path, an absolute path when relevant, "
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
+    )
+
+
+def _terminal_usage_error_recovery_hint(family: str, count: int) -> str:
+    """Guidance for repeated CLI parser/usage failures in one command family."""
+    executable = family.split(" ", 1)[0]
+    return (
+        f"terminal has hit CLI usage errors for `{family}` {count} times this turn. "
+        "Stop guessing new argument variants in the same command family. "
+        f"Run a help or discovery command such as `{family} --help`, "
+        f"`{executable} help`, `which {executable}`, or inspect the CLI source/docs "
+        "before trying this family again. If the command surface is unavailable, "
+        "switch tools or report the blocker instead of continuing the argument loop."
     )
 
 
@@ -628,11 +765,186 @@ def _low_information_result(tool_name: str, args: Mapping[str, Any], result: str
 
 def _terminal_result_text(parsed: Mapping[str, Any]) -> str:
     parts = []
-    for key in ("stdout", "stderr", "output", "content"):
+    for key in ("stdout", "stderr", "output", "content", "error"):
         value = parsed.get(key)
         if isinstance(value, str):
             parts.append(value)
     return "\n".join(parts)
+
+
+def _terminal_usage_error_family(
+    tool_name: str,
+    args: Mapping[str, Any],
+    result: str | None,
+) -> str | None:
+    if tool_name != "terminal":
+        return None
+    family = _terminal_command_family(args)
+    if not family:
+        return None
+
+    parsed = safe_json_loads(result or "")
+    exit_code: Any = None
+    if isinstance(parsed, Mapping):
+        exit_code = parsed.get("exit_code")
+        text = _terminal_result_text(parsed)
+    else:
+        text = result or ""
+
+    lowered = text[:5000].lower()
+    has_usage = bool(re.search(r"(^|\n)\s*usage:\s", lowered))
+    strong_usage_error = bool(
+        re.search(
+            r"\b("
+            r"unrecognized arguments?|unknown option|unknown command|invalid command|"
+            r"invalid choice|no such option|missing required|too few arguments|"
+            r"too many arguments|subcommand required|bad option|illegal option|"
+            r"requires at least"
+            r")\b",
+            lowered,
+        )
+    )
+    help_hint = "--help" in lowered or " help" in lowered
+
+    if exit_code in (2, 64) and (has_usage or strong_usage_error or help_hint):
+        return family
+    if strong_usage_error and (has_usage or help_hint or exit_code not in (None, 0)):
+        return family
+    return None
+
+
+def _terminal_command_family(args: Mapping[str, Any]) -> str | None:
+    command = args.get("command", args.get("cmd", ""))
+    if not isinstance(command, str):
+        return None
+    segment = _terminal_primary_command_segment(command)
+    if not segment:
+        return None
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+    tokens = _strip_terminal_wrappers(tokens)
+    if not tokens:
+        return None
+
+    base = tokens[0].rsplit("/", 1)[-1]
+    rest = tokens[1:]
+    if base.startswith("python"):
+        python_family = _python_invoked_cli_family(rest)
+        if python_family:
+            return python_family
+    if base.endswith(".py"):
+        base = base[:-3]
+
+    family = [base]
+    for token in rest:
+        if token.startswith("-") or "=" in token:
+            break
+        if token in {"2>&1", "1>&2"}:
+            break
+        family.append(token)
+        break
+    return " ".join(family)
+
+
+def _terminal_primary_command_segment(command: str) -> str:
+    command = _normalize_terminal_command(command)
+    if not command:
+        return ""
+    chain_parts = [part.strip() for part in re.split(r"\s*(?:&&|;|\|\|)\s*", command) if part.strip()]
+    segment = chain_parts[-1] if chain_parts else command
+    segment = segment.split("|", 1)[0].strip()
+    return segment
+
+
+def _strip_terminal_wrappers(tokens: list[str]) -> list[str]:
+    while tokens:
+        token = tokens[0]
+        if token == "env":
+            tokens = tokens[1:]
+            continue
+        if "=" in token and not token.startswith("-") and token.split("=", 1)[0].isidentifier():
+            tokens = tokens[1:]
+            continue
+        break
+    return tokens
+
+
+def _python_invoked_cli_family(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    tokens = list(tokens)
+    while tokens and tokens[0].startswith("-") and tokens[0] not in {"-m", "-c"}:
+        tokens = tokens[1:]
+    if len(tokens) >= 2 and tokens[0] == "-m":
+        base = tokens[1].rsplit(".", 1)[-1]
+        rest = tokens[2:]
+    elif tokens and tokens[0].endswith(".py"):
+        base = tokens[0].rsplit("/", 1)[-1][:-3]
+        rest = tokens[1:]
+    else:
+        return None
+    if base == "meshctl":
+        base = "meshctl"
+    family = [base]
+    for token in rest:
+        if token.startswith("-") or "=" in token:
+            break
+        family.append(token)
+        break
+    return " ".join(family)
+
+
+def _is_terminal_usage_diagnostic_command(args: Mapping[str, Any], family: str) -> bool:
+    command = args.get("command", args.get("cmd", ""))
+    if not isinstance(command, str):
+        return False
+    if _terminal_availability_probe_target(command):
+        return True
+    lowered = command.lower()
+    executable = re.escape(family.split(" ", 1)[0].lower())
+    if re.search(r"(^|\s)(--help|-h|help)(\s|$)", lowered):
+        return True
+    if re.search(rf"\b(command\s+-v|which|type)\s+{executable}\b", lowered):
+        return True
+    if re.search(rf"\b{executable}\b[^\n;&|]*\b(version|doctor|diagnose|diagnostics)\b", lowered):
+        return True
+    return False
+
+
+def _terminal_usage_clear_target(args: Mapping[str, Any], family: str) -> tuple[str, bool]:
+    command = args.get("command", args.get("cmd", ""))
+    if isinstance(command, str):
+        target = _terminal_availability_probe_target(command)
+        if target:
+            return target, True
+    return family, _is_terminal_usage_diagnostic_command(args, family)
+
+
+def _terminal_availability_probe_target(command: str) -> str | None:
+    segment = _terminal_primary_command_segment(command)
+    if not segment:
+        return None
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+    tokens = _strip_terminal_wrappers(tokens)
+    if not tokens:
+        return None
+    if tokens[0] == "command" and len(tokens) >= 3 and tokens[1] == "-v":
+        return _normalize_command_name(tokens[2])
+    if tokens[0] in {"which", "type"} and len(tokens) >= 2 and not tokens[1].startswith("-"):
+        return _normalize_command_name(tokens[1])
+    return None
+
+
+def _normalize_command_name(token: str) -> str:
+    name = token.rsplit("/", 1)[-1]
+    if name.endswith(".py"):
+        return name[:-3]
+    return name
 
 
 def _terminal_probe_family(args: Mapping[str, Any]) -> str | None:

@@ -4403,6 +4403,15 @@ class AIAgent:
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
             self._tool_guardrail_halt_decision = decision
 
+    def _log_tool_guardrail_decision(self, decision: ToolGuardrailDecision) -> None:
+        if decision.action == "allow":
+            return
+        try:
+            metadata = json.dumps(decision.to_metadata(), ensure_ascii=False, sort_keys=True)
+        except Exception:
+            metadata = str(decision.to_metadata())
+        logger.info("tool_guardrail_decision %s", metadata)
+
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
         return (
@@ -4426,13 +4435,15 @@ class AIAgent:
             function_result,
             failed=failed,
         )
-        if decision.action in {"warn", "halt"}:
+        if decision.action in {"warn", "redirect", "halt"}:
+            self._log_tool_guardrail_decision(decision)
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         return function_result
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
+        self._log_tool_guardrail_decision(decision)
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 

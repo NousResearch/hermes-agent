@@ -184,6 +184,112 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     assert "different tool" in content
 
 
+def test_terminal_usage_error_redirect_blocks_same_family_until_help_probe():
+    agent = _make_agent("terminal", max_iterations=10)
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "python3 .mesh/tools/meshctl.py task view foo"}),
+                    "c-bad-1",
+                )
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "meshctl task status foo --bad-flag"}),
+                    "c-bad-2",
+                )
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "cd ~/Workspaces && meshctl task changes foo 2>&1 | head -20"}),
+                    "c-bad-3",
+                )
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "meshctl task view foo --another-guess"}),
+                    "c-blocked",
+                )
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "meshctl task --help"}),
+                    "c-help",
+                )
+            ],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+    executed = []
+    usage_error = json.dumps(
+        {
+            "exit_code": 2,
+            "stderr": (
+                "usage: meshctl task [-h] {list,show}\n"
+                "meshctl task: error: argument command: invalid choice"
+            ),
+        }
+    )
+
+    def fake_handle(name, args, task_id, **kwargs):
+        executed.append((name, args, kwargs.get("tool_call_id")))
+        if kwargs.get("tool_call_id") == "c-help":
+            return json.dumps({"exit_code": 0, "stdout": "usage: meshctl task [-h] {list,show}"})
+        return usage_error
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=fake_handle),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("use meshctl task")
+
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert result["final_response"] == "done"
+    assert "guardrail" not in result
+    assert [call_id for _name, _args, call_id in executed] == [
+        "c-bad-1",
+        "c-bad-2",
+        "c-bad-3",
+        "c-help",
+    ]
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("terminal_usage_error_warning" in content for content in tool_contents)
+    assert any("terminal_usage_error_redirect" in content for content in tool_contents)
+    assert any("Stop guessing new argument variants" in content for content in tool_contents)
+    assert any(
+        '"code": "terminal_usage_error_redirect"' in content
+        or '"code":"terminal_usage_error_redirect"' in content
+        for content in tool_contents
+    )
+
+
 def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
     agent = _make_agent("web_search", config=_hard_stop_config())
     blocked_args = {"query": "blocked"}

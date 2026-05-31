@@ -670,7 +670,16 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Already checked long_context_tier above
+        # budget_exhausted / insufficient_quota are non-retryable: the operator's
+        # token-budget cap was hit and won't reset within the retry window.
+        if error_code.lower() in {"budget_exhausted", "insufficient_quota"}:
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -848,7 +857,12 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
-    if code_lower in ("insufficient_quota", "billing_not_active", "payment_required"):
+    if code_lower in {
+        "insufficient_quota",
+        "budget_exhausted",
+        "billing_not_active",
+        "payment_required",
+    }:
         return result_fn(
             FailoverReason.billing,
             retryable=False,

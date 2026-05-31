@@ -1619,6 +1619,10 @@ class APIServerAdapter(BasePlatformAdapter):
         is_failed = bool(result.get("failed"))
         completed = bool(result.get("completed", True))
         err_msg = result.get("error")
+        err_type = str(result.get("error_type") or "server_error")
+        err_code = result.get("error_code")
+        if err_code is not None:
+            err_code = str(err_code)
 
         # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
         # for normal completion, and downstream SDKs accept "error" / custom
@@ -1642,8 +1646,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if not final_response and (is_failed or is_partial):
             err_body = _openai_error(
                 err_msg or "Agent run did not produce a response.",
-                err_type="server_error",
-                code="agent_incomplete",
+                err_type=err_type,
+                code=err_code or "agent_incomplete",
             )
             err_body["error"]["hermes"] = {
                 "completed": completed,
@@ -1951,6 +1955,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response_text = ""
         agent_error: Optional[str] = None
+        agent_error_type = "server_error"
+        agent_error_code: Optional[str] = None
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
 
@@ -2264,6 +2270,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     final_response_text = agent_final
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
                     agent_error = result["error"]
+                    agent_error_type = str(result.get("error_type") or "server_error")
+                    _agent_error_code = result.get("error_code")
+                    if _agent_error_code:
+                        agent_error_code = str(_agent_error_code)
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = str(e)
@@ -2335,7 +2345,9 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent_error:
                 failed_env = _envelope("failed")
                 failed_env["output"] = final_items
-                failed_env["error"] = {"message": agent_error, "type": "server_error"}
+                failed_env["error"] = {"message": agent_error, "type": agent_error_type}
+                if agent_error_code:
+                    failed_env["error"]["code"] = agent_error_code
                 failed_env["usage"] = {
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),

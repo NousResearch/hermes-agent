@@ -253,6 +253,52 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_429_budget_exhausted_code_is_billing(self):
+        """429 with code=budget_exhausted must be non-retryable billing, not rate_limit."""
+        e = MockAPIError(
+            "HTTP 429: Token budget exhausted",
+            status_code=429,
+            body={"error": {"code": "budget_exhausted", "message": "Token budget exhausted"}},
+        )
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_429_insufficient_quota_code_is_billing(self):
+        """429 with code=insufficient_quota must be non-retryable billing."""
+        e = MockAPIError(
+            "HTTP 429: Insufficient quota",
+            status_code=429,
+            body={"error": {"code": "insufficient_quota", "message": "Quota exceeded"}},
+        )
+        result = classify_api_error(e, provider="openai")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_insufficient_quota_type_is_billing(self):
+        """429 with type=insufficient_quota must also be non-retryable billing."""
+        e = MockAPIError(
+            "HTTP 429: Insufficient quota",
+            status_code=429,
+            body={"error": {"type": "insufficient_quota", "message": "Quota exceeded"}},
+        )
+        result = classify_api_error(e, provider="openai")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_generic_still_rate_limit(self):
+        """Plain 429 without budget code keeps existing rate_limit behavior (regression guard)."""
+        e = MockAPIError(
+            "Too Many Requests",
+            status_code=429,
+            body={"error": {"message": "Rate limit reached for this key"}},
+        )
+        result = classify_api_error(e, provider="openai")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 
@@ -1131,6 +1177,16 @@ class TestAdversarialEdgeCases:
         e = MockAPIError("server error", status_code=500, body={"message": None})
         result = classify_api_error(e)
         assert result is not None
+
+    def test_error_code_budget_exhausted_no_status(self):
+        """budget_exhausted error code without HTTP status → billing (non-retryable)."""
+        e = MockAPIError(
+            "Budget exhausted",
+            body={"error": {"code": "budget_exhausted", "message": "Token budget exhausted"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
 
 
 # ── Test: SSL/TLS transient errors ─────────────────────────────────────

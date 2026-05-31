@@ -4845,7 +4845,7 @@ class AIAgent:
         if isinstance(body, dict):
             payload = body.get("error") if isinstance(body.get("error"), dict) else body
         if isinstance(payload, dict):
-            reason = payload.get("code") or payload.get("error")
+            reason = payload.get("code") or payload.get("type") or payload.get("error")
             if isinstance(reason, str) and reason.strip():
                 context["reason"] = reason.strip()
             message = payload.get("message") or payload.get("error_description")
@@ -13520,14 +13520,16 @@ class AIAgent:
                         # Fall through to normal error handling if compression
                         # is exhausted or didn't help.
 
-                    # Eager fallback for rate-limit errors (429 or quota exhaustion).
+                    # Eager fallback for rate-limit errors.
                     # When a fallback model is configured, switch immediately instead
                     # of burning through retries with exponential backoff -- the
                     # primary provider won't recover within the retry window.
-                    is_rate_limited = classified.reason in (
-                        FailoverReason.rate_limit,
-                        FailoverReason.billing,
-                    )
+                    #
+                    # Billing/quota exhaustion is handled separately as a
+                    # non-retryable client error after credential-pool recovery
+                    # has had a chance to rotate. Retrying the same exhausted
+                    # credential only burns the user's wait window.
+                    is_rate_limited = classified.reason == FailoverReason.rate_limit
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
@@ -13854,7 +13856,6 @@ class AIAgent:
                             and not classified.should_compress
                             and classified.reason not in (
                                 FailoverReason.rate_limit,
-                                FailoverReason.billing,
                                 FailoverReason.overloaded,
                                 FailoverReason.context_overflow,
                                 FailoverReason.payload_too_large,
@@ -13920,6 +13921,10 @@ class AIAgent:
                             "completed": False,
                             "failed": True,
                             "error": str(api_error),
+                            "error_type": classified.reason.value,
+                            "error_code": error_context.get("reason"),
+                            "status_code": status_code,
+                            "retryable": classified.retryable,
                         }
 
                     if retry_count >= max_retries:

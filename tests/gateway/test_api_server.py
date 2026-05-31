@@ -1911,6 +1911,36 @@ class TestResponsesStreaming:
                 assert " world" in body
 
     @pytest.mark.asyncio
+    async def test_stream_failure_preserves_structured_error(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {
+                        "final_response": None,
+                        "completed": False,
+                        "failed": True,
+                        "error": "HTTP 429: Token budget exhausted",
+                        "error_type": "billing",
+                        "error_code": "budget_exhausted",
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "event: response.failed" in body
+                assert '"type": "billing"' in body
+                assert '"code": "budget_exhausted"' in body
+
+    @pytest.mark.asyncio
     async def test_stream_emits_function_call_and_output_items(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2726,6 +2756,36 @@ class TestChatCompletionsAgentIncomplete:
             assert data["error"]["hermes"]["partial"] is True
             assert data["error"]["hermes"]["failed"] is True
             assert resp.headers.get("X-Hermes-Completed") == "false"
+
+    @pytest.mark.asyncio
+    async def test_failure_with_structured_error_preserves_type_and_code(self, adapter):
+        """Agent metadata should survive the hard-fail envelope."""
+        mock_result = {
+            "final_response": None,
+            "completed": False,
+            "failed": True,
+            "error": "HTTP 429: Token budget exhausted",
+            "error_type": "billing",
+            "error_code": "budget_exhausted",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "x"}]},
+                )
+            assert resp.status == 502
+            data = await resp.json()
+            assert data["error"]["type"] == "billing"
+            assert data["error"]["code"] == "budget_exhausted"
+            assert data["error"]["hermes"]["failed"] is True
 
     @pytest.mark.asyncio
     async def test_normal_completion_unchanged(self, adapter):

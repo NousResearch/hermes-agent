@@ -683,6 +683,8 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         total_tokens=(
             usage_data.get("inputTokens", 0) + usage_data.get("outputTokens", 0)
         ),
+        cache_read_input_tokens=usage_data.get("cacheReadInputTokens", 0),
+        cache_creation_input_tokens=usage_data.get("cacheWriteInputTokens", 0),
     )
 
     finish_reason = _converse_stop_reason_to_openai(stop_reason)
@@ -831,6 +833,8 @@ def stream_converse_with_callbacks(
             usage_data = {
                 "inputTokens": meta_usage.get("inputTokens", 0),
                 "outputTokens": meta_usage.get("outputTokens", 0),
+                "cacheReadInputTokens": meta_usage.get("cacheReadInputTokens", 0),
+                "cacheWriteInputTokens": meta_usage.get("cacheWriteInputTokens", 0),
             }
 
     # Flush remaining text
@@ -850,6 +854,8 @@ def stream_converse_with_callbacks(
         total_tokens=(
             usage_data.get("inputTokens", 0) + usage_data.get("outputTokens", 0)
         ),
+        cache_read_input_tokens=usage_data.get("cacheReadInputTokens", 0),
+        cache_creation_input_tokens=usage_data.get("cacheWriteInputTokens", 0),
     )
 
     finish_reason = _converse_stop_reason_to_openai(stop_reason)
@@ -867,6 +873,40 @@ def stream_converse_with_callbacks(
         usage=usage,
         model="",
     )
+
+
+# ---------------------------------------------------------------------------
+# Prompt caching (Anthropic models on Bedrock, via Converse cachePoint)
+# ---------------------------------------------------------------------------
+
+def _bedrock_prompt_cache_enabled() -> bool:
+    """Whether to insert Converse ``cachePoint`` markers for Anthropic models.
+
+    Bedrock supports Anthropic prompt caching natively via ``cachePoint``
+    blocks on the Converse API, but Hermes' generic ``cache_control`` path
+    (agent/prompt_caching.py) never reaches this boto3 adapter — so without
+    this the Bedrock provider re-bills the full prompt every turn. Enabled by
+    default for Anthropic Bedrock models; disable with
+    ``HERMES_BEDROCK_PROMPT_CACHE=0``.
+    """
+    return os.environ.get("HERMES_BEDROCK_PROMPT_CACHE", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def _bedrock_cache_ttl() -> str:
+    """Cache TTL for Bedrock prompt caching. Bedrock Converse accepts ``5m`` or
+    ``1h`` (per the bedrock-runtime ``CacheTTL`` shape). Defaults to ``1h`` for
+    the longest-lived prefix cache; override with ``HERMES_BEDROCK_CACHE_TTL``."""
+    ttl = os.environ.get("HERMES_BEDROCK_CACHE_TTL", "1h").strip().lower()
+    return ttl if ttl in {"5m", "1h"} else "1h"
+
+
+def _cache_point() -> Dict[str, Any]:
+    """A Converse ``cachePoint`` marker. Bedrock caches the entire prefix up to
+    this block; cache hits bill at ~0.1x input cost. Returns a fresh dict so
+    the same marker can be appended to multiple block lists safely."""
+    return {"cachePoint": {"type": "default", "ttl": _bedrock_cache_ttl()}}
 
 
 # ---------------------------------------------------------------------------
@@ -889,6 +929,12 @@ def build_converse_kwargs(
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
 
+    # Anthropic models on Bedrock support prompt caching via Converse
+    # ``cachePoint`` markers. We cache the two large, turn-stable prefixes —
+    # the system prompt and the tool schemas — which are re-sent identically
+    # every turn. Cache hits bill at ~0.1x input cost.
+    cache_prefix = is_anthropic_bedrock_model(model) and _bedrock_prompt_cache_enabled()
+
     kwargs: Dict[str, Any] = {
         "modelId": model,
         "messages": converse_messages,
@@ -898,6 +944,9 @@ def build_converse_kwargs(
     }
 
     if system_prompt:
+        if cache_prefix:
+            # Marker goes after all system text so the whole system block is cached.
+            system_prompt = [*system_prompt, _cache_point()]
         kwargs["system"] = system_prompt
 
     if temperature is not None:
@@ -918,6 +967,9 @@ def build_converse_kwargs(
             # Strip tools for known non-tool-calling models and warn the user.
             # Ref: PR #7920 feedback from @ptlally, pattern from PR #4346.
             if _model_supports_tool_use(model):
+                if cache_prefix:
+                    # Cache the tool schemas too — appended after the last tool.
+                    converse_tools = [*converse_tools, _cache_point()]
                 kwargs["toolConfig"] = {"tools": converse_tools}
             else:
                 logger.warning(

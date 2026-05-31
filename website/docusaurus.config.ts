@@ -162,8 +162,7 @@ const config: Config = {
         {
           title: 'More',
           items: [
-            { label: 'Download (Stable)', href: 'https://github.com/NousResearch/hermes-agent/releases/latest' },
-            { label: 'Desktop Nightly', href: 'https://github.com/NousResearch/hermes-agent/releases/tag/desktop-nightly' },
+            { label: 'Desktop Download', href: 'https://github.com/NousResearch/hermes-agent/releases/latest' },
             { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],

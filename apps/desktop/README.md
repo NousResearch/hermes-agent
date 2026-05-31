@@ -99,34 +99,16 @@ npm run dist:win      # NSIS + MSI
 
 Before packaging, the desktop app no longer bundles a copy of the Hermes Agent Python source. Instead, the packaged Electron app will fetch and install Hermes Agent at first launch via `scripts/install.ps1`'s stage protocol (Windows) — see the bootstrap flow documented in `electron/main.cjs`. macOS and Linux packaged builds are temporarily non-functional until `install.sh` gains the same stage protocol; dev workflows on all three platforms continue to work since they resolve a sibling source checkout.
 
-## Automated Releases
+## Releases
 
-Desktop installers are published by [`.github/workflows/desktop-release.yml`](../../.github/workflows/desktop-release.yml) with two channels:
+Installers are built and uploaded manually (no CI auto-build). Build per platform
+with the `dist:*` scripts above, then attach the artifacts to a GitHub Release and
+point the website's download links at them via env (`NEXT_PUBLIC_HERMES_DL_*`).
 
-- **Stable:** runs on published GitHub releases and uploads signed artifacts to that release tag.
-- **Nightly:** runs on `main` pushes and updates the rolling `desktop-nightly` prerelease.
-
-The workflow injects a channel-aware desktop version at build time:
-
-- stable: derived from the release tag (for example `v2026.5.5` -> `2026.5.5`)
-- nightly: `0.0.0-nightly.YYYYMMDD.<sha>`
-
-Artifact names include channel, platform, and architecture:
-
-```text
-Hermes-<version>-<channel>-<platform>-<arch>.<ext>
-```
-
-Each run also publishes `SHA256SUMS-<platform>.txt` so installers can be verified.
-
-### Stable release gates
-
-Stable builds fail fast if signing credentials are missing:
+Signing credentials are read from the environment at build time when present:
 
 - macOS signing + notarization: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`
 - Windows signing: `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`
-
-Stable macOS builds also validate stapling and Gatekeeper assessment in CI before upload.
 
 ## Icons
 

@@ -66,8 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 Prefer native installers for desktop use?
 
-- **Stable desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
-- **Nightly desktop channel:** [desktop-nightly](https://github.com/NousResearch/hermes-agent/releases/tag/desktop-nightly)
+- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
 
 :::tip Android / Termux
 If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.

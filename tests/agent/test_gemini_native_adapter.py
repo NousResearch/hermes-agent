@@ -326,3 +326,28 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_system_instruction_includes_role_field():
+    # Gemma models (and strict Gemini API validation) require systemInstruction
+    # to carry a "role": "system" key — without it the API returns HTTP 500.
+    # Regression guard for #27121.
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    assert "systemInstruction" in request
+    si = request["systemInstruction"]
+    assert si.get("role") == "system", (
+        "systemInstruction must have role='system' — Gemma returns HTTP 500 without it"
+    )
+    assert si["parts"][0]["text"] == "You are a helpful assistant."
+    # System message must not appear in contents
+    assert all(c.get("role") != "system" for c in request["contents"])

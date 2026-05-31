@@ -431,7 +431,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS",
-            1.0,
+            1.8,
             min_value=self._text_batch_delay_seconds,
             max_value=4.0,
         )

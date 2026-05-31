@@ -27,6 +27,7 @@ def _make_adapter():
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
+    adapter._text_batch_split_delay_seconds = 0.2
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
@@ -119,6 +120,41 @@ class TestTextBatching:
         text = adapter.handle_message.call_args[0][0].text
         assert "Primera parte" in text
         assert "Segunda parte" in text
+
+    @pytest.mark.asyncio
+    async def test_split_sized_chunk_uses_split_delay(self):
+        """Near-limit Telegram chunks use the longer continuation window."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.25
+
+        event = _make_event("x" * adapter._SPLIT_THRESHOLD)
+        adapter._enqueue_text_event(event)
+
+        await asyncio.sleep(0.10)
+        adapter.handle_message.assert_not_called()
+
+        await asyncio.sleep(0.20)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fast_message_timer_escalates_when_followup_makes_burst_medium(self):
+        """A short first note should not flush if a follow-up pushes the batch into paragraph tier."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.45
+
+        adapter._enqueue_text_event(_make_event("ok, contexto inicial"))
+        await asyncio.sleep(0.05)
+        adapter._enqueue_text_event(_make_event("detalle " * 60))
+
+        await asyncio.sleep(0.25)
+        adapter.handle_message.assert_not_called()
+
+        await asyncio.sleep(0.35)
+        adapter.handle_message.assert_called_once()
+        text = adapter.handle_message.call_args[0][0].text
+        assert "contexto inicial" in text
+        assert "detalle" in text
 
     @pytest.mark.asyncio
     async def test_different_chats_not_merged(self):

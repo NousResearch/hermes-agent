@@ -2036,7 +2036,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             # provider fails.
             try:
                 from hermes_cli.auth import is_provider_explicitly_configured
-
                 if not is_provider_explicitly_configured(provider_id):
                     continue
             except ImportError:

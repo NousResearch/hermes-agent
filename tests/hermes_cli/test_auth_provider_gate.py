@@ -197,3 +197,82 @@ def test_provider_not_in_registry_but_in_models_dev(tmp_path, monkeypatch):
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("openrouter") is True
+
+
+@pytest.mark.parametrize("env_var", ["GH_TOKEN", "GITHUB_TOKEN"])
+def test_generic_github_tokens_do_not_count_as_explicit_copilot(tmp_path, monkeypatch, env_var):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv(env_var, "ghp_classic_pat_for_git_only")
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("copilot") is False
+
+
+def test_copilot_specific_env_var_counts_as_explicit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_explicit_copilot_token")
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("copilot") is True
+
+
+@pytest.mark.parametrize("env_var", ["GH_TOKEN", "GITHUB_TOKEN"])
+def test_copilot_status_skips_generic_github_token(tmp_path, monkeypatch, env_var):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv(env_var, "ghp_classic_pat_for_git_only")
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli import auth
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: pytest.fail("generic GitHub token must not trigger Copilot probing"),
+    )
+    api_key, source = auth._resolve_api_key_provider_secret(
+        "copilot", auth.PROVIDER_REGISTRY["copilot"]
+    )
+    assert (api_key, source) == ("", "")
+
+
+def test_copilot_status_preserves_provider_specific_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_explicit_copilot_token")
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli import auth
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("validated-token", "COPILOT_GITHUB_TOKEN"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda token: "api-token:" + token,
+    )
+    api_key, source = auth._resolve_api_key_provider_secret(
+        "copilot", auth.PROVIDER_REGISTRY["copilot"]
+    )
+    assert (api_key, source) == ("api-token:validated-token", "COPILOT_GITHUB_TOKEN")
+
+
+def test_copilot_status_preserves_explicit_provider_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("GITHUB_TOKEN", "gho_explicit_provider_config")
+    _write_config(tmp_path, {"model": {"provider": "copilot"}})
+
+    from hermes_cli import auth
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("validated-token", "GITHUB_TOKEN"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda token: "api-token:" + token,
+    )
+    api_key, source = auth._resolve_api_key_provider_secret(
+        "copilot", auth.PROVIDER_REGISTRY["copilot"]
+    )
+    assert (api_key, source) == ("api-token:validated-token", "GITHUB_TOKEN")

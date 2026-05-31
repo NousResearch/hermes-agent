@@ -2927,3 +2927,44 @@ class TestUnifiedCapabilityMedia:
             ))
         qq.assert_awaited_once()
         assert any("omitted" in w for w in res["warnings"])
+
+    def test_adapter_send_exception_returns_error_dict(self, tmp_path, monkeypatch):
+        from gateway.platforms.base import MediaKind, SendResult
+
+        class FakeQQ:
+            MEDIA_KINDS = frozenset(MediaKind)
+
+            async def send(self, chat_id, content, metadata=None):
+                return SendResult(success=True, message_id="m0")
+
+            async def send_image_file(self, chat_id, image_path, **kw):
+                raise RuntimeError("upload exploded")
+
+        self._install_runner(monkeypatch, FakeQQ())
+        path = self._good_path(tmp_path)
+        res = asyncio.run(_send_to_platform(
+            Platform.QQBOT, SimpleNamespace(extra={}), "c", "hi",
+            media_files=[(path, False)],
+        ))
+        assert "error" in res
+        assert "upload exploded" in res["error"]
+
+    def test_media_only_all_dropped_returns_explicit_error(self, monkeypatch):
+        from gateway.platforms.base import MediaKind, SendResult
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.validate_media_delivery_path", lambda p: None
+        )
+
+        class FakeQQ:
+            MEDIA_KINDS = frozenset(MediaKind)
+
+            async def send(self, chat_id, content, metadata=None):
+                raise AssertionError("no text to send")
+
+        self._install_runner(monkeypatch, FakeQQ())
+        res = asyncio.run(_send_to_platform(
+            Platform.QQBOT, SimpleNamespace(extra={}), "c", "   ",
+            media_files=[("/tmp/EVIL.png", False)],
+        ))
+        assert res["error"]  # non-empty, explains nothing was delivered

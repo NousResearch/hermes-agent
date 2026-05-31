@@ -783,23 +783,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             safe = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             metadata = {"thread_id": thread_id} if thread_id else None
             warnings, last_result = [], None
-            for i, chunk in enumerate(chunks):
-                attach = safe if i == len(chunks) - 1 else []
-                if chunk.strip():
-                    result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
-                    if not result.success:
-                        return {"error": f"Adapter send failed: {result.error}"}
-                    last_result = {"success": True, "message_id": result.message_id}
-                for path, is_voice in attach:
-                    kind = classify_media_kind(path, is_voice, platform.value, force_document)
-                    if kind not in adapter.MEDIA_KINDS:
-                        warnings.append(f"{platform.value} cannot deliver {kind.value}: {path} (skipped)")
-                        continue
-                    last_result = await _dispatch_media_one(adapter, kind, chat_id, path, metadata)
-                    if last_result.get("error"):
-                        return last_result
-            if last_result is None:  # media-only send, every file unsupported
-                return {"error": "; ".join(warnings)}
+            try:
+                for i, chunk in enumerate(chunks):
+                    attach = safe if i == len(chunks) - 1 else []
+                    if chunk.strip():
+                        result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                        if not result.success:
+                            return {"error": f"Adapter send failed: {result.error}"}
+                        last_result = {"success": True, "message_id": result.message_id}
+                    for path, is_voice in attach:
+                        kind = classify_media_kind(path, is_voice, platform.value, force_document)
+                        if kind not in adapter.MEDIA_KINDS:
+                            warnings.append(f"{platform.value} cannot deliver {kind.value}: {path} (skipped)")
+                            continue
+                        last_result = await _dispatch_media_one(adapter, kind, chat_id, path, metadata)
+                        if last_result.get("error"):
+                            return last_result
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                return {"error": f"Adapter media send failed: {e}"}
+            if last_result is None:  # nothing delivered: every file unsupported or dropped as unsafe
+                return {"error": "; ".join(warnings) or f"No deliverable media for {platform.value} (attachments were unsafe or unsupported)"}
             if warnings and last_result.get("success"):
                 last_result["warnings"] = [*last_result.get("warnings", []), *warnings]
             return last_result

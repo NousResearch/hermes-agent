@@ -82,7 +82,7 @@ def matrix_env(tmp_path, monkeypatch):
             return _Resp({
                 "status": "done",
                 "video": {"url": "https://xai-cdn/out.mp4", "duration": 8},
-                "model": "grok-imagine-video",
+                "model": xai_calls[-1]["json"].get("model", "grok-imagine-video"),
             })
     import plugins.video_gen.xai as xai_plugin
     monkeypatch.setattr(xai_plugin.httpx, "AsyncClient", lambda: _Client())
@@ -202,6 +202,7 @@ def test_xai_text_only_via_tool_surface(matrix_env):
     assert len(xai_calls) == 1
     assert xai_calls[0]["url"].endswith("/videos/generations")
     payload = xai_calls[0]["json"] or {}
+    assert payload["model"] == "grok-imagine-video"
     assert "image" not in payload
     assert "reference_images" not in payload
 
@@ -221,6 +222,26 @@ def test_xai_text_plus_image_via_tool_surface(matrix_env):
     assert len(xai_calls) == 1
     assert xai_calls[0]["url"].endswith("/videos/generations")
     payload = xai_calls[0]["json"] or {}
+    assert payload["model"] == "grok-imagine-video-1.5-preview"
+    assert payload["image"] == {"url": "https://example.com/img.png"}
+
+
+def test_xai_explicit_model_override_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "animate this",
+            "image_url": "https://example.com/img.png",
+            "model": "grok-imagine-video",
+        },
+    )
+    assert result["success"] is True
+
+    payload = xai_calls[0]["json"] or {}
+    assert payload["model"] == "grok-imagine-video"
     assert payload["image"] == {"url": "https://example.com/img.png"}
 
 

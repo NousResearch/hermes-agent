@@ -182,7 +182,8 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 | Chat | `grok-4.20-multi-agent-0309` | Multi-agent variant |
 | Image | `grok-imagine-image` | Default; ~5–10 s |
 | Image | `grok-imagine-image-quality` | Higher fidelity; ~10–20 s |
-| Video | `grok-imagine-video` | Text-to-video and image-to-video; up to 7 reference images |
+| Video | `grok-imagine-video` | Text-to-video |
+| Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |
 | TTS | (default voice) | xAI `/v1/tts` endpoint |
 
 The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.3` is always pinned to the top of the list.

@@ -363,19 +363,76 @@ def cmd_sync():
         print("❌ Sync failed. Is Paragate running? Is your key correct?")
 
 
-def cmd_health():
-    """Print current action items from last sync result."""
-    last_sync_path = _para_state() / "last_sync.json"
-    if not last_sync_path.exists():
-        print("No sync data yet. Run sync first.")
+def cmd_pull():
+    """Pull remote files from Paragate, decrypt, write locally if newer."""
+    profile_path = _para_home() / "profile.json"
+    if not profile_path.exists():
+        print("❌ profile.json not found.")
+        return
+    profile = json.loads(profile_path.read_text())
+    did = profile.get("identity", {}).get("did", "")
+    if not did:
+        print("❌ No DID — cloud pull not available. Run in local mode.")
         return
 
-    last = json.loads(last_sync_path.read_text())
-    print(f"Last sync: {last.get('synced_at', '?')}")
-    print(f"Files tracked: {len(last.get('hashes', {}))}")
+    result = _sign_and_request("GET", f"/public/para/{did}/files")
+    if not result.get("success"):
+        print("❌ Could not fetch remote file list")
+        return
 
-    # Re-sync to get fresh health status
-    cmd_sync()
+    remote_files = result.get("files", {})
+    if not remote_files:
+        print("   No remote files found")
+        return
+
+    crypto = _get_crypto()
+    para = _para_home()
+    pulled = 0
+
+    for name, meta in remote_files.items():
+        remote_hash = meta.get("hash", "")
+        remote_ct = meta.get("content", "")
+        pt_hash = meta.get("plaintext_hash", "")
+
+        if not remote_ct:
+            continue
+
+        local_path = para / name
+        local_hash = _compute_file_hash(local_path) if local_path.exists() else ""
+        if local_hash == remote_hash:
+            continue
+
+        if crypto:
+            try:
+                crypto.decrypt_to_file(remote_ct, str(local_path), pt_hash)
+                pulled += 1
+                print(f"   ✅ {name}")
+            except Exception as e:
+                print(f"   ⚠️  {name}: {e}")
+        else:
+            local_path.write_text(remote_ct)
+            pulled += 1
+            print(f"   ✅ {name} (plaintext)")
+
+    print(f"   Pulled {pulled} file(s)" if pulled else "   All up to date")
+
+
+def cmd_health():
+    """Print current health status from local health.json."""
+    health_path = _para_state() / "health.json"
+    if not health_path.exists():
+        print("No health data yet. Daemon will create it on next cycle.")
+        return
+
+    report = json.loads(health_path.read_text())
+    print(f"Checked: {report.get('checked_at', '?')}")
+    print(f"Write cycle needed: {report.get('needs_write_cycle', False)}")
+    print(f"Stale files: {report.get('stale_files', [])}")
+    print()
+    for name, info in report.get("files", {}).items():
+        s = info.get("stale_hours", "-")
+        flag = "⚠️ " if info.get("is_stale") else "✅"
+        print(f"  {flag} {name:30s} {str(s):>6s}h  (max {info.get('max_hours', '?')}h)")
 
 
 def cmd_switch_out():
@@ -732,6 +789,7 @@ COMMANDS = {
     "init": cmd_init,
     "sync": cmd_sync,
     "sync-full": lambda: (sys.argv.append("--full"), cmd_sync()),
+    "pull": cmd_pull,
     "health": cmd_health,
     "switch-out": cmd_switch_out,
     "switch-in": cmd_switch_in,

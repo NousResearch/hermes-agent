@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
-"""Para-Soul Sync Daemon — Server-driven health + 10-min sync
+"""Para-Soul Sync Daemon — Local-first health + optional cloud sync
 
 Every 10 minutes:
-  1. Sync file hashes to Paragate (core.py sync)
-  2. Read action_items from server response
-  3. Execute auto-fix actions (memsync, reflect, index)
-  4. Heartbeat sync every 12h even if no file changes
+  1. Local health check (mtime-based, writes health.json)      ← ALWAYS
+  2. Auto-fix stale files (memsync, reflect, index)            ← ALWAYS
+  3. If DID configured: push changed files, pull remote updates ← OPT-IN
 
-No local health check — server is the single source of truth.
+Cloud is passive storage only. No server-driven health logic.
 """
 
 import subprocess
 import time
 import os
 import json
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from pathlib import Path
 
-SYNC_INTERVAL = 600       # 10 minutes
-HEARTBEAT_INTERVAL = 12 * 3600  # 12 hours
-
+SYNC_INTERVAL = 600               # 10 minutes
+HEARTBEAT_INTERVAL = 12 * 3600    # 12 hours (cloud mode only)
 LOG_FILE = None
 
 ENV_DEFAULTS = {
@@ -27,6 +26,37 @@ ENV_DEFAULTS = {
     "PARA_KEYS_DIR": os.path.expanduser("~/.config/paragate/keys"),
     "PARAGATE_URL": "http://paragate.cc",
 }
+
+# ── Monitored files + thresholds ────────────────────
+
+MONITORED_FILES = [
+    "growth-log", "human-relationship.md", "memory.md",
+    "skills.json", "mental-models.md", "keywords.json",
+    "long-term-memory.md", "principles.md", "soul.md",
+]
+
+STALENESS_THRESHOLDS = {
+    "growth-log": 24,
+    "human-relationship.md": 24,
+    "memory.md": 48,
+    "skills.json": 120,
+    "mental-models.md": 120,
+    "keywords.json": 120,
+    "long-term-memory.md": 120,
+    "principles.md": 120,
+    "soul.md": 120,
+}
+
+AUTO_FIX_FILES = {
+    "memory.md": "memsync",
+    "skills.json": "memsync",
+    "mental-models.md": "reflect",
+    "keywords.json": "index",
+}
+
+MARK_ONLY_FILES = {"growth-log", "human-relationship.md",
+                    "long-term-memory.md", "principles.md", "soul.md"}
+
 
 # ── Logging ──────────────────────────────────────────
 
@@ -39,156 +69,189 @@ def log(msg):
         with open(LOG_FILE, "a") as f:
             f.write(line + "\n")
 
+
+# ── Local health check ───────────────────────────────
+
+def _latest_growth_log(para_home):
+    log_dir = Path(para_home) / "growth-log"
+    if not log_dir.is_dir():
+        return None
+    md_files = sorted(
+        [f for f in log_dir.iterdir() if f.suffix == ".md"],
+        key=lambda f: f.stat().st_mtime, reverse=True,
+    )
+    return md_files[0] if md_files else None
+
+
+def _compute_file_hash(path):
+    if not path or not path.exists():
+        return ""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def local_health_check(para_home):
+    """Check all monitored files' freshness. Write health.json."""
+    now = datetime.now()
+    report = {"checked_at": now.isoformat(), "files": {},
+              "needs_write_cycle": False, "needs_reflect": False, "stale_files": []}
+
+    for name in MONITORED_FILES:
+        if name == "growth-log":
+            path = _latest_growth_log(para_home)
+        else:
+            path = Path(para_home) / name
+
+        max_h = STALENESS_THRESHOLDS.get(name, 120)
+
+        if not path or not path.exists():
+            report["files"][name] = {"exists": False, "stale_hours": None, "max_hours": max_h,
+                                      "is_stale": True}
+            report["stale_files"].append(name)
+            report["needs_write_cycle"] = True
+            continue
+
+        mtime = datetime.fromtimestamp(path.stat().st_mtime)
+        stale_h = (now - mtime).total_seconds() / 3600
+        is_stale = stale_h > max_h
+
+        report["files"][name] = {
+            "exists": True,
+            "last_modified": mtime.isoformat(),
+            "stale_hours": round(stale_h, 1),
+            "max_hours": max_h,
+            "is_stale": is_stale,
+        }
+        if is_stale:
+            report["stale_files"].append(name)
+
+    report["needs_write_cycle"] = any(
+        report["files"].get(f, {}).get("is_stale", True)
+        for f in ["growth-log", "human-relationship.md"]
+    )
+    report["needs_reflect"] = report["files"].get("mental-models", {}).get("is_stale", True)
+    report["stale_files"] = sorted(report["stale_files"])
+
+    state_dir = Path(para_home) / "state"
+    state_dir.mkdir(exist_ok=True)
+    (state_dir / "health.json").write_text(json.dumps(report, indent=2))
+
+    if report["stale_files"]:
+        log(f"⚠️  HEALTH: {len(report['stale_files'])} stale ({', '.join(report['stale_files'])})")
+
+    return report
+
+
 # ── Auto-fix actions ─────────────────────────────────
 
 def run_memsync(para_home, core_path):
-    """Run memsync to update memory.md + skills.json."""
-    memsync_paths = [
-        Path(core_path).resolve().parent / "scripts" / "memsync.py",
-        para_home / ".." / "scripts" / "memsync.py",
-    ]
-    for mp in memsync_paths:
-        if mp.exists():
-            try:
-                result = subprocess.run(
-                    ["python3", str(mp)],
-                    capture_output=True, text=True, timeout=60,
-                    env={**os.environ, "PARA_HOME": str(para_home)}
-                )
-                if result.returncode == 0:
-                    log("✅ memsync OK")
-                else:
-                    log(f"⚠️  memsync: {result.stderr.strip()[:100]}")
-                return True
-            except Exception as e:
-                log(f"⚠️  memsync ERROR: {e}")
-    log("⚠️  memsync: script not found")
-    return False
+    memsync_path = Path(core_path).resolve().parent / "scripts" / "memsync.py"
+    if not memsync_path.exists():
+        log("⚠️  memsync: script not found")
+        return
+    try:
+        result = subprocess.run(
+            ["python3", str(memsync_path)],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, "PARA_HOME": str(para_home)}
+        )
+        if result.returncode == 0:
+            log("✅ memsync OK")
+        else:
+            log(f"⚠️  memsync: {result.stderr.strip()[:100]}")
+    except Exception as e:
+        log(f"⚠️  memsync ERROR: {e}")
 
 
 def run_reflect(core_path, para_home):
-    """Run reflect --save to update mental-models.md."""
     try:
         result = subprocess.run(
             ["python3", str(core_path), "reflect", "--save"],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "PARA_HOME": str(para_home)}
         )
-        if "✅" in result.stdout:
+        if result.returncode == 0:
             log("✅ reflect OK")
-        else:
-            log(f"⚠️  reflect: {result.stdout.strip()[:100]}")
     except Exception as e:
         log(f"⚠️  reflect ERROR: {e}")
 
 
 def run_index(core_path, para_home):
-    """Run index to update keywords.json."""
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["python3", str(core_path), "index"],
             capture_output=True, text=True, timeout=30,
             env={**os.environ, "PARA_HOME": str(para_home)}
         )
-        if "✅" in result.stdout:
-            log("✅ index OK")
+        log("✅ index OK")
     except Exception as e:
         log(f"⚠️  index ERROR: {e}")
 
 
-def execute_actions(action_items, core_path, para_home):
-    """Execute auto-fix actions returned by server."""
-    if not action_items:
-        return
+def execute_auto_fix(report, core_path, para_home):
+    """Run auto-fix for files that can be auto-generated."""
+    ran = set()
+    for name in report.get("stale_files", []):
+        action = AUTO_FIX_FILES.get(name)
+        if not action or action in ran:
+            continue
+        ran.add(action)
+        stale_h = report["files"].get(name, {}).get("stale_hours", 0)
 
-    for item in action_items:
-        file = item.get("file", "")
-        action = item.get("action", "")
-        stale_h = item.get("stale_hours", 0)
-
-        if action == "auto_memsync":
-            log(f"🔧 auto_memsync triggered ({file}: stale {stale_h:.0f}h)")
+        if action == "memsync":
+            log(f"🔧 auto_memsync ({name}: stale {stale_h:.0f}h)")
             run_memsync(para_home, core_path)
-
-        elif action == "auto_reflect":
-            log(f"🔧 auto_reflect triggered ({file}: stale {stale_h:.0f}h)")
+        elif action == "reflect":
+            log(f"🔧 auto_reflect ({name}: stale {stale_h:.0f}h)")
             run_reflect(core_path, para_home)
-
-        elif action == "auto_index":
-            log(f"🔧 auto_index triggered ({file}: stale {stale_h:.0f}h)")
+        elif action == "index":
+            log(f"🔧 auto_index ({name}: stale {stale_h:.0f}h)")
             run_index(core_path, para_home)
 
-        elif action == "block_write":
-            # Can't block daemon — just log urgently
-            log(f"🚨 BLOCK_WRITE needed: {file} stale {stale_h:.0f}h")
-            log(f"   This file requires manual agent action. Daemon cannot auto-generate content.")
-
-        elif action == "mark_stale":
-            log(f"⚠️  STALE: {file} — {stale_h:.0f}h. Auto-fix not available (mark only).")
-
-        else:
-            log(f"⚠️  Unknown action '{action}' for {file}")
+    for name in report.get("stale_files", []):
+        if name in MARK_ONLY_FILES:
+            h = report["files"].get(name, {}).get("stale_hours", 0)
+            log(f"⚠️  {name} stale {h:.0f}h — needs manual write (daemon cannot auto-generate)")
 
 
-# ── Sync ────────────────────────────────────────────
+# ── Cloud sync (opt-in, DID-passthrough) ─────────────
 
-def sync_once(core_path):
-    """Run core.py sync, return action_items."""
-    env = os.environ.copy()
-    for k, v in ENV_DEFAULTS.items():
-        if k not in env:
-            env[k] = v
-
+def has_did(para_home):
+    profile_path = Path(para_home) / "profile.json"
+    if not profile_path.exists():
+        return False
     try:
-        result = subprocess.run(
-            ["python3", str(core_path), "sync"],
-            capture_output=True, text=True, timeout=30, env=env
-        )
-        stdout = result.stdout
-        if "✅" in stdout:
-            # Parse action items from output
-            action_items = []
-            in_action = False
-            for line in stdout.split("\n"):
-                if "Health actions needed" in line:
-                    in_action = True
-                    continue
-                if in_action and line.strip().startswith("["):
-                    # Parse: [ACTION] file — stale Nh — description
-                    try:
-                        parts = line.strip().split("—")
-                        action_part = parts[0].strip()
-                        stale_part = parts[1].strip() if len(parts) > 1 else ""
-                        # Parse action and file from "[ACTION] file"
-                        bracket_end = action_part.index("]")
-                        action = action_part[1:bracket_end].strip().lower()
-                        file_part = action_part[bracket_end+1:].strip()
-                        # Parse stale hours
-                        stale_hours = 0
-                        if "stale" in stale_part:
-                            stale_str = stale_part.split("stale")[1].split("h")[0].strip()
-                            try:
-                                stale_hours = float(stale_str)
-                            except ValueError:
-                                pass
-                        action_items.append({
-                            "file": file_part,
-                            "action": action,
-                            "stale_hours": stale_hours,
-                        })
-                    except Exception:
-                        pass
-                elif in_action and not line.strip():
-                    in_action = False
+        profile = json.loads(profile_path.read_text())
+        return bool(profile.get("identity", {}).get("did", ""))
+    except Exception:
+        return False
 
-            log("✅ Sync OK")
-            return action_items
+
+def cloud_sync(core_path, para_home):
+    """Push changed files + pull remote updates. Passive storage only."""
+    try:
+        # Push
+        result = subprocess.run(
+            ["python3", str(core_path), "sync", "--full"],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "PARA_HOME": str(para_home)}
+        )
+        if result.returncode == 0 and "✅" in result.stdout:
+            log("☁️  Push OK")
         else:
-            log(f"❌ Sync FAIL: {result.stderr.strip()[:150] or stdout.strip()[:150]}")
-            return []
+            log(f"⚠️  Push: {result.stderr.strip()[:100] or result.stdout.strip()[:100]}")
+
+        # Pull
+        result2 = subprocess.run(
+            ["python3", str(core_path), "pull"],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "PARA_HOME": str(para_home)}
+        )
+        if result2.returncode == 0:
+            out = result2.stdout.strip()
+            if out and "❌" not in out:
+                log(f"☁️  Pull: {out[:100]}")
     except Exception as e:
-        log(f"❌ Sync ERROR: {e}")
-        return []
+        log(f"⚠️  Cloud sync error: {e}")
 
 
 # ── Main ────────────────────────────────────────────
@@ -199,66 +262,29 @@ def main():
     para_home = Path(os.environ.get("PARA_HOME", ENV_DEFAULTS["PARA_HOME"]))
     LOG_FILE = str(para_home / "sync" / "sync_daemon.log")
 
-    # Find core.py
     script_dir = Path(__file__).resolve().parent
     core_path = script_dir.parent / "core.py"
-    if not core_path.exists():
-        core_path = para_home / ".." / "core.py"
-    if not core_path.exists():
-        log("❌ core.py not found. Daemon cannot start.")
-        return
 
-    # Track heartbeat
-    heartbeat_path = para_home / "state" / "last_heartbeat.json"
-    para_home.mkdir(parents=True, exist_ok=True)
-    (para_home / "state").mkdir(exist_ok=True)
-    (para_home / "sync").mkdir(exist_ok=True)
+    log("Daemon started (local-first, cloud opt-in)")
+    log(f"Interval: {SYNC_INTERVAL//60}min | PARA_HOME: {para_home}")
 
-    # Read last heartbeat
-    last_heartbeat = 0
-    if heartbeat_path.exists():
-        try:
-            last_heartbeat = json.loads(heartbeat_path.read_text()).get("ts", 0)
-        except Exception:
-            pass
+    cloud_enabled = has_did(para_home)
+    log(f"Cloud sync: {'✅ enabled' if cloud_enabled else '❌ disabled (no DID)'}")
 
-    log(f"Daemon started. Interval: {SYNC_INTERVAL}s ({SYNC_INTERVAL//60}min)")
-    log(f"Heartbeat: every {HEARTBEAT_INTERVAL//3600}h")
-    log(f"PARA_HOME: {para_home}")
-    log(f"PARAGATE_URL: {os.environ.get('PARAGATE_URL', ENV_DEFAULTS['PARAGATE_URL'])}")
-
-    # First sync immediately
-    action_items = sync_once(core_path)
-    execute_actions(action_items, core_path, para_home)
-
-    consecutive_failures = 0
+    # First run
+    report = local_health_check(para_home)
+    execute_auto_fix(report, core_path, para_home)
+    if cloud_enabled:
+        cloud_sync(core_path, para_home)
 
     while True:
         time.sleep(SYNC_INTERVAL)
 
-        now = time.time()
-        should_heartbeat = (now - last_heartbeat) >= HEARTBEAT_INTERVAL
+        report = local_health_check(para_home)
+        execute_auto_fix(report, core_path, para_home)
 
-        # Run sync
-        action_items = sync_once(core_path)
-
-        if action_items:
-            consecutive_failures = 0
-            execute_actions(action_items, core_path, para_home)
-
-            # If auto-fixes were applied, sync again to push changes
-            if any(a["action"] in ["auto_memsync", "auto_reflect", "auto_index"] for a in action_items):
-                time.sleep(2)
-                sync_once(core_path)
-        else:
-            consecutive_failures += 1
-
-        # Update heartbeat
-        last_heartbeat = now
-        heartbeat_path.write_text(json.dumps({"ts": now}))
-
-        if consecutive_failures >= 3:
-            log(f"⚠️  {consecutive_failures} consecutive sync failures")
+        if cloud_enabled:
+            cloud_sync(core_path, para_home)
 
 
 if __name__ == "__main__":

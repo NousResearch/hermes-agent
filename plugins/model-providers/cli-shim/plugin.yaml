@@ -1,0 +1,5 @@
+name: cli-shim-provider
+kind: model-provider
+version: 1.0.0
+description: Local CLI shim — shells out to claude/codex/gemini CLIs (OAuth)
+author: Hermes local

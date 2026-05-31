@@ -1266,6 +1266,21 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "cli-shim" or str(client_kwargs.get("base_url", "")).startswith("cli://shim"):
+        from agent.cli_shim_client import CliShimClient
+
+        # CliShimClient ignores api_key/base_url for routing; pass model
+        # through so per-request dispatch lands on the right CLI.
+        shim_kwargs = dict(client_kwargs)
+        shim_kwargs.setdefault("model", getattr(agent, "model", None) or "claude-sonnet-cli")
+        client = CliShimClient(**shim_kwargs)
+        _ra().logger.info(
+            "CLI shim client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 

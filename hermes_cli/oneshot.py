@@ -242,6 +242,61 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _normalize_runtime_for_oneshot(
+    effective_model: str,
+    runtime: dict,
+) -> tuple[str, dict]:
+    """Apply the same provider-specific model/API routing used by chat.
+
+    ``hermes -z`` bypasses ``HermesCLI._ensure_runtime_credentials()``, which
+    is where Copilot/OpenCode model IDs are normalized and GPT-5/Codex models
+    are routed to the Responses API. Keep this helper intentionally small so
+    oneshot stays quiet while still sharing the critical routing semantics.
+    """
+    normalized_runtime = dict(runtime)
+    resolved_provider = str(normalized_runtime.get("provider") or "").strip()
+    resolved_mode = str(normalized_runtime.get("api_mode") or "chat_completions").strip()
+    current_model = (effective_model or "").strip()
+
+    try:
+        from hermes_cli.model_normalize import (
+            _AGGREGATOR_PROVIDERS,
+            normalize_model_for_provider,
+        )
+
+        if resolved_provider not in _AGGREGATOR_PROVIDERS:
+            normalized_model = normalize_model_for_provider(current_model, resolved_provider)
+            if normalized_model:
+                current_model = normalized_model
+    except Exception:
+        pass
+
+    if resolved_provider == "copilot":
+        try:
+            from hermes_cli.models import copilot_model_api_mode, normalize_copilot_model_id
+
+            api_key = normalized_runtime.get("api_key")
+            canonical = normalize_copilot_model_id(current_model, api_key=api_key)
+            if canonical:
+                current_model = canonical
+            resolved_mode = copilot_model_api_mode(current_model, api_key=api_key)
+        except Exception:
+            pass
+    elif resolved_provider in {"opencode-zen", "opencode-go"}:
+        try:
+            from hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
+
+            canonical = normalize_opencode_model_id(resolved_provider, current_model)
+            if canonical:
+                current_model = canonical
+            resolved_mode = opencode_model_api_mode(resolved_provider, current_model)
+        except Exception:
+            pass
+
+    normalized_runtime["api_mode"] = resolved_mode or "chat_completions"
+    return current_model, normalized_runtime
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -319,6 +374,7 @@ def _run_agent(
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
     )
+    effective_model, runtime = _normalize_runtime_for_oneshot(effective_model, runtime)
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived

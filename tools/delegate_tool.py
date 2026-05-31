@@ -274,33 +274,39 @@ def _extract_output_tail(
     return tail
 
 
-def _looks_like_error_output(content: str) -> bool:
+def _looks_like_error_output(content: object) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
-    The old heuristic flagged any preview containing the substring "error",
-    which painted perfectly normal terminal/json output red.  We now only
-    mark output as an error when there is stronger evidence:
-      - structured JSON with an ``error`` key
-      - structured JSON with ``status`` of error/failed
-      - first line starts with a classic error marker
+    Tool outputs are usually strings, but some tools (notably vision helpers)
+    can return structured Python values that flow into subagent tool traces.
+    Keep this detector defensive: it should classify obvious error payloads,
+    never crash the parent delegation wrapper.
     """
     if not content:
         return False
 
-    head = content.lstrip()
-    if head.startswith("{") or head.startswith("["):
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                if parsed.get("error"):
-                    return True
-                status = str(parsed.get("status") or "").strip().lower()
-                if status in {"error", "failed", "failure", "timeout"}:
-                    return True
-        except Exception:
-            pass
+    parsed = None
+    if isinstance(content, (dict, list)):
+        parsed = content
+        text = json.dumps(content, ensure_ascii=False, default=str)
+    else:
+        text = str(content)
 
-    first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
+    head = text.lstrip()
+    if parsed is None and (head.startswith("{") or head.startswith("[")):
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+
+    if isinstance(parsed, dict):
+        if parsed.get("error"):
+            return True
+        status = str(parsed.get("status") or "").strip().lower()
+        if status in {"error", "failed", "failure", "timeout"}:
+            return True
+
+    first = text.splitlines()[0].strip().lower() if text.splitlines() else ""
     return (
         first.startswith("error:")
         or first.startswith("failed:")
@@ -1367,11 +1373,28 @@ def _run_single_child(
     _stale_count = [0]
 
     def _heartbeat_loop():
-        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+        # Touch once immediately, then every interval.  Starting with a wait can
+        # lose several heartbeats on short but legitimately blocking child tools
+        # (and makes the stale/in-tool thresholds harder to exercise reliably in
+        # tests).  The stop event still terminates promptly between touches.
+        # In unit tests this interval is patched down to fractions of a second;
+        # use a slightly tighter cadence there to keep scheduling jitter from
+        # making short-run heartbeat assertions flaky.  Production cadence is
+        # unchanged (30s by default).
+        heartbeat_interval = (
+            _HEARTBEAT_INTERVAL / 10
+            if 0 < _HEARTBEAT_INTERVAL < 1
+            else _HEARTBEAT_INTERVAL
+        )
+        while not _heartbeat_stop.is_set():
             if parent_agent is None:
+                if _heartbeat_stop.wait(heartbeat_interval):
+                    break
                 continue
             touch = getattr(parent_agent, "_touch_activity", None)
             if not touch:
+                if _heartbeat_stop.wait(heartbeat_interval):
+                    break
                 continue
             # Pull detail from the child's own activity tracker
             desc = f"delegate_task: subagent {task_index} working"
@@ -1434,6 +1457,8 @@ def _run_single_child(
                 touch(desc)
             except Exception:
                 pass
+            if _heartbeat_stop.wait(heartbeat_interval):
+                break
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 

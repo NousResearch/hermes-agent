@@ -357,16 +357,18 @@ class TelegramAdapter(BasePlatformAdapter):
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
 
-    # Adaptive text-batch ingress: short messages need a tighter delay so the
-    # first token reaches the agent fast.  Numbers tuned for "feels instant":
-    # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024
-    # (a normal paragraph) in ~240ms; longer waits the configured cap.
-    # Always clamped to ``_text_batch_delay_seconds`` so an operator can lower
-    # the cap further via env var.
+    # Adaptive text-batch ingress: tiny chat replies need a tight delay so the
+    # first token reaches the agent fast, but paragraph-sized Telegram messages
+    # often arrive as human-authored bursts ("one more thing" / pasted chunks),
+    # not just client-side 4096-char splits. Keep ≤320 codepoints near-instant;
+    # let larger messages wait for the configured quiet window so follow-ups can
+    # merge before the agent starts a premature turn.
+    # All delays are clamped to ``_text_batch_delay_seconds`` so an operator can
+    # lower the cap further via env var.
     _TEXT_BATCH_FAST_LEN = 320
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
-    _TEXT_BATCH_SHORT_DELAY_S = 0.24
+    _TEXT_BATCH_SHORT_DELAY_S = 1.2
 
     @staticmethod
     def _env_float_clamped(
@@ -416,18 +418,16 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
-        # Buffer rapid text messages so Telegram client-side splits of long
-        # messages are aggregated into a single MessageEvent.  Lower defaults
-        # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
-        # without a noticeable wait — combined with the adaptive fast-path
-        # in ``_calc_text_batch_delay`` below, ≤320-codepoint replies settle
-        # in ~180ms.  All bounds are conservative for Telegram's
-        # ~1 edit/s flood envelope.
+        # Buffer rapid text messages so Telegram client-side splits and
+        # paragraph-sized human bursts are aggregated into a single MessageEvent.
+        # Tiny chat replies still use the adaptive fast-path below (~180ms), but
+        # larger messages get a longer quiet window so users can send multiple
+        # consecutive notes without Hermes starting from partial context.
         self._text_batch_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS",
-            0.3,
+            1.2,
             min_value=0.08,
-            max_value=2.0,
+            max_value=3.0,
         )
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS",
@@ -5194,10 +5194,11 @@ class TelegramAdapter(BasePlatformAdapter):
             #  - last chunk ≥ _SPLIT_THRESHOLD: a continuation is almost
             #    certain → wait the longer split delay.
             #  - total accumulated text ≤ _TEXT_BATCH_FAST_LEN (~320 cp):
-            #    short message → cap delay at _TEXT_BATCH_FAST_DELAY_S
-            #    so the agent sees the text near-instantly.
+            #    tiny chat reply → cap delay at _TEXT_BATCH_FAST_DELAY_S
+            #    so the agent sees it near-instantly.
             #  - total ≤ _TEXT_BATCH_SHORT_LEN (~1024 cp):
-            #    medium → cap at _TEXT_BATCH_SHORT_DELAY_S.
+            #    paragraph-sized message → wait a human-burst window before
+            #    dispatching, so consecutive notes merge into one turn.
             #  - otherwise: use the configured cap.
             # Tiers compose with operator overrides via the env-var-driven
             # ``_text_batch_delay_seconds`` (e.g. an operator who sets the
@@ -5847,6 +5848,7 @@ class TelegramAdapter(BasePlatformAdapter):
             ),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
+            is_bot=bool(getattr(user, "is_bot", False)) if user else False,
             message_id=str(message.message_id),
         )
         

@@ -125,6 +125,19 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_BOT_NOISE_RE = re.compile(
+    r"^(?:\s|[\u200b\ufeff])*"
+    r"(?:"
+    r"hecho(?:\s+sin\s+acci[oó]n\.?)?"
+    r"|sin\s+acci[oó]n\.?(?:\s+sin\s+acci[oó]n\.?)*"
+    r"|silencio\s+operativo\.?(?:\s+silencio\s+operativo\.?)*"
+    r"|⚠️\s*empty\s+response\s+from\s+model\s+—\s+retrying\s+\(\d+/\d+\)"
+    r"|❌\s*model\s+returned\s+no\s+content\s+after\s+all\s+retries.*"
+    r"|⚠️\s*no\s+first\s+byte\s+from\s+provider.*"
+    r")\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -138,6 +151,59 @@ _GATEWAY_SECRET_PATTERNS = (
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
     return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _gateway_should_suppress_bot_message(source: Any, text: str) -> bool:
+    """Return True when a platform bot/status message should not enter the agent loop.
+
+    Telegram group/chat allow-all settings authorize whole chats, but they should
+    not make Hermes converse with other bots' acks/status messages. Some Telegram
+    bridges/user sessions surface bot-looking senders with ``is_bot=False`` (for
+    example display-name prefixes like "Orion" or "Hermes DAS Bot"), so combine
+    Telegram's bot flag with conservative sender-name + status-text detection.
+    Intentional bot-to-bot handoffs must opt in with TELEGRAM_ALLOW_BOTS=all|mentions.
+    """
+    platform = _gateway_platform_value(getattr(source, "platform", None))
+    if platform != "telegram":
+        return False
+
+    name = str(getattr(source, "user_name", "") or "").strip().lower()
+    body = str(text or "").strip()
+    body_l = body.lower()
+    known_bot_names = {
+        "hermes das bot",
+        "hermes m2 das bot",
+        "hermes bot",
+        "orion",
+        "orión",
+        "orion bot",
+        "orión bot",
+    }
+    botish_sender = (
+        bool(getattr(source, "is_bot", False))
+        or name in known_bot_names
+        or name.endswith(" bot")
+    )
+    status_noise = (
+        _GATEWAY_BOT_NOISE_RE.search(body) is not None
+        or body_l.startswith(("hecho", "resultado", "siguiente", "ignorado", "sin acción", "silencio operativo"))
+        or "still working" in body_l
+        or "compacting context" in body_l
+        or "iteration budget exhausted" in body_l
+        or "no first byte from provider" in body_l
+        or body_l.startswith("cronjob response:")
+    )
+    if not botish_sender or not status_noise:
+        return False
+
+    allow_bots = os.getenv("TELEGRAM_ALLOW_BOTS", "none").strip().lower()
+    if allow_bots == "all":
+        return False
+    if allow_bots == "mentions":
+        # Keep explicit bot mentions available for carefully-scoped bridge use,
+        # while still dropping generic status/ack chatter.
+        return status_noise
+    return True
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -6973,6 +7039,19 @@ class GatewayRunner:
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
+
+        # Suppress bot-to-bot loops before hooks/auth/session handling. Chat-wide
+        # allowlists (or GATEWAY_ALLOW_ALL_USERS) must not make Hermes answer
+        # other Telegram bots' status/ack messages.
+        if not is_internal and _gateway_should_suppress_bot_message(source, event.text or ""):
+            logger.info(
+                "Suppressing bot-originated Telegram message before dispatch: user=%s chat=%s thread=%s text=%r",
+                source.user_name or source.user_id or "unknown",
+                source.chat_id or "unknown",
+                source.thread_id or "",
+                (event.text or "")[:120].replace("\n", " "),
+            )
+            return None
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:

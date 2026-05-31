@@ -28,6 +28,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _looks_like_error_output,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -58,6 +59,13 @@ def _make_mock_parent(depth=0):
 
 
 class TestDelegateRequirements(unittest.TestCase):
+    def test_looks_like_error_output_accepts_structured_tool_content(self):
+        """Structured tool outputs in child traces must not crash delegation."""
+        self.assertFalse(_looks_like_error_output([{"type": "text", "text": "ok"}]))
+        self.assertFalse(_looks_like_error_output({"status": "ok", "result": [1, 2]}))
+        self.assertTrue(_looks_like_error_output({"status": "error", "message": "boom"}))
+        self.assertTrue(_looks_like_error_output({"error": "boom"}))
+
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
 

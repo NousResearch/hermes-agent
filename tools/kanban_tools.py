@@ -12,7 +12,7 @@ Why tools instead of just shelling out to ``hermes kanban``?
    / Modal / Singularity / SSH would run ``hermes kanban complete …``
    inside the container, where ``hermes`` isn't installed and the DB
    isn't mounted. Tools run in the agent's Python process, so they
-   always reach ``~/.hermes/kanban.db`` regardless of terminal backend.
+   always reach the active/pinned kanban DB regardless of terminal backend.
 
 2. **No shell-quoting footguns.** Passing ``--metadata '{"x": [...]}'``
    through shlex+argparse is fragile. Structured tool args skip it.

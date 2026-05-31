@@ -506,6 +506,35 @@ def test_base_gateway_replies_to_triggering_message_for_telegram_dm_topic():
     assert _reply_anchor_for_event(event) == "463"
 
 
+def test_base_gateway_reply_anchor_for_feishu_topic():
+    """Feishu topic/thread replies should anchor to the triggering message,
+    not to reply_to_message_id which may point to the main group's seed message."""
+    event = SimpleNamespace(
+        message_id="msg_in_topic_456",
+        reply_to_message_id="main_group_seed_123",
+        source=SimpleNamespace(
+            platform="feishu",
+            thread_id="omt_topic_abc",
+        ),
+    )
+    # Before the fix, this returned reply_to_message_id ("main_group_seed_123"),
+    # causing the reply to escape the topic into the main group.
+    assert _reply_anchor_for_event(event) == "msg_in_topic_456"
+
+
+def test_base_gateway_reply_anchor_for_feishu_topic_no_message_id():
+    """When message_id is None for a Feishu topic event, return None."""
+    event = SimpleNamespace(
+        message_id=None,
+        reply_to_message_id="main_group_seed_123",
+        source=SimpleNamespace(
+            platform="feishu",
+            thread_id="omt_topic_abc",
+        ),
+    )
+    assert _reply_anchor_for_event(event) is None
+
+
 @pytest.mark.asyncio
 async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_dm_topic(monkeypatch, tmp_path):
     """GatewayRunner's duplicate thread metadata must match the base helper."""

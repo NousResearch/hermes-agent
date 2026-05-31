@@ -88,10 +88,21 @@ def _locales_dir() -> Path:
     """Return the directory containing locale YAML files.
 
     Lives next to the repo root so both the bundled install and editable
-    checkouts find it without PYTHONPATH gymnastics.
+    checkouts find it without PYTHONPATH gymnastics.  Falls back to a
+    package-relative location when the repo-root path doesn't exist
+    (e.g. in some pip-installed layouts).
     """
     # agent/i18n.py -> agent/ -> repo root
-    return Path(__file__).resolve().parent.parent / "locales"
+    primary = Path(__file__).resolve().parent.parent / "locales"
+    if primary.is_dir():
+        return primary
+    # Fallback: check alongside the agent package (e.g. site-packages/locales)
+    fallback = Path(__file__).resolve().parent / "locales"
+    if fallback.is_dir():
+        return fallback
+    # Return the primary path even if missing — _load_catalog will log a
+    # debug message and return an empty dict, which is better than crashing.
+    return primary
 
 
 def _normalize_lang(value: Any) -> str:

@@ -167,3 +167,90 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
 def test_t_unknown_language_uses_english():
     """Unknown lang codes normalize to English, not to a key-path fallback."""
     assert i18n.t("approval.denied", lang="klingon") == i18n.t("approval.denied", lang="en")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for #35595 — /model command i18n keys resolve correctly
+# ---------------------------------------------------------------------------
+
+def test_gateway_model_keys_have_english_catalog():
+    """Every gateway.model.* key used in /model command output MUST exist in
+    the English catalog so the t() function never returns a bare dotted key
+    path to end users (#35595)."""
+    model_keys = [
+        "gateway.model.switched",
+        "gateway.model.provider_label",
+        "gateway.model.context_label",
+        "gateway.model.max_output_label",
+        "gateway.model.cost_label",
+        "gateway.model.capabilities_label",
+        "gateway.model.prompt_caching_enabled",
+        "gateway.model.warning_prefix",
+        "gateway.model.saved_global",
+        "gateway.model.session_only_hint",
+        "gateway.model.current_label",
+        "gateway.model.current_tag",
+        "gateway.model.more_models_suffix",
+        "gateway.model.usage_switch_model",
+        "gateway.model.usage_switch_provider",
+        "gateway.model.usage_persist",
+        "gateway.model.error_prefix",
+    ]
+    for key in model_keys:
+        result = i18n.t(key, lang="en")
+        assert result != key, (
+            f"i18n key {key!r} returned itself — missing from en.yaml catalog. "
+            f"This causes the /model command to show structured field names "
+            f"instead of human-readable messages (#35595)."
+        )
+
+
+def test_model_switch_message_renders_human_readable():
+    """End-to-end: a /model switch confirmation should produce a human-readable
+    paragraph, not structured i18n key paths."""
+    msg = i18n.t("gateway.model.switched", model="gpt-5.4-mini")
+    assert "`gpt-5.4-mini`" in msg
+    assert msg != "gateway.model.switched"
+
+    provider = i18n.t("gateway.model.provider_label", provider="openai")
+    assert "openai" in provider
+    assert provider != "gateway.model.provider_label"
+
+    ctx = i18n.t("gateway.model.context_label", tokens="128,000")
+    assert "128,000" in ctx
+    assert ctx != "gateway.model.context_label"
+
+
+def test_locales_dir_finds_catalogs(tmp_path, monkeypatch):
+    """_locales_dir() should find locales even when the repo-root path
+    doesn't exist, using the package-relative fallback."""
+    real_locales = i18n._locales_dir()
+    assert real_locales.is_dir(), "real locales dir should exist in git checkout"
+
+    # Simulate a pip-installed layout where only the fallback path exists
+    fake_agent = tmp_path / "agent"
+    fake_agent.mkdir()
+    fake_locales = fake_agent / "locales"
+    fake_locales.mkdir()
+    (fake_locales / "en.yaml").write_text(
+        "gateway:\n  model:\n    switched: \"Switched to {model}\"\n",
+        encoding="utf-8",
+    )
+
+    # Mock __file__ to be inside fake_agent
+    fake_i18n = fake_agent / "i18n.py"
+    fake_i18n.write_text("", encoding="utf-8")
+
+    import agent.i18n as i18n_module
+
+    original_file = i18n_module.__file__
+    try:
+        # Point __file__ to the fake location; parent.parent won't have locales
+        monkeypatch.setattr(i18n_module, "__file__", str(fake_i18n))
+        # Clear any cached catalogs from the real locale path
+        i18n.reset_language_cache()
+        result = i18n_module._locales_dir()
+        assert result.is_dir(), "fallback path should find fake_locales"
+    finally:
+        monkeypatch.setattr(i18n_module, "__file__", original_file)
+        i18n.reset_language_cache()

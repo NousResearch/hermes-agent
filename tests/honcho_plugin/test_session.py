@@ -237,6 +237,7 @@ class TestPeerLookupHelpers:
         # so that a subsequent honcho_profile read returns what was written.
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()
+        assistant_peer.get_card.return_value = []
         assistant_peer.set_card.return_value = ["Role: user"]
         mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
@@ -397,6 +398,63 @@ class TestPeerLookupHelpers:
             "session_id": session.honcho_session_id,
         }])
 
+    def test_create_conclusion_records_sanitized_failure_reason(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        scope.create.side_effect = RuntimeError(
+            "Request timed out after 30.0s Bearer abc123 HONCHO_API_KEY=secret"
+        )
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        ok = mgr.create_conclusion(session.key, "Robert prefers vinyl")
+
+        assert ok is False
+        assert "Request timed out after 30.0s" in mgr.last_error
+        assert "Bearer [REDACTED]" in mgr.last_error
+        assert "HONCHO_API_KEY=[REDACTED]" in mgr.last_error
+        assert "abc123" not in mgr.last_error
+        assert "secret" not in mgr.last_error
+
+    def test_set_peer_card_merges_into_same_observer_target_card_used_for_reads(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.set_card.return_value = ["Existing fact", "New fact"]
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        mgr._fetch_peer_card = MagicMock(return_value=["Existing fact"])
+
+        result = mgr.set_peer_card(session.key, ["Existing fact", "New fact"], peer="user")
+
+        assert result == ["Existing fact", "New fact"]
+        mgr._fetch_peer_card.assert_called_once_with(
+            session.assistant_peer_id,
+            target=session.user_peer_id,
+        )
+        mgr._get_or_create_peer.assert_called_once_with(session.assistant_peer_id)
+        assistant_peer.set_card.assert_called_once_with(
+            ["Existing fact", "New fact"],
+            target=session.user_peer_id,
+        )
+
+    def test_set_peer_card_preserves_direct_target_card_fallback(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.set_card.return_value = ["Direct target fact", "New fact"]
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        mgr._fetch_peer_card = MagicMock(side_effect=[[], ["Direct target fact"]])
+
+        result = mgr.set_peer_card(session.key, ["New fact"], peer="user")
+
+        assert result == ["Direct target fact", "New fact"]
+        assert mgr._fetch_peer_card.call_args_list[0].args == (session.assistant_peer_id,)
+        assert mgr._fetch_peer_card.call_args_list[0].kwargs == {"target": session.user_peer_id}
+        assert mgr._fetch_peer_card.call_args_list[1].args == (session.user_peer_id,)
+        assistant_peer.set_card.assert_called_once_with(
+            ["Direct target fact", "New fact"],
+            target=session.user_peer_id,
+        )
+
 
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
@@ -447,6 +505,53 @@ class TestConcludeToolDispatch:
             "Assistant likes terse replies",
             peer="ai",
         )
+
+    def test_honcho_conclude_failure_includes_manager_reason(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.create_conclusion.return_value = False
+        provider._manager.last_error = "Request timed out after 30.0s"
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode"},
+        )
+
+        assert "Failed to save conclusion: Request timed out after 30.0s" in result
+
+    def test_honcho_profile_update_failure_includes_manager_reason(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.set_peer_card.return_value = None
+        provider._manager.last_error = "Honcho API unavailable"
+
+        result = provider.handle_tool_call(
+            "honcho_profile",
+            {"peer": "user", "card": ["User prefers dark mode"]},
+        )
+
+        assert "Failed to update peer card: Honcho API unavailable" in result
+
+    def test_honcho_read_tools_still_dispatch_to_manager(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.get_peer_card.return_value = ["Name: Robert"]
+        provider._manager.search_context.return_value = "Robert prefers dark mode"
+        provider._manager.get_session_context.return_value = {"card": "Name: Robert"}
+
+        profile = provider.handle_tool_call("honcho_profile", {"peer": "user"})
+        search = provider.handle_tool_call("honcho_search", {"peer": "user", "query": "dark"})
+        context = provider.handle_tool_call("honcho_context", {"peer": "user"})
+
+        assert "Name: Robert" in profile
+        assert "Robert prefers dark mode" in search
+        assert "Name: Robert" in context
 
     def test_honcho_profile_can_target_explicit_peer_id(self):
         provider = HonchoMemoryProvider()

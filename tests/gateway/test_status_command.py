@@ -175,6 +175,79 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
 
 
 @pytest.mark.asyncio
+async def test_status_command_includes_live_agent_model_and_context():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 1000,
+        "output_tokens": 250,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "openai/gpt-test",
+    }
+    running_agent = SimpleNamespace(
+        model="openai/gpt-test",
+        provider="openai",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=12_345,
+            context_length=100_000,
+        ),
+        interrupt=MagicMock(),
+    )
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `openai/gpt-test` (openai)" in result
+    assert "**Context:** 12,345 / 100,000 (12%)" in result
+    assert "**Cumulative API tokens (re-sent each call):** 1,250 (cumulative)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_persisted_model_and_context_when_agent_not_running(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=24_000,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 2000,
+        "output_tokens": 500,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "openai/gpt-persisted",
+        "billing_provider": "openai-codex",
+        "billing_base_url": "https://example.invalid/v1",
+    }
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 272_000,
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `openai/gpt-persisted` (openai-codex)" in result
+    assert "**Context:** 24,000 / 272,000 (9%)" in result
+    assert "**Cumulative API tokens (re-sent each call):** 2,500 (cumulative)" in result
+
+
+@pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())
     session_entry = SessionEntry(

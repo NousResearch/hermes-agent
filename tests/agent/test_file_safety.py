@@ -44,6 +44,19 @@ class TestEnvFileReadBlocking:
         error = get_read_block_error("/home/user/app/services/api/.env.production")
         assert error is not None
 
+    @pytest.mark.parametrize("basename", [
+        ".ENV",
+        ".Env.Local",
+        ".ENV.PRODUCTION",
+        ".ENVRC",
+    ])
+    def test_blocked_env_basenames_case_insensitive(self, basename):
+        """Secret-bearing .env basenames are blocked regardless of case."""
+        error = get_read_block_error(f"/tmp/project/{basename}")
+        assert error is not None, f"{basename} should be blocked"
+        assert "Access denied" in error
+        assert "environment file" in error.lower()
+
     def test_blocked_env_absolute_path(self):
         """Absolute paths to .env files are blocked."""
         error = get_read_block_error("/opt/myapp/.env")

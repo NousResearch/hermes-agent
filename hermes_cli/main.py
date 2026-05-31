@@ -2485,13 +2485,14 @@ def select_provider_and_model(args=None):
     selected_members = ordered[provider_idx][2]
 
     # Group row → drill into a member sub-picker. Default to the active member
-    # if the active provider lives in this group.
+    # if the active provider lives in this group. The descriptive text lives on
+    # the group row itself, so member rows show only their short label here.
     if selected_members:
         member_default = 0
         if active in selected_members:
             member_default = selected_members.index(active)
         member_labels = [
-            canonical_descs.get(m, provider_labels.get(m, m)) for m in selected_members
+            provider_labels.get(m, m) for m in selected_members
         ]
         member_idx = _prompt_provider_choice(member_labels, default=member_default)
         if member_idx is None:

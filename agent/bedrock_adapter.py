@@ -877,7 +877,7 @@ def build_converse_kwargs(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
@@ -936,7 +936,7 @@ def call_converse(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
@@ -977,7 +977,7 @@ def call_converse_stream(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
@@ -1244,7 +1244,12 @@ def classify_bedrock_error(error_message: str) -> str:
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # Anthropic Claude models on Bedrock
+    # Opus 4.6+ and Sonnet 4.5+ support 1M context with entitlement (context-1m beta).
+    # Default to 200K (standard); users with 1M entitlement should set context_length in config.
+    "anthropic.claude-opus-4-8":     200_000,
+    "anthropic.claude-opus-4-7":     200_000,
     "anthropic.claude-opus-4-6":     200_000,
+    "anthropic.claude-opus-4-5":     200_000,
     "anthropic.claude-sonnet-4-6":   200_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
@@ -1259,14 +1264,21 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     "amazon.nova-pro":               300_000,
     "amazon.nova-lite":              300_000,
     "amazon.nova-micro":             128_000,
+    "amazon.nova-premier":           1_000_000,
     # Meta Llama
-    "meta.llama4-maverick":          128_000,
+    "meta.llama4-maverick":          1_000_000,
     "meta.llama4-scout":             128_000,
     "meta.llama3-3-70b-instruct":    128_000,
     # Mistral
     "mistral.mistral-large":         128_000,
+    "mistral.pixtral-large":         128_000,
     # DeepSeek
     "deepseek.v3":                   128_000,
+    "deepseek.r1":                   128_000,
+    # Kimi / GLM / MiniMax (2P models)
+    "moonshotai.kimi-k2":            128_000,
+    "zai.glm-4":                     128_000,
+    "minimax.minimax-m2":            128_000,
 }
 
 # Default for unknown Bedrock models

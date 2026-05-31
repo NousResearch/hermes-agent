@@ -3476,6 +3476,17 @@ class HermesCLI:
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        # Strip Bedrock cross-region inference profile prefix (us., global., eu., ap.)
+        # so the status bar shows "claude-sonnet-4-6" instead of "us.anthropic.claude-sonnet-4-6"
+        if "." in model_short:
+            parts = model_short.split(".", 1)
+            if parts[0] in ("us", "eu", "ap", "global", "apac", "jp"):
+                model_short = parts[1]
+            # Also strip the vendor prefix (anthropic., amazon., meta., etc.)
+            if "." in model_short:
+                vendor_parts = model_short.split(".", 1)
+                if vendor_parts[0] in ("anthropic", "amazon", "meta", "mistral", "cohere", "ai21", "deepseek", "moonshotai", "zai", "minimax"):
+                    model_short = vendor_parts[1]
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:

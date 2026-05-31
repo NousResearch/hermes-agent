@@ -8999,9 +8999,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ctx_display = str(context_length)
 
         lines = [
-            f"◆ Model: `{model}`",
-            f"◆ Provider: {provider or 'openrouter'}",
-            f"◆ Context: {ctx_display} tokens ({ctx_source})",
+            t("gateway.reset.model", "◆ Model: `{model}`").format(model=model),
+            t("gateway.reset.provider", "◆ Provider: {provider}").format(provider=provider or 'openrouter'),
+            t("gateway.reset.context", "◆ Context: {ctx_display} tokens ({ctx_source})").format(ctx_display=ctx_display, ctx_source=ctx_source),
         ]
 
         # Show endpoint for local/custom setups
@@ -9011,6 +9011,173 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "\n".join(lines)
 
 
+        # Snapshot the old entry so on_session_finalize can report the
+        # expiring session id before reset_session() rotates it.
+        old_entry = self.session_store._entries.get(session_key)
+
+        # Close tool resources on the old agent (terminal sandboxes, browser
+        # daemons, background processes) before evicting from cache.
+        # Guard with getattr because test fixtures may skip __init__.
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+            if _old_agent is not None:
+                self._cleanup_agent_resources(_old_agent)
+        self._evict_cached_agent(session_key)
+
+        # Discard any /queue overflow for this session — /new is a
+        # conversation-boundary operation, queued follow-ups from the
+        # previous conversation must not bleed into the new one.
+        _qe = getattr(self, "_queued_events", None)
+        if _qe is not None:
+            _qe.pop(session_key, None)
+
+        try:
+            from tools.env_passthrough import clear_env_passthrough
+            clear_env_passthrough()
+        except Exception:
+            pass
+
+        try:
+            from tools.credential_files import clear_credential_files
+            clear_credential_files()
+        except Exception:
+            pass
+
+        # Reset the session
+        new_entry = self.session_store.reset_session(session_key)
+
+        # Clear any session-scoped model/reasoning overrides so the next agent
+        # picks up configured defaults instead of previous session switches.
+        self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.pop(session_key, None)
+
+        # Clear session-scoped dangerous-command approvals and /yolo state.
+        # /new is a conversation-boundary operation — approval state from the
+        # previous conversation must not survive the reset.
+        self._clear_session_boundary_security_state(session_key)
+
+        _old_sid = old_entry.session_id if old_entry else None
+
+        # Fire plugin on_session_finalize hook (session boundary)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_finalize",
+                session_id=_old_sid,
+                platform=source.platform.value if source.platform else "",
+                reason="new_session",
+                old_session_id=_old_sid,
+                new_session_id=new_entry.session_id if new_entry else None,
+            )
+        except Exception:
+            pass
+
+        # Emit session:end hook (session is ending)
+        await self.hooks.emit("session:end", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+        })
+
+        # Emit session:reset hook
+        await self.hooks.emit("session:reset", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+        })
+
+        # Resolve session config info to surface to the user
+        try:
+            session_info = self._format_session_info()
+        except Exception:
+            session_info = ""
+
+        if new_entry:
+            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default", "✨ New session started")
+        else:
+            # No existing session, just create one
+            new_entry = self.session_store.get_or_create_session(source, force_new=True)
+            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
+
+        # Set session title if provided with /new <title>
+        _title_arg = event.get_command_args().strip()
+        _title_note = ""
+        if _title_arg and self._session_db and new_entry:
+            from hermes_state import SessionDB
+            try:
+                sanitized = SessionDB.sanitize_title(_title_arg)
+            except ValueError as e:
+                sanitized = None
+                _title_note = t("gateway.reset.title_rejected", error=str(e))
+            if sanitized:
+                try:
+                    self._session_db.set_session_title(new_entry.session_id, sanitized)
+                    header = t("gateway.reset.header_titled", title=sanitized)
+                except ValueError as e:
+                    _title_note = t("gateway.reset.title_error_untitled", error=str(e))
+                except Exception:
+                    pass
+            elif not _title_note:
+                # sanitize_title returned empty (whitespace-only / unprintable)
+                _title_note = t("gateway.reset.title_empty_untitled")
+        header = header + _title_note
+
+        # When /new runs inside a Telegram DM topic lane, rewrite the
+        # (chat_id, thread_id) → session_id binding so the next message
+        # uses the freshly-created session. Without this, the binding
+        # still points at the old session and the binding-lookup at the
+        # top of _handle_message_with_agent would switch right back.
+        if self._is_telegram_topic_lane(source) and new_entry is not None:
+            try:
+                self._record_telegram_topic_binding(source, new_entry)
+            except Exception:
+                logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
+
+        # Fire plugin on_session_reset hook (new session guaranteed to exist)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _new_sid = new_entry.session_id if new_entry else None
+            _invoke_hook(
+                "on_session_reset",
+                session_id=_new_sid,
+                platform=source.platform.value if source.platform else "",
+                reason="new_session",
+                old_session_id=_old_sid,
+                new_session_id=_new_sid,
+            )
+        except Exception:
+            pass
+
+        # Append a random tip to the reset message
+        try:
+            from hermes_cli.tips import get_random_tip
+            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+        except Exception:
+            _tip_line = ""
+
+        if session_info:
+            return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
+        return EphemeralReply(f"{header}{_tip_line}")
+
+    async def _handle_profile_command(self, event: MessageEvent) -> str:
+        """Handle /profile — show active profile name and home directory."""
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import get_active_profile_name
+
+        display = display_hermes_home()
+        profile_name = get_active_profile_name()
+
+        lines = [
+            t("gateway.profile.header", profile=profile_name),
+            t("gateway.profile.home", home=display),
+        ]
+
+        return "\n".join(lines)
 
 
     def _check_slash_access(
@@ -10611,7 +10778,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _on_confirm(choice: str):
             if choice == "cancel":
-                return f"🟡 /{command} cancelled. Conversation unchanged."
+                return t("gateway.confirm.cancelled", "🟡 /{command} cancelled. Conversation unchanged.").format(command=command)
             if choice == "always":
                 try:
                     from cli import save_config_value
@@ -10627,9 +10794,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             result = await execute()
             if choice == "always":
                 note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
+                    "\n\n" + t("gateway.confirm.always_note",
+                        "ℹ️ Future /clear, /new, /reset, and /undo will run "
+                        "without confirmation. Re-enable via "
+                        "`approvals.destructive_slash_confirm: true` in config.yaml.")
                 )
                 if isinstance(result, str):
                     return result + note
@@ -10641,13 +10809,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         _p = self._typed_command_prefix_for(event.source.platform)
         prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
-            f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
+            t("gateway.confirm.title", "⚠️ **Confirm /{command}**").format(command=command) + "\n\n"
+            + detail + "\n\n"
+            + t("gateway.confirm.choose", "Choose:") + "\n"
+            + t("gateway.confirm.once", "• **Approve Once** — proceed this time only") + "\n"
+            + t("gateway.confirm.always", "• **Always Approve** — proceed and silence this prompt permanently") + "\n"
+            + t("gateway.confirm.cancel", "• **Cancel** — keep current conversation") + "\n\n"
+            + t("gateway.confirm.fallback", "_Text fallback: reply `/approve`, `/always`, or `/cancel`._")
         )
         return await self._request_slash_confirm(
             event=event,

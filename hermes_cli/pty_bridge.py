@@ -239,7 +239,7 @@ class PtyBridge:
     def _process_tree_alive(self) -> bool:
         if self._pgid is not None:
             try:
-                os.killpg(self._pgid, 0)
+                os.killpg(self._pgid, 0)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
                 return True
             except ProcessLookupError:
                 return False
@@ -252,7 +252,7 @@ class PtyBridge:
     def _signal_tree(self, sig) -> None:
         if self._pgid is not None:
             try:
-                os.killpg(self._pgid, sig)
+                os.killpg(self._pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
                 return
             except Exception:
                 pass

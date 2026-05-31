@@ -244,9 +244,16 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "elevenlabs",
             },
-            # Mistral (Voxtral TTS) temporarily hidden — `mistralai` PyPI
-            # package is currently quarantined (malicious 2.4.6 release on
-            # 2026-05-12). Restore this entry once PyPI un-quarantines.
+            # Mistral Voxtral TTS — `mistralai` SDK lazy-installs on first use.
+            {
+                "name": "Mistral (Voxtral TTS)",
+                "badge": "paid",
+                "tag": "Multilingual, native Opus",
+                "env_vars": [
+                    {"key": "MISTRAL_API_KEY", "prompt": "Mistral API key", "url": "https://console.mistral.ai/"},
+                ],
+                "tts_provider": "mistral",
+            },
             {
                 "name": "Google Gemini TTS",
                 "badge": "preview",
@@ -339,11 +346,26 @@ TOOL_CATEGORIES = {
     "video_gen": {
         "name": "Video Generation",
         "icon": "🎬",
-        # Providers list is intentionally empty — every video gen backend
-        # is a plugin, surfaced by ``_plugin_video_gen_providers()`` and
-        # injected by ``_visible_providers``. Mirrors the design we'll
-        # converge image_gen toward.
-        "providers": [],
+        # "Nous Subscription" row mirrors the image_gen pattern — managed
+        # FAL video generation billed via the Nous Portal.  Plugin-backed
+        # provider rows (FAL BYOK, xAI, …) are injected at runtime by
+        # ``_plugin_video_gen_providers()`` in ``_visible_providers``.
+        "providers": [
+            {
+                "name": "Nous Subscription",
+                "badge": "subscription",
+                "tag": "Managed FAL video generation billed to your subscription",
+                "env_vars": [],
+                "requires_nous_auth": True,
+                "managed_nous_feature": "video_gen",
+                "override_env_vars": ["FAL_KEY"],
+                # The underlying plugin backend — when the user picks
+                # "Nous Subscription" we set video_gen.provider = "fal"
+                # and video_gen.use_gateway = True so the FAL plugin
+                # routes through the managed queue gateway.
+                "video_gen_plugin_name": "fal",
+            },
+        ],
     },
     "x_search": {
         "name": "X (Twitter) Search",
@@ -1438,7 +1460,7 @@ def _toolset_has_keys(
         except Exception:
             return False
 
-    if ts_key in {"web", "image_gen", "tts", "browser"}:
+    if ts_key in {"web", "image_gen", "video_gen", "tts", "browser"}:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
@@ -1854,18 +1876,26 @@ def _visible_providers(
     *,
     force_fresh: bool = False,
 ) -> list[dict]:
-    """Return provider entries visible for the current auth/config state."""
+    """Return provider entries visible for the current auth/config state.
+
+    Nous-managed Tool Gateway rows (``managed_nous_feature``) are always
+    shown — even to logged-out / unentitled users — so the picker advertises
+    that the capability exists.  Selecting one drives an inline Nous Portal
+    login + entitlement check (see ``_configure_provider``); the row only
+    *activates* the gateway once paid access is confirmed.
+    """
     features = get_nous_subscription_features(config, force_fresh=force_fresh)
-    managed_available = bool(
-        features.account_info
-        and features.account_info.logged_in
-        and features.account_info.paid_service_access is True
-    )
     visible = []
     for provider in cat.get("providers", []):
-        if provider.get("managed_nous_feature") and not managed_available:
-            continue
-        if provider.get("requires_nous_auth") and not features.nous_auth_present:
+        # Nous-managed Tool Gateway rows stay visible regardless of auth —
+        # selecting one drives an inline Portal login. A `requires_nous_auth`
+        # row that is NOT a managed gateway feature (pure pre-auth UX) is
+        # still hidden until the user is logged in.
+        if (
+            provider.get("requires_nous_auth")
+            and not provider.get("managed_nous_feature")
+            and not features.nous_auth_present
+        ):
             continue
         visible.append(provider)
 
@@ -1911,22 +1941,16 @@ def _hidden_nous_gateway_message(
     *,
     force_fresh: bool = False,
 ) -> str:
-    """Return a reason when a category's Nous provider is hidden."""
-    features = get_nous_subscription_features(config, force_fresh=force_fresh)
-    managed_available = bool(
-        features.account_info
-        and features.account_info.logged_in
-        and features.account_info.paid_service_access is True
-    )
-    if managed_available:
-        return ""
-    if not any(p.get("managed_nous_feature") for p in cat.get("providers", [])):
-        return ""
-    message = format_nous_portal_entitlement_message(
-        features.account_info,
-        capability=capability,
-    )
-    return message or ""
+    """Deprecated: Nous Tool Gateway rows are no longer hidden.
+
+    Previously this returned a "log in / upgrade" banner shown above a
+    category when its Nous-managed rows were filtered out for unentitled
+    users. Those rows are now always listed (see ``_visible_providers``), and
+    the login + entitlement guidance happens inline when the user selects one
+    (``ensure_nous_portal_access``). Kept as a no-op so call sites stay simple;
+    always returns an empty string.
+    """
+    return ""
 
 
 _POST_SETUP_INSTALLED: dict = {
@@ -2110,14 +2134,17 @@ def _configure_tool_category(
                     configured = ""
                 else:
                     configured = " [configured]"
-            # Highlight Nous-managed entries when the user has Portal auth.
-            # curses_radiolist can't render ANSI inside item strings, so we
-            # use a plain unicode star + parenthetical phrase. Suppressed
-            # when no Portal auth is present so non-subscribers see the
-            # picker unchanged.
+            # Mark Nous-managed entries. Logged-in paid subscribers get the
+            # "included" star; everyone else gets a "via Nous Portal" hint so
+            # it's clear selecting the row triggers a Portal login. The rows
+            # are always shown now (see _visible_providers) — selecting one
+            # drives an inline login + entitlement check.
             sub_marker = ""
-            if _nous_logged_in and p.get("managed_nous_feature"):
-                sub_marker = "  ★ Included with your Nous subscription"
+            if p.get("managed_nous_feature"):
+                if _nous_logged_in:
+                    sub_marker = "  ★ Included with your Nous subscription"
+                else:
+                    sub_marker = "  ★ via Nous Portal (login on select)"
             provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
 
         # Add skip option
@@ -2153,7 +2180,7 @@ def _is_provider_active(
         return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
 
     video_plugin_name = provider.get("video_gen_plugin_name")
-    if video_plugin_name:
+    if video_plugin_name and not provider.get("managed_nous_feature"):
         video_cfg = config.get("video_gen", {})
         return isinstance(video_cfg, dict) and video_cfg.get("provider") == video_plugin_name
 
@@ -2170,6 +2197,15 @@ def _is_provider_active(
                 if configured_provider not in {None, "", "fal"}:
                     return False
                 if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
+                    return False
+            return feature.managed_by_nous
+        if managed_feature == "video_gen":
+            video_cfg = config.get("video_gen", {})
+            if isinstance(video_cfg, dict):
+                configured_provider = video_cfg.get("provider")
+                if configured_provider not in {None, "", "fal"}:
+                    return False
+                if video_cfg.get("use_gateway") is not None and not is_truthy_value(video_cfg.get("use_gateway"), default=False):
                     return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
@@ -2505,14 +2541,14 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
     _print_success(f"  Model set to: {chosen}")
 
 
-def _select_plugin_video_gen_provider(plugin_name: str, config: dict) -> None:
+def _select_plugin_video_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
     """Persist a plugin-backed video generation provider selection."""
     vid_cfg = config.setdefault("video_gen", {})
     if not isinstance(vid_cfg, dict):
         vid_cfg = {}
         config["video_gen"] = vid_cfg
     vid_cfg["provider"] = plugin_name
-    vid_cfg["use_gateway"] = False
+    vid_cfg["use_gateway"] = use_gateway
     _print_success(f"  video_gen.provider set to: {plugin_name}")
     _configure_videogen_model_for_plugin(plugin_name, config)
 
@@ -2527,7 +2563,26 @@ def _configure_provider(
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
 
-    if provider.get("requires_nous_auth"):
+    # Nous-managed Tool Gateway backends are always listed (see
+    # _visible_providers), but only *activate* once the user has paid Nous
+    # Portal access. Selecting one runs an inline Portal login when needed —
+    # auth + entitlement only, no inference-provider switch and no bulk
+    # "enable all tools" prompt (that lives in `hermes model`).
+    if managed_feature:
+        from hermes_cli.nous_subscription import ensure_nous_portal_access
+
+        if not ensure_nous_portal_access(
+            capability=f"{provider.get('name', 'the Nous Tool Gateway')}"
+        ):
+            _print_warning(
+                "  Not enabled — Nous Portal paid access is required for this backend."
+            )
+            return
+
+    # Pure pre-auth UX rows (requires_nous_auth without a managed gateway
+    # feature) keep the old gate. Managed rows are handled by the inline
+    # login above, so don't double-check them here.
+    if provider.get("requires_nous_auth") and not managed_feature:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
         entitled = bool(
             features.account_info and features.account_info.paid_service_access is True
@@ -2597,7 +2652,7 @@ def _configure_provider(
         # registry.
         video_plugin = provider.get("video_gen_plugin_name")
         if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
+            _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
             return
         # Imagegen backends prompt for model selection after backend pick.
         backend = provider.get("imagegen_backend")
@@ -2676,7 +2731,7 @@ def _configure_provider(
             return
         video_plugin = provider.get("video_gen_plugin_name")
         if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
+            _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
             return
         # Imagegen backends prompt for model selection after env vars are in.
         backend = provider.get("imagegen_backend")
@@ -2891,7 +2946,22 @@ def _reconfigure_provider(
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
 
-    if provider.get("requires_nous_auth"):
+    # Same inline Nous Portal login + entitlement gate as _configure_provider:
+    # managed Tool Gateway backends only activate with paid Portal access.
+    if managed_feature:
+        from hermes_cli.nous_subscription import ensure_nous_portal_access
+
+        if not ensure_nous_portal_access(
+            capability=f"{provider.get('name', 'the Nous Tool Gateway')}"
+        ):
+            _print_warning(
+                "  Not enabled — Nous Portal paid access is required for this backend."
+            )
+            return
+
+    # Pure pre-auth UX rows keep the old gate; managed rows already handled
+    # by the inline login above.
+    if provider.get("requires_nous_auth") and not managed_feature:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
         entitled = bool(
             features.account_info and features.account_info.paid_service_access is True
@@ -2957,7 +3027,7 @@ def _reconfigure_provider(
         # Plugin-registered video_gen provider — same flow, different registry.
         video_plugin = provider.get("video_gen_plugin_name")
         if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
+            _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
             return
         # Imagegen backends prompt for model selection on reconfig too.
         backend = provider.get("imagegen_backend")
@@ -2997,7 +3067,7 @@ def _reconfigure_provider(
     # Plugin-registered video_gen provider — same flow, different registry.
     video_plugin = provider.get("video_gen_plugin_name")
     if video_plugin:
-        _select_plugin_video_gen_provider(video_plugin, config)
+        _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
         return
 
     backend = provider.get("imagegen_backend")

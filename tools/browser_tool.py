@@ -33,8 +33,8 @@ Environment Variables:
   requires Scale Plan (default: "false")
 - BROWSERBASE_KEEP_ALIVE: Enable keepAlive for session reconnection after disconnects,
   requires paid plan (default: "true")
-- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
-  beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in seconds (max 21600 = 6h).
+  Set to extend beyond project default. Common values: 600 (10min), 1800 (30min) (default: none)
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
@@ -2872,6 +2872,22 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
             response = {
                 "success": False,
                 "error": f"JavaScript evaluation is not supported by this browser backend. {err}",
+            }
+            return json.dumps(_copy_fallback_warning(response, result))
+        # A live DOM node / NodeList / Window can't be JSON-serialized by CDP
+        # and fails the eval with "Object reference chain is too long".  The
+        # supervisor fast path retries with returnByValue=false, but the CLI
+        # subprocess can't, so turn the cryptic protocol error into actionable
+        # guidance instead of surfacing it raw.
+        if "reference chain is too long" in err.lower():
+            response = {
+                "success": False,
+                "error": (
+                    "Expression returned a live DOM node / NodeList / Window, "
+                    "which can't be serialized. Extract a primitive value "
+                    "(e.g. .innerText, .href, .src, .value) or use "
+                    "JSON.stringify() / a snapshot tool instead."
+                ),
             }
             return json.dumps(_copy_fallback_warning(response, result))
         response = {

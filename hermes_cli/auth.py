@@ -6126,55 +6126,56 @@ def _prompt_model_selection(
     _DIM = "\033[2m"
     _RESET = "\033[0m"
 
-    # Try arrow-key menu first, fall back to number input
+    # Try arrow-key menu first, fall back to number input.
+    # Uses the shared curses radiolist (ESC/arrow-key handling that works
+    # across terminals, incl. those that emit raw escape sequences) instead
+    # of simple_term_menu, which conflicts with /dev/tty and left ESC/arrow
+    # keys unreliable in the setup model picker.
     try:
-        from simple_term_menu import TerminalMenu
+        from hermes_cli.curses_ui import curses_radiolist
 
-        choices = [f"  {_label(mid)}" for mid in ordered]
-        choices.append("  Enter custom model name")
-        choices.append("  Skip (keep current)")
+        choices = [_label(mid) for mid in ordered]
+        choices.append("Enter custom model name")
+        choices.append("Skip (keep current)")
 
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         unavailable_footer = unavailable_message.strip()
         if not unavailable_footer and _unavailable:
             unavailable_footer = f"Upgrade at {_upgrade_url} for paid models"
 
-        # Print the unavailable block BEFORE the menu via regular print().
-        # simple_term_menu pads title lines to terminal width (causes wrapping),
-        # so we keep the title minimal and use stdout for the static block.
-        # clear_screen=False means our printed output stays visible above.
+        # The pricing column header (and any unavailable-models block) is shown
+        # as a multi-line description above the list so it survives the curses
+        # screen clear. menu_title already embeds the aligned price header.
+        desc_lines: list[str] = []
+        if has_pricing:
+            # menu_title is "Select default model:\n<pad><header>  /Mtok"
+            # Keep only the header portion for the description.
+            header_part = menu_title.split("\n", 1)
+            if len(header_part) > 1:
+                desc_lines.extend(header_part[1].splitlines())
         if _unavailable:
-            print(menu_title)
-            print()
             for mid in _unavailable:
-                print(f"{_DIM}     {_label(mid)}{_RESET}")
-            print()
-            print(f"{_DIM}  ── {unavailable_footer} ──{_RESET}")
-            print()
-            effective_title = "Available free models:"
-        else:
-            effective_title = menu_title
+                desc_lines.append(f"   {_label(mid)}")
+            desc_lines.append(f"  ── {unavailable_footer} ──")
+        description = "\n".join(desc_lines) if desc_lines else None
 
-        menu = TerminalMenu(
+        idx = curses_radiolist(
+            "Select default model:",
             choices,
-            cursor_index=default_idx,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title=effective_title,
+            selected=default_idx,
+            cancel_returns=-1,
+            description=description,
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-        flush_stdin()
-        if idx is None:
+        if idx < 0:
             return None
         print()
         if idx < len(ordered):
             return ordered[idx]
         elif idx == len(ordered):
-            custom = input("Enter model name: ").strip()
+            try:
+                custom = input("Enter model name: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return None
             return custom if custom else None
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):

@@ -43,7 +43,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |
 | `/title` | Set a title for the current session (usage: /title My Session Name) |
-| `/compress [focus topic]` | Manually compress conversation context (flush memories + summarize). Optional focus topic narrows what the summary preserves. |
+| `/compress [here [N] \| focus topic]` | Manually compress conversation context (flush memories + summarize). `/compress here [N]` summarizes everything except the most recent N exchanges (default 2), kept verbatim — pick your own compression boundary. A focus topic narrows what a full summary preserves. |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
 | `/snapshot [create\|restore <id>\|prune]` (alias: `/snap`) | Create or restore state snapshots of Hermes config/state. `create [label]` saves a snapshot, `restore <id>` reverts to it, `prune [N]` removes old snapshots, or list all with no args. |
 | `/stop` | Kill all running background processes |
@@ -206,7 +206,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/retry` | Retry the last message. |
 | `/undo` | Remove the last exchange. |
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
-| `/compress [focus topic]` | Manually compress conversation context. Optional focus topic narrows what the summary preserves. |
+| `/compress [here [N] \| focus topic]` | Manually compress conversation context. `/compress here [N]` keeps the most recent N exchanges (default 2) verbatim and summarizes the rest. A focus topic narrows what a full summary preserves. |
 | `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |

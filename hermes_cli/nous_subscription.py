@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.config import get_env_value, load_config
-from hermes_cli.nous_account import NousPortalAccountInfo, get_nous_portal_account_info
+from hermes_cli.nous_account import (
+    NousPortalAccountInfo,
+    format_nous_portal_entitlement_message,
+    get_nous_portal_account_info,
+)
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
@@ -72,11 +76,15 @@ class NousSubscriptionFeatures:
         return self.features["browser"]
 
     @property
+    def video_gen(self) -> NousFeatureState:
+        return self.features["video_gen"]
+
+    @property
     def modal(self) -> NousFeatureState:
         return self.features["modal"]
 
     def items(self) -> Iterable[NousFeatureState]:
-        ordered = ("web", "image_gen", "tts", "browser", "modal")
+        ordered = ("web", "image_gen", "video_gen", "tts", "browser", "modal")
         for key in ordered:
             yield self.features[key]
 
@@ -255,6 +263,7 @@ def get_nous_subscription_features(
 
     web_tool_enabled = _toolset_enabled(config, "web")
     image_tool_enabled = _toolset_enabled(config, "image_gen")
+    video_tool_enabled = _toolset_enabled(config, "video_gen")
     tts_tool_enabled = _toolset_enabled(config, "tts")
     browser_tool_enabled = _toolset_enabled(config, "browser")
     modal_tool_enabled = _toolset_enabled(config, "terminal")
@@ -289,6 +298,8 @@ def get_nous_subscription_features(
     browser_use_gateway = _uses_gateway(browser_cfg)
     image_gen_cfg = config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}
     image_use_gateway = _uses_gateway(image_gen_cfg)
+    video_gen_cfg = config.get("video_gen") if isinstance(config.get("video_gen"), dict) else {}
+    video_use_gateway = _uses_gateway(video_gen_cfg)
 
     direct_exa = bool(get_env_value("EXA_API_KEY"))
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
@@ -296,6 +307,7 @@ def get_nous_subscription_features(
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
     direct_fal = fal_key_is_configured()
+    direct_fal_video = direct_fal  # same FAL_KEY; separate var so use_gateway is independent
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
     direct_camofox = bool(get_env_value("CAMOFOX_URL"))
@@ -311,6 +323,8 @@ def get_nous_subscription_features(
         direct_tavily = False
     if image_use_gateway:
         direct_fal = False
+    if video_use_gateway:
+        direct_fal_video = False
     if tts_use_gateway:
         direct_openai_tts = False
         direct_elevenlabs = False
@@ -320,6 +334,8 @@ def get_nous_subscription_features(
 
     managed_web_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
     managed_image_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
+    # Video gen uses the same fal-queue gateway as image gen.
+    managed_video_available = managed_image_available
     managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
     managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browser-use")
     managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
@@ -356,6 +372,10 @@ def get_nous_subscription_features(
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
     image_active = bool(image_tool_enabled and (image_managed or direct_fal))
     image_available = bool(managed_image_available or direct_fal)
+
+    video_managed = video_tool_enabled and managed_video_available and not direct_fal_video
+    video_active = bool(video_tool_enabled and (video_managed or direct_fal_video))
+    video_available = bool(managed_video_available or direct_fal_video)
 
     tts_current_provider = tts_provider or "edge"
     tts_managed = (
@@ -450,6 +470,18 @@ def get_nous_subscription_features(
             toolset_enabled=image_tool_enabled,
             current_provider="FAL" if direct_fal else ("Nous Subscription" if image_managed else ""),
             explicit_configured=direct_fal,
+        ),
+        "video_gen": NousFeatureState(
+            key="video_gen",
+            label="Video generation",
+            included_by_default=False,
+            available=video_available,
+            active=video_active,
+            managed_by_nous=video_managed,
+            direct_override=video_active and not video_managed,
+            toolset_enabled=video_tool_enabled,
+            current_provider="FAL" if direct_fal_video else ("Nous Subscription" if video_managed else ""),
+            explicit_configured=direct_fal_video,
         ),
         "tts": NousFeatureState(
             key="tts",
@@ -559,7 +591,21 @@ def apply_nous_managed_defaults(
         changed.add("browser")
 
     if "image_gen" in selected_toolsets and not fal_key_is_configured():
+        image_cfg = config.get("image_gen")
+        if not isinstance(image_cfg, dict):
+            image_cfg = {}
+            config["image_gen"] = image_cfg
+        image_cfg["use_gateway"] = True
         changed.add("image_gen")
+
+    if "video_gen" in selected_toolsets and not fal_key_is_configured():
+        video_cfg = config.get("video_gen")
+        if not isinstance(video_cfg, dict):
+            video_cfg = {}
+            config["video_gen"] = video_cfg
+        video_cfg["provider"] = "fal"
+        video_cfg["use_gateway"] = True
+        changed.add("video_gen")
 
     return changed
 
@@ -571,6 +617,7 @@ def apply_nous_managed_defaults(
 _GATEWAY_TOOL_LABELS = {
     "web": "Web search & extract (Firecrawl)",
     "image_gen": "Image generation (FAL)",
+    "video_gen": "Video generation (FAL)",
     "tts": "Text-to-speech (OpenAI TTS)",
     "browser": "Browser automation (Browser Use)",
 }
@@ -578,6 +625,7 @@ _GATEWAY_TOOL_LABELS = {
 
 def _get_gateway_direct_credentials() -> Dict[str, bool]:
     """Return a dict of tool_key -> has_direct_credentials."""
+    fal_direct = fal_key_is_configured()
     return {
         "web": bool(
             get_env_value("FIRECRAWL_API_KEY")
@@ -586,7 +634,8 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
             or get_env_value("TAVILY_API_KEY")
             or get_env_value("EXA_API_KEY")
         ),
-        "image_gen": fal_key_is_configured(),
+        "image_gen": fal_direct,
+        "video_gen": fal_direct,
         "tts": bool(
             resolve_openai_audio_api_key()
             or get_env_value("ELEVENLABS_API_KEY")
@@ -601,11 +650,12 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
 _GATEWAY_DIRECT_LABELS = {
     "web": "Firecrawl/Exa/Parallel/Tavily key",
     "image_gen": "FAL key",
+    "video_gen": "FAL key",
     "tts": "OpenAI/ElevenLabs key",
     "browser": "Browser Use/Browserbase key",
 }
 
-_ALL_GATEWAY_KEYS = ("web", "image_gen", "tts", "browser")
+_ALL_GATEWAY_KEYS = ("web", "image_gen", "video_gen", "tts", "browser")
 
 
 def get_gateway_eligible_tools(
@@ -646,6 +696,7 @@ def get_gateway_eligible_tools(
     opted_in = {
         "web": _uses_gateway(config.get("web")),
         "image_gen": _uses_gateway(config.get("image_gen")),
+        "video_gen": _uses_gateway(config.get("video_gen")),
         "tts": _uses_gateway(config.get("tts")),
         "browser": _uses_gateway(config.get("browser")),
     }
@@ -713,6 +764,15 @@ def apply_gateway_defaults(
             config["image_gen"] = image_cfg
         image_cfg["use_gateway"] = True
         changed.add("image_gen")
+
+    if "video_gen" in tool_keys:
+        video_cfg = config.get("video_gen")
+        if not isinstance(video_cfg, dict):
+            video_cfg = {}
+            config["video_gen"] = video_cfg
+        video_cfg["provider"] = "fal"
+        video_cfg["use_gateway"] = True
+        changed.add("video_gen")
 
     return changed
 
@@ -826,3 +886,136 @@ def prompt_enable_tool_gateway(
         if already_managed and not newly_switched:
             print("  (all tools already using Tool Gateway)")
     return changed
+
+
+# ---------------------------------------------------------------------------
+# Inline Nous Portal login for the Tool Gateway picker (`hermes tools`)
+# ---------------------------------------------------------------------------
+
+
+def ensure_nous_portal_access(*, capability: str = "the Nous Tool Gateway") -> bool:
+    """Make sure the user has paid Nous Portal access, logging in if needed.
+
+    Used by ``hermes tools`` when a user selects a Nous-managed Tool Gateway
+    backend (e.g. "Firecrawl (Nous Portal)").  Unlike ``hermes model``'s Nous
+    login, this:
+
+    - does NOT change the inference provider (``model.provider`` is untouched),
+    - does NOT run model selection, and
+    - does NOT offer the bulk "enable for all tools" Tool Gateway prompt.
+
+    It only performs the Nous Portal device-code OAuth (when the user isn't
+    already logged in) and refreshes entitlement, so the caller can enable the
+    single tool the user picked.
+
+    Returns ``True`` when the account has paid service access after the flow,
+    ``False`` otherwise (declined login, login failed, or no paid entitlement).
+    """
+    # Fast path: already entitled.
+    try:
+        info = get_nous_portal_account_info(force_fresh=True)
+    except Exception:
+        info = None
+    if info is not None and info.paid_service_access is True:
+        return True
+
+    # If not logged in at all, run the device-code login (auth only).
+    if info is None or not info.logged_in:
+        if not _run_nous_portal_login_only(capability=capability):
+            return False
+        try:
+            info = get_nous_portal_account_info(force_fresh=True)
+        except Exception:
+            info = None
+
+    if info is not None and info.paid_service_access is True:
+        return True
+
+    # Logged in but no paid access — surface billing guidance, do not enable.
+    message = format_nous_portal_entitlement_message(info, capability=capability)
+    if message:
+        for line in message.splitlines():
+            print(f"  {line}")
+    return False
+
+
+def _run_nous_portal_login_only(*, capability: str) -> bool:
+    """Run the Nous Portal device-code OAuth and persist credentials only.
+
+    No model selection, no provider switch, no Tool Gateway bulk prompt.
+    Returns ``True`` on a successful login, ``False`` if the user declined or
+    the flow failed.
+    """
+    try:
+        from hermes_cli.auth import (
+            _auth_store_lock,
+            _load_auth_store,
+            _nous_device_code_login,
+            _read_shared_nous_state,
+            _save_auth_store,
+            _save_provider_state,
+            _sync_nous_pool_from_auth_store,
+            _try_import_shared_nous_state,
+            _write_shared_nous_state,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"  Could not start Nous Portal login: {exc}")
+        return False
+
+    print()
+    print(f"  {capability} requires a Nous Portal login.")
+    try:
+        proceed = input("  Log in to Nous Portal now? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if proceed not in {"", "y", "yes"}:
+        print("  Skipped Nous Portal login.")
+        return False
+
+    try:
+        # Snapshot the active_provider so a tool-config login never silently
+        # switches the user's inference provider to Nous.
+        with _auth_store_lock():
+            prior_active_provider = _load_auth_store().get("active_provider")
+
+        auth_state = None
+        shared = _read_shared_nous_state()
+        if shared:
+            try:
+                do_import = input(
+                    "  Found existing Nous OAuth credentials. Import them? [Y/n]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "y"
+            if do_import in {"", "y", "yes"}:
+                auth_state = _try_import_shared_nous_state(timeout_seconds=15.0)
+
+        if auth_state is None:
+            auth_state = _nous_device_code_login()
+
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            _save_provider_state(auth_store, "nous", auth_state)
+            # Preserve the user's existing inference provider — this login is
+            # for tool entitlement only, not a provider switch.
+            if prior_active_provider:
+                auth_store["active_provider"] = prior_active_provider
+            else:
+                auth_store.pop("active_provider", None)
+            _save_auth_store(auth_store)
+
+        _write_shared_nous_state(auth_state)
+        _sync_nous_pool_from_auth_store()
+        print("  Nous Portal login successful.")
+        return True
+    except KeyboardInterrupt:
+        print("\n  Login cancelled.")
+        return False
+    except SystemExit:
+        # _nous_device_code_login raises SystemExit on subscription_required;
+        # it already printed billing guidance.
+        return False
+    except Exception as exc:
+        print(f"  Nous Portal login failed: {exc}")
+        return False

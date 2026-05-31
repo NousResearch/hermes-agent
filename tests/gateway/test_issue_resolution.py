@@ -15,6 +15,7 @@ from gateway.issue_resolution import (
     IssueRunStatus,
     IssueRunType,
     PullRequestMetadata,
+    cancel_issue_resolution,
     ReviewFindingsRetry,
     ReviewLoopCircuitBreaker,
     ReviewTagParseError,
@@ -35,6 +36,7 @@ from gateway.issue_resolution import (
     github_issue_webhook_command,
     is_master_issue,
     parse_decomposition_response,
+    parse_issue_cancel_command_args,
     parse_issue_command_args,
     submit_issue_resolution,
     parse_issue_next_command_args,
@@ -96,6 +98,70 @@ def test_github_issue_webhook_command_builds_slash_command():
     )
 
 
+def test_parse_issue_cancel_command_args():
+    """Issue cancellation accepts a run id plus optional audit reason."""
+    assert parse_issue_cancel_command_args("#42 stop spend") == (42, "stop spend")
+    assert parse_issue_cancel_command_args("42") == (
+        42,
+        "operator requested cancellation",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_issue_resolution_marks_queued_run(tmp_path, monkeypatch):
+    """Operators should be able to cancel queued work before execution starts."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    run = store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    messages: list[str] = []
+    comments: list[tuple[int, str]] = []
+
+    async def notify(message: str):
+        messages.append(message)
+
+    async def fake_post_issue_audit_comment(_repo, issue_number, body):
+        comments.append((issue_number, body))
+
+    monkeypatch.setattr("gateway.issue_resolution.IssueStateStore", lambda: store)
+    monkeypatch.setattr(
+        "gateway.issue_resolution._post_issue_audit_comment",
+        fake_post_issue_audit_comment,
+    )
+
+    result = await cancel_issue_resolution(run.id, reason="stop spend", notify=notify)
+
+    cancelled = store.get_run(run.id)
+    assert result.cancelled is True
+    assert result.status is IssueRunStatus.CANCELLED
+    assert cancelled.status is IssueRunStatus.CANCELLED
+    assert cancelled.error == "cancelled by operator: stop spend"
+    assert any("Cancelled issue run" in message for message in messages)
+    assert comments == [
+        (
+            42,
+            f"Hermes audit: run #{run.id} cancelled by operator. Reason: stop spend",
+        )
+    ]
+
+
+def test_cancel_run_ignores_terminal_runs(tmp_path):
+    """Completed or failed runs should not be moved back into cancellation state."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    run = store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    store.mark_completed(run.id)
+
+    result = store.cancel_run(run.id, "too late")
+
+    assert result.cancelled is False
+    assert result.status is IssueRunStatus.COMPLETED
+    assert store.get_run(run.id).status is IssueRunStatus.COMPLETED
+
+
 def test_issue_repo_allowlist_uses_safe_default(monkeypatch):
     """Issue automation should default to the controlled CryptoTrader playground."""
     monkeypatch.delenv("HERMES_ISSUE_ALLOWED_REPOS", raising=False)
@@ -146,7 +212,8 @@ async def test_submit_issue_resolution_accepts_configured_repo(tmp_path, monkeyp
         "gateway.issue_resolution.ensure_issue_queue_worker",
         fake_ensure_issue_queue_worker,
     )
-    monkeypatch.setattr("gateway.issue_resolution.IssueStateStore", IssueStateStore)
+    store = IssueStateStore(tmp_path / "allowed.db")
+    monkeypatch.setattr("gateway.issue_resolution.IssueStateStore", lambda: store)
 
     result = await submit_issue_resolution(
         IssueResolutionRequest("team/app", 1, tmp_path), notify=notify

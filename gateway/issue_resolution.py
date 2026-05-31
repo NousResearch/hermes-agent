@@ -76,6 +76,7 @@ class IssueRunStatus(str, Enum):
     EXPANDED = "expanded"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class IssueRunType(str, Enum):
@@ -209,6 +210,15 @@ class SubmitResult:
     reused: bool
 
 
+@dataclass(frozen=True)
+class CancellationResult:
+    """Result returned when an operator cancels an issue run."""
+
+    run_id: int
+    status: IssueRunStatus
+    cancelled: bool
+
+
 _RUN_NOTIFIERS: dict[int, Callable[[str], Awaitable[None]]] = {}
 _DEFAULT_NOTIFY: Callable[[str], Awaitable[None]] | None = None
 _QUEUE_WORKER_TASK: asyncio.Task | None = None
@@ -270,6 +280,26 @@ async def submit_next_issue_resolution(
         ),
         notify=notify,
     )
+
+
+async def cancel_issue_resolution(
+    run_id: int,
+    *,
+    reason: str,
+    notify: Callable[[str], Awaitable[None]],
+) -> CancellationResult:
+    """Cancel a queued or running issue run and write an audit note when possible."""
+    store = IssueStateStore()
+    result = store.cancel_run(run_id, reason)
+    run = store.get_run(run_id)
+    if result.cancelled:
+        await notify(f"Hermes: Cancelled issue run #{run_id}: {reason}")
+        await _post_issue_audit_comment(
+            run.repo,
+            run.issue_number,
+            f"Hermes audit: run #{run_id} cancelled by operator. Reason: {reason}",
+        )
+    return result
 
 
 def allowed_issue_repos() -> tuple[str, ...]:
@@ -753,6 +783,35 @@ class IssueStateStore:
             )
             conn.commit()
 
+    def cancel_run(self, run_id: int, reason: str) -> CancellationResult:
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM issue_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"issue run #{run_id} not found")
+            status = IssueRunStatus(str(row["status"]))
+            if status not in {IssueRunStatus.QUEUED, IssueRunStatus.RUNNING}:
+                return CancellationResult(run_id=run_id, status=status, cancelled=False)
+            conn.execute(
+                """
+                UPDATE issue_runs
+                SET status = ?, error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    IssueRunStatus.CANCELLED.value,
+                    f"cancelled by operator: {reason}"[:4000],
+                    now,
+                    run_id,
+                ),
+            )
+            conn.commit()
+        return CancellationResult(
+            run_id=run_id, status=IssueRunStatus.CANCELLED, cancelled=True
+        )
+
     def record_review_findings(self, run_id: int) -> int:
         """Increment and return the review-findings loop count for this run."""
         now = _now()
@@ -984,6 +1043,21 @@ def parse_issue_command_args(raw_args: str) -> IssueResolutionRequest:
         workdir=workdir or _default_workdir(repo),
         branch=branch,
     )
+
+
+def parse_issue_cancel_command_args(raw_args: str) -> tuple[int, str]:
+    """Parse `/issue-cancel` arguments into a run id and audit reason."""
+    tokens = shlex.split(raw_args or "")
+    if not tokens:
+        raise ValueError("missing run id")
+    try:
+        run_id = int(tokens[0].lstrip("#"))
+    except ValueError as exc:
+        raise ValueError(f"invalid run id: {tokens[0]}") from exc
+    if run_id <= 0:
+        raise ValueError("run id must be positive")
+    reason = " ".join(tokens[1:]).strip() or "operator requested cancellation"
+    return run_id, reason
 
 
 def parse_issue_next_command_args(raw_args: str) -> IssueSelectionRequest:

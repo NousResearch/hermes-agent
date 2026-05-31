@@ -7723,6 +7723,8 @@ class GatewayRunner:
             return await self._handle_issue_command(event)
         if canonical == "issue-next":
             return await self._handle_issue_next_command(event)
+        if canonical == "issue-cancel":
+            return await self._handle_issue_cancel_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -10009,6 +10011,32 @@ class GatewayRunner:
             f"Hermes: Next open issue in {request.repo} queued as run #{result.run_id}. "
             "Local coder execution is single-flight."
         )
+
+    async def _handle_issue_cancel_command(self, event: MessageEvent) -> str:
+        """Handle /issue-cancel by marking a queued or running run cancelled."""
+        from gateway.issue_resolution import (
+            cancel_issue_resolution,
+            parse_issue_cancel_command_args,
+        )
+
+        try:
+            run_id, reason = parse_issue_cancel_command_args(event.get_command_args())
+        except ValueError as exc:
+            return f"Usage: /issue-cancel <run-id> [reason]\nError: {exc}"
+
+        async def _notify(message: str) -> None:
+            await self._deliver_platform_notice(event.source, message)
+
+        try:
+            result = await cancel_issue_resolution(run_id, reason=reason, notify=_notify)
+        except Exception as exc:
+            return f"Hermes: Issue run #{run_id} could not be cancelled: {exc}"
+        if not result.cancelled:
+            return (
+                f"Hermes: Issue run #{run_id} is already {result.status.value}; "
+                "only queued or running runs can be cancelled."
+            )
+        return f"Hermes: Issue run #{run_id} cancelled."
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

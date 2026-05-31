@@ -41,6 +41,8 @@ _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
 _models_dev_retry_after: float = 0
 _models_dev_fetch_lock = threading.Lock()
+_models_dev_refresh_lock = threading.Lock()
+_models_dev_refresh_in_flight = False
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +243,73 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 
 
+def _fetch_models_dev_from_network() -> Dict[str, Any]:
+    """Fetch the live models.dev registry without touching local caches."""
+    response = requests.get(MODELS_DEV_URL, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    if isinstance(data, dict) and data:
+        return data
+    return {}
+
+
+def _mark_stale_cache_grace() -> None:
+    """Give stale cache data a short in-memory grace before retrying refresh."""
+    global _models_dev_cache_time
+    _models_dev_cache_time = (
+        time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_RETRY_DELAY
+    )
+
+
+def _background_refresh_models_dev() -> None:
+    """Best-effort refresh after serving stale cache data."""
+    global _models_dev_cache, _models_dev_cache_time
+    global _models_dev_retry_after, _models_dev_refresh_in_flight
+    try:
+        data = _fetch_models_dev_from_network()
+        if not data:
+            raise ValueError("models.dev returned an empty or invalid registry")
+        _save_disk_cache(data)
+        _models_dev_cache = data
+        _models_dev_cache_time = time.time()
+        _models_dev_retry_after = 0
+        logger.debug(
+            "Refreshed models.dev registry in background: %d providers",
+            len(data),
+        )
+    except Exception as e:
+        _models_dev_retry_after = time.time() + _MODELS_DEV_RETRY_DELAY
+        logger.debug(
+            "Background models.dev refresh failed; retry suppressed for %ds: %s",
+            _MODELS_DEV_RETRY_DELAY,
+            e,
+        )
+    finally:
+        with _models_dev_refresh_lock:
+            _models_dev_refresh_in_flight = False
+
+
+def _start_background_refresh_models_dev() -> None:
+    """Start one daemon refresh worker if none is already running.
+
+    Honors the process-wide failure backoff: after a failed refresh,
+    no new background worker is spawned until ``_models_dev_retry_after``.
+    """
+    global _models_dev_refresh_in_flight
+    if time.time() < _models_dev_retry_after:
+        return
+    with _models_dev_refresh_lock:
+        if _models_dev_refresh_in_flight:
+            return
+        _models_dev_refresh_in_flight = True
+    thread = threading.Thread(
+        target=_background_refresh_models_dev,
+        name="models-dev-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
 def fetch_models_dev(
     force_refresh: bool = False, *, allow_network: bool = True
 ) -> Dict[str, Any]:
@@ -249,20 +318,25 @@ def fetch_models_dev(
     Returns the full registry dict keyed by provider ID, or empty dict on failure.
 
     Cache hierarchy (when ``force_refresh=False``):
-      1. In-memory cache, populated and < TTL old → return immediately.
-      2. **Disk cache file < TTL old by mtime → load, populate in-mem, return.**
-         No network call. Saves ~500 ms per cold-start agent construction;
-         ``models.dev`` only changes when providers add new models, so a
-         1 hour staleness window is acceptable (same TTL as in-mem cache).
-      3. Network fetch → on success, save to disk + in-mem and return.
-      4. Network fails → fall back to ANY available cache (even stale) and
-         suppress additional automatic refreshes for 5 minutes.
+      1. Fresh in-memory cache → return immediately.
+      2. Stale in-memory cache → return immediately and refresh in a single
+         background daemon thread. Callers never block on the network while
+         any cache exists; ``models.dev`` only changes when providers add
+         new models, so stale data is preferable to a foreground timeout.
+      3. Disk cache file (any age) → load, populate in-mem, return
+         immediately. Stale disk caches trigger the same background refresh.
+      4. No cache at all → singleflight foreground network fetch. On
+         success, save to disk + in-mem and return.
+      5. Any failed refresh (foreground or background) suppresses further
+         automatic refreshes for 5 minutes process-wide.
 
     When ``force_refresh=True`` (used by ``hermes config refresh``, the
-    \"refresh model catalog\" code path), stages 1 and 2 are skipped. The
-    function bypasses caches and failure backoff, then only falls back to
-    cached data if the network call fails. When ``allow_network=False``, any
-    memory or disk cache is returned regardless of age and no request is made.
+    \"refresh model catalog\" code path), cache fast paths and the failure
+    backoff are bypassed; the function hits the network and only falls back
+    to cached data if the call fails. When ``allow_network=False``, any
+    memory or disk cache is returned regardless of age and no request is
+    made — used by latency-sensitive paths (gateway route-identity checks)
+    that must never wait on the network.
     """
     global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
 
@@ -287,55 +361,65 @@ def fetch_models_dev(
     ):
         return _models_dev_cache
 
-    # Stage 2: fresh-by-mtime disk cache short-circuits the network call.
-    # Only kicks in on cold-start processes (in-mem cache is empty or
-    # expired) and only when the user hasn't asked for a forced refresh.
-    # Skipped if the disk cache file is missing, unreadable, or older
-    # than _MODELS_DEV_CACHE_TTL.
+    # Stage 2: stale in-memory cache is still better than blocking provider
+    # resolution on a foreground network timeout. Refresh it in the background.
+    if not force_refresh and _models_dev_cache:
+        _mark_stale_cache_grace()
+        _start_background_refresh_models_dev()
+        logger.debug(
+            "Using stale in-memory models.dev cache; refreshing in background"
+        )
+        return _models_dev_cache
+
+    # Stage 3: disk cache short-circuits the network call.
+    # Only kicks in on cold-start processes (in-mem cache is empty) and only
+    # when the user hasn't asked for a forced refresh. A stale disk cache is
+    # deliberately usable: provider/model resolution should not hang just
+    # because models.dev is unreachable.
     if not force_refresh:
         disk_age = _disk_cache_age_seconds()
-        if disk_age is not None and disk_age < _MODELS_DEV_CACHE_TTL:
+        if disk_age is not None:
             disk_data = _load_disk_cache()
             if disk_data:
                 _models_dev_cache = disk_data
-                # Anchor in-mem TTL to the disk file's age so we don't
-                # extend an already-aging cache by another full hour.
-                _models_dev_cache_time = time.time() - disk_age
-                logger.debug(
-                    "Loaded models.dev from fresh disk cache "
-                    "(%d providers, age=%.0fs)", len(disk_data), disk_age,
-                )
+                if disk_age < _MODELS_DEV_CACHE_TTL:
+                    # Anchor in-mem TTL to the disk file's age so we don't
+                    # extend an already-aging cache by another full hour.
+                    _models_dev_cache_time = time.time() - disk_age
+                    logger.debug(
+                        "Loaded models.dev from fresh disk cache "
+                        "(%d providers, age=%.0fs)", len(disk_data), disk_age,
+                    )
+                else:
+                    _mark_stale_cache_grace()
+                    _start_background_refresh_models_dev()
+                    logger.debug(
+                        "Using stale models.dev disk cache (age=%.0fs); "
+                        "refreshing in background",
+                        disk_age,
+                    )
                 return _models_dev_cache
 
     # Failed automatic refreshes are process-wide. Avoid making every caller
-    # retry the same unreachable endpoint while stale data remains usable.
+    # retry the same unreachable endpoint while no usable cache exists.
     if not force_refresh and time.time() < _models_dev_retry_after:
-        if not _models_dev_cache:
-            _models_dev_cache = _load_disk_cache()
-            _models_dev_cache_time = 0
         return _models_dev_cache
 
-    # Stage 3: singleflight network fetch. Recheck state after acquiring the
-    # lock because another caller may have refreshed or established backoff.
+    # Stage 4: singleflight foreground network fetch — only reached when no
+    # memory or disk cache exists (or on force_refresh). Recheck state after
+    # acquiring the lock because another caller may have refreshed or
+    # established backoff while we waited.
     with _models_dev_fetch_lock:
         now = time.time()
         if not force_refresh:
-            if (
-                _models_dev_cache
-                and (now - _models_dev_cache_time) < _MODELS_DEV_CACHE_TTL
-            ):
+            if _models_dev_cache:
                 return _models_dev_cache
             if now < _models_dev_retry_after:
-                if not _models_dev_cache:
-                    _models_dev_cache = _load_disk_cache()
-                    _models_dev_cache_time = 0
                 return _models_dev_cache
 
         try:
-            response = requests.get(MODELS_DEV_URL, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            if not isinstance(data, dict) or not data:
+            data = _fetch_models_dev_from_network()
+            if not data:
                 raise ValueError("models.dev returned an empty or invalid registry")
 
             _save_disk_cache(data)
@@ -360,7 +444,7 @@ def fetch_models_dev(
                 e,
             )
 
-        # Stage 4: network failed — return any stale memory/disk cache. Cache
+        # Stage 5: network failed — return any stale memory/disk cache. Cache
         # freshness remains expired; the retry-after timestamp controls when
         # the next automatic request is allowed.
         if not _models_dev_cache:

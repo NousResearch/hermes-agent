@@ -19,7 +19,7 @@ metadata:
 
 # Google Workspace
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
+Gmail, Calendar, Tasks, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
 
 ## References
 
@@ -90,7 +90,7 @@ Tell the user:
 > 2. Enable the required APIs from the API Library:
 >    https://console.cloud.google.com/apis/library
 >    Enable: Gmail API, Google Calendar API, Google Drive API,
->    Google Sheets API, Google Docs API, People API
+>    Google Sheets API, Google Docs API, Google Tasks API, People API
 > 3. Create the OAuth client here:
 >    https://console.cloud.google.com/apis/credentials
 >    Credentials → Create Credentials → OAuth 2.0 Client ID
@@ -205,13 +205,24 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 $GAPI calendar list
 $GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
 
-# Create event (ISO 8601 with timezone required)
+# Create event (naive ISO 8601 datetimes use HERMES_GOOGLE_TIMEZONE, or UTC by default)
 $GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
 $GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
 $GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
 
 # Delete event
 $GAPI calendar delete EVENT_ID
+```
+
+### Tasks
+
+```bash
+# List tasks from the default task list
+$GAPI tasks list --max 20
+
+# Create a task, optionally with a due date
+$GAPI tasks add --title "Pay invoice" --due 2026-03-01
+$GAPI tasks add --title "Inbox zero"
 ```
 
 ### Drive
@@ -295,6 +306,8 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
+- **Tasks list**: `{tasklistId, tasklistTitle, tasks: [{id, title, status, due, updated, webViewLink}]}`
+- **Tasks add**: `{status: "created", tasklistId, tasklistTitle, id, title, due, webViewLink}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
 - **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
 - **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`
@@ -313,7 +326,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
-4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
+4. **Calendar times should include timezone when possible** — use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`). Naive ISO datetimes are interpreted with `HERMES_GOOGLE_TIMEZONE`, falling back to `UTC`.
 5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
 
 ## Troubleshooting

@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -51,6 +52,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks",
 ]
 
 
@@ -165,6 +167,10 @@ def _extract_doc_text(doc: dict) -> str:
     return "".join(text_parts)
 
 
+def _default_timezone() -> str:
+    return os.getenv("HERMES_GOOGLE_TIMEZONE", "UTC")
+
+
 def _datetime_with_timezone(value: str) -> str:
     if not value:
         return value
@@ -175,7 +181,19 @@ def _datetime_with_timezone(value: str) -> str:
     tail = value[10:]
     if "+" in tail or "-" in tail:
         return value
-    return value + "Z"
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        timezone_name = _default_timezone()
+        try:
+            tzinfo = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            print(
+                f"ERROR: Unknown timezone in HERMES_GOOGLE_TIMEZONE: {timezone_name}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        dt = dt.replace(tzinfo=tzinfo)
+    return dt.isoformat()
 
 
 def get_credentials():
@@ -518,8 +536,8 @@ def calendar_list(args):
 def calendar_create(args):
     event = {
         "summary": args.summary,
-        "start": {"dateTime": args.start},
-        "end": {"dateTime": args.end},
+        "start": {"dateTime": _datetime_with_timezone(args.start)},
+        "end": {"dateTime": _datetime_with_timezone(args.end)},
     }
     if args.location:
         event["location"] = args.location
@@ -562,6 +580,71 @@ def calendar_delete(args):
     service = build_service("calendar", "v3")
     service.events().delete(calendarId=args.calendar, eventId=args.event_id).execute()
     print(json.dumps({"status": "deleted", "eventId": args.event_id}))
+
+
+# =========================================================================
+# Tasks
+# =========================================================================
+
+
+def _tasks_default_list_id(service, requested: str = "") -> tuple[str, str]:
+    if requested:
+        return requested, requested
+    result = service.tasklists().list(maxResults=10).execute()
+    items = result.get("items", [])
+    if not items:
+        print("No Google Tasks lists found.", file=sys.stderr)
+        sys.exit(1)
+    first = items[0]
+    return first["id"], first.get("title", "")
+
+
+def tasks_list(args):
+    service = build_service("tasks", "v1")
+    tasklist_id, tasklist_title = _tasks_default_list_id(service, args.tasklist)
+    result = service.tasks().list(
+        tasklist=tasklist_id,
+        maxResults=args.max,
+        showCompleted=args.show_completed,
+    ).execute()
+    tasks = []
+    for item in result.get("items", []):
+        tasks.append({
+            "id": item.get("id", ""),
+            "title": item.get("title", ""),
+            "status": item.get("status", ""),
+            "due": item.get("due", ""),
+            "updated": item.get("updated", ""),
+            "webViewLink": item.get("webViewLink", ""),
+        })
+    print(json.dumps({
+        "tasklistId": tasklist_id,
+        "tasklistTitle": tasklist_title,
+        "tasks": tasks,
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_add(args):
+    service = build_service("tasks", "v1")
+    tasklist_id, tasklist_title = _tasks_default_list_id(service, args.tasklist)
+    body = {"title": args.title}
+    if args.due:
+        due = args.due
+        if "T" not in due:
+            due = due + "T00:00:00Z"
+        else:
+            due = _datetime_with_timezone(due)
+        body["due"] = due
+    task = service.tasks().insert(tasklist=tasklist_id, body=body).execute()
+    print(json.dumps({
+        "status": "created",
+        "tasklistId": tasklist_id,
+        "tasklistTitle": tasklist_title,
+        "id": task.get("id", ""),
+        "title": task.get("title", ""),
+        "due": task.get("due", ""),
+        "webViewLink": task.get("webViewLink", ""),
+    }, indent=2, ensure_ascii=False))
 
 
 # =========================================================================
@@ -1118,6 +1201,22 @@ def main():
     p.add_argument("event_id")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_delete)
+
+    # --- Tasks ---
+    tasks = sub.add_parser("tasks")
+    tasks_sub = tasks.add_subparsers(dest="action", required=True)
+
+    p = tasks_sub.add_parser("list")
+    p.add_argument("--tasklist", default="", help="Task list ID (defaults to the first available list)")
+    p.add_argument("--max", type=int, default=20)
+    p.add_argument("--show-completed", action="store_true", help="Include completed tasks")
+    p.set_defaults(func=tasks_list)
+
+    p = tasks_sub.add_parser("add")
+    p.add_argument("--title", required=True)
+    p.add_argument("--due", default="", help="Due date YYYY-MM-DD or ISO 8601 datetime")
+    p.add_argument("--tasklist", default="", help="Task list ID (defaults to the first available list)")
+    p.set_defaults(func=tasks_add)
 
     # --- Drive ---
     drv = sub.add_parser("drive")

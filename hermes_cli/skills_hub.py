@@ -109,6 +109,71 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_count(value: Any) -> Optional[str]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        normalized = stripped.replace(",", "")
+        if normalized.isdigit():
+            return f"{int(normalized):,}"
+        return stripped
+    return None
+
+
+def _popularity_payload(extra: Dict[str, Any]) -> Dict[str, Any]:
+    if not extra:
+        return {}
+
+    payload: Dict[str, Any] = {}
+    for key in (
+        "installs",
+        "install_count",
+        "downloads",
+        "download_count",
+        "stars",
+        "stargazers_count",
+    ):
+        value = extra.get(key)
+        formatted = _format_count(value)
+        if formatted is not None:
+            payload[key] = value.strip() if isinstance(value, str) else value
+
+    weekly_value = extra.get("weekly_installs")
+    weekly = _format_count(weekly_value)
+    if weekly is not None:
+        payload["weekly_installs"] = (
+            weekly_value.strip() if isinstance(weekly_value, str) else weekly_value
+        )
+
+    return payload
+
+
+def _format_popularity(extra: Dict[str, Any]) -> str:
+    payload = _popularity_payload(extra)
+    if not payload:
+        return "-"
+
+    labels = []
+    installs = payload["installs"] if "installs" in payload else payload.get("install_count")
+    if installs is not None:
+        labels.append(f"{_format_count(installs)} installs")
+    if "weekly_installs" in payload:
+        labels.append(f"{_format_count(payload['weekly_installs'])} weekly")
+    downloads = payload["downloads"] if "downloads" in payload else payload.get("download_count")
+    if downloads is not None:
+        labels.append(f"{_format_count(downloads)} downloads")
+    stars = payload["stars"] if "stars" in payload else payload.get("stargazers_count")
+    if stars is not None:
+        labels.append(f"{_format_count(stars)} stars")
+
+    return "\n".join(labels) if labels else "-"
+
+
 def _resolve_source_meta_and_bundle(identifier: str, sources):
     """Resolve metadata and bundle for a specific identifier."""
     meta = None
@@ -272,6 +337,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
                 "source": r.source,
                 "trust_level": r.trust_level,
                 "description": r.description,
+                "popularity": _popularity_payload(getattr(r, "extra", {}) or {}),
             }
             for r in results
         ]
@@ -289,6 +355,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
     table = Table(title=f"Skills Hub — {len(results)} result(s)")
     table.add_column("Name", style="bold cyan")
     table.add_column("Description", max_width=60)
+    table.add_column("Popularity", style="dim", no_wrap=True)
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
     # overflow="fold" keeps the full slug visible (wraps instead of
@@ -303,6 +370,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         table.add_row(
             r.name,
             r.description[:60] + ("..." if len(r.description) > 60 else ""),
+            _format_popularity(getattr(r, "extra", {}) or {}),
             r.source,
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,

@@ -669,6 +669,24 @@ _LONG_RESULT = type("R", (), {
     "identifier": _LONG_SLUG,
 })()
 
+_POPULAR_RESULT = type("R", (), {
+    "name": "react-best-practices",
+    "description": "React guidance",
+    "source": "skills.sh",
+    "trust_level": "community",
+    "identifier": "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices",
+    "extra": {"installs": 207679, "weekly_installs": "1.2K", "stars": 42},
+})()
+
+_BROWSE_SH_POPULAR_RESULT = type("R", (), {
+    "name": "search-listings",
+    "description": "Search site listings",
+    "source": "browse-sh",
+    "trust_level": "community",
+    "identifier": "browse-sh/airbnb.com/search-listings-ddgioa",
+    "extra": {"install_count": 3210},
+})()
+
 
 def test_do_search_identifier_column_does_not_truncate_long_slug():
     """The Identifier column must use overflow='fold', not the default ellipsis.
@@ -740,6 +758,60 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["identifier"] == _LONG_SLUG
     assert payload[0]["name"] == "get-forecast"
     assert payload[0]["source"] == "browse-sh"
+    assert payload[0]["popularity"] == {}
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+
+def test_do_search_displays_existing_popularity_metadata():
+    """Search results should surface popularity already provided by source metadata."""
+    from hermes_cli.skills_hub import do_search
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=120)
+
+    with patch("tools.skills_hub.unified_search", return_value=[_POPULAR_RESULT]), \
+         patch("tools.skills_hub.create_source_router", return_value={}), \
+         patch("tools.skills_hub.GitHubAuth"):
+        do_search("react", console=console)
+
+    output = sink.getvalue()
+    assert "Popularity" in output
+    assert "207,679 installs" in output
+    assert "1.2K weekly" in output
+    assert "42 stars" in output
+
+
+def test_do_search_json_includes_existing_popularity_metadata(capsys):
+    from hermes_cli.skills_hub import do_search
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    with patch("tools.skills_hub.unified_search", return_value=[_POPULAR_RESULT]), \
+         patch("tools.skills_hub.create_source_router", return_value={}), \
+         patch("tools.skills_hub.GitHubAuth"):
+        do_search("react", console=console, as_json=True)
+
+    import json as _json
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload[0]["popularity"] == {
+        "installs": 207679,
+        "stars": 42,
+        "weekly_installs": "1.2K",
+    }
+    assert sink.getvalue() == ""
+
+
+def test_do_search_displays_browse_sh_install_count_metadata():
+    from hermes_cli.skills_hub import do_search
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=120)
+
+    with patch("tools.skills_hub.unified_search", return_value=[_BROWSE_SH_POPULAR_RESULT]), \
+         patch("tools.skills_hub.create_source_router", return_value={}), \
+         patch("tools.skills_hub.GitHubAuth"):
+        do_search("airbnb", console=console)
+
+    assert "3,210 installs" in sink.getvalue()

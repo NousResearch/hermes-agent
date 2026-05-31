@@ -138,6 +138,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -851,13 +852,16 @@ def normalize_feishu_message(
             relation_kind="image",
             mentions=mention_refs,
         )
-    if normalized_type in {"file", "audio", "media"}:
+    if normalized_type in {"file", "audio", "media", "video"}:
         media_ref = _build_media_ref_from_payload(payload, resource_type=normalized_type)
         placeholder = _attachment_placeholder(media_ref.file_name)
+        preferred = "audio" if normalized_type == "audio" else "document"
+        if normalized_type == "video":
+            preferred = "video"
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
             text_content="",
-            preferred_message_type="audio" if normalized_type == "audio" else "document",
+            preferred_message_type=preferred,
             media_refs=[media_ref] if media_ref.file_key else [],
             relation_kind=normalized_type,
             metadata={"placeholder_text": placeholder},
@@ -3033,6 +3037,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        if not self._should_batch_media_event(event):
+            await self._flush_pending_media_for_source(event)
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return
@@ -3040,6 +3046,16 @@ class FeishuAdapter(BasePlatformAdapter):
             await self._enqueue_media_event(event)
             return
         await self._handle_message_with_guards(event)
+
+    async def _flush_pending_media_for_source(self, event: MessageEvent) -> None:
+        """Flush buffered media before control/text messages can advance intake state."""
+        prefix = self._media_batch_key(event).rsplit(":media:", 1)[0] + ":media:"
+        matching_keys = [key for key in list(self._pending_media_batches) if key.startswith(prefix)]
+        for key in matching_keys:
+            task = self._pending_media_batch_tasks.pop(key, None)
+            if task is not None:
+                task.cancel()
+            await self._flush_media_batch_now(key)
 
     # =========================================================================
     # Media batching
@@ -3472,7 +3488,7 @@ class FeishuAdapter(BasePlatformAdapter):
         text = normalized.text_content
 
         if (
-            inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
+            inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO}
             and len(media_urls) == 1
             and normalized.preferred_message_type in {"document", "audio"}
         ):
@@ -3536,6 +3552,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
+        if preferred == "video":
+            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.VIDEO)
         return MessageType.TEXT
 
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
@@ -3643,9 +3661,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     return cached_path, (media_type or f"audio/{ext.lstrip('.') or 'ogg'}")
 
                 if media_type.startswith("video/"):
-                    if not Path(filename).suffix:
-                        filename = f"{filename}.mp4"
-                    cached_path = cache_document_from_bytes(raw_bytes, filename)
+                    ext = self._guess_extension(filename, content_type, ".mp4", allowed=_VIDEO_EXTENSIONS)
+                    cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
                     logger.info("[Feishu] Cached message video resource at %s", cached_path)
                     return cached_path, media_type
 

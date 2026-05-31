@@ -1730,6 +1730,49 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("第二张", event.text)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_control_text_flushes_pending_media_before_state_transition(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _run() -> None:
+            await adapter._dispatch_inbound_event(
+                MessageEvent(
+                    text="商品视频",
+                    message_type=MessageType.VIDEO,
+                    source=source,
+                    message_id="om_v1",
+                    media_urls=["/tmp/a.mp4"],
+                    media_types=["video/mp4"],
+                )
+            )
+            self.assertEqual(len(adapter._pending_media_batches), 1)
+            await adapter._dispatch_inbound_event(
+                MessageEvent(text="录入结束", message_type=MessageType.COMMAND, source=source, message_id="om_done")
+            )
+
+        asyncio.run(_run())
+
+        self.assertEqual(adapter.handle_message.await_count, 2)
+        first = adapter.handle_message.await_args_list[0].args[0]
+        second = adapter.handle_message.await_args_list[1].args[0]
+        self.assertEqual(first.message_type, MessageType.VIDEO)
+        self.assertEqual(first.media_urls, ["/tmp/a.mp4"])
+        self.assertEqual(second.text, "录入结束")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_image_downloads_then_uses_native_image_send(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

@@ -50,6 +50,25 @@ def _ra():
     return run_agent
 
 
+def _merge_stream_tool_arguments(existing: str, incoming: str) -> str:
+    """Merge tool-call argument chunks without duplicating replayed prefixes.
+
+    Most providers stream only the new JSON fragment for ``arguments``. Some
+    providers instead resend the full accumulated JSON-so-far in later chunks.
+    Preserve normal append semantics for true deltas while treating exact or
+    prefix replays as idempotent updates of the current buffer.
+    """
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    if incoming == existing:
+        return existing
+    if incoming.startswith(existing):
+        return incoming
+    return existing + incoming
+
+
 def estimate_request_context_tokens(api_payload: Any) -> int:
     """Estimate context/load tokens from an API payload, dict or messages list.
 
@@ -1867,7 +1886,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             # Vercel AI patterns) is immune to this.
                             entry["function"]["name"] = tc_delta.function.name
                         if tc_delta.function.arguments:
-                            entry["function"]["arguments"] += tc_delta.function.arguments
+                            entry["function"]["arguments"] = _merge_stream_tool_arguments(
+                                entry["function"]["arguments"],
+                                tc_delta.function.arguments,
+                            )
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
                         extra = (tc_delta.model_extra or {}).get("extra_content")

@@ -186,6 +186,124 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_arguments_not_duplicated_when_provider_replays_full_prefix(self, mock_close, mock_create):
+        """Some providers resend full arguments-so-far instead of delta fragments."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_xml",
+                    name="session_search",
+                    arguments='{"query":"bug","options":{"',
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_xml",
+                    name="session_search",
+                    arguments='{"query":"bug","options":{"around_message_id":"m_123"',
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_xml",
+                    name="session_search",
+                    arguments='{"query":"bug","options":{"around_message_id":"m_123","limit":5}}',
+                )
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert len(tc) == 1
+        assert tc[0].function.name == "session_search"
+        assert tc[0].function.arguments == (
+            '{"query":"bug","options":{"around_message_id":"m_123","limit":5}}'
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_arguments_ignore_exact_replay_chunk(self, mock_close, mock_create):
+        """An identical replay chunk must not duplicate the current JSON buffer."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_dup",
+                    name="memory",
+                    arguments='{"action":"replace","old_string":"foo"',
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_dup",
+                    name="memory",
+                    arguments='{"action":"replace","old_string":"foo"',
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_dup",
+                    name="memory",
+                    arguments='{"action":"replace","old_string":"foo","new_string":"bar"}',
+                )
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert len(tc) == 1
+        assert tc[0].function.name == "memory"
+        assert tc[0].function.arguments == (
+            '{"action":"replace","old_string":"foo","new_string":"bar"}'
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_call_extra_content_preserved(self, mock_close, mock_create):
         """Streamed tool calls preserve provider-specific extra_content metadata."""
         from run_agent import AIAgent

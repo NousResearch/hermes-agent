@@ -42,6 +42,187 @@ def test_init_db_is_idempotent(kanban_home):
     assert tasks[0].title == "persisted"
 
 
+def test_init_repairs_sticky_blocked_task_stale_running_pointer(kanban_home):
+    """A review-required block must not remain as running with a stale run.
+
+    Regression shape from t_392e1f77: a task had a valid prior
+    ``blocked`` event/run, but later the task row was ``status='running'``
+    with no claim/PID and ``current_run_id`` pointing at a duplicate open
+    run.  Normal init/dispatcher paths should repair that invariant instead
+    of requiring hand-written SQL against the live board.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="review handoff", assignee="default")
+        kb.claim_task(conn, tid)
+        claimed = kb.get_task(conn, tid)
+        assert claimed is not None
+        original_run_id = claimed.current_run_id
+        assert original_run_id is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: needs human review",
+            expected_run_id=original_run_id,
+        )
+        now = int(time.time())
+        cur = conn.execute(
+            """
+            INSERT INTO task_runs (task_id, profile, status, started_at)
+            VALUES (?, 'default', 'running', ?)
+            """,
+            (tid, now),
+        )
+        duplicate_run_id = int(cur.lastrowid)
+        conn.execute(
+            """
+            UPDATE tasks
+               SET status='running', current_run_id=?,
+                   claim_lock=NULL, claim_expires=NULL, worker_pid=NULL
+             WHERE id=?
+            """,
+            (duplicate_run_id, tid),
+        )
+        conn.commit()
+
+    kb.init_db()
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.current_run_id is None
+        rows = conn.execute(
+            "SELECT id, status, outcome, ended_at FROM task_runs WHERE task_id=? ORDER BY id",
+            (tid,),
+        ).fetchall()
+        by_id = {int(r["id"]): r for r in rows}
+        assert by_id[int(original_run_id)]["outcome"] == "blocked"
+        assert by_id[duplicate_run_id]["status"] == "reclaimed"
+        assert by_id[duplicate_run_id]["outcome"] == "reclaimed"
+        assert by_id[duplicate_run_id]["ended_at"] is not None
+        events = kb.list_events(conn, tid)
+        assert any(e.kind == "reconciled_status" for e in events)
+
+
+def test_init_backfill_does_not_create_duplicate_run_for_sticky_block(kanban_home):
+    """Legacy run backfill must not synthesize a new open run for a
+    running/no-claim row whose latest block marker is a sticky review block."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy review handoff", assignee="default")
+        kb.claim_task(conn, tid)
+        claimed = kb.get_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: needs review",
+            expected_run_id=run_id,
+        )
+        conn.execute(
+            """
+            UPDATE tasks
+               SET status='running', current_run_id=NULL,
+                   claim_lock=NULL, claim_expires=NULL, worker_pid=NULL
+             WHERE id=?
+            """,
+            (tid,),
+        )
+        conn.commit()
+
+    kb.init_db()
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.current_run_id is None
+        open_runs = conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id=? AND ended_at IS NULL",
+            (tid,),
+        ).fetchone()[0]
+        assert open_runs == 0
+
+
+def test_init_releases_claimless_running_without_sticky_block_to_ready(kanban_home):
+    """Claimless running rows with no sticky block are not human-review
+    handoffs; repair them to ready so the dispatcher can claim cleanly."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="claimless non-sticky", assignee="default")
+        now = int(time.time())
+        cur = conn.execute(
+            """
+            INSERT INTO task_runs (task_id, profile, status, started_at)
+            VALUES (?, 'default', 'running', ?)
+            """,
+            (tid, now),
+        )
+        assert cur.lastrowid is not None
+        stale_run_id = int(cur.lastrowid)
+        conn.execute(
+            """
+            UPDATE tasks
+               SET status='running', current_run_id=?,
+                   claim_lock=NULL, claim_expires=NULL, worker_pid=NULL
+             WHERE id=?
+            """,
+            (stale_run_id, tid),
+        )
+        conn.commit()
+
+    kb.init_db()
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.current_run_id is None
+        stale_run = conn.execute(
+            "SELECT status, outcome, ended_at FROM task_runs WHERE id=?",
+            (stale_run_id,),
+        ).fetchone()
+        assert stale_run["status"] == "reclaimed"
+        assert stale_run["outcome"] == "reclaimed"
+        assert stale_run["ended_at"] is not None
+
+
+def test_init_backfills_legitimate_running_claim(kanban_home):
+    """Legacy running rows with actual claim state still get a run pointer."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy active claim", assignee="default")
+        now = int(time.time())
+        conn.execute(
+            """
+            UPDATE tasks
+               SET status='running', current_run_id=NULL,
+                   claim_lock='host:123', claim_expires=?, worker_pid=123,
+                   started_at=?
+             WHERE id=?
+            """,
+            (now + 900, now, tid),
+        )
+        conn.commit()
+
+    kb.init_db()
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert task.current_run_id is not None
+        run = conn.execute(
+            "SELECT status, claim_lock, claim_expires, worker_pid, ended_at "
+            "FROM task_runs WHERE id=?",
+            (task.current_run_id,),
+        ).fetchone()
+        assert run["status"] == "running"
+        assert run["claim_lock"] == "host:123"
+        assert run["claim_expires"] == now + 900
+        assert run["worker_pid"] == 123
+        assert run["ended_at"] is None
+
+
 def test_init_creates_expected_tables(kanban_home):
     with kb.connect() as conn:
         rows = conn.execute(
@@ -1996,18 +2177,17 @@ def test_session_id_compose_with_tenant_filter(kanban_home):
 
 
 # ---------------------------------------------------------------------------
-# Shared-board path resolution (issue #19348)
+# Profile-board path resolution
 #
-# The kanban board is a cross-profile coordination primitive: a worker
-# spawned with `hermes -p <profile>` must read/write the same kanban.db
-# as the dispatcher that claimed the task. These tests exercise the
-# path-resolution layer directly and would have caught the regression
-# where `kanban_db_path()` resolved to the active profile's HERMES_HOME.
+# Default and named profiles own separate kanban.db/workspace/log trees by
+# default. Dispatcher-spawned workers still converge on the claimed board via
+# explicit HERMES_KANBAN_DB / HERMES_KANBAN_WORKSPACES_ROOT /
+# HERMES_KANBAN_LOGS_ROOT pins.
 # ---------------------------------------------------------------------------
 
-class TestSharedBoardPaths:
+class TestProfileBoardPaths:
     """`kanban_home`/`kanban_db_path`/`workspaces_root`/`worker_log_path`
-    must anchor at the **shared root**, not the active profile's HERMES_HOME."""
+    anchor at the active profile's HERMES_HOME unless an explicit kanban pin is set."""
 
     def _set_home(self, monkeypatch, tmp_path, hermes_home):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -2030,59 +2210,53 @@ class TestSharedBoardPaths:
             == default_home / "kanban" / "logs" / "t_demo.log"
         )
 
-    def test_profile_worker_resolves_to_shared_root(
+    def test_profile_worker_resolves_to_profile_home(
         self, tmp_path, monkeypatch
     ):
-        # Reproduces the bug: dispatcher uses ~/.hermes/kanban.db,
-        # worker spawned with -p <profile> previously resolved to
-        # ~/.hermes/profiles/<profile>/kanban.db. After the fix both
-        # converge on ~/.hermes/kanban.db.
+        # Named profile mode: HERMES_HOME points at the profile home, so that
+        # profile owns a separate kanban.db/workspaces/log tree.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         profile_home = default_home / "profiles" / "nehemiahkanban"
         profile_home.mkdir(parents=True)
         self._set_home(monkeypatch, tmp_path, profile_home)
 
-        # All four resolvers must anchor at the shared root, not the
-        # profile-local HERMES_HOME.
-        assert kb.kanban_home() == default_home
-        assert kb.kanban_db_path() == default_home / "kanban.db"
-        assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
+        assert kb.kanban_home() == profile_home
+        assert kb.kanban_db_path() == profile_home / "kanban.db"
+        assert kb.workspaces_root() == profile_home / "kanban" / "workspaces"
         assert (
             kb.worker_log_path("t_0d214f19")
-            == default_home / "kanban" / "logs" / "t_0d214f19.log"
+            == profile_home / "kanban" / "logs" / "t_0d214f19.log"
         )
+        assert kb.kanban_db_path() != default_home / "kanban.db"
 
-        # Sanity: the profile-local path that used to be returned is
-        # explicitly NOT what we resolve to anymore.
-        assert kb.kanban_db_path() != profile_home / "kanban.db"
-
-    def test_dispatcher_and_profile_worker_converge(
+    def test_dispatcher_and_profile_worker_converge_only_with_pins(
         self, tmp_path, monkeypatch
     ):
-        # End-to-end convergence: resolve the path under each side's
-        # HERMES_HOME and confirm equality. This is the property the
-        # dispatcher/worker handoff actually depends on.
+        # Unpinned default/profile homes intentionally resolve to separate DBs.
+        # The dispatcher->worker handoff property is preserved by the env pins
+        # that _default_spawn injects (HERMES_KANBAN_DB/WORKSPACES_ROOT).
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         profile_home = default_home / "profiles" / "coder"
         profile_home.mkdir(parents=True)
 
-        # Dispatcher's perspective.
         self._set_home(monkeypatch, tmp_path, default_home)
         dispatcher_db = kb.kanban_db_path()
         dispatcher_ws = kb.workspaces_root()
         dispatcher_log = kb.worker_log_path("t_handoff")
+        dispatcher_log_dir = dispatcher_log.parent
 
-        # Worker's perspective (profile activated by `hermes -p coder`).
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
-        worker_db = kb.kanban_db_path()
-        worker_ws = kb.workspaces_root()
-        worker_log = kb.worker_log_path("t_handoff")
+        assert kb.kanban_db_path() == profile_home / "kanban.db"
+        assert kb.kanban_db_path() != dispatcher_db
 
-        assert dispatcher_db == worker_db
-        assert dispatcher_ws == worker_ws
-        assert dispatcher_log == worker_log
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(dispatcher_db))
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(dispatcher_ws))
+        monkeypatch.setenv("HERMES_KANBAN_LOGS_ROOT", str(dispatcher_log_dir))
+        assert kb.kanban_db_path() == dispatcher_db
+        assert kb.workspaces_root() == dispatcher_ws
+        assert kb.worker_log_path("t_handoff") == dispatcher_log
 
     def test_docker_custom_hermes_home_uses_env_path_directly(
         self, tmp_path, monkeypatch
@@ -2098,19 +2272,37 @@ class TestSharedBoardPaths:
         assert kb.kanban_home() == custom_root
         assert kb.kanban_db_path() == custom_root / "kanban.db"
 
-    def test_docker_profile_layout_uses_grandparent(
+    def test_docker_profile_layout_uses_profile_home(
         self, tmp_path, monkeypatch
     ):
         # Docker profile shape: HERMES_HOME=/opt/hermes/profiles/coder;
-        # `get_default_hermes_root()` walks up to /opt/hermes because
-        # the immediate parent dir is named "profiles".
+        # the profile owns its own kanban.db just like standard named profiles.
         custom_root = tmp_path / "opt" / "hermes"
         profile = custom_root / "profiles" / "coder"
         profile.mkdir(parents=True)
         self._set_home(monkeypatch, tmp_path, profile)
 
-        assert kb.kanban_home() == custom_root
-        assert kb.kanban_db_path() == custom_root / "kanban.db"
+        assert kb.kanban_home() == profile
+        assert kb.kanban_db_path() == profile / "kanban.db"
+
+    def test_docker_profile_layout_warns_when_root_board_would_split(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Docker/custom profile layouts used to resolve Kanban through the
+        # custom root. If an old root DB exists, the new profile-local default
+        # must emit a migration notice instead of silently creating a split.
+        custom_root = tmp_path / "opt" / "hermes"
+        profile = custom_root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        (custom_root / "kanban.db").write_text("old root db", encoding="utf-8")
+        monkeypatch.setattr(kb, "_profile_kanban_migration_warned", False)
+        self._set_home(monkeypatch, tmp_path, profile)
+
+        assert kb.kanban_home() == profile
+        err = capsys.readouterr().err
+        assert "Hermes Kanban migration" in err
+        assert str(custom_root / "kanban.db") in err
+        assert "HERMES_KANBAN_HOME" in err
 
     def test_explicit_override_via_hermes_kanban_home(
         self, tmp_path, monkeypatch
@@ -2141,25 +2333,29 @@ class TestSharedBoardPaths:
 
         assert kb.kanban_home() == default_home
 
-    def test_dispatcher_and_worker_share_a_real_database(
+    def test_dispatcher_and_worker_share_a_real_database_when_pinned(
         self, tmp_path, monkeypatch
     ):
-        # Belt-and-suspenders: round-trip a task across the two
-        # HERMES_HOME perspectives via a real SQLite file. Without the
-        # fix the worker would open a different file and see no rows.
+        # A default-board dispatcher and named-profile worker are separate by
+        # default, but the dispatcher pins HERMES_KANBAN_DB into the child env.
+        # With that pin, the worker reads/writes the dispatcher's claimed DB.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         profile_home = default_home / "profiles" / "nehemiahkanban"
         profile_home.mkdir(parents=True)
 
-        # Dispatcher creates the board and a task.
         self._set_home(monkeypatch, tmp_path, default_home)
         kb.init_db()
+        dispatcher_db = kb.kanban_db_path()
         with kb.connect() as conn:
             task_id = kb.create_task(conn, title="cross-profile")
 
-        # Worker switches to the profile HERMES_HOME and reads.
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        assert kb.kanban_db_path() == profile_home / "kanban.db"
+        with kb.connect() as conn:
+            assert kb.get_task(conn, task_id) is None
+
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(dispatcher_db))
         with kb.connect() as conn:
             task = kb.get_task(conn, task_id)
         assert task is not None
@@ -2268,6 +2464,9 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
             default_home / "kanban" / "workspaces"
+        )
+        assert env["HERMES_KANBAN_LOGS_ROOT"] == str(
+            default_home / "kanban" / "logs"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"

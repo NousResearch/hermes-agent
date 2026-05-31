@@ -101,13 +101,21 @@ class TestAdaptiveTextBatchTiers:
         assert delay == 0.10
 
     def test_short_tier_uses_min_with_configured_cap(self, adapter):
-        """Same composition rule for the medium tier."""
-        adapter._text_batch_delay_seconds = 0.6
+        """Paragraph-sized messages wait up to the configured human-burst cap."""
+        adapter._text_batch_delay_seconds = 1.5
         delay = min(
             adapter._text_batch_delay_seconds,
             TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S,
         )
         assert delay == TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S
+
+        # Operator tightened the cap below the paragraph-tier delay; cap wins.
+        adapter._text_batch_delay_seconds = 0.6
+        delay = min(
+            adapter._text_batch_delay_seconds,
+            TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S,
+        )
+        assert delay == 0.6
 
     def test_long_message_uses_full_cap(self, adapter):
         """Messages above the medium threshold use the configured cap

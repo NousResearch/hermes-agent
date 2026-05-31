@@ -52,8 +52,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
-    # Code execution + delegation
-    "execute_code", "delegate_task",
+    # Code execution + delegation / external coding co-agents
+    "execute_code", "delegate_task", "claude_code_status", "claude_code_run",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -243,6 +243,18 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "claude_code": {
+        "description": (
+            "Local Claude Code CLI co-agent tools. Uses the user's Claude Code "
+            "OAuth/subscription login by default (not Anthropic API billing), "
+            "supports read-only review, controlled implementation prompts, "
+            "visible Telegram/dialogue transcripts, and Kanban task context/"
+            "writes via hermes kanban when explicitly allowed."
+        ),
+        "tools": ["claude_code_status", "claude_code_run"],
         "includes": []
     },
 

@@ -100,6 +100,27 @@ class TestTextBatching:
         assert "chunk 3" in text
 
     @pytest.mark.asyncio
+    async def test_medium_human_burst_waits_long_enough_to_merge_followup(self):
+        """Paragraph-sized Telegram follow-ups should not flush after the old 240ms fast path."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.55
+
+        first = "Primera parte " + ("con contexto " * 35)
+        second = "Segunda parte que el usuario mandó enseguida."
+
+        adapter._enqueue_text_event(_make_event(first))
+        await asyncio.sleep(0.30)
+        adapter.handle_message.assert_not_called()
+
+        adapter._enqueue_text_event(_make_event(second))
+        await asyncio.sleep(0.65)
+
+        adapter.handle_message.assert_called_once()
+        text = adapter.handle_message.call_args[0][0].text
+        assert "Primera parte" in text
+        assert "Segunda parte" in text
+
+    @pytest.mark.asyncio
     async def test_different_chats_not_merged(self):
         """Messages from different chats should be separate batches."""
         adapter = _make_adapter()

@@ -105,9 +105,40 @@ class TestSlugValidation:
 
 class TestPathResolution:
     def test_default_board_legacy_path(self, fresh_home):
-        """The default board's DB lives at ``<root>/kanban.db`` for back-compat."""
+        """The default board's DB lives at the active profile home for back-compat."""
         assert kb.kanban_db_path() == fresh_home / "kanban.db"
         assert kb.kanban_db_path(board="default") == fresh_home / "kanban.db"
+
+    def test_named_profile_uses_its_own_kanban_home(self, tmp_path, monkeypatch):
+        """Named profiles should not collapse onto the root/default kanban.db."""
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "vera"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+
+        assert kb.kanban_home() == profile_home
+        assert kb.kanban_db_path() == profile_home / "kanban.db"
+        assert kb.workspaces_root() == profile_home / "kanban" / "workspaces"
+        assert kb.worker_logs_dir() == profile_home / "kanban" / "logs"
+        assert kb.current_board_path() == profile_home / "kanban" / "current"
+        assert kb.kanban_db_path() != root / "kanban.db"
+
+    def test_kanban_home_override_still_wins_over_profile_home(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "vera"
+        override = tmp_path / "forced-kanban-home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(override))
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        assert kb.kanban_home() == override
+        assert kb.kanban_db_path() == override / "kanban.db"
 
     def test_named_board_under_boards_dir(self, fresh_home):
         p = kb.kanban_db_path(board="atm10-server")
@@ -380,7 +411,7 @@ class TestConnectionIsolation:
 # ---------------------------------------------------------------------------
 
 class TestWorkerSpawnEnv:
-    """Ensure the dispatcher pins ``HERMES_KANBAN_BOARD`` / DB / workspaces on spawn.
+    """Ensure the dispatcher pins ``HERMES_KANBAN_BOARD`` / DB / workspaces / logs on spawn.
 
     We monkey-patch ``subprocess.Popen`` to capture the child env without
     actually spawning anything.
@@ -428,6 +459,8 @@ class TestWorkerSpawnEnv:
         assert env["HERMES_KANBAN_DB"] == str(expected_db)
         expected_ws = fresh_home / "kanban" / "boards" / "spawntest" / "workspaces"
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(expected_ws)
+        expected_logs = fresh_home / "kanban" / "boards" / "spawntest" / "logs"
+        assert env["HERMES_KANBAN_LOGS_ROOT"] == str(expected_logs)
 
     def test_default_board_spawn_keeps_legacy_paths(self, fresh_home, monkeypatch):
         captured = {}
@@ -461,6 +494,12 @@ class TestWorkerSpawnEnv:
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "default"
         assert env["HERMES_KANBAN_DB"] == str(fresh_home / "kanban.db")
+        assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
+            fresh_home / "kanban" / "workspaces"
+        )
+        assert env["HERMES_KANBAN_LOGS_ROOT"] == str(
+            fresh_home / "kanban" / "logs"
+        )
 
 
 # ---------------------------------------------------------------------------

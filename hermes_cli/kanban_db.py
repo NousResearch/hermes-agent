@@ -1,12 +1,13 @@
 """SQLite-backed Kanban board for multi-profile, multi-project collaboration.
 
-In a fresh install the board lives at ``<root>/kanban.db`` where
-``<root>`` is the **shared Hermes root** (the parent of any active
-profile). Profiles intentionally collapse onto a shared board: it IS
-the cross-profile coordination primitive. A worker spawned with
-``hermes -p <profile>`` joins the same board as the dispatcher that
-claimed the task. The same applies to ``<root>/kanban/workspaces/`` and
-``<root>/kanban/logs/``.
+In a fresh install the board lives at ``<profile-home>/kanban.db`` where
+``<profile-home>`` is the active Hermes home (``~/.hermes`` for the default
+profile, or ``~/.hermes/profiles/<name>`` for a named profile). Profiles keep
+separate boards by default so each agent owns its own queue. A dispatcher that
+spawns a worker still pins the DB/workspace/log paths into the worker env so the
+worker writes back to the exact board where its task was claimed. The same
+profile-local anchoring applies to ``<profile-home>/kanban/workspaces/`` and
+``<profile-home>/kanban/logs/``.
 
 **Multiple boards (projects):** users can create additional boards to
 separate unrelated streams of work (e.g. one per project / repo / domain).
@@ -36,13 +37,14 @@ Board resolution order (highest precedence first, all optional):
   the "currently selected" board. Written by ``hermes kanban boards
   switch <slug>``. When absent, the active board is ``default``.
 
-In standard installs ``<root>`` is ``~/.hermes``. In Docker / custom
-deployments where ``HERMES_HOME`` points outside ``~/.hermes`` (e.g.
-``/opt/hermes``), ``<root>`` is ``HERMES_HOME``. Legacy env-var
-overrides still work:
+In standard installs ``<profile-home>`` is ``~/.hermes`` for the default
+profile and ``~/.hermes/profiles/<name>`` for named profiles. In Docker /
+custom deployments, ``HERMES_HOME`` itself is treated as the profile home.
+Legacy env-var overrides still work:
 
 * ``HERMES_KANBAN_DB`` — pin the database file path directly.
 * ``HERMES_KANBAN_WORKSPACES_ROOT`` — pin the workspaces root directly.
+* ``HERMES_KANBAN_LOGS_ROOT`` — pin the worker logs root directly.
 * ``HERMES_KANBAN_HOME`` — pin the umbrella root that anchors kanban
   paths. Useful for tests and unusual deployments.
 
@@ -90,6 +92,7 @@ from typing import Any, Iterable, Optional
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
+_profile_kanban_migration_warned = False
 
 
 # ---------------------------------------------------------------------------
@@ -214,26 +217,81 @@ def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
 
 
 def kanban_home() -> Path:
-    """Return the shared Hermes root that anchors the kanban board.
+    """Return the active profile home that anchors this profile's kanban board.
 
     Resolution order:
 
     1. ``HERMES_KANBAN_HOME`` env var when set and non-empty (explicit
        override for tests and unusual deployments).
-    2. ``get_default_hermes_root()``, which already returns ``<root>``
-       when ``HERMES_HOME`` is ``<root>/profiles/<name>``, and returns
-       ``HERMES_HOME`` directly for Docker / custom deployments.
+    2. ``get_hermes_home()``, so named profiles naturally get isolated
+       ``kanban.db`` / workspaces / logs under their own profile home.
 
-    The kanban board is shared across profiles **by design** (see the
-    module docstring). Resolving the kanban paths through the active
-    profile's ``HERMES_HOME`` would silently fork the board per profile,
-    which breaks the dispatcher / worker handoff.
+    The dispatcher still injects ``HERMES_KANBAN_DB`` and related pins into
+    workers so a worker always writes to the same DB the dispatcher claimed
+    from, even if the worker activates a profile with its own ``HERMES_HOME``.
     """
     override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
     if override:
         return Path(override).expanduser()
-    from hermes_constants import get_default_hermes_root
-    return get_default_hermes_root()
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    _warn_profile_kanban_migration(home)
+    return home
+
+
+def _warn_profile_kanban_migration(home: Path) -> None:
+    """Emit a one-shot migration warning for custom Docker profile layouts.
+
+    Before profile-local kanban boards, a Docker/custom deployment with
+    ``HERMES_HOME=/opt/hermes/profiles/coder`` resolved kanban paths through
+    the root ``/opt/hermes/kanban.db``. New behavior intentionally anchors at
+    the active profile home. If an old root DB exists and the new profile DB
+    does not, warn loudly so the split is discoverable instead of silent.
+    """
+    global _profile_kanban_migration_warned
+    if _profile_kanban_migration_warned:
+        return
+    # Explicit pins mean the operator has already chosen the kanban location.
+    if (
+        os.environ.get("HERMES_KANBAN_DB", "").strip()
+        or os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    ):
+        return
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if not env_home:
+        return
+    env_path = Path(env_home).expanduser()
+    if env_path.parent.name != "profiles":
+        return
+    try:
+        env_path.resolve().relative_to((Path.home() / ".hermes").resolve())
+        # Standard ~/.hermes/profiles/<name> installs intentionally migrate to
+        # profile-local boards without an extra Docker/custom-layout warning.
+        return
+    except (OSError, ValueError):
+        pass
+    root = env_path.parent.parent
+    old_db = root / "kanban.db"
+    new_db = home / "kanban.db"
+    try:
+        if not old_db.exists() or new_db.exists():
+            return
+    except OSError:
+        return
+    _profile_kanban_migration_warned = True
+    msg = (
+        "[Hermes Kanban migration] HERMES_HOME points at a custom profile "
+        f"home ({env_path}), so Kanban now uses the profile-local board "
+        f"{new_db}. An existing root board was found at {old_db}. To keep "
+        f"using that shared/root board, set HERMES_KANBAN_HOME={root} or "
+        "HERMES_KANBAN_DB to the desired kanban.db; otherwise migrate/copy "
+        "the root DB into the profile home."
+    )
+    try:
+        sys.stderr.write(msg + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 def boards_root() -> Path:
@@ -434,11 +492,18 @@ def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
-    ``default`` keeps the legacy path ``<root>/kanban/logs/``. Other
-    boards use ``<root>/kanban/boards/<slug>/logs/``. Logs follow the
-    board — makes ``hermes kanban log`` unambiguous even when multiple
-    boards have tasks with the same id.
+    ``HERMES_KANBAN_LOGS_ROOT`` pins the path directly (highest precedence)
+    so dispatcher-spawned workers keep writing logs beside the DB that claimed
+    them, even when worker profile activation changes ``HERMES_HOME``.
+
+    ``default`` keeps the legacy path ``<profile-home>/kanban/logs/``. Other
+    boards use ``<profile-home>/kanban/boards/<slug>/logs/``. Logs follow the
+    board — makes ``hermes kanban log`` unambiguous even when multiple boards
+    have tasks with the same id.
     """
+    override = os.environ.get("HERMES_KANBAN_LOGS_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
@@ -1688,12 +1753,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
     ).fetchone() is not None
     if runs_exist:
+        _repair_claimless_running_tasks(conn)
         with write_txn(conn):
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
                 "       max_runtime_seconds, last_heartbeat_at, started_at "
                 "FROM tasks "
-                "WHERE status = 'running' AND current_run_id IS NULL"
+                "WHERE status = 'running' AND current_run_id IS NULL "
+                "  AND (claim_lock IS NOT NULL OR claim_expires IS NOT NULL OR worker_pid IS NOT NULL)"
             ).fetchall()
             for row in inflight:
                 started = row["started_at"] or int(time.time())
@@ -1919,6 +1986,81 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
         raise
     except Exception:
         pass  # I/O errors during check are non-fatal; let normal ops continue
+
+
+def _repair_claimless_running_tasks(conn: sqlite3.Connection) -> int:
+    """Repair impossible ``running`` task rows before run backfill.
+
+    A true running task must carry either a claim (``claim_lock`` /
+    ``claim_expires``), a host-local worker pid, or a live run pointer created
+    by ``claim_task``. During the task_runs migration/backfill, older boards may
+    contain rows that are ``status='running'`` but have no claim/worker state;
+    blindly synthesizing a run for those rows creates the duplicate stale
+    ``current_run_id`` shape observed after review-required blocks.
+
+    If the event history says the latest explicit block is sticky
+    (``kanban_block``/review-required with no later unblock), restore the task
+    to ``blocked``. Otherwise release it to ``ready`` so the dispatcher can make
+    a fresh, auditable claim later. Any dangling run pointer is closed as
+    ``reclaimed`` and cleared.
+    """
+    now = int(time.time())
+    repaired = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            """
+            SELECT id, current_run_id
+              FROM tasks
+             WHERE status = 'running'
+               AND claim_lock IS NULL
+               AND claim_expires IS NULL
+               AND worker_pid IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            task_id = row["id"]
+            stale_run_id = row["current_run_id"]
+            new_status = "blocked" if _has_sticky_block(conn, task_id) else "ready"
+            if stale_run_id:
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status = 'reclaimed', outcome = 'reclaimed',
+                           summary = COALESCE(summary, 'invariant recovery: claimless running task'),
+                           ended_at = COALESCE(ended_at, ?),
+                           claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                     WHERE id = ?
+                    """,
+                    (now, int(stale_run_id)),
+                )
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = ?, current_run_id = NULL,
+                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND claim_lock IS NULL
+                   AND claim_expires IS NULL
+                   AND worker_pid IS NULL
+                """,
+                (new_status, task_id),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn,
+                task_id,
+                "reconciled_status",
+                {
+                    "reason": "claimless_running",
+                    "status": new_status,
+                    "stale_run_id": int(stale_run_id) if stale_run_id else None,
+                },
+                run_id=int(stale_run_id) if stale_run_id else None,
+            )
+            repaired += 1
+    return repaired
 
 
 @contextlib.contextmanager
@@ -6417,8 +6559,8 @@ def _default_spawn(
     the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
 
     ``board`` pins the child's kanban context to that board: the child's
-    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
-    vars all resolve to the same board the dispatcher claimed the task
+    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root / logs_root
+    env vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
     """
     import subprocess
@@ -6479,14 +6621,15 @@ def _default_spawn(
     )
     if foreground_timeout is not None:
         env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
-    # Pin the shared board + workspaces root the dispatcher resolved, so
-    # that even when the worker activates a profile (`hermes -p <name>`
-    # rewrites HERMES_HOME), its kanban paths still match the
-    # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
-    # resolution in `kanban_home()` — symmetric resolution is the norm,
-    # but unusual symlink / Docker layouts are caught here too.
+    # Pin the board + workspaces root the dispatcher resolved, so that even
+    # when the worker activates a profile (`hermes -p <name>` rewrites
+    # HERMES_HOME), its kanban paths still match the dispatcher's board.
+    # This is now essential for per-profile kanban.db isolation: cross-profile
+    # workers must write back to the DB where the task was claimed, not blindly
+    # to their own profile's default DB unless that is also the dispatcher's DB.
     env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
     env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    env["HERMES_KANBAN_LOGS_ROOT"] = str(worker_logs_dir(board=board))
     # Board slug — the final defense-in-depth pin. If the worker ever
     # resolves kanban paths without the DB / workspaces env vars, the
     # board slug still forces it to the right directory.

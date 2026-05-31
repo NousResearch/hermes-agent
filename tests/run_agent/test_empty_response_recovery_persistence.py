@@ -3,12 +3,22 @@
 from run_agent import AIAgent
 
 
+class _RewriteTrackingDB:
+    def __init__(self):
+        self.replaced = []
+
+    def replace_messages(self, session_id, messages):
+        self.replaced.append((session_id, [m.copy() for m in messages]))
+
+
 def _agent_with_stubbed_persistence():
     agent = AIAgent.__new__(AIAgent)
+    agent.session_id = "test-session"
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
     agent._session_db = None
     agent._session_messages = []
+    agent._last_flushed_db_idx = 0
     agent.flushed_session_db_messages = []
     agent._flush_messages_to_session_db = lambda messages, conversation_history=None: (
         agent.flushed_session_db_messages.append([m.copy() for m in messages])
@@ -92,3 +102,33 @@ def test_persist_session_strips_marked_terminal_empty_sentinel():
     assert messages == [{"role": "user", "content": "continue"}]
     assert agent.flushed_session_db_messages[-1] == messages
     assert all(not msg.get("_empty_terminal_sentinel") for msg in messages)
+
+
+def test_persist_session_rewrites_db_when_empty_cleanup_rewinds_flushed_tail():
+    agent = _agent_with_stubbed_persistence()
+    agent._session_db = _RewriteTrackingDB()
+    agent._last_flushed_db_idx = 3
+    messages = [
+        {"role": "user", "content": "run the task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "search_files", "arguments": "{}"}}],
+        },
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+        {
+            "role": "assistant",
+            "content": "(empty)",
+            "_empty_terminal_sentinel": True,
+        },
+    ]
+
+    AIAgent._persist_session(agent, messages, conversation_history=[])
+
+    assert messages == [{"role": "user", "content": "run the task"}]
+    assert agent._session_db.replaced == [
+        ("test-session", [{"role": "user", "content": "run the task"}])
+    ]
+    assert agent._last_flushed_db_idx == 1
+    assert agent.flushed_session_db_messages == []

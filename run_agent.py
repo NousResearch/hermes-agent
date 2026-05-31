@@ -1404,13 +1404,23 @@ class AIAgent:
 
         Ensures conversations are never lost, even on errors or early returns.
         """
-        self._drop_trailing_empty_response_scaffolding(messages)
+        rewound_transcript = self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
+        if rewound_transcript and self._session_db:
+            try:
+                self._session_db.replace_messages(self.session_id, messages)
+                self._last_flushed_db_idx = len(messages)
+                return
+            except Exception as e:
+                logger.warning(
+                    "Failed to rewrite session DB after empty-response cleanup: %s",
+                    e,
+                )
         self._flush_messages_to_session_db(messages, conversation_history)
 
-    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
+    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> bool:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
 
         Also rewinds past any trailing tool-result / assistant(tool_calls) pair
@@ -1418,7 +1428,8 @@ class AIAgent:
         a raw ``tool`` message and the next user turn lands as
         ``...tool, user, user`` — a protocol-invalid sequence that most
         providers silently reject (returns empty content), causing the
-        empty-retry loop to fire forever. See #<TBD>.
+        empty-retry loop to fire forever. Returns True when the transcript was
+        mutated so callers can rewrite already-flushed persistent stores.
         """
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
@@ -1440,7 +1451,7 @@ class AIAgent:
         # result. Only runs when scaffolding was actually present — normal
         # conversation tails (real tool loops mid-progress) are untouched.
         if not dropped_scaffolding:
-            return
+            return False
 
         # Drop any trailing tool-result messages
         while (
@@ -1462,6 +1473,7 @@ class AIAgent:
             and messages[-1].get("tool_calls")
         ):
             messages.pop()
+        return True
 
     def _repair_message_sequence(self, messages: List[Dict]) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_message_sequence``."""

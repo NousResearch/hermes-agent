@@ -394,6 +394,23 @@ class TestGeneratedSystemdUnits:
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
 
+    def test_user_unit_prefixes_configured_service_wrapper(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SERVICE_WRAPPER", "/usr/local/bin/preflight --mode gateway")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/opt/hermes/venv/bin/python")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "ExecStart=/usr/local/bin/preflight --mode gateway /opt/hermes/venv/bin/python -m hermes_cli.main gateway run --replace" in unit
+
+    def test_invalid_service_wrapper_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SERVICE_WRAPPER", "'unterminated")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/opt/hermes/venv/bin/python")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "ExecStart=/opt/hermes/venv/bin/python -m hermes_cli.main gateway run --replace" in unit
+        assert "unterminated" not in unit
+
 
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
@@ -474,6 +491,19 @@ class TestLaunchdServiceRecovery:
             gateway_cli._get_restart_drain_timeout()
             == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
         )
+
+    def test_launchd_plist_prefixes_configured_service_wrapper(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SERVICE_WRAPPER", "/usr/local/bin/preflight --mode gateway")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/opt/hermes/venv/bin/python")
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>ProgramArguments</key>" in plist
+        assert "<string>/usr/local/bin/preflight</string>" in plist
+        assert "<string>--mode</string>" in plist
+        assert "<string>gateway</string>" in plist
+        assert "<string>/opt/hermes/venv/bin/python</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
 
     def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

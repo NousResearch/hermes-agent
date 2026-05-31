@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2161,6 +2162,63 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _configured_gateway_service_wrapper() -> list[str]:
+    """Return an optional service wrapper command for supervised gateways.
+
+    Operators sometimes need a tiny preflight process to prepare the runtime
+    environment before ``gateway run`` starts (for example, loading secrets from
+    an external vault or refreshing short-lived credentials). When configured,
+    systemd/launchd invoke the wrapper first and pass the normal Hermes gateway
+    command as its argv. The wrapper should ``exec`` the command it receives.
+
+    Config surfaces, in precedence order:
+    - ``HERMES_GATEWAY_SERVICE_WRAPPER`` environment variable
+    - ``gateway.service_wrapper`` in config.yaml
+
+    The value is parsed with ``shlex.split`` so a wrapper may include fixed
+    arguments, but it must not be an inline shell script.
+    """
+    raw = os.getenv("HERMES_GATEWAY_SERVICE_WRAPPER", "").strip()
+    if not raw:
+        try:
+            gateway_cfg = read_raw_config().get("gateway") or {}
+            if isinstance(gateway_cfg, dict):
+                raw = str(gateway_cfg.get("service_wrapper") or "").strip()
+        except Exception:
+            raw = ""
+    if not raw:
+        return []
+    try:
+        return shlex.split(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid gateway.service_wrapper value")
+        return []
+
+
+def _gateway_service_command(
+    *,
+    hermes_home: str | None = None,
+    python_path: str | None = None,
+) -> list[str]:
+    python_path = python_path or get_python_path()
+    profile_arg = _profile_arg(hermes_home or str(get_hermes_home().resolve()))
+    command = [python_path, "-m", "hermes_cli.main"]
+    if profile_arg:
+        command.extend(profile_arg.split())
+    command.extend(["gateway", "run", "--replace"])
+    return _configured_gateway_service_wrapper() + command
+
+
+def _systemd_escape_arg(arg: str) -> str:
+    return shlex.quote(str(arg))
+
+
+def _launchd_xml_arg(arg: str) -> str:
+    import html
+
+    return f"<string>{html.escape(str(arg), quote=False)}</string>"
+
+
 def _stable_service_working_dir() -> str:
     """Return a WorkingDirectory that will not disappear out from under systemd.
 
@@ -2215,11 +2273,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
-        profile_arg = _profile_arg(hermes_home)
-        # Remap all paths that may resolve under the calling user's home
-        # (e.g. /root/) to the target user's home so the service can
-        # actually access them.
         python_path = _remap_path_for_user(python_path, home_dir)
+        service_command = " ".join(
+            _systemd_escape_arg(part)
+            for part in _gateway_service_command(hermes_home=str(hermes_home), python_path=python_path)
+        )
         # Anchor cwd to the target user's HERMES_HOME (stable, always exists)
         # rather than a remapped source-checkout path that can rot. See
         # _stable_service_working_dir() for the full rationale.
@@ -2240,7 +2298,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={service_command}
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2265,7 +2323,7 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
-    profile_arg = _profile_arg(hermes_home)
+    service_command = " ".join(_systemd_escape_arg(part) for part in _gateway_service_command(hermes_home=hermes_home))
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
@@ -2278,7 +2336,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={service_command}
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -2843,7 +2901,6 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -2863,20 +2920,10 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend([
-        "<string>gateway</string>",
-        "<string>run</string>",
-        "<string>--replace</string>",
-    ])
+    # Build ProgramArguments array, including an optional service wrapper and
+    # --profile when using a named profile. If a wrapper is configured, launchd
+    # runs the wrapper and passes the normal Hermes command as argv.
+    prog_args = [_launchd_xml_arg(part) for part in _gateway_service_command(hermes_home=hermes_home)]
     prog_args_xml = "\n        ".join(prog_args)
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>

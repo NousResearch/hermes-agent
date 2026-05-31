@@ -73,6 +73,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "modal", "daytona",
         "messaging", "slack", "matrix", "dingtalk", "feishu",
         "honcho", "hindsight",
+        "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]
     for extra in lazy_covered_extras:
@@ -139,6 +140,6 @@ def test_nested_bundled_plugin_metadata_is_packaged():
     package_data = _load_package_data()
     plugin_data = package_data["plugins"]
 
-    assert "*/*/plugin.yaml" in plugin_data
-    assert "*/*/plugin.yml" in plugin_data
-    assert "*/*/README.md" in plugin_data
+    assert "**/plugin.yaml" in plugin_data
+    assert "**/plugin.yml" in plugin_data
+    assert "**/README.md" in plugin_data

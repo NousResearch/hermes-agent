@@ -3126,8 +3126,6 @@ class TestWebhookSecurity(unittest.TestCase):
 
     def test_signature_valid_passes(self):
         import hashlib
-        from gateway.platforms.feishu import FeishuAdapter
-        from gateway.config import PlatformConfig
 
         encrypt_key = "test_secret"
         adapter = self._make_adapter(encrypt_key)
@@ -4885,3 +4883,62 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestChatLockEviction(unittest.TestCase):
+    """_get_chat_lock is LRU-bounded so _chat_locks cannot grow unbounded."""
+
+    def _make_adapter(self, max_size=5):
+        import collections as _collections
+
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        adapter._chat_locks = _collections.OrderedDict()
+        adapter.CHAT_LOCK_MAX_SIZE = max_size
+        return adapter
+
+    def test_chat_locks_is_ordered_dict(self):
+        import collections as _collections
+
+        adapter = self._make_adapter()
+        self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
+
+    def test_same_id_returns_same_lock_and_stays_bounded(self):
+        adapter = self._make_adapter(max_size=5)
+        locks = [adapter._get_chat_lock(f"c{i}") for i in range(5)]
+        self.assertEqual(len(adapter._chat_locks), 5)
+        # Re-requesting an existing id returns the identical lock, no growth.
+        self.assertIs(adapter._get_chat_lock("c2"), locks[2])
+        self.assertEqual(len(adapter._chat_locks), 5)
+
+    def test_lru_eviction_respects_recent_access(self):
+        adapter = self._make_adapter(max_size=5)
+        for i in range(5):
+            adapter._get_chat_lock(f"c{i}")
+        # Touch c0 so it is no longer the LRU entry, then add a new chat.
+        adapter._get_chat_lock("c0")
+        adapter._get_chat_lock("c_new")
+        self.assertEqual(len(adapter._chat_locks), 5)
+        self.assertNotIn("c1", adapter._chat_locks)  # c1 was the true LRU
+        self.assertIn("c0", adapter._chat_locks)
+        self.assertIn("c_new", adapter._chat_locks)
+
+    def test_eviction_skips_held_locks(self):
+        adapter = self._make_adapter(max_size=3)
+
+        async def _run():
+            held = adapter._get_chat_lock("held")
+            await held.acquire()
+            try:
+                adapter._get_chat_lock("x")
+                adapter._get_chat_lock("y")
+                # At capacity; "held" is LRU but locked, so "x" should go instead.
+                adapter._get_chat_lock("z")
+                self.assertIn("held", adapter._chat_locks)
+                self.assertNotIn("x", adapter._chat_locks)
+                self.assertEqual(len(adapter._chat_locks), 3)
+            finally:
+                held.release()
+
+        asyncio.run(_run())

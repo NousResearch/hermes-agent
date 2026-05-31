@@ -255,7 +255,7 @@ gateway:
     title:                 "**Titel:** {title}"
     created:               "**Geskep:** {timestamp}"
     last_activity:         "**Laaste aktiwiteit:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Kumulatiewe API-tokens (elke oproep weer gestuur):** {tokens}"
     agent_running:         "**Agent loop:** {state}"
     state_yes:             "Ja ⚡"
     state_no:              "Nee"

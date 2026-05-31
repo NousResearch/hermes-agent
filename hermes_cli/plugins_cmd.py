@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import shutil
@@ -810,7 +811,29 @@ def _discover_all_plugins() -> list:
     return list(seen.values())
 
 
-def cmd_list() -> None:
+def _plugin_status(name: str, enabled: set, disabled: set) -> str:
+    """Return the user-facing activation state for a plugin name."""
+    if name in disabled:
+        return "disabled"
+    if name in enabled:
+        return "enabled"
+    return "not enabled"
+
+
+def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set) -> list:
+    """Apply ``hermes plugins list`` CLI filters."""
+    filtered = entries
+    if getattr(args, "no_bundled", False) or getattr(args, "user", False):
+        filtered = [entry for entry in filtered if entry[3] != "bundled"]
+    if getattr(args, "enabled", False):
+        filtered = [
+            entry for entry in filtered
+            if _plugin_status(entry[0], enabled, disabled) == "enabled"
+        ]
+    return filtered
+
+
+def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     from rich.console import Console
     from rich.table import Table
@@ -824,6 +847,31 @@ def cmd_list() -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
+    entries = _filter_plugin_entries(entries, args, enabled, disabled)
+
+    if getattr(args, "json", False):
+        payload = [
+            {
+                "name": name,
+                "status": _plugin_status(name, enabled, disabled),
+                "version": str(version),
+                "description": description,
+                "source": source,
+            }
+            for name, version, description, source, _dir in entries
+        ]
+        print(json.dumps(payload, indent=2))
+        return
+
+    if getattr(args, "plain", False):
+        for name, version, _description, source, _dir in entries:
+            status = _plugin_status(name, enabled, disabled)
+            print(f"{status:12} {source:8} {str(version):8} {name}")
+        return
+
+    if not entries:
+        console.print("[dim]No plugins matched the selected filters.[/dim]")
+        return
 
     table = Table(title="Plugins", show_lines=False)
     table.add_column("Name", style="bold")
@@ -833,9 +881,10 @@ def cmd_list() -> None:
     table.add_column("Source", style="dim")
 
     for name, version, description, source, _dir in entries:
-        if name in disabled:
+        status_name = _plugin_status(name, enabled, disabled)
+        if status_name == "disabled":
             status = "[red]disabled[/red]"
-        elif name in enabled:
+        elif status_name == "enabled":
             status = "[green]enabled[/green]"
         else:
             status = "[yellow]not enabled[/yellow]"
@@ -844,6 +893,7 @@ def cmd_list() -> None:
     console.print()
     console.print(table)
     console.print()
+    console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
     console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
@@ -1110,7 +1160,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                 stdscr.addnstr(0, 0, "Plugins", max_x - 1, hattr)
                 stdscr.addnstr(
                     1, 0,
-                    "  \u2191\u2193 navigate  SPACE toggle  ENTER configure/confirm  ESC done",
+                    "  ↑↓/j/k navigate  PgUp/PgDn page  SPACE toggle  ENTER configure/confirm  ESC done",
                     max_x - 1, curses.A_DIM,
                 )
             except curses.error:
@@ -1150,7 +1200,9 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                         pass
                     y += 1
 
-                for i in range(n_plugins):
+                plugin_start = scroll_offset
+                plugin_stop = min(n_plugins, scroll_offset + max(visible_rows, 0))
+                for i in range(plugin_start, plugin_stop):
                     if y >= max_y - 1:
                         break
                     check = "\u2713" if i in chosen else " "
@@ -1208,6 +1260,16 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             elif key in {curses.KEY_DOWN, ord("j")}:
                 if total_items > 0:
                     cursor = (cursor + 1) % total_items
+            elif key in {curses.KEY_NPAGE, ord("f")}:
+                if total_items > 0:
+                    cursor = min(total_items - 1, cursor + max(1, max_y - 5))
+            elif key in {curses.KEY_PPAGE, ord("b")}:
+                if total_items > 0:
+                    cursor = max(0, cursor - max(1, max_y - 5))
+            elif key == curses.KEY_HOME:
+                cursor = 0
+            elif key == curses.KEY_END:
+                cursor = max(0, total_items - 1)
             elif key == ord(" "):
                 if cursor < n_plugins:
                     # Toggle general plugin
@@ -1649,7 +1711,7 @@ def plugins_command(args) -> None:
     elif action == "disable":
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
-        cmd_list()
+        cmd_list(args)
     elif action is None:
         cmd_toggle()
     else:

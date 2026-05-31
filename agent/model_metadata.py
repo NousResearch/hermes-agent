@@ -913,12 +913,33 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
+def get_context_length_from_provider_error(
+    error_msg: str,
+    current_context_length: int,
+) -> Optional[int]:
+    """Return a provider-reported lower context limit, if one is present.
+
+    Context-overflow recovery must not invent a new model window size.  Some
+    providers only say that the input exceeds the context window without
+    reporting the actual maximum.  In that case callers should keep the
+    configured context length and try compression only, rather than stepping
+    down through guessed probe tiers (1M → 256K → 128K → ...).
+    """
+    parsed_limit = parse_context_limit_from_error(error_msg)
+    if parsed_limit is None:
+        return None
+    if parsed_limit < current_context_length:
+        return parsed_limit
+    return None
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Detect an "output cap too large" error and return how many output tokens are available.
 
     Background — two distinct context errors exist:
       1. "Prompt too long"  — the INPUT itself exceeds the context window.
-           Fix: compress history and/or halve context_length.
+           Fix: compress history, and only reduce context_length if the
+           provider explicitly reports the actual lower limit.
       2. "max_tokens too large" — input is fine, but input + requested_output > window.
            Fix: reduce max_tokens (the output cap) for this call.
            Do NOT touch context_length — the window hasn't shrunk.

@@ -152,7 +152,8 @@ def _save_supermemory_config(values: dict, hermes_home: str) -> None:
         except Exception:
             existing = {}
     existing.update(values)
-    config_path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    from utils import atomic_json_write
+    atomic_json_write(config_path, existing, mode=0o600, sort_keys=True)
 
 
 def _detect_category(text: str) -> str:

@@ -578,6 +578,48 @@ class TestModelsEndpoint:
             assert len(data["data"]) == 1
             assert data["data"][0]["id"] == "hermes-agent"
             assert data["data"][0]["owned_by"] == "hermes"
+            assert data["data"][0]["root"] == "hermes-agent"
+
+    @pytest.mark.asyncio
+    async def test_models_advertise_governed_provider_models_from_config(self):
+        governed_config = {
+            "providers": {
+                "homelab": {
+                    "base_url": "http://llama-cpp:8080/v1",
+                    "model": "Qwen3.6-27B-UD-Q8_K_XL",
+                    "models": {"Qwen3.6-27B-UD-Q8_K_XL": {"context_length": 65000}},
+                }
+            }
+        }
+        governed_entries = [
+            {
+                "provider_key": "homelab",
+                "name": "homelab",
+                "base_url": "http://llama-cpp:8080/v1",
+                "model": "Qwen3.6-27B-UD-Q8_K_XL",
+                "models": {"Qwen3.6-27B-UD-Q8_K_XL": {"context_length": 65000}},
+            }
+        ]
+        with (
+            patch("gateway.run._load_gateway_config", return_value=governed_config),
+            patch("gateway.run._resolve_gateway_model", return_value="hermes-agent"),
+            patch("hermes_cli.config.get_compatible_custom_providers", return_value=governed_entries),
+        ):
+            adapter = _make_adapter()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            assert resp.status == 200
+            data = await resp.json()
+            model_ids = [row["id"] for row in data["data"]]
+            assert model_ids == ["hermes-agent", "Qwen3.6-27B-UD-Q8_K_XL"]
+            governed = data["data"][1]
+            assert governed["root"] == "Qwen3.6-27B-UD-Q8_K_XL"
+            assert adapter._resolve_request_model_route("hermes.Qwen3.6-27B-UD-Q8_K_XL") == {
+                "advertised_id": "Qwen3.6-27B-UD-Q8_K_XL",
+                "runtime_model": "Qwen3.6-27B-UD-Q8_K_XL",
+                "requested_provider": "homelab",
+            }
 
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):

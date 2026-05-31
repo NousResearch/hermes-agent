@@ -700,6 +700,15 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        try:
+            from gateway.run import _load_gateway_config, _resolve_gateway_model
+
+            self._gateway_config: Dict[str, Any] = _load_gateway_config()
+            self._default_runtime_model: str = _resolve_gateway_model(self._gateway_config)
+        except Exception:
+            self._gateway_config = {}
+            self._default_runtime_model = self._model_name
+        self._advertised_models, self._configured_model_routes = self._build_configured_model_routes()
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -753,6 +762,123 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return "hermes-agent"
+
+    @staticmethod
+    def _normalize_model_alias(value: Any) -> str:
+        return str(value or "").strip()
+
+    def _build_configured_model_routes(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        """Build advertised-model rows plus request-time routing metadata.
+
+        The default API-server model remains the first-class direct Hermes
+        surface. Additional governed models come from config.yaml user-defined
+        providers/custom providers so /v1/models, `hermes model`, and request-
+        time model selection can share the same provider truth.
+        """
+        rows: list[dict[str, Any]] = []
+        routes: dict[str, dict[str, Any]] = {}
+        seen_advertised_ids: set[str] = set()
+
+        def _register(advertised_id: str, runtime_model: str, *, requested_provider: Optional[str] = None) -> None:
+            advertised = self._normalize_model_alias(advertised_id)
+            runtime = self._normalize_model_alias(runtime_model) or advertised
+            if not advertised:
+                return
+            if advertised not in seen_advertised_ids:
+                rows.append({
+                    "id": advertised,
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": "hermes",
+                    "permission": [],
+                    "root": runtime,
+                    "parent": None,
+                })
+                seen_advertised_ids.add(advertised)
+            route = {
+                "advertised_id": advertised,
+                "runtime_model": runtime,
+                "requested_provider": requested_provider,
+            }
+            aliases = {advertised, runtime, f"hermes.{advertised}", f"hermes.{runtime}"}
+            for alias in aliases:
+                alias_norm = self._normalize_model_alias(alias)
+                if alias_norm:
+                    routes.setdefault(alias_norm, route)
+
+        default_runtime_model = self._default_runtime_model or self._model_name
+        _register(self._model_name, default_runtime_model, requested_provider=None)
+
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+
+            custom_providers = get_compatible_custom_providers(self._gateway_config)
+        except Exception:
+            custom_providers = []
+
+        for entry in custom_providers if isinstance(custom_providers, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            provider_key = self._normalize_model_alias(entry.get("provider_key") or entry.get("name"))
+            if not provider_key:
+                continue
+            advertised_models: list[str] = []
+            entry_model = self._normalize_model_alias(entry.get("model"))
+            if entry_model:
+                advertised_models.append(entry_model)
+            entry_models = entry.get("models")
+            if isinstance(entry_models, dict):
+                for model_id in entry_models.keys():
+                    normalized = self._normalize_model_alias(model_id)
+                    if normalized and normalized not in advertised_models:
+                        advertised_models.append(normalized)
+            elif isinstance(entry_models, list):
+                for model_id in entry_models:
+                    normalized = self._normalize_model_alias(model_id)
+                    if normalized and normalized not in advertised_models:
+                        advertised_models.append(normalized)
+            for model_id in advertised_models:
+                _register(model_id, model_id, requested_provider=provider_key)
+
+        return rows, routes
+
+    def _resolve_request_model_route(self, requested_model: Optional[str]) -> dict[str, Any]:
+        requested = self._normalize_model_alias(requested_model)
+        if not requested:
+            requested = self._model_name
+        route = self._configured_model_routes.get(requested)
+        if route is not None:
+            return route
+        return {
+            "advertised_id": requested,
+            "runtime_model": requested,
+            "requested_provider": None,
+        }
+
+    def _resolve_runtime_agent_kwargs_for_route(self, route: Optional[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+        from gateway.run import _resolve_runtime_agent_kwargs
+        from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
+
+        runtime_model = self._default_runtime_model or self._model_name
+        requested_provider = ""
+        if isinstance(route, dict):
+            runtime_model = self._normalize_model_alias(route.get("runtime_model")) or runtime_model
+            requested_provider = self._normalize_model_alias(route.get("requested_provider"))
+        if not requested_provider:
+            return _resolve_runtime_agent_kwargs(), runtime_model
+        try:
+            runtime = resolve_runtime_provider(requested=requested_provider)
+        except Exception as exc:
+            raise RuntimeError(format_runtime_provider_error(exc)) from exc
+        return {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+        }, runtime_model
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -962,31 +1088,24 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
-    ) -> Any:
+        requested_model: Optional[str] = None,
+    ):
         """
-        Create an AIAgent instance using the gateway's runtime config.
+        Construct a fresh ``AIAgent`` for one API request.
 
-        Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
-        base_url, etc. from config.yaml / env vars.  Toolsets are resolved
-        from config.yaml platform_toolsets.api_server (same as all other
-        gateway platforms), falling back to the hermes-api-server default.
-
-        ``gateway_session_key`` is a stable per-channel identifier supplied
-        by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
-        which scopes the short-term transcript and rotates on /new, this
-        key is meant to persist across transcripts so long-term memory
-        providers (e.g. Honcho) can scope their per-chat state correctly
-        — matching the semantics of the native gateway's ``session_key``.
+        Uses runtime config as the default provider/model source, but when a
+        request targets a governed configured model the provider credentials are
+        resolved from the matching config.yaml provider entry instead.
         """
         from run_agent import AIAgent
-        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
+        from gateway.run import GatewayRunner
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        route = self._resolve_request_model_route(requested_model)
+        runtime_kwargs, resolved_model = self._resolve_runtime_agent_kwargs_for_route(route)
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
 
-        user_config = _load_gateway_config()
+        user_config = self._gateway_config or {}
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -996,7 +1115,7 @@ class APIServerAdapter(BasePlatformAdapter):
         fallback_model = GatewayRunner._load_fallback_model()
 
         agent = AIAgent(
-            model=model,
+            model=resolved_model,
             **runtime_kwargs,
             max_iterations=max_iterations,
             quiet_mode=True,
@@ -1046,24 +1165,14 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
+        """GET /v1/models — return advertised direct + governed Hermes models."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
         return web.json_response({
             "object": "list",
-            "data": [
-                {
-                    "id": self._model_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
-                }
-            ],
+            "data": list(self._advertised_models),
         })
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
@@ -1505,12 +1614,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
         history = self._conversation_history_for_session(session_id)
+        requested_model = body.get("model") or None
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            requested_model=requested_model,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
@@ -1588,6 +1699,7 @@ class APIServerAdapter(BasePlatformAdapter):
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+        requested_model = body.get("model") or None
 
         async def _run_and_signal() -> None:
             try:
@@ -1602,6 +1714,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    requested_model=requested_model,
                 )
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -1868,6 +1981,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                requested_model=model_name,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1887,6 +2001,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                requested_model=model_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2900,6 +3015,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                requested_model=model_name,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2933,6 +3049,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                requested_model=model_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3435,6 +3552,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        requested_model: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3458,6 +3576,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -3673,6 +3792,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    requested_model=body.get("model") or None,
                 )
                 self._active_run_agents[run_id] = agent
 

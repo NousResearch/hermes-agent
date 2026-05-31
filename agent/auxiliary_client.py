@@ -4384,10 +4384,26 @@ def _resolve_auto(
         resolved_provider = main_provider
         explicit_base_url = runtime_base_url or None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        if runtime_base_url and main_provider == "custom":
+            # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
+            # — pass through with explicit base_url + api_key.
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif main_provider.startswith("custom:"):
+            # Named custom provider (custom_providers / providers dict entry).
+            # KEEP the full ``custom:<name>`` so resolve_provider_client lands in
+            # the named-custom-provider arm — that arm honours the entry's
+            # api_mode (e.g. anthropic_messages → AnthropicAuxiliaryClient,
+            # avoiding the /anthropic→/v1 rewrite that 404s against proxies
+            # like Palantir Foundry's Anthropic surface).  Do NOT collapse to
+            # plain "custom"; that path strips /anthropic and routes through
+            # OpenAI chat.completions.
+            resolved_provider = main_provider
+            # base_url / api_key come from the named entry itself — leave the
+            # explicit_* overrides unset so the named arm reads them from config.
+            if runtime_api_key:
+                explicit_api_key = runtime_api_key
         elif runtime_api_key:
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool

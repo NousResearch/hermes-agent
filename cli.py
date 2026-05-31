@@ -4065,6 +4065,61 @@ class HermesCLI:
         merged.append(current)
         return "\n".join(merged)
 
+    @classmethod
+    def _join_status_bar_line_groups(cls, groups: list[list[str]], max_width: int) -> str:
+        """Join pre-wrapped line groups while preserving explicit line breaks.
+
+        Use this when the footer should intentionally stay multiline even if the
+        full content could fit on one row. Each input group becomes at least one
+        rendered line, though any over-wide line inside a group is still wrapped
+        losslessly to stay within ``max_width``.
+        """
+        lines: list[str] = []
+        for group in groups:
+            group_lines: list[str] = []
+            for line in group:
+                if line:
+                    group_lines.extend(cls._wrap_status_bar_text(line, max_width))
+            if group_lines:
+                lines.extend(group_lines)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_status_bar_token_summary(snapshot: Dict[str, Any], *, compact: bool = False) -> str:
+        """Return a compact session-token summary for the footer."""
+        input_tokens = int(snapshot.get("session_input_tokens", 0) or 0)
+        output_tokens = int(snapshot.get("session_output_tokens", 0) or 0)
+        total_tokens = int(snapshot.get("session_total_tokens", 0) or 0)
+        cache_read_tokens = int(snapshot.get("session_cache_read_tokens", 0) or 0)
+        cache_write_tokens = int(snapshot.get("session_cache_write_tokens", 0) or 0)
+        api_calls = int(snapshot.get("session_api_calls", 0) or 0)
+
+        parts: list[str] = []
+        if compact:
+            if total_tokens > 0:
+                parts.append(f"Σ {format_token_count_compact(total_tokens)}")
+            if api_calls > 0:
+                parts.append(f"calls {api_calls}")
+            if input_tokens > 0 or output_tokens > 0:
+                parts.append(
+                    f"↕ {format_token_count_compact(input_tokens)}/{format_token_count_compact(output_tokens)}"
+                )
+            return " · ".join(parts)
+
+        if input_tokens > 0:
+            parts.append(f"in {format_token_count_compact(input_tokens)}")
+        if output_tokens > 0:
+            parts.append(f"out {format_token_count_compact(output_tokens)}")
+        if total_tokens > 0:
+            parts.append(f"Σ {format_token_count_compact(total_tokens)}")
+        if cache_read_tokens > 0 or cache_write_tokens > 0:
+            parts.append(
+                f"cache {format_token_count_compact(cache_read_tokens)}/{format_token_count_compact(cache_write_tokens)}"
+            )
+        if api_calls > 0:
+            parts.append(f"calls {api_calls}")
+        return "↕ " + " · ".join(parts) if parts else ""
+
     @staticmethod
     def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
         """Return the live prompt_toolkit width, falling back to ``shutil``.
@@ -4231,7 +4286,12 @@ class HermesCLI:
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
-        """Return a width-aware status string for the TUI footer without truncation."""
+        """Return a width-aware status string for the TUI footer without truncation.
+
+        For normal desktop widths, deliberately prefer a two-line footer so the
+        user can see richer session/account state without packing everything into
+        a dense single row.
+        """
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
@@ -4291,6 +4351,8 @@ class HermesCLI:
             bg_proc_count = snapshot.get("active_background_processes", 0)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            token_summary_compact = self._format_status_bar_token_summary(snapshot, compact=True)
+            token_summary_full = self._format_status_bar_token_summary(snapshot, compact=False)
 
             if width < 52:
                 header_parts = [f"⚕ {snapshot['model_short']}", percent_label, duration_label]
@@ -4312,39 +4374,49 @@ class HermesCLI:
 
             if width < 76:
                 header_parts = [f"⚕ {snapshot['model_short']}", percent_label, duration_label]
-                usage_lines = self._wrap_status_bar_parts([account_usage_label], " · ", width) if account_usage_label else []
-                aux_parts = []
+                if prompt_elapsed:
+                    header_parts.append(prompt_elapsed)
+                detail_parts = []
+                if account_usage_label:
+                    detail_parts.append(account_usage_label)
+                elif token_summary_compact:
+                    detail_parts.append(token_summary_compact)
                 if compressions:
-                    aux_parts.append(f"🗜️ {compressions}")
+                    detail_parts.append(f"🗜️ {compressions}")
                 if bg_count:
-                    aux_parts.append(f"▶ {bg_count}")
+                    detail_parts.append(f"▶ {bg_count}")
                 if bg_proc_count:
-                    aux_parts.append(f"⚙ {bg_proc_count}")
+                    detail_parts.append(f"⚙ {bg_proc_count}")
                 if yolo_active:
-                    aux_parts.append("⚠ YOLO")
-                return self._merge_status_bar_line_groups([
+                    detail_parts.append("⚠ YOLO")
+                return self._join_status_bar_line_groups([
                     self._wrap_status_bar_parts(header_parts, " · ", width),
-                    usage_lines,
-                    self._wrap_status_bar_parts(aux_parts, " · ", width),
-                ], width, line_separator=" · ")
+                    self._wrap_status_bar_parts(detail_parts, " · ", width),
+                ], width)
 
             header_parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label, duration_label]
             if prompt_elapsed:
                 header_parts.append(prompt_elapsed)
-            usage_lines = self._wrap_status_bar_parts([account_usage_label], " │ ", width) if account_usage_label else []
-            aux_parts = []
+            detail_parts = []
+            if account_usage_label:
+                detail_parts.append(account_usage_label)
+            if width >= 140 and token_summary_full:
+                detail_parts.append(token_summary_full)
+            elif width >= 100 and token_summary_compact:
+                detail_parts.append(token_summary_compact)
             if compressions:
-                aux_parts.append(f"🗜️ {compressions}")
+                detail_parts.append(f"🗜️ {compressions}")
             if bg_count:
-                aux_parts.append(f"▶ {bg_count}")
+                detail_parts.append(f"▶ {bg_count}")
             if bg_proc_count:
-                aux_parts.append(f"⚙ {bg_proc_count}")
+                detail_parts.append(f"⚙ {bg_proc_count}")
             if yolo_active:
-                aux_parts.append("⚠ YOLO")
-            return self._merge_status_bar_line_groups([
+                detail_parts.append("⚠ YOLO")
+            if not detail_parts and token_summary_compact:
+                detail_parts.append(token_summary_compact)
+            return self._join_status_bar_line_groups([
                 self._wrap_status_bar_parts(header_parts, " │ ", width),
-                usage_lines,
-                self._wrap_status_bar_parts(aux_parts, " │ ", width),
+                self._wrap_status_bar_parts(detail_parts, " │ ", width),
             ], width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"

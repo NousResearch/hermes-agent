@@ -91,12 +91,16 @@ class TestCLIStatusBar:
         )
 
         text = cli_obj._build_status_bar_text(width=120)
+        lines = text.splitlines()
 
+        assert len(lines) == 2
         assert "claude-sonnet-4-20250514" in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+        assert "Σ 12.4K" in text
+        assert "calls 7" in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
@@ -210,7 +214,9 @@ class TestCLIStatusBar:
         )
 
         text = cli_obj._build_status_bar_text(width=60)
+        lines = text.splitlines()
 
+        assert len(lines) == 2
         assert "⚕" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text

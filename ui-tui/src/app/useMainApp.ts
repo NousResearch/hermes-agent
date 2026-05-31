@@ -661,7 +661,7 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued, composerState.queuedDisplay.length])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {

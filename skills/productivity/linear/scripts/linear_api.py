@@ -95,7 +95,11 @@ def gql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         sys.stderr.write(f"Network error: {e}\n")
         sys.exit(1)
 
-    result = json.loads(body)
+    try:
+        result = json.loads(body)
+    except json.JSONDecodeError:
+        sys.stderr.write(f"Non-JSON response from Linear API:\n{body[:500]}\n")
+        sys.exit(1)
     if "errors" in result and result["errors"]:
         sys.stderr.write(f"GraphQL errors: {json.dumps(result['errors'], indent=2)}\n")
         # Still return data if partial success; let caller decide
@@ -349,7 +353,11 @@ def cmd_search_documents(args: argparse.Namespace) -> None:
 
 
 def cmd_raw(args: argparse.Namespace) -> None:
-    variables = json.loads(args.vars) if args.vars else None
+    try:
+        variables = json.loads(args.vars) if args.vars else None
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"Invalid JSON in --vars: {e}\n")
+        sys.exit(1)
     emit(gql(args.query, variables))
 
 

@@ -868,7 +868,11 @@ def sheets_get(args):
 
 
 def sheets_update(args):
-    values = json.loads(args.values)
+    try:
+        values = json.loads(args.values)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"Invalid JSON in --values: {e}\n")
+        sys.exit(1)
     body = {"values": values}
 
     if _gws_binary():
@@ -894,7 +898,11 @@ def sheets_update(args):
 
 
 def sheets_append(args):
-    values = json.loads(args.values)
+    try:
+        values = json.loads(args.values)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"Invalid JSON in --values: {e}\n")
+        sys.exit(1)
     body = {"values": values}
 
     if _gws_binary():

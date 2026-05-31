@@ -1020,14 +1020,44 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # source of the 429 so the cooldown should not be reset/extended.
         fallback_already_active = bool(getattr(agent, "_fallback_activated", False))
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-        primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
+        primary_provider = (
+            ((getattr(agent, "_primary_runtime", None) or {}).get("provider") or "")
+            .strip()
+            .lower()
+        )
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
-    if agent._fallback_index >= len(agent._fallback_chain):
+
+    chain = getattr(agent, "_fallback_chain", None) or []
+    if not isinstance(chain, (list, tuple)):
+        logger.warning(
+            "Fallback unavailable: invalid fallback chain type %s",
+            type(chain).__name__,
+        )
+        agent._fallback_chain = []
+        agent._fallback_index = 0
         return False
 
-    fb = agent._fallback_chain[agent._fallback_index]
-    agent._fallback_index += 1
+    try:
+        index = int(getattr(agent, "_fallback_index", 0) or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if index < 0:
+        index = 0
+    agent._fallback_index = index
+
+    if index >= len(chain):
+        return False
+
+    fb = chain[index]
+    agent._fallback_index = index + 1
+    if not isinstance(fb, dict):
+        logger.warning(
+            "Fallback skip: chain entry %s is not a mapping",
+            type(fb).__name__,
+        )
+        return agent._try_activate_fallback()
+
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:

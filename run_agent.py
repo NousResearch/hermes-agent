@@ -3613,8 +3613,22 @@ class AIAgent:
         ``try_activate_fallback`` (#35314, #17446).
         """
         chain = getattr(self, "_fallback_chain", None) or []
-        index = getattr(self, "_fallback_index", 0)
-        return index < len(chain)
+        if not isinstance(chain, (list, tuple)):
+            return False
+        try:
+            index = int(getattr(self, "_fallback_index", 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if index < 0:
+            index = 0
+        if index >= len(chain):
+            return False
+        return any(
+            isinstance(entry, dict)
+            and bool((entry.get("provider") or "").strip())
+            and bool((entry.get("model") or "").strip())
+            for entry in chain[index:]
+        )
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 

@@ -104,6 +104,59 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=None)
         assert agent._try_activate_fallback() is False
 
+    def test_none_chain_returns_false_instead_of_type_error(self):
+        """#35848: runtime-corrupted fallback chain must not mask the primary error."""
+        agent = _make_agent(fallback_model=None)
+        agent._fallback_chain = None
+        agent._fallback_index = 0
+
+        assert agent._try_activate_fallback() is False
+        assert agent._fallback_index == 0
+
+    def test_malformed_chain_type_returns_false_and_resets(self):
+        """Truthy non-list chains should not be treated as fallback entries."""
+        agent = _make_agent(fallback_model=None)
+        agent._fallback_chain = {"provider": "openai", "model": "gpt-4o"}
+        agent._fallback_index = 0
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            assert agent._try_activate_fallback() is False
+
+        assert agent._fallback_chain == []
+        assert agent._fallback_index == 0
+        mock_resolve.assert_not_called()
+
+    def test_malformed_chain_entry_skips_to_next(self):
+        """Partially-populated fallback chains should skip bad entries."""
+        agent = _make_agent(fallback_model=None)
+        agent._fallback_chain = [
+            None,
+            {"provider": "openai", "model": "gpt-4o"},
+        ]
+        agent._fallback_index = 0
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.model == "gpt-4o"
+            assert agent._fallback_index == 2
+
+    def test_has_pending_fallback_handles_none_and_malformed_state(self):
+        agent = _make_agent(fallback_model=None)
+
+        agent._fallback_chain = None
+        agent._fallback_index = 0
+        assert agent._has_pending_fallback() is False
+
+        agent._fallback_chain = {"provider": "openai", "model": "gpt-4o"}
+        assert agent._has_pending_fallback() is False
+
+        agent._fallback_chain = [None, {"provider": "openai", "model": "gpt-4o"}]
+        agent._fallback_index = "not-an-int"
+        assert agent._has_pending_fallback() is True
+
     def test_advances_index(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},

@@ -145,3 +145,29 @@ def test_has_pending_fallback_missing_attrs():
     """Bare agent with no fallback attributes set must default to False, not crash."""
     agent = _bare_agent()
     assert agent._has_pending_fallback() is False
+
+
+def test_has_pending_fallback_invalid_chain_type():
+    """Malformed runtime fallback state should be treated as exhausted."""
+    agent = _bare_agent()
+    agent._fallback_chain = object()
+    agent._fallback_index = 0
+    assert agent._has_pending_fallback() is False
+
+
+def test_has_pending_fallback_skips_malformed_entries():
+    agent = _bare_agent()
+    agent._fallback_chain = [
+        None,
+        {"provider": "", "model": "gpt-5"},
+        {"provider": "openai", "model": "gpt-5"},
+    ]
+    agent._fallback_index = 0
+    assert agent._has_pending_fallback() is True
+
+
+def test_has_pending_fallback_malformed_entries_only():
+    agent = _bare_agent()
+    agent._fallback_chain = [None, {"provider": "openai"}]
+    agent._fallback_index = 0
+    assert agent._has_pending_fallback() is False

@@ -48,6 +48,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -99,6 +100,7 @@ def check_webhook_requirements() -> bool:
 
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
+    MEDIA_KINDS = frozenset()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)

@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -70,6 +71,7 @@ def check_mattermost_requirements() -> bool:
 
 class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
+    MEDIA_KINDS = frozenset({MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.VOICE, MediaKind.DOCUMENT})
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)

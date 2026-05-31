@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -60,6 +61,7 @@ class SmsAdapter(BasePlatformAdapter):
     Each inbound phone number gets its own Hermes session (multi-tenant).
     Replies are always sent from the configured TWILIO_PHONE_NUMBER.
     """
+    MEDIA_KINDS = frozenset()
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
 

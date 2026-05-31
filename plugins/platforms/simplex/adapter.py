@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional
 # external dependency that would block the plugin from loading.
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -118,6 +119,7 @@ class SimplexAdapter(BasePlatformAdapter):
     Instantiated by the ``adapter_factory`` passed to
     ``ctx.register_platform()`` in :func:`register`.
     """
+    MEDIA_KINDS = frozenset()
 
     def __init__(self, config: PlatformConfig, **kwargs):
         platform = Platform("simplex")

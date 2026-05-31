@@ -30,6 +30,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -56,6 +57,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     MessageEvent objects.  Supports domain/entity filtering and
     per-entity cooldowns to avoid event floods.
     """
+    MEDIA_KINDS = frozenset()
 
     MAX_MESSAGE_LENGTH = 4096
 

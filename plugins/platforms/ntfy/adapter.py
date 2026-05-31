@@ -62,6 +62,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -155,6 +156,7 @@ class NtfyAdapter(BasePlatformAdapter):
     Subscribes to a topic via HTTP streaming (``/json`` endpoint) and
     publishes replies via HTTP POST. No external SDK — only httpx.
     """
+    MEDIA_KINDS = frozenset()
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 

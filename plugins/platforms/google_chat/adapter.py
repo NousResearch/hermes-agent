@@ -129,6 +129,7 @@ from gateway.config import Platform, PlatformConfig
 Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -441,6 +442,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
       GOOGLE_CHAT_MAX_MESSAGES (FlowControl, default 1)
       GOOGLE_CHAT_MAX_BYTES    (FlowControl, default 16_777_216 = 16 MiB)
     """
+    MEDIA_KINDS = frozenset({MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.VOICE, MediaKind.DOCUMENT})
 
     MAX_MESSAGE_LENGTH = _MAX_TEXT_LENGTH
     # Pub/Sub supervisor configuration.

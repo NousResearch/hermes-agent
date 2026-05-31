@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -244,6 +245,7 @@ def _extract_attachments(
 
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
+    MEDIA_KINDS = frozenset({MediaKind.IMAGE, MediaKind.DOCUMENT})
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)

@@ -66,6 +66,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -341,6 +342,7 @@ class TelegramAdapter(BasePlatformAdapter):
     - Forum topics (thread_id support)
     - Media messages
     """
+    MEDIA_KINDS = frozenset({MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.VOICE, MediaKind.DOCUMENT})
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096

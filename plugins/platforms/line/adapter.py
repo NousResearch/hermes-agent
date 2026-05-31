@@ -88,6 +88,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -622,6 +623,7 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter."""
+    MEDIA_KINDS = frozenset({MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.VOICE})
 
     # LINE has its own message-edit story (none) — we always send fresh
     # bubbles, never edit, so REQUIRES_EDIT_FINALIZE stays False.

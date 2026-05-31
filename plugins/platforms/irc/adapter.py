@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     SendResult,
     MessageEvent,
@@ -98,6 +99,7 @@ class IRCAdapter(BasePlatformAdapter):
     This class is instantiated by the adapter_factory passed to
     register_platform().
     """
+    MEDIA_KINDS = frozenset()
 
     def __init__(self, config, **kwargs):
         platform = Platform("irc")

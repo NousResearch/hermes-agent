@@ -12,7 +12,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_default_hermes_root
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -190,6 +190,43 @@ def check_fail(text: str, detail: str = ""):
 
 def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
+
+
+def _iter_env_files_for_permission_check(root: Path, active_env_path: Path) -> list[Path]:
+    """Return known Hermes .env files that may predate permission hardening."""
+    env_files: list[Path] = []
+    for candidate in (root / ".env", active_env_path):
+        if candidate.exists() and candidate not in env_files:
+            env_files.append(candidate)
+
+    profiles_dir = root / "profiles"
+    if profiles_dir.exists():
+        for profile_env in sorted(profiles_dir.glob("*/.env")):
+            if profile_env.exists() and profile_env not in env_files:
+                env_files.append(profile_env)
+    return env_files
+
+
+def _env_file_is_group_or_other_readable(path: Path) -> bool:
+    try:
+        return bool(path.stat().st_mode & 0o077)
+    except OSError:
+        return False
+
+
+def _tighten_env_file_permissions(path: Path) -> bool:
+    try:
+        os.chmod(path, 0o600)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+def _display_env_path(path: Path) -> str:
+    try:
+        return str(path.expanduser().resolve()).replace(str(Path.home()), "~", 1)
+    except OSError:
+        return str(path)
 
 
 def _section(title: str) -> None:
@@ -636,6 +673,27 @@ def run_doctor(args):
             else:
                 check_info("Run 'hermes setup' to create one")
                 issues.append("Run 'hermes setup' to create .env")
+
+    insecure_env_files = [
+        path for path in _iter_env_files_for_permission_check(get_default_hermes_root(), env_path)
+        if _env_file_is_group_or_other_readable(path)
+    ]
+    if insecure_env_files:
+        if should_fix:
+            fixed_env_files = [path for path in insecure_env_files if _tighten_env_file_permissions(path)]
+            if fixed_env_files:
+                check_ok(f"Tightened permissions on {len(fixed_env_files)} .env file(s) to 0600")
+                fixed_count += len(fixed_env_files)
+            still_insecure = [path for path in insecure_env_files if _env_file_is_group_or_other_readable(path)]
+            for path in still_insecure:
+                check_warn("Insecure .env permissions", f"({_display_env_path(path)} is group/other-accessible)")
+                issues.append(f"Restrict {_display_env_path(path)}: chmod 600 {_display_env_path(path)}")
+        else:
+            for path in insecure_env_files:
+                check_warn("Insecure .env permissions", f"({_display_env_path(path)} is group/other-accessible)")
+            issues.append("Run 'hermes doctor --fix' or chmod 600 on Hermes .env files")
+    elif env_path.exists():
+        check_ok("Hermes .env file permissions are owner-only")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'

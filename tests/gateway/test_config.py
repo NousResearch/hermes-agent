@@ -199,6 +199,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            api_user_memory_isolation=True,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -209,6 +210,12 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.api_user_memory_isolation is True
+
+    def test_api_user_memory_isolation_defaults_false(self):
+        # Absent from config → shared-memory behaviour preserved.
+        assert GatewayConfig().api_user_memory_isolation is False
+        assert GatewayConfig.from_dict({}).api_user_memory_isolation is False
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(

@@ -488,6 +488,16 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
+    # Per-user memory isolation for the OpenAI-compatible API server (Open WebUI etc.).
+    # When True, requests carrying a trusted user-identity header (X-OpenWebUI-User-Id)
+    # are scoped so each user gets a dedicated short-term transcript and long-term
+    # memory scope instead of all users sharing one memory. Default False preserves the
+    # historical shared-memory behaviour.
+    #
+    # SECURITY: the user-identity header is trusted unconditionally, so this flag must
+    # only be enabled when the API server is reachable solely through a trusted proxy
+    # (Open WebUI) that injects the header — never where end users can set it directly.
+    api_user_memory_isolation: bool = False
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -593,6 +603,7 @@ class GatewayConfig:
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "api_user_memory_isolation": self.api_user_memory_isolation,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -638,6 +649,7 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        api_user_memory_isolation = data.get("api_user_memory_isolation")
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -664,6 +676,7 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            api_user_memory_isolation=_coerce_bool(api_user_memory_isolation, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
@@ -753,6 +766,9 @@ def load_gateway_config() -> GatewayConfig:
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+
+            if "api_user_memory_isolation" in yaml_cfg:
+                gw_data["api_user_memory_isolation"] = yaml_cfg["api_user_memory_isolation"]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):

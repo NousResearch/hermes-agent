@@ -337,6 +337,68 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_forwards_user_id(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "base_url": "https://example.test/v1",
+                "api_mode": "codex_responses",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="api-session",
+            user_id="owui-user-42",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["user_id"] == "owui-user-42"
+        # Dead identity params (email/name) were removed — no provider consumes them.
+        assert "user_email" not in captured
+        assert "user_name" not in captured
+
+
+class TestDeriveChatSessionId:
+    def test_stable_without_user_scope(self):
+        a = _derive_chat_session_id("sys", "hello")
+        b = _derive_chat_session_id("sys", "hello")
+        assert a == b
+        assert a.startswith("api-")
+
+    def test_user_scope_changes_session_id(self):
+        # Same conversation, different users → different sessions (no transcript
+        # collision). This is what makes per-user isolation safe.
+        shared = _derive_chat_session_id("sys", "hello")
+        alice = _derive_chat_session_id("sys", "hello", user_scope="alice")
+        bob = _derive_chat_session_id("sys", "hello", user_scope="bob")
+        assert alice != bob
+        assert alice != shared
+        assert bob != shared
+
+    def test_empty_user_scope_matches_unscoped(self):
+        # Falsy scope must not change the historical (shared) session id.
+        assert _derive_chat_session_id("sys", "hi", user_scope="") == _derive_chat_session_id("sys", "hi")
+        assert _derive_chat_session_id("sys", "hi", user_scope=None) == _derive_chat_session_id("sys", "hi")
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -3495,3 +3557,192 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+
+
+# ---------------------------------------------------------------------------
+# Per-user memory isolation (Open WebUI multi-user) — GatewayConfig flag
+# ---------------------------------------------------------------------------
+
+
+def _isolation_adapter(enabled: bool, api_key: str = "sk-secret") -> APIServerAdapter:
+    """API adapter with the per-user memory isolation flag toggled in extra.
+
+    Mirrors how GatewayRunner._create_adapter propagates gateway-level flags
+    into PlatformConfig.extra.
+    """
+    extra = {"api_user_memory_isolation": enabled}
+    if api_key:
+        extra["key"] = api_key
+    return APIServerAdapter(PlatformConfig(enabled=True, extra=extra))
+
+
+async def _post_chat(adapter, headers):
+    """Drive POST /v1/chat/completions with _run_agent stubbed; return its kwargs."""
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (
+                {"final_response": "ok", "completed": True},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer sk-secret", **headers},
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]},
+            )
+        assert resp.status == 200, await resp.text()
+        return mock_run.call_args.kwargs
+
+
+class TestPerUserMemoryIsolation:
+    @pytest.mark.asyncio
+    async def test_disabled_ignores_user_header(self):
+        # Flag off: header is ignored, no per-user scoping (historical behaviour).
+        kw = await _post_chat(_isolation_adapter(False), {"X-OpenWebUI-User-Id": "alice"})
+        assert kw["user_id"] is None
+        assert kw["gateway_session_key"] is None
+
+    @pytest.mark.asyncio
+    async def test_enabled_scopes_by_user(self):
+        kw = await _post_chat(_isolation_adapter(True), {"X-OpenWebUI-User-Id": "alice"})
+        # user peer forwarded to the memory provider
+        assert kw["user_id"] == "alice"
+        # long-term memory key namespaced per user
+        assert kw["gateway_session_key"] == "owui-user:alice"
+
+    @pytest.mark.asyncio
+    async def test_enabled_namespaces_provided_session_key(self):
+        kw = await _post_chat(
+            _isolation_adapter(True),
+            {"X-OpenWebUI-User-Id": "alice", "X-Hermes-Session-Key": "chan-1"},
+        )
+        assert kw["user_id"] == "alice"
+        assert kw["gateway_session_key"] == "chan-1:owui-user:alice"
+
+    @pytest.mark.asyncio
+    async def test_enabled_without_header_falls_back_to_shared(self):
+        # Flag on but no identity header → behaves like shared (no user scope).
+        kw = await _post_chat(_isolation_adapter(True), {})
+        assert kw["user_id"] is None
+        assert kw["gateway_session_key"] is None
+
+    @pytest.mark.asyncio
+    async def test_different_users_get_different_sessions(self):
+        # Same conversation body, two users → distinct short-term transcripts.
+        alice = await _post_chat(_isolation_adapter(True), {"X-OpenWebUI-User-Id": "alice"})
+        bob = await _post_chat(_isolation_adapter(True), {"X-OpenWebUI-User-Id": "bob"})
+        shared = await _post_chat(_isolation_adapter(False), {"X-OpenWebUI-User-Id": "alice"})
+        assert alice["session_id"] != bob["session_id"]
+        assert alice["session_id"] != shared["session_id"]
+
+    @pytest.mark.asyncio
+    async def test_enabled_caps_user_id_length(self):
+        # Oversized id is truncated so derived keys stay bounded.
+        long_id = "u" * 400
+        kw = await _post_chat(_isolation_adapter(True), {"X-OpenWebUI-User-Id": long_id})
+        assert kw["user_id"] == "u" * 256
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_does_not_leak_across_users(self):
+        # Two isolated users sharing an Idempotency-Key + identical body must not
+        # be served each other's cached response.
+        adapter = _isolation_adapter(True)
+        idem = f"shared-key-{uuid.uuid4().hex}"
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+
+        async def _fake_run(**kwargs):
+            return (
+                {"final_response": f"hi {kwargs.get('user_id')}", "completed": True},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_fake_run):
+                r1 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": idem,
+                             "X-OpenWebUI-User-Id": "alice"},
+                    json=body,
+                )
+                r2 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": idem,
+                             "X-OpenWebUI-User-Id": "bob"},
+                    json=body,
+                )
+                d1, d2 = await r1.json(), await r2.json()
+        c1 = d1["choices"][0]["message"]["content"]
+        c2 = d2["choices"][0]["message"]["content"]
+        assert "alice" in c1
+        assert "bob" in c2  # bob is NOT served alice's cached response
+
+
+async def _post_responses(adapter, headers):
+    """Drive POST /v1/responses with _run_agent stubbed; return its kwargs."""
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+            resp = await cli.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer sk-secret", **headers},
+                json={"model": "hermes-agent", "input": "hello", "store": False},
+            )
+        assert resp.status == 200, await resp.text()
+        return mock_run.call_args.kwargs
+
+
+class TestResponsesPerUserMemoryIsolation:
+    @pytest.mark.asyncio
+    async def test_disabled_ignores_user_header(self):
+        kw = await _post_responses(_isolation_adapter(False), {"X-OpenWebUI-User-Id": "alice"})
+        assert kw["user_id"] is None
+        assert kw["gateway_session_key"] is None
+
+    @pytest.mark.asyncio
+    async def test_enabled_scopes_by_user(self):
+        kw = await _post_responses(_isolation_adapter(True), {"X-OpenWebUI-User-Id": "alice"})
+        assert kw["user_id"] == "alice"
+        assert kw["gateway_session_key"] == "owui-user:alice"
+
+    @pytest.mark.asyncio
+    async def test_enabled_namespaces_provided_session_key(self):
+        kw = await _post_responses(
+            _isolation_adapter(True),
+            {"X-OpenWebUI-User-Id": "alice", "X-Hermes-Session-Key": "chan-1"},
+        )
+        assert kw["user_id"] == "alice"
+        assert kw["gateway_session_key"] == "chan-1:owui-user:alice"
+
+    @pytest.mark.asyncio
+    async def test_enabled_without_header_falls_back_to_shared(self):
+        kw = await _post_responses(_isolation_adapter(True), {})
+        assert kw["user_id"] is None
+        assert kw["gateway_session_key"] is None
+
+
+class TestScopeMemoryKey:
+    def test_noop_without_user_scope(self):
+        assert APIServerAdapter._scope_memory_key("chan-1", None) == "chan-1"
+        assert APIServerAdapter._scope_memory_key(None, None) is None
+        assert APIServerAdapter._scope_memory_key(None, "") is None
+
+    def test_derives_key_when_none_provided(self):
+        assert APIServerAdapter._scope_memory_key(None, "alice") == "owui-user:alice"
+
+    def test_namespaces_provided_key(self):
+        assert APIServerAdapter._scope_memory_key("chan-1", "alice") == "chan-1:owui-user:alice"
+
+    def test_idempotent_on_round_tripped_key(self):
+        # A client may echo back the scoped key it received; re-scoping must not
+        # append again (would drift the key and eventually breach the length cap).
+        once = APIServerAdapter._scope_memory_key("chan-1", "alice")
+        twice = APIServerAdapter._scope_memory_key(once, "alice")
+        assert once == twice == "chan-1:owui-user:alice"
+        # Bare derived key is also stable across round-trips.
+        bare = APIServerAdapter._scope_memory_key(None, "alice")
+        assert APIServerAdapter._scope_memory_key(bare, "alice") == bare == "owui-user:alice"

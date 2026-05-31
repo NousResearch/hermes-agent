@@ -638,6 +638,7 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
 def _derive_chat_session_id(
     system_prompt: Optional[str],
     first_user_message: str,
+    user_scope: Optional[str] = None,
 ) -> str:
     """Derive a stable session ID from the conversation's first user message.
 
@@ -647,8 +648,16 @@ def _derive_chat_session_id(
     them produces a deterministic session ID that lets the API server reuse
     the same Hermes session (and therefore the same Docker container sandbox
     directory) across turns.
+
+    ``user_scope``, when provided, is folded into the hash so that two
+    different users who open conversations with an identical system prompt and
+    first message do not collide onto the same session (and therefore the same
+    transcript). This is what makes per-user memory isolation safe for
+    multi-user frontends — see ``GatewayConfig.api_user_memory_isolation``.
     """
     seed = f"{system_prompt or ''}\n{first_user_message}"
+    if user_scope:
+        seed = f"{user_scope}\n{seed}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
 
@@ -931,6 +940,53 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    def _extract_user_scope(self, request: "web.Request") -> Optional[str]:
+        """Return the trusted per-user memory scope for this request, or None.
+
+        Per-user memory isolation for multi-user OpenAI-compatible front-ends
+        (Open WebUI etc.). When GatewayConfig.api_user_memory_isolation is
+        enabled, the ``X-OpenWebUI-User-Id`` header identifies the user so each
+        gets dedicated short-term and long-term memory instead of all users
+        sharing one scope.
+
+        SECURITY: the header is trusted unconditionally, so isolation only
+        activates when the operator opts in via config — deploy the API server
+        behind a trusted proxy (Open WebUI) that injects the header and is not
+        reachable by end users directly.
+        """
+        if not self.config.extra.get("api_user_memory_isolation", False):
+            return None
+        owui_user_id = request.headers.get("X-OpenWebUI-User-Id", "").strip()
+        # Reject control chars (header/log injection on echo paths) and cap
+        # length so derived session keys stay bounded.
+        if owui_user_id and not re.search(r"[\r\n\x00]", owui_user_id):
+            return owui_user_id[: self._MAX_SESSION_HEADER_LEN]
+        return None
+
+    @staticmethod
+    def _scope_memory_key(gateway_session_key: Optional[str], user_scope: Optional[str]) -> Optional[str]:
+        """Namespace the long-term memory key per user when isolation is active.
+
+        Providers that scope off ``gateway_session_key`` (and Honcho's session
+        resolution) keep each user's memory separate across transcripts. A
+        no-op when ``user_scope`` is falsy.
+
+        Idempotent: the scoped key is echoed back to the client in the
+        ``X-Hermes-Session-Key`` response header, and clients may round-trip it
+        on the next turn. Re-appending the suffix would make the key drift every
+        turn (fragmenting long-term memory) and eventually breach
+        ``_MAX_SESSION_HEADER_LEN``, so a key that already carries this user's
+        suffix is returned unchanged.
+        """
+        if not user_scope:
+            return gateway_session_key
+        suffix = f"owui-user:{user_scope}"
+        if not gateway_session_key:
+            return suffix
+        if gateway_session_key == suffix or gateway_session_key.endswith(f":{suffix}"):
+            return gateway_session_key
+        return f"{gateway_session_key}:{suffix}"
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -962,6 +1018,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -977,6 +1034,12 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
+
+        ``user_id`` is the trusted per-user identity (from the OpenWebUI
+        ``X-OpenWebUI-User-Id`` header) forwarded to the memory provider as the
+        user peer, so long-term memory is scoped per user. It is only populated
+        when ``api_user_memory_isolation`` is enabled — see
+        ``_handle_chat_completions``.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
@@ -1013,6 +1076,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            user_id=user_id,
         )
         return agent
 
@@ -1733,6 +1797,12 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Per-user memory isolation (Open WebUI multi-user). When enabled, the
+        # trusted user identity scopes both the short-term transcript (via the
+        # derived session_id below) and the long-term memory provider (via the
+        # user peer + a per-user memory key). See _extract_user_scope.
+        user_scope = self._extract_user_scope(request)
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -1779,8 +1849,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if cm.get("role") == "user":
                     first_user = cm.get("content", "")
                     break
-            session_id = _derive_chat_session_id(system_prompt, first_user)
+            session_id = _derive_chat_session_id(system_prompt, first_user, user_scope=user_scope)
             # history already set from request body above
+
+        # Namespace the long-term memory key per user when isolation is active.
+        gateway_session_key = self._scope_memory_key(gateway_session_key, user_scope)
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
@@ -1868,6 +1941,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                user_id=user_scope,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1887,10 +1961,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_id=user_scope,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            # Namespace by user so two isolated users sharing an Idempotency-Key
+            # + identical body can't be served each other's cached response.
+            if user_scope:
+                idempotency_key = f"{user_scope}\x1f{idempotency_key}"
             fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
@@ -2748,6 +2827,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Per-user memory isolation (Open WebUI multi-user). New /v1/responses
+        # sessions already get a fresh UUID per conversation, so the user scope
+        # is applied to the long-term memory key + provider user peer only.
+        user_scope = self._extract_user_scope(request)
+
         # Parse request body
         try:
             body = await request.json()
@@ -2847,6 +2931,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
 
+        # Namespace the long-term memory key per user when isolation is active.
+        gateway_session_key = self._scope_memory_key(gateway_session_key, user_scope)
+
         stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
@@ -2900,6 +2987,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                user_id=user_scope,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2933,10 +3021,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                user_id=user_scope,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            # Namespace by user so two isolated users sharing an Idempotency-Key
+            # + identical body can't be served each other's cached response.
+            if user_scope:
+                idempotency_key = f"{user_scope}\x1f{idempotency_key}"
             fp = _make_request_fingerprint(
                 body,
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
@@ -3435,6 +3528,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3458,6 +3552,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                user_id=user_id,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

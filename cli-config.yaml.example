@@ -520,6 +520,15 @@ session_reset:
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Per-user memory isolation for the OpenAI-compatible API server (Open WebUI etc.).
+# When true, requests carrying the trusted X-OpenWebUI-User-Id header are scoped so
+# each user gets a dedicated transcript and long-term memory scope instead of all
+# users sharing one memory. Default false preserves the historical shared behaviour.
+# SECURITY: the header is trusted unconditionally — only enable this when the API
+# server is reachable solely through a trusted proxy (Open WebUI) that injects the
+# header, never where end users can set it directly.
+api_user_memory_isolation: false
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────

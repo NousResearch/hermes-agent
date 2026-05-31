@@ -6391,6 +6391,10 @@ class GatewayRunner:
                 "thread_sessions_per_user",
                 getattr(self.config, "thread_sessions_per_user", False),
             )
+            config.extra.setdefault(
+                "api_user_memory_isolation",
+                getattr(self.config, "api_user_memory_isolation", False),
+            )
 
         # ── Plugin-registered platforms (checked first) ───────────────────
         try:

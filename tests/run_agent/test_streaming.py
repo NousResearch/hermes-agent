@@ -3,11 +3,8 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
-import json
-import threading
-import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -186,6 +183,143 @@ class TestStreamingAccumulator:
         assert len(tc) == 1
         assert tc[0].function.name == "read_file"
         assert tc[0].function.arguments == '{"path": "x.py"}'
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_args_not_duplicated_on_cumulative_growing_resend(self, mock_close, mock_create):
+        """DeepSeek / Baidu Qianfan stream args in cumulative mode (#35592).
+
+        Each chunk resends the full arguments-so-far (monotonic growth)
+        instead of the new fragment.  Blind += produced a duplicated
+        '{...}{...}' string that failed json.loads and got nuked to '{}'.
+        The per-slot cumulative latch must replace (not append) so the
+        final arguments are a single valid object.
+        """
+        import json as _json
+        from run_agent import AIAgent
+
+        full = '{"pattern": "def handle", "path": "gateway", "output_mode": "content"}'
+        # Growing prefixes, then identical full resends at the tail.
+        steps = [full[:12], full[:30], full[:48], full, full, full]
+        chunks = [_make_stream_chunk(tool_calls=[
+            _make_tool_call_delta(index=0, tc_id="call_qf", name="search_files")
+        ])]
+        for s in steps:
+            chunks.append(_make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_qf", name="search_files", arguments=s)
+            ]))
+        chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://qianfan.baidubce.com/v2",
+            model="deepseek-v4-pro",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None and len(tc) == 1
+        assert _json.loads(tc[0].function.arguments) == _json.loads(full)
+        # Not flagged as truncated (which would set finish_reason='length').
+        assert response.choices[0].finish_reason == "tool_calls"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_args_identical_full_resend_collapsed_by_backstop(self, mock_close, mock_create):
+        """Provider resends the COMPLETE object identically from chunk 1.
+
+        There is never a strict superset to latch on, so the per-chunk
+        guard appends — but the post-loop _collapse_repeated_json_arguments
+        backstop must collapse the K-repeat to one valid object (#35592).
+        """
+        import json as _json
+        from run_agent import AIAgent
+
+        full = '{"action": "replace", "old_text": "a", "new_text": "b"}'
+        chunks = [_make_stream_chunk(tool_calls=[
+            _make_tool_call_delta(index=0, tc_id="call_id", name="memory")
+        ])]
+        for _ in range(5):
+            chunks.append(_make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_id", name="memory", arguments=full)
+            ]))
+        chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://qianfan.baidubce.com/v2",
+            model="deepseek-v4-pro",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None and len(tc) == 1
+        assert _json.loads(tc[0].function.arguments) == _json.loads(full)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_incremental_args_with_duplicate_leading_fragment(self, mock_close, mock_create):
+        """Genuine incremental stream whose 2nd fragment equals the 1st.
+
+        Safety guard: an exact-equal delta on a NON-latched slot must be
+        treated as a real fragment and appended, never silently dropped.
+        Verifies the cumulative-resend fix does not corrupt nested-key
+        objects (the false-positive class flagged in review of #35592).
+        """
+        from run_agent import AIAgent
+
+        # Fragments deliberately repeat the leading '{"command":' substring.
+        frags = ['{"command":', '{"command":', ' "x"}', '}']
+        chunks = [_make_stream_chunk(tool_calls=[
+            _make_tool_call_delta(index=0, tc_id="c3", name="t")
+        ])]
+        for f in frags:
+            chunks.append(_make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="c3", name="t", arguments=f)
+            ]))
+        chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None and len(tc) == 1
+        # All four fragments concatenated — nothing dropped.
+        assert tc[0].function.arguments == '{"command":{"command": "x"}}'
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -783,32 +917,28 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
-        # Mock the stream context manager
-        mock_event_text = SimpleNamespace(
-            type="response.output_text.delta",
-            delta="Hello from Codex!",
-        )
-        mock_event_done = SimpleNamespace(
-            type="response.completed",
-            delta="",
-        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Hello from Codex!",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="r1", usage=None),
+            ),
+        ]
 
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(return_value=iter([mock_event_text, mock_event_done]))
-        mock_stream.get_final_response.return_value = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="Hello from Codex!")],
-            )],
-            status="completed",
-        )
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+            def close(self_inner):
+                return None
 
         mock_client = MagicMock()
-        mock_client.responses.stream.return_value = mock_stream
+        mock_client.responses.create.return_value = _FakeCreateStream()
 
-        response = agent._run_codex_stream({}, client=mock_client)
+        agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
 
     def test_codex_stream_refreshes_activity_on_every_event(self):
@@ -828,56 +958,39 @@ class TestCodexStreamCallbacks:
         touch_calls = []
         agent._touch_activity = lambda desc: touch_calls.append(desc)
 
-        mock_event_text_1 = SimpleNamespace(
-            type="response.output_text.delta",
-            delta="Hello",
-        )
-        mock_event_text_2 = SimpleNamespace(
-            type="response.output_text.delta",
-            delta=" world",
-        )
-        mock_event_done = SimpleNamespace(
-            type="response.completed",
-            delta="",
-        )
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+            SimpleNamespace(type="response.output_text.delta", delta=" world"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="r2", usage=None),
+            ),
+        ]
 
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(
-            return_value=iter([mock_event_text_1, mock_event_text_2, mock_event_done])
-        )
-        mock_stream.get_final_response.return_value = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="Hello world")],
-            )],
-            status="completed",
-        )
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+            def close(self_inner):
+                return None
 
         mock_client = MagicMock()
-        mock_client.responses.stream.return_value = mock_stream
+        mock_client.responses.create.return_value = _FakeCreateStream()
 
         agent._run_codex_stream({}, client=mock_client)
 
         assert touch_calls.count("receiving stream response") == 3
 
-    def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
+    def test_codex_remote_protocol_error_retries_then_raises(self):
+        """Transport errors from ``responses.create`` retry once then re-raise.
+
+        With the migration from ``responses.stream(...)`` to
+        ``responses.create(stream=True)``, there is no longer a separate
+        fallback function — the same call IS the streaming path.  When it
+        raises ``httpx.RemoteProtocolError``, we retry once (matching the
+        old behavior on the helper) and re-raise on the second failure.
+        """
         from run_agent import AIAgent
         import httpx
-
-        fallback_response = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="fallback from create stream")],
-            )],
-            status="completed",
-        )
-
-        mock_client = MagicMock()
-        mock_client.responses.stream.side_effect = httpx.RemoteProtocolError(
-            "peer closed connection without sending complete message body"
-        )
 
         agent = AIAgent(
             api_key="test-key",
@@ -890,11 +1003,22 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
-        with patch.object(agent, "_run_codex_create_stream_fallback", return_value=fallback_response) as mock_fallback:
-            response = agent._run_codex_stream({}, client=mock_client)
+        call_count = {"n": 0}
 
-        assert response is fallback_response
-        mock_fallback.assert_called_once_with({}, client=mock_client)
+        def _create_side_effect(**kwargs):
+            call_count["n"] += 1
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body"
+            )
+
+        mock_client = MagicMock()
+        mock_client.responses.create.side_effect = _create_side_effect
+
+        with pytest.raises(httpx.RemoteProtocolError):
+            agent._run_codex_stream({}, client=mock_client)
+
+        # 1 initial + 1 retry = 2 calls
+        assert call_count["n"] == 2
 
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent

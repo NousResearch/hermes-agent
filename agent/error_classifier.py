@@ -44,9 +44,10 @@ class FailoverReason(enum.Enum):
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
-    # Model
+    # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
+    content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
@@ -97,13 +98,20 @@ _BILLING_PATTERNS = [
     "insufficient_quota",
     "insufficient balance",
     "credit balance",
+    "credits exhausted",
     "credits have been exhausted",
+    "no usable credits",
     "top up your credits",
     "payment required",
     "billing hard limit",
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "out of funds",
+    "run out of funds",
+    "balance_depleted",
+    "model_not_supported_on_free_tier",
+    "not available on the free tier",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)
@@ -280,6 +288,45 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
     "no endpoints available matching your guardrail",
     "no endpoints available matching your data policy",
     "no endpoints found matching your data policy",
+]
+
+# Provider content-policy / safety-filter blocks. Distinct from
+# ``provider_policy_blocked`` above (which is an OpenRouter *account*-level
+# data/privacy guardrail) — these are *per-prompt* safety decisions made by
+# the upstream model provider. They are deterministic for the unchanged
+# request, so retrying the same prompt three times just reproduces the same
+# block and burns paid attempts on a refusal. The recovery is to switch to a
+# configured fallback model/provider immediately, or surface the block to
+# the user with actionable guidance if no fallback exists.
+#
+# Patterns are intentionally narrow — each phrase is a verbatim string from
+# a specific provider's safety pipeline, not a generic word like "policy" or
+# "violation" that could collide with billing/auth/format errors:
+#   • OpenAI Codex cybersecurity refusal (gpt-5.5, the case from #18028)
+#   • OpenAI moderation refusal ("violates our usage policies", with
+#     "usage policies" disambiguating from billing's "exceeded ... policy")
+#   • Anthropic safety refusal ("prompt was flagged by ... safety system")
+#   • OpenAI Responses content filter
+_CONTENT_POLICY_BLOCKED_PATTERNS = [
+    # OpenAI Codex (#18028) — message may arrive without an HTTP status
+    "flagged for possible cybersecurity risk",
+    "trusted access for cyber",
+    # OpenAI moderation — chat completions / responses
+    "violates our usage policies",
+    "violates openai's usage policies",
+    "your request was flagged by",
+    # Anthropic safety system
+    "prompt was flagged by our safety",
+    "responses cannot be generated due to safety",
+    # Generic content-filter wording seen on Azure / OpenAI Responses.
+    # ``content_filter`` (underscore) is the OpenAI-standard error/finish
+    # token surfaced verbatim by their SDKs when a request is blocked.
+    # ``responsibleaipolicyviolation`` is Azure OpenAI's error code.
+    # Deliberately NOT matching the space variant ("content filter") — it
+    # appears in benign config descriptions and tooltip text that providers
+    # echo back; the underscore form is provider-specific enough.
+    "content_filter",
+    "responsibleaipolicyviolation",
 ]
 
 # Auth patterns (non-status-code signals)
@@ -484,6 +531,20 @@ def classify_api_error(
         return ClassifiedError(**defaults)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
+
+    # Provider content-policy / safety-filter block. The provider has made a
+    # deterministic refusal decision about THIS prompt — retrying unchanged
+    # just reproduces the same refusal and burns paid attempts. Must run
+    # before status-based classification so a 400 safety block isn't
+    # downgraded to a generic ``format_error`` and a status-less block
+    # (OpenAI Codex SDK can raise without one) isn't left in the retryable
+    # ``unknown`` bucket. See issue #18028.
+    if any(p in error_msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
+        return _result(
+            FailoverReason.content_policy_blocked,
+            retryable=False,
+            should_fallback=True,
+        )
 
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
@@ -690,8 +751,13 @@ def _classify_by_status(
         )
 
     if status_code == 403:
-        # OpenRouter 403 "key limit exceeded" is actually billing
-        if "key limit exceeded" in error_msg or "spending limit" in error_msg:
+        # OpenRouter 403 "key limit exceeded" is actually billing. Other
+        # providers also use 403 for account-plan or credit exhaustion.
+        if (
+            "key limit exceeded" in error_msg
+            or "spending limit" in error_msg
+            or any(p in error_msg for p in _BILLING_PATTERNS)
+        ):
             return result_fn(
                 FailoverReason.billing,
                 retryable=False,
@@ -708,6 +774,17 @@ def _classify_by_status(
         return _classify_402(error_msg, result_fn)
 
     if status_code == 404:
+        # Nous API currently surfaces HA/NAS credit depletion as a paid model
+        # becoming unavailable on the Free Tier, returned as 404 rather than
+        # 402. Treat that as entitlement/billing exhaustion, not a missing
+        # model, so the retry loop can show credit/top-up guidance.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         # OpenRouter policy-block 404 — distinct from "model not found".
         # The model exists; the user's account privacy setting excludes the
         # only endpoint serving it. Falling back to another provider won't
@@ -973,7 +1050,15 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
-    if code_lower in {"insufficient_quota", "billing_not_active", "payment_required"}:
+    if code_lower in {
+        "insufficient_quota",
+        "billing_not_active",
+        "payment_required",
+        "insufficient_credits",
+        "no_usable_credits",
+        "balance_depleted",
+        "model_not_supported_on_free_tier",
+    }:
         return result_fn(
             FailoverReason.billing,
             retryable=False,

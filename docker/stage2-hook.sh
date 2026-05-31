@@ -20,7 +20,28 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# --- Bootstrap HERMES_HOME as root ---
+# Create the directory (and any missing parents) while we still have root
+# privileges so the chown checks below see real metadata and the later
+# `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
+# ancestors. Without this, custom HERMES_HOME paths whose parents only
+# root can create (e.g. `HERMES_HOME=/home/hermes/.hermes` in a Compose
+# file, or any path under a fresh / not pre-populated by the image)
+# fail on first boot with `mkdir: cannot create directory '/...': Permission
+# denied` and the cont-init hook exits non-zero. Idempotent — `mkdir -p`
+# is a no-op if the dir already exists. (#18482, salvages #18488)
+mkdir -p "$HERMES_HOME"
+
 # --- UID/GID remap ---
+# Accept PUID/PGID as aliases for HERMES_UID/HERMES_GID.  NAS users (UGOS,
+# Synology, unRAID) expect the LinuxServer.io PUID/PGID convention and
+# bind-mount /opt/data from a host directory owned by their own UID; without
+# this alias those vars are silently ignored and the s6-setuidgid drop to
+# UID 10000 leaves the runtime unable to read the volume.  HERMES_UID/
+# HERMES_GID still win when both are set.  See #15290, salvages #25872.
+HERMES_UID="${HERMES_UID:-${PUID:-}}"
+HERMES_GID="${HERMES_GID:-${PGID:-}}"
+
 if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
     usermod -u "$HERMES_UID" hermes
@@ -31,6 +52,62 @@ if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
     # exist as "dialout" in the Debian-based container image).
     groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
 fi
+
+# --- Docker socket group membership (docker-in-docker / DooD) ---
+# When the user bind-mounts the host Docker daemon socket
+# (`-v /var/run/docker.sock:/var/run/docker.sock`) to use the `docker`
+# terminal backend from inside the container, the socket is owned by the
+# host's `docker` group (or root). The supervised hermes user (UID 10000)
+# is not a member of any group that matches the socket's GID, so every
+# `docker` invocation EACCES'es and `check_terminal_requirements()` fails.
+# See #16703.
+#
+# Granting the supp group via `docker run --group-add <gid>` alone is
+# NOT sufficient with our s6-setuidgid privilege drop: s6-setuidgid (and
+# gosu, the older shim) calls initgroups() for the target user, which
+# rebuilds the supplementary group list from /etc/group. Without an
+# /etc/group entry whose GID matches the socket, the kernel-granted
+# supp group is silently wiped between PID 1 and the dropped process.
+# Confirmed empirically: `--group-add 998` alone leaves the dropped
+# hermes process with `Groups: 10000` (998 gone); after this hook adds
+# the entry, the dropped process has `Groups: 998 10000` as expected.
+#
+# Fix: detect the socket's GID at boot and ensure /etc/group has a
+# matching entry that includes hermes. Idempotent across container
+# restarts. Skipped silently when no socket is bind-mounted.
+#
+# Handles the awkward corner cases:
+#   - socket owned by GID 0 (root) — some Podman setups; usermod -aG root
+#   - socket GID already used by a known container group (e.g. tty=5):
+#     reuse that group's name rather than creating a duplicate
+#   - hermes is already a member of the right group (idempotent restart)
+#   - chown/groupadd failures under rootless containers — non-fatal
+for sock in /var/run/docker.sock /run/docker.sock; do
+    [ -S "$sock" ] || continue
+    sock_gid=$(stat -c '%g' "$sock" 2>/dev/null) || continue
+    [ -n "$sock_gid" ] || continue
+    # Already a member? Nothing to do.
+    if id -G hermes 2>/dev/null | tr ' ' '\n' | grep -qx "$sock_gid"; then
+        echo "[stage2] hermes already in group $sock_gid for $sock"
+        break
+    fi
+    # Resolve or create a group name for this GID.
+    sock_group=$(getent group "$sock_gid" 2>/dev/null | cut -d: -f1)
+    if [ -z "$sock_group" ]; then
+        sock_group="hostdocker"
+        if ! groupadd -g "$sock_gid" "$sock_group" 2>/dev/null; then
+            echo "[stage2] Warning: groupadd -g $sock_gid $sock_group failed; skipping docker socket group setup"
+            break
+        fi
+        echo "[stage2] Created group $sock_group (GID $sock_gid) for Docker socket"
+    fi
+    if usermod -aG "$sock_group" hermes 2>/dev/null; then
+        echo "[stage2] Added hermes to group $sock_group (GID $sock_gid) for $sock"
+    else
+        echo "[stage2] Warning: usermod -aG $sock_group hermes failed; docker backend may fail with EACCES"
+    fi
+    break
+done
 
 # --- Fix ownership of data volume ---
 # When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
@@ -174,6 +251,49 @@ fi
 if [ -d "$INSTALL_DIR/skills" ]; then
     s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
+fi
+
+# --- Discover agent-browser's Chromium binary ---
+# The image's Dockerfile runs `npx playwright install chromium`, which
+# populates ``$PLAYWRIGHT_BROWSERS_PATH`` (=/opt/hermes/.playwright) with
+# a ``chromium_headless_shell-<build>/chrome-headless-shell-linux64/``
+# directory. agent-browser (the runtime CLI Hermes spawns for the
+# browser tool) doesn't recognise this layout in its own cache scan and
+# fails with "Auto-launch failed: Chrome not found" — even though the
+# binary is right there (#15697).
+#
+# Fix: locate the binary at boot and export ``AGENT_BROWSER_EXECUTABLE_PATH``
+# via /run/s6/container_environment so the `with-contenv` shebang on
+# main-wrapper.sh propagates it into the supervised ``hermes`` process
+# and thence to agent-browser subprocesses.
+#
+# - Skipped when the user has already set ``AGENT_BROWSER_EXECUTABLE_PATH``
+#   (lets users override with a system Chrome install).
+# - Filename-matched (not path-matched): the chromium dir contains many
+#   shared libraries (libGLESv2.so, libEGL.so, ...) which inherit the
+#   executable bit from Playwright's tarball but are NOT browser binaries.
+#   We only accept files whose basename is chrome / chromium /
+#   chrome-headless-shell / chromium-browser. Compare PR #18635's earlier
+#   ``find | grep -Ei 'chrome|chromium'`` which would match the path
+#   ``.../chrome-headless-shell-linux64/libGLESv2.so`` and pick a .so.
+# - Quietly skipped when $PLAYWRIGHT_BROWSERS_PATH doesn't exist (e.g.
+#   custom builds that strip Playwright).
+if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
+        [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && \
+        [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
+    browser_bin=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -executable \
+        \( -name 'chrome' -o -name 'chromium' \
+           -o -name 'chrome-headless-shell' -o -name 'chromium-browser' \) \
+        2>/dev/null | head -n 1)
+    if [ -n "$browser_bin" ]; then
+        echo "[stage2] Found agent-browser Chromium binary: $browser_bin"
+        # Write to s6's container_environment so with-contenv picks it
+        # up for all supervised services (main-hermes, dashboard, etc.).
+        # Idempotent: each boot overwrites with the current path.
+        printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
+    else
+        echo "[stage2] Warning: no Chromium binary under $PLAYWRIGHT_BROWSERS_PATH; browser tool may fail"
+    fi
 fi
 
 echo "[stage2] Setup complete; starting user services"

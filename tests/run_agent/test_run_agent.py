@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
+from agent.codex_responses_adapter import _normalize_codex_response
 
 import run_agent
 from run_agent import AIAgent
@@ -1323,6 +1323,178 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+class TestTaskCompletionGuidance:
+    """Tests for the universal task-completion / no-fabrication guidance
+    (config.yaml ``agent.task_completion_guidance``).
+
+    Unlike tool_use_enforcement, this block is model-family-agnostic — it
+    targets cross-model failure modes (stopping after a stub; fabricating
+    output when blocked) and should appear for every model by default."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    task_completion_guidance=True, **extra_cfg):
+        agent_cfg = {"task_completion_guidance": task_completion_guidance}
+        agent_cfg.update(extra_cfg)
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": agent_cfg},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_default_injects_for_claude(self):
+        """The block must reach Claude by default — that's the
+        primary motivating model family."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-opus-4.8")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_default_injects_for_deepseek(self):
+        """And for DeepSeek — the other model that failed the Sarasota
+        real-estate task by fabricating output."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-v4-flash")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_default_injects_for_gpt(self):
+        """Also reaches model families that already get enforcement —
+        it's additive, not exclusive."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-5.4")
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+
+    def test_false_disables(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-opus-4.8", task_completion_guidance=False
+        )
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE not in prompt
+
+    def test_no_tools_no_injection(self):
+        """Same gate as tool_use_enforcement — no tools means no guidance.
+        The guidance refers to ``tool calls`` and ``tool output``; without
+        tools it would be advice for a capability the agent doesn't have."""
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"task_completion_guidance": True}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=[],
+            )
+            a.client = MagicMock()
+            assert TASK_COMPLETION_GUIDANCE not in a._build_system_prompt()
+
+
+class TestEnvironmentProbeIntegration:
+    """Tests for the local Python toolchain probe wiring (config.yaml
+    ``agent.environment_probe``).  The probe itself is unit-tested in
+    tests/tools/test_env_probe.py; this class confirms it lands in the
+    system prompt when enabled and stays out when disabled."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    environment_probe=True):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"environment_probe": environment_probe}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_probe_appears_when_problem_detected(self, monkeypatch):
+        """When the probe finds something off, the line lands in the prompt."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: {"python3": "3.11.15"}.get(b))
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which",
+                            lambda name: None if name == "uv" else "/usr/bin/" + name)
+
+        agent = self._make_agent(environment_probe=True)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" in prompt
+        assert "3.11.15" in prompt
+
+    def test_probe_silent_on_clean_env(self, monkeypatch):
+        """Clean environment → probe emits nothing → no line in prompt."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: "3.13.3" if b == "python3" else None)
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: False)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.13")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        agent = self._make_agent(environment_probe=True)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" not in prompt
+
+    def test_probe_disabled_by_config(self, monkeypatch):
+        """Even with detectable problems, the probe stays out when disabled."""
+        from tools import env_probe
+        env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: {"python3": "3.11.15"}.get(b))
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: True)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        agent = self._make_agent(environment_probe=False)
+        prompt = agent._build_system_prompt()
+        assert "Python toolchain:" not in prompt
+
+
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
         agent._cached_system_prompt = "cached value"
@@ -2256,6 +2428,8 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                enabled_toolsets=agent.enabled_toolsets,
+                disabled_toolsets=agent.disabled_toolsets,
             )
             assert result == "result"
 
@@ -2368,6 +2542,122 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
         assert agent._turns_since_memory == 5
+
+    def test_concurrent_blocked_write_skips_checkpoint(self, agent, monkeypatch):
+        """Concurrent path: blocked write_file should not trigger checkpoint."""
+        tc1 = _mock_tool_call(name="write_file",
+                              arguments='{"path":"test.txt","content":"hello"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="read_file",
+                              arguments='{"path":"other.py"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked" if args[0] == "write_file" else None,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        cp_mock.assert_not_called()
+
+    def test_concurrent_blocked_patch_skips_checkpoint(self, agent, monkeypatch):
+        """Concurrent path: blocked patch should not trigger checkpoint."""
+        tc1 = _mock_tool_call(name="patch",
+                              arguments='{"path":"f.py","old":"a","new":"b"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="read_file",
+                              arguments='{"path":"other.py"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked" if args[0] == "patch" else None,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        cp_mock.assert_not_called()
+
+    def test_concurrent_blocked_terminal_skips_checkpoint(self, agent, monkeypatch):
+        """Concurrent path: blocked terminal should not trigger checkpoint."""
+        tc1 = _mock_tool_call(name="terminal",
+                              arguments='{"command":"rm -rf /tmp/foo"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="read_file",
+                              arguments='{"path":"other.py"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked" if args[0] == "terminal" else None,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                with patch("agent.tool_executor._is_destructive_command", return_value=True):
+                    agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        cp_mock.assert_not_called()
+
+    def test_concurrent_blocked_write_does_not_steal_slot_from_allowed_write(self, agent, monkeypatch):
+        """When write_file is blocked, its dedup slot must not be consumed,
+        so a subsequent allowed write_file for the same path still checkpoints."""
+        tc1 = _mock_tool_call(name="write_file",
+                              arguments='{"path":"dup.txt","content":"blocked"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="write_file",
+                              arguments='{"path":"dup.txt","content":"allowed"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        call_count = {"n": 0}
+        def block_first_only(*args, **kwargs):
+            call_count["n"] += 1
+            return "Blocked" if call_count["n"] == 1 else None
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            block_first_only,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        # Second (allowed) write must checkpoint even though first was blocked.
+        cp_mock.assert_called_once()
 
 
 class TestPathsOverlap:
@@ -2581,6 +2871,40 @@ class TestHandleMaxIterations:
             if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
         ]
         assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
+
+    def test_summary_strips_strict_schema_foreign_fields(self, agent):
+        """Regression: the max-iterations summary request must NOT carry
+        Chat-Completions-schema-foreign keys — tool_name (SQLite FTS
+        bookkeeping), codex_* reasoning carriers, or internal _-prefixed
+        scaffolding. Strict gateways (Fireworks-backed OpenCode Go, Mistral,
+        Kimi) reject these with 'Extra inputs are not permitted, field:
+        messages[N].tool_name'. The transport's convert_messages() strips
+        them on the main loop; this hand-built summary path must mirror it."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
+                "codex_reasoning_items": [{"id": "rs_1"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result", "tool_name": "execute_code"},
+            {"role": "assistant", "content": "Done.", "_empty_recovery_synthetic": True},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        for m in sent_msgs:
+            assert "tool_name" not in m, m
+            assert "codex_reasoning_items" not in m, m
+            assert "codex_message_items" not in m, m
+            assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
+        # Internal history is untouched — the path copies each message.
+        assert messages[2]["tool_name"] == "execute_code"
+        assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
@@ -2872,7 +3196,11 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: the bare "(empty)" sentinel is now replaced by a
+        # user-visible end-of-turn explanation so the failure isn't silent.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
+        assert result["turn_exit_reason"] == "empty_response_exhausted"
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
@@ -2892,7 +3220,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
@@ -2939,7 +3269,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
         assert result["api_calls"] == 4  # 1 original + 3 retries
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
@@ -3035,7 +3367,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
 
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
@@ -3061,7 +3395,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
 
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel, but the
+        # status emissions during retries are unchanged.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
         # Should have emitted retry statuses (3 retries) + final failure
         retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
         assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"
@@ -3295,8 +3632,13 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
-    def test_non_minimax_delta_overflow_still_probes_down(self, agent):
-        """Non-MiniMax providers should keep the generic probe-down behavior."""
+    def test_non_minimax_overflow_without_provider_limit_keeps_context(self, agent):
+        """Generic overflow without a provider-reported max must NOT probe-step down.
+
+        Previously a 200K configured window would silently drop to the 128K probe
+        tier on a generic overflow error.  Now we keep the configured window and
+        rely on compression — see #33669 / PR #33826.
+        """
         self._setup_agent(agent)
         agent.provider = "openrouter"
         agent.model = "some/unknown-model"
@@ -3330,7 +3672,8 @@ class TestRunConversation:
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
-        assert agent.context_compressor.context_length == 128_000
+        # Context length preserved — no guessed probe-tier step-down.
+        assert agent.context_compressor.context_length == 200_000
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
@@ -3601,9 +3944,18 @@ class TestRunConversation:
         mock_handle_function_call.assert_not_called()
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
-        """Regression: kanban worker must call kanban_block when iteration
-        budget is exhausted, otherwise the dispatcher sees a protocol
-        violation and gives up after 1 failure (issue #23216)."""
+        """Regression: kanban worker must signal the dispatcher when its
+        iteration budget is exhausted, otherwise the task silently re-runs
+        forever without ever tripping the failure_limit circuit breaker
+        (issue #23216 / #29747 gap 2).
+
+        As of #29747, the exhaustion path routes through
+        ``kanban_db._record_task_failure(outcome="timed_out")`` so the
+        ``consecutive_failures`` counter increments and the dispatcher's
+        ``failure_limit`` breaker eventually trips. The legacy
+        ``kanban_block`` call was replaced because blocked-outcome runs
+        bypass the failure counter.
+        """
         self._setup_agent(agent)
         agent.max_iterations = 2
 
@@ -3622,8 +3974,14 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
+        mock_record_failure = MagicMock(return_value=False)
+        mock_connect = MagicMock(return_value=MagicMock())
+
         with (
-            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
+            patch("hermes_cli.kanban_db.connect", mock_connect),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -3633,23 +3991,24 @@ class TestRunConversation:
         # The agent should have reported the task as not completed.
         assert result["completed"] is False
 
-        # Among all handle_function_call invocations, one must be
-        # kanban_block with the correct task_id and a reason mentioning
-        # iteration exhaustion.
-        kanban_block_calls = [
-            c for c in mock_hfc.call_args_list
-            if c[0][0] == "kanban_block"
-        ]
-        assert len(kanban_block_calls) == 1, (
-            f"Expected exactly 1 kanban_block call, got {len(kanban_block_calls)}. "
-            f"All calls: {mock_hfc.call_args_list}"
+        # _record_task_failure should have been called exactly once for
+        # the exhaustion event, with outcome="timed_out".
+        assert mock_record_failure.call_count == 1, (
+            f"Expected exactly 1 _record_task_failure call, "
+            f"got {mock_record_failure.call_count}. "
+            f"Calls: {mock_record_failure.call_args_list}"
         )
-        call = kanban_block_calls[0]
-        assert call[0][1]["task_id"] == "t_test_task_123"
-        assert "Iteration budget exhausted" in call[0][1]["reason"]
+        call = mock_record_failure.call_args_list[0]
+        # Positional: (conn, task_id, ...)
+        assert call.args[1] == "t_test_task_123"
+        assert call.kwargs.get("outcome") == "timed_out"
+        assert call.kwargs.get("release_claim") is True
+        assert call.kwargs.get("end_run") is True
+        assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
-        """kanban_block must NOT be called when HERMES_KANBAN_TASK is unset."""
+        """The exhaustion bridge must NOT fire when HERMES_KANBAN_TASK
+        is unset (non-kanban runs are unaffected by #29747 gap 2)."""
         self._setup_agent(agent)
         agent.max_iterations = 2
 
@@ -3666,20 +4025,20 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
+        mock_record_failure = MagicMock(return_value=False)
+
         with (
-            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             agent.run_conversation("do stuff")
 
-        kanban_block_calls = [
-            c for c in mock_hfc.call_args_list
-            if c[0][0] == "kanban_block"
-        ]
-        assert len(kanban_block_calls) == 0, (
-            "kanban_block should not be called outside kanban mode"
+        assert mock_record_failure.call_count == 0, (
+            "_record_task_failure should not be called outside kanban mode"
         )
 
 
@@ -3867,7 +4226,7 @@ class TestNousCredentialRefresh:
 
         assert ok is True
         assert closed["value"] is True
-        assert captured["inference_auth_mode"] == "legacy"
+        assert captured["force_refresh"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (
             rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
@@ -4425,7 +4784,6 @@ class TestSafeWriter:
 
     def test_double_wrap_prevented(self):
         """Wrapping an already-wrapped stream doesn't add layers."""
-        import sys
         from run_agent import _SafeWriter
         from io import StringIO
         inner = StringIO()

@@ -27,7 +27,6 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
@@ -37,7 +36,6 @@ from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
-    get_model_context_length,
     is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -52,7 +50,6 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from model_tools import check_toolset_requirements, get_tool_definitions
 from utils import base_url_host_matches
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -183,6 +180,7 @@ def init_agent(
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
     user_id: str = None,
+    user_id_alt: str = None,
     user_name: str = None,
     chat_id: str = None,
     chat_name: str = None,
@@ -265,6 +263,7 @@ def init_agent(
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
+    agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name
     agent._chat_id = chat_id
     agent._chat_name = chat_name
@@ -736,8 +735,8 @@ def init_agent(
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Vercel AI Gateway attribution,
-                # Kimi User-Agent on non-kimi.com endpoints).
+                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
+                # endpoints).
                 try:
                     from providers import get_provider_profile as _gpf
                     _ph = _gpf(agent.provider)
@@ -1119,6 +1118,8 @@ def init_agent(
                     # Thread gateway user identity for per-user memory scoping
                     if agent._user_id:
                         _init_kwargs["user_id"] = agent._user_id
+                    if agent._user_id_alt:
+                        _init_kwargs["user_id_alt"] = agent._user_id_alt
                     if agent._user_name:
                         _init_kwargs["user_name"] = agent._user_name
                     if agent._chat_id:
@@ -1196,6 +1197,18 @@ def init_agent(
     if not isinstance(_agent_section, dict):
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+    # Universal task-completion guidance toggle.  Default True.  Surfaced
+    # as a separate flag from tool_use_enforcement because the guidance
+    # applies to ALL models, not just the model families enforcement
+    # targets.
+    agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
+
+    # Local Python toolchain probe toggle.  Default True.  When False,
+    # the probe is skipped entirely (no subprocess calls, no system-prompt
+    # line).  Useful for users on exotic setups where the probe heuristics
+    # are noisy.
+    agent._environment_probe = bool(_agent_section.get("environment_probe", True))
 
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -1458,7 +1471,6 @@ def init_agent(
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
-    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     _ctx = getattr(agent.context_compressor, "context_length", 0)
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
@@ -1518,6 +1530,7 @@ def init_agent(
                 platform=agent.platform or "cli",
                 model=agent.model,
                 context_length=getattr(agent.context_compressor, "context_length", 0),
+                conversation_id=getattr(agent, "_gateway_session_key", None),
             )
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)

@@ -840,6 +840,41 @@ class TelegramAdapter(BasePlatformAdapter):
                 stack.append(context)
         return False
 
+    @staticmethod
+    def _looks_like_pool_timeout(error: Exception) -> bool:
+        """Return True when a Telegram TimedOut wraps an httpx pool timeout.
+
+        PTB converts ``httpx.PoolTimeout`` into ``telegram.error.TimedOut`` with
+        a message that explicitly states the request was *not* sent
+        (``"Pool timeout: All connections in the connection pool are occupied.
+        Request was *not* sent to Telegram."``). Because the request never left
+        the process, re-sending is safe and cannot duplicate -- the opposite of
+        a generic TimedOut, which may have reached Telegram. We match the
+        wrapped ``httpx.PoolTimeout`` class as well as the message string so the
+        check survives PTB message-wording changes.
+        """
+        seen: set[int] = set()
+        stack: list[BaseException] = [error]
+        while stack:
+            cur = stack.pop()
+            ident = id(cur)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            name = cur.__class__.__name__.lower()
+            text = str(cur).lower()
+            if "pooltimeout" in name or "pool timeout" in text or (
+                "connection pool" in text and "occupied" in text
+            ):
+                return True
+            cause = getattr(cur, "__cause__", None)
+            context = getattr(cur, "__context__", None)
+            if cause is not None:
+                stack.append(cause)
+            if context is not None:
+                stack.append(context)
+        return False
+
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -1690,7 +1725,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeAllPrivateChats,
                     BotCommandScopeAllGroupChats,
                     BotCommandScopeDefault,
-                    BotCommandScopeChat,
                 )
                 from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
@@ -2002,11 +2036,15 @@ class TelegramAdapter(BasePlatformAdapter):
                         # TimedOut is also a subclass of NetworkError. A
                         # generic timeout may have reached Telegram, so don't
                         # retry; a wrapped ConnectTimeout means no connection
-                        # was established, so retrying is safe.
+                        # was established, so retrying is safe. A pool timeout
+                        # (httpx pool exhausted) is explicitly "not sent to
+                        # Telegram" -- retrying through the loop is safe and
+                        # prevents silent drops when the pool frees up.
                         if (
                             _TimedOut
                             and isinstance(send_err, _TimedOut)
                             and not self._looks_like_connect_timeout(send_err)
+                            and not self._looks_like_pool_timeout(send_err)
                         ):
                             raise
                         if _send_attempt < 2:
@@ -2066,12 +2104,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error="message_too_long")
             # TimedOut usually means the request may have reached Telegram —
             # mark as non-retryable so _send_with_retry() doesn't re-send.
-            # Exception: wrapped ConnectTimeout, where no connection was
-            # established; retrying is safe and prevents silent drops.
+            # Exceptions: a wrapped ConnectTimeout (no connection established)
+            # and an httpx pool timeout (request explicitly not sent) -- both
+            # are safe to re-send and must not be silently dropped.
             _to = locals().get("_TimedOut")
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
-            return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or not is_timeout))
+            is_pool_timeout = self._looks_like_pool_timeout(e)
+            return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or is_pool_timeout or not is_timeout))
 
     async def send_or_update_status(
         self,
@@ -2805,21 +2845,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 return slug
 
         try:
-            # Build provider buttons — 2 per row
-            buttons: list = []
-            for p in providers:
-                count = p.get("total_models", len(p.get("models", [])))
-                label = f"{p['name']} ({count})"
-                if p.get("is_current"):
-                    label = f"✓ {label}"
-                # Compact callback data: mp:<slug>  (max 64 bytes)
-                buttons.append(
-                    InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
-                )
-
-            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
-            keyboard = InlineKeyboardMarkup(rows)
+            # Build provider buttons — folds provider groups (display only).
+            keyboard = self._build_provider_keyboard(providers)
 
             provider_label = get_label(current_provider)
             text = self.format_message(
@@ -2865,6 +2892,56 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     _MODEL_PAGE_SIZE = 8
+
+    def _build_provider_keyboard(self, providers: list):
+        """Build the top-level provider keyboard, folding provider groups.
+
+        Provider families (Kimi/Moonshot, MiniMax, xAI Grok, ...) collapse to
+        a single ``mpg:<gid>`` button; tapping it drills into a member
+        sub-keyboard. Single providers (and groups with only one authenticated
+        member) render as direct ``mp:<slug>`` buttons. Grouping mirrors the
+        CLI ``hermes model`` picker via the shared ``group_providers`` fold,
+        so all surfaces stay consistent.
+        """
+        try:
+            from hermes_cli.models import group_providers
+        except Exception:
+            group_providers = None
+
+        by_slug = {p.get("slug"): p for p in providers}
+
+        def _provider_button(p):
+            count = p.get("total_models", len(p.get("models", [])))
+            label = f"{p['name']} ({count})"
+            if p.get("is_current"):
+                label = f"✓ {label}"
+            return InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+
+        buttons: list = []
+        if group_providers is not None:
+            for row in group_providers([p.get("slug") for p in providers]):
+                if row["kind"] == "group":
+                    members = [by_slug[m] for m in row["members"] if m in by_slug]
+                    count = sum(
+                        m.get("total_models", len(m.get("models", []))) for m in members
+                    )
+                    label = f"{row['label']} ▸ ({count})"
+                    if any(m.get("is_current") for m in members):
+                        label = f"✓ {label}"
+                    buttons.append(
+                        InlineKeyboardButton(label, callback_data=f"mpg:{row['group_id']}")
+                    )
+                else:
+                    p = by_slug.get(row["slug"])
+                    if p is not None:
+                        buttons.append(_provider_button(p))
+        else:
+            for p in providers:
+                buttons.append(_provider_button(p))
+
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+        rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+        return InlineKeyboardMarkup(rows)
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
@@ -3044,10 +3121,23 @@ class TelegramAdapter(BasePlatformAdapter):
             # Clean up state
             self._model_picker_state.pop(chat_id, None)
 
-        elif data == "mb":
-            # --- Back to provider list ---
+        elif data.startswith("mpg:"):
+            # --- Provider group selected: show member providers ---
+            group_id = data[4:]
+            try:
+                from hermes_cli.models import PROVIDER_GROUPS
+                _label, member_slugs = PROVIDER_GROUPS.get(group_id, ("", []))
+            except Exception:
+                _label, member_slugs = "", []
+
+            by_slug = {p["slug"]: p for p in state["providers"]}
+            members = [by_slug[m] for m in member_slugs if m in by_slug]
+            if not members:
+                await query.answer(text="Group not found.")
+                return
+
             buttons = []
-            for p in state["providers"]:
+            for p in members:
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count})"
                 if p.get("is_current"):
@@ -3055,10 +3145,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 buttons.append(
                     InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
                 )
-
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            rows.append([
+                InlineKeyboardButton("◀ Back", callback_data="mb"),
+                InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+            ])
             keyboard = InlineKeyboardMarkup(rows)
+
+            await query.edit_message_text(
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Provider family: *{_label or group_id}*\n\n"
+                        f"Select a provider:"
+                    )
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data == "mb":
+            # --- Back to provider list (folds groups) ---
+            keyboard = self._build_provider_keyboard(state["providers"])
 
             try:
                 provider_label = get_label(state["current_provider"])
@@ -3108,7 +3217,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
@@ -5027,8 +5136,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped key for text message batching.
+
+        Applies the installed topic-recovery hook first so DM-topic batches
+        coalesce on (and dispatch to) the recovered lane rather than the
+        raw inbound ``message_thread_id`` Telegram may have attached.
+        """
         from gateway.session import build_session_key
+        self._apply_topic_recovery(event)
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),

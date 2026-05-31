@@ -1,10 +1,53 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import sqlite3
 import time
 import pytest
-from pathlib import Path
 
-from hermes_state import SessionDB
+from hermes_state import SCHEMA_SQL, SessionDB
+
+
+class _NoFtsCursor(sqlite3.Cursor):
+    """Simulate a SQLite build without the fts5 module."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if "USING fts5" in probe:
+            raise sqlite3.OperationalError("no such module: fts5")
+        if probe in (
+            "SELECT * FROM messages_fts LIMIT 0",
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such table: " + probe.split()[-3])
+        return super().execute(sql, parameters)
+
+    def executescript(self, sql_script):
+        if "USING fts5" in sql_script:
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().executescript(sql_script)
+
+
+class _NoFtsConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFtsCursor)
+
+
+class _NoFtsExistingTableCursor(_NoFtsCursor):
+    """Simulate existing FTS virtual tables under a runtime without FTS5."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if probe in (
+            "SELECT * FROM messages_fts LIMIT 0",
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().execute(sql, parameters)
+
+
+class _NoFtsExistingTableConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFtsExistingTableCursor)
 
 
 @pytest.fixture()
@@ -129,12 +172,163 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
 
+    def test_update_session_model_overwrites_existing(self, db):
+        """A mid-session /model switch must overwrite the stored model.
+
+        update_token_counts uses COALESCE(model, ?) (first-writer-wins), so
+        the dashboard kept showing the original model after a switch (#34850).
+        update_session_model sets the column unconditionally.
+        """
+        db.create_session(session_id="s1", source="telegram",
+                          model="xiaomi/mimo-v2.5-pro")
+        # Token updates never change the model once set.
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               model="xiaomi/mimo-v2.5-pro")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
+
+        # Explicit switch overwrites it.
+        db.update_session_model("s1", "xiaomi/mimo-v2.5")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
+        # And a subsequent token update does NOT revert it (COALESCE no-ops
+        # because the column is now non-NULL).
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               model="xiaomi/mimo-v2.5-pro")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+    def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            assert db._fts_enabled is False
+            # Neither FTS5 virtual table should have been created on a build
+            # that lacks the fts5 module — both init paths must degrade.
+            assert db._fts_table_exists("messages_fts") is False
+            assert db._fts_table_exists("messages_fts_trigram") is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="hello from sqlite without fts")
+
+            messages = db.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "hello from sqlite without fts"
+            assert db.search_messages("hello") == []
+        finally:
+            db.close()
+
+    def test_existing_fts_tables_do_not_break_without_fts5(
+        self, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="before runtime change")
+        finally:
+            seeded.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsExistingTableConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._fts_enabled is False
+            assert db.get_session("s1") is not None
+            assert len(db.get_messages("s1")) == 1
+
+            # Existing FTS triggers must be disabled too; otherwise this write
+            # would try to insert into an unusable FTS virtual table.
+            db.append_message("s1", role="assistant", content="after runtime change")
+            messages = db.get_messages("s1")
+            assert len(messages) == 2
+            assert messages[1]["content"] == "after runtime change"
+        finally:
+            db.close()
+
+    def test_old_schema_without_fts5_does_not_crash(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (9,))
+        conn.commit()
+        conn.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._fts_enabled is False
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="legacy no fts")
+            assert db.get_messages("s1")[0]["content"] == "legacy no fts"
+            assert db.search_messages("legacy") == []
+
+            # Leave the FTS migration version in place so a future FTS-capable
+            # runtime can still rebuild and backfill the indexes.
+            row = db._conn.execute("SELECT version FROM schema_version").fetchone()
+            assert row["version"] == 9
+        finally:
+            db.close()
+
+    def test_fts_runtime_restores_triggers_after_no_fts_open(
+        self, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="first searchable")
+        finally:
+            seeded.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsExistingTableConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+        no_fts = SessionDB(db_path=db_path)
+        try:
+            no_fts.append_message("s1", role="assistant", content="not indexed yet")
+        finally:
+            no_fts.close()
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", real_connect)
+        restored = SessionDB(db_path=db_path)
+        try:
+            assert restored._fts_enabled is True
+            restored.append_message("s1", role="assistant", content="indexed again")
+            assert len(restored.search_messages("not indexed yet")) == 1
+            assert len(restored.search_messages("indexed")) == 2
+        finally:
+            restored.close()
 
 
 # =========================================================================
@@ -2327,7 +2521,6 @@ class TestCompressionChainProjection:
 
         Returns (root_id, delegate_id, mid_id, tip_id).
         """
-        import time as _time
         # Root that gets compressed
         db.create_session("root1", "cli")
         db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
@@ -2642,7 +2835,6 @@ class TestConcurrentWriteSafety:
         """Connection timeout should be >= 30s to survive CLI/gateway contention."""
         # Access the underlying connection timeout via sqlite3 introspection.
         # There is no public API, so we check the kwarg via the module default.
-        import sqlite3
         import inspect
         from hermes_state import SessionDB as _SessionDB
         src = inspect.getsource(_SessionDB.__init__)
@@ -2677,6 +2869,64 @@ class TestVacuum:
         db.append_message(session_id="s1", role="user", content="hi")
         # Should not raise, even though there's nothing significant to reclaim.
         db.vacuum()
+
+
+class TestOptimizeFts:
+    def test_optimize_returns_index_count(self, db):
+        """A fresh DB has both FTS indexes; optimize merges both."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hello world")
+        assert db.optimize_fts() == 2
+
+    def test_optimize_preserves_search_and_snippet(self, db):
+        """Optimize is layout-only: MATCH results + snippets are unchanged."""
+        db.create_session(session_id="s1", source="cli")
+        for i in range(50):
+            db.append_message(
+                session_id="s1",
+                role="user",
+                content=f"needle alpha bravo charlie message {i}",
+            )
+        before = db.search_messages("needle")
+        n = db.optimize_fts()
+        assert n == 2
+        after = db.search_messages("needle")
+        assert len(after) == len(before)
+        assert len(after) > 0
+        # Snippet must still be populated (would be empty/None if the FTS
+        # content shadow were lost during optimize).
+        assert all(row.get("snippet") for row in after)
+        # IDs and snippets are identical before/after — pure layout change.
+        assert [r["id"] for r in after] == [r["id"] for r in before]
+        assert [r["snippet"] for r in after] == [r["snippet"] for r in before]
+
+    def test_optimize_skips_missing_trigram_table(self, db):
+        """When the trigram index is absent, optimize handles only the porter
+        index and does not raise."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hello")
+        # Drop the trigram table + triggers to simulate a disabled/absent index.
+        with db._lock:
+            for trig in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                db._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            db._conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+        assert db._fts_table_exists("messages_fts_trigram") is False
+        assert db._fts_table_exists("messages_fts") is True
+        # Only the porter index remains -> 1 optimized, no error.
+        assert db.optimize_fts() == 1
+
+    def test_optimize_idempotent(self, db):
+        """Running optimize twice is safe (second pass is a no-op merge)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="repeat me")
+        assert db.optimize_fts() == 2
+        assert db.optimize_fts() == 2
+        # Search still works after repeated optimization.
+        assert len(db.search_messages("repeat")) == 1
 
 
 class TestAutoMaintenance:
@@ -3021,3 +3271,223 @@ class TestFTS5ToolCallMigration:
         finally:
             session_db.close()
 
+
+# ---------------------------------------------------------------------------
+# apply_wal_with_fallback — read-only probe tests
+# ---------------------------------------------------------------------------
+
+
+class TestApplyWalProbe:
+    """Unit tests for the journal_mode probe in apply_wal_with_fallback."""
+
+    def test_skips_set_pragma_when_already_wal(self, tmp_path):
+        """Already-WAL connection must not trigger the set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "wal.db"
+        # Prime the file into WAL mode first.
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        # Only the probe should have fired; the set-pragma must NOT appear.
+        assert any("PRAGMA journal_mode" == sql.strip() for sql in conn.executed), (
+            "probe PRAGMA should have run"
+        )
+        assert not any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must not run when already in WAL mode"
+        )
+
+    def test_sets_wal_on_fresh_connection(self, tmp_path):
+        """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must fire on a fresh (non-WAL) connection"
+        )
+
+    def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
+        """20 threads calling connect() on the same DB must not see disk I/O error."""
+        import sys
+        import threading
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        db_path = tmp_path / "concurrent.db"
+        errors = []
+
+        def _connect_cycle():
+            for _ in range(5):
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    apply_wal_with_fallback(conn)
+                    conn.close()
+                except sqlite3.OperationalError as exc:
+                    if "disk i/o error" in str(exc).lower():
+                        errors.append(exc)
+
+        threads = [threading.Thread(target=_connect_cycle) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"disk I/O errors from concurrent connects: {errors}"
+
+        # Linux-only: no (deleted) WAL/SHM FDs should accumulate.
+        if sys.platform == "linux":
+            import os
+
+            fd_dir = f"/proc/{os.getpid()}/fd"
+            deleted_fds = []
+            for fd_name in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(os.path.join(fd_dir, fd_name))
+                    if "(deleted)" in target and (
+                        "wal" in target.lower() or "shm" in target.lower()
+                    ):
+                        deleted_fds.append(target)
+                except OSError:
+                    pass
+            assert not deleted_fds, f"stale deleted WAL/SHM FDs: {deleted_fds}"
+
+    def test_fallback_to_delete_still_works(self, tmp_path):
+        """When set-pragma raises a WAL-incompat error, falls back to DELETE."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _IncompatConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._call_count = 0
+
+            def execute(self, sql, params=()):
+                self._call_count += 1
+                # First call is the read probe; let it return "delete".
+                # Second call is the set-pragma; raise a WAL-incompat error.
+                if "journal_mode=WAL" in sql:
+                    raise sqlite3.OperationalError("locking protocol")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "incompat.db"
+        conn = _IncompatConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn, db_label="test.db")
+        finally:
+            conn.close()
+
+        assert result == "delete"
+
+    def test_probe_failure_falls_through_to_set_pragma(self, tmp_path):
+        """When the read probe raises OperationalError, fall through to set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _ProbeFails(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._first = True
+
+            def execute(self, sql, params=()):
+                if self._first and "journal_mode" in sql and "WAL" not in sql:
+                    self._first = False
+                    raise sqlite3.OperationalError("simulated probe failure")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "probe_fail.db"
+        conn = _ProbeFails(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        # Despite probe failure, set-pragma must still run and succeed.
+        assert result == "wal"
+
+    def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
+        """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
+        import sqlite3
+        import pytest
+        from hermes_state import apply_wal_with_fallback
+
+        class _EIOConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._first = True
+
+            def execute(self, sql, params=()):
+                # Let the probe succeed (returns "delete" for fresh DB).
+                if "journal_mode=WAL" in sql:
+                    raise sqlite3.OperationalError("some unexpected hardware failure")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "eio.db"
+        conn = _EIOConn(str(db_path))
+        try:
+            with pytest.raises(
+                sqlite3.OperationalError, match="some unexpected hardware failure"
+            ):
+                apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+    def test_returns_wal_not_delete_from_probe(self, tmp_path):
+        """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        # Fresh DB is in "delete" mode — probe returns "delete", must NOT early-return.
+        db_path = tmp_path / "delete_mode.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must fire when probe returns 'delete'"
+        )

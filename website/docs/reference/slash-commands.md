@@ -43,7 +43,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |
 | `/title` | Set a title for the current session (usage: /title My Session Name) |
-| `/compress [focus topic]` | Manually compress conversation context (flush memories + summarize). Optional focus topic narrows what the summary preserves. |
+| `/compress [here [N] \| focus topic]` | Manually compress conversation context (flush memories + summarize). `/compress here [N]` summarizes everything except the most recent N exchanges (default 2), kept verbatim — pick your own compression boundary. A focus topic narrows what a full summary preserves. |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
 | `/snapshot [create\|restore <id>\|prune]` (alias: `/snap`) | Create or restore state snapshots of Hermes config/state. `create [label]` saves a snapshot, `restore <id>` reverts to it, `prune [N]` removes old snapshots, or list all with no args. |
 | `/stop` | Kill all running background processes |
@@ -87,6 +87,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/toolsets` | List available toolsets |
 | `/browser [connect\|disconnect\|status]` | Manage a local Chromium-family CDP connection. `connect` attaches browser tools to a running Chrome, Brave, Chromium, or Edge instance (default: `http://127.0.0.1:9222`). `disconnect` detaches. `status` shows current connection. Auto-launches a supported Chromium-family browser if no debugger is detected. |
 | `/skills` | Search, install, inspect, or manage skills from online registries |
+| `/bundles` | List configured skill bundles — `/<name>` slash aliases that preload several skills at once. Configure under `bundles:` in `~/.hermes/config.yaml`. See [Skill Bundles](/user-guide/features/skills#skill-bundles). |
 | `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
 | `/curator` | Background skill maintenance — `status`, `run`, `pin`, `archive`. See [Curator](/user-guide/features/curator). |
 | `/kanban <action>` | Drive the multi-profile, multi-project collaboration board without leaving chat. Full `hermes kanban` surface is available: `/kanban list`, `/kanban show t_abc`, `/kanban create "title" --assignee X`, `/kanban comment t_abc "text"`, `/kanban unblock t_abc`, `/kanban dispatch`, etc. Multi-board support included: `/kanban boards list`, `/kanban boards create <slug>`, `/kanban boards switch <slug>`, `/kanban --board <slug> <action>`. See [Kanban slash command](/user-guide/features/kanban#kanban-slash-command). |
@@ -193,6 +194,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 | Command | Description |
 |---------|-------------|
+| `/start` | Platform-protocol command. Many chat platforms (Telegram, Discord, …) send `/start` automatically the first time a user opens a bot conversation. Hermes acknowledges the ping silently — no agent reply, no session burn — so first-contact handshakes don't waste a turn. You can also send it explicitly to confirm the gateway is reachable. |
 | `/new` | Start a new conversation. |
 | `/reset` | Reset conversation history. |
 | `/status` | Show session info, followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest prompt + reply). |
@@ -204,7 +206,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/retry` | Retry the last message. |
 | `/undo` | Remove the last exchange. |
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
-| `/compress [focus topic]` | Manually compress conversation context. Optional focus topic narrows what the summary preserves. |
+| `/compress [here [N] \| focus topic]` | Manually compress conversation context. `/compress here [N]` keeps the most recent N exchanges (default 2) verbatim and summarizes the rest. A focus topic narrows what a full summary preserves. |
 | `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |

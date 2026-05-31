@@ -304,9 +304,20 @@ function applyTheme(theme: DashboardTheme) {
 // ---------------------------------------------------------------------------
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  /** Name of the currently active theme (built-in id or user YAML name). */
+  /** Name of the currently active theme (built-in id or user YAML name).
+   *  Initial source priority (highest first):
+   *    1. ``window.__HERMES_INITIAL_ACTIVE_THEME__`` — backend injects the
+   *       resolved active theme name from ``config.yaml`` in index.html so
+   *       the first render skips the localStorage / "default" fallback.
+   *    2. localStorage cache from a previous session.
+   *    3. ``"default"`` as the last resort. */
   const [themeName, setThemeName] = useState<string>(() => {
     if (typeof window === "undefined") return "default";
+    const injected = (window as unknown as { __HERMES_INITIAL_ACTIVE_THEME__?: string })
+      .__HERMES_INITIAL_ACTIVE_THEME__;
+    if (typeof injected === "string" && injected.trim()) {
+      return injected;
+    }
     return window.localStorage.getItem(STORAGE_KEY) ?? "default";
   });
 
@@ -321,10 +332,21 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   /** Full definitions for user themes keyed by name — the API provides
-   *  these so custom YAMLs apply without a client-side stub. */
+   *  these so custom YAMLs apply without a client-side stub.
+   *  Initial value: ``window.__HERMES_INITIAL_USER_THEMES__`` — backend
+   *  ships pre-normalised user-theme definitions in index.html so the
+   *  first ``applyTheme()`` on mount can resolve a user-theme name to
+   *  its full DashboardTheme without waiting for the API round-trip
+   *  (eliminating the green flash on reload). */
   const [userThemeDefs, setUserThemeDefs] = useState<
     Record<string, DashboardTheme>
-  >({});
+  >(() => {
+    if (typeof window === "undefined") return {};
+    const injected = (window as unknown as {
+      __HERMES_INITIAL_USER_THEMES__?: Record<string, DashboardTheme>;
+    }).__HERMES_INITIAL_USER_THEMES__;
+    return injected && typeof injected === "object" ? injected : {};
+  });
 
   // Resolve a theme name to a full DashboardTheme, falling back to default
   // only when neither a built-in nor a user theme is found.

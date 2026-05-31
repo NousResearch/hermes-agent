@@ -3827,60 +3827,56 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     return normalise_prefix(raw)
 
 
-def _render_active_theme_bootstrap_css() -> str:
-    """Critical-CSS shim for the active user theme.
+def _render_initial_theme_globals() -> str:
+    """JS bootstrap that gives the SPA the active user theme on first paint.
 
-    Returns a ``<style>`` block with the ``:root`` CSS variables that
-    ``ThemeProvider.applyTheme()`` installs after the
-    ``/api/dashboard/themes`` round-trip completes.  The goal is to
-    eliminate the FOUC where the first paint shows the bundle's default
-    Hermes Teal canvas before the SPA flips it to the configured theme.
+    ``ThemeProvider`` would otherwise read ``themeName`` from localStorage
+    (or fall back to ``"default"``) and call ``applyTheme()`` with the
+    bundle's ``defaultTheme`` because ``userThemeDefs`` is empty until the
+    ``/api/dashboard/themes`` round-trip resolves.  That sets the Hermes
+    Teal CSS variables as inline styles on ``document.documentElement``,
+    which the browser paints — then the API resolves, ``setUserThemeDefs``
+    re-fires ``applyTheme(<user theme>)``, and the user sees a flash of
+    Hermes Teal between the two paints.
 
-    Built-in themes return an empty string — their full definitions live
-    in ``web/src/themes/presets.ts`` and are applied by the bundle
-    before paint, so no critical-CSS shim is needed for them.
+    This helper emits a ``<script>`` block that defines two
+    ``window.__HERMES_INITIAL_*`` globals which ``ThemeProvider`` reads
+    from its ``useState`` initializers:
+
+      - ``__HERMES_INITIAL_ACTIVE_THEME__`` — name of the active theme
+        (from ``config.yaml`` ``dashboard.theme``).
+      - ``__HERMES_INITIAL_USER_THEMES__`` — name → DashboardTheme map of
+        user-theme definitions already normalised through
+        ``_normalise_theme_definition``.
+
+    With both globals in place, the first ``applyTheme()`` on mount can
+    resolve a user-theme name to its full definition without an API call,
+    so the first paint already uses the right palette.  Returns an empty
+    string if no user themes are configured or the lookup fails — the
+    bundle falls back to its built-in cascade unchanged.
     """
     try:
+        user_themes = _discover_user_themes()
+        if not user_themes:
+            return ""
         config = load_config()
         active = cfg_get(config, "dashboard", "theme", default="default")
-        if not active or not isinstance(active, str):
+        defs_by_name = {t["name"]: t for t in user_themes if isinstance(t.get("name"), str)}
+        if not defs_by_name and (not isinstance(active, str) or active == "default"):
             return ""
-        # Built-in: the bundle already owns the definition, no FOUC.
-        if any(b["name"] == active for b in _BUILTIN_DASHBOARD_THEMES):
-            return ""
-        for theme in _discover_user_themes():
-            if theme.get("name") != active:
-                continue
-            palette = theme.get("palette") or {}
-            bg = palette.get("background") or {}
-            mg = palette.get("midground") or {}
-            bg_hex = bg.get("hex", "#0a0a0a") if isinstance(bg, dict) else "#0a0a0a"
-            mg_hex = mg.get("hex", "#e5e5e5") if isinstance(mg, dict) else "#e5e5e5"
-            typo = theme.get("typography") or {}
-            font_sans = typo.get("fontSans") or _THEME_DEFAULT_TYPOGRAPHY["fontSans"]
-            base_size = typo.get("baseSize") or _THEME_DEFAULT_TYPOGRAPHY["baseSize"]
-            # Defensive ``</style>`` escape — current values are well-known
-            # hex/font strings, but this keeps the helper safe if it is later
-            # extended to ship user-authored CSS literals.
-            def _esc(s: str) -> str:
-                return str(s).replace("</", "<\\/")
-            return (
-                '<style id="hermes-theme-bootstrap">'
-                ":root{"
-                f"--background-base:{_esc(bg_hex)};"
-                f"--color-background:{_esc(bg_hex)};"
-                f"--midground-base:{_esc(mg_hex)};"
-                f"--color-midground:{_esc(mg_hex)};"
-                f"--font-sans:{_esc(font_sans)};"
-                f"--font-base-size:{_esc(base_size)};"
-                "}"
-                f"html,body{{background-color:{_esc(bg_hex)};color:{_esc(mg_hex)};"
-                f"font-family:{_esc(font_sans)};font-size:{_esc(base_size)};}}"
-                "</style>"
-            )
-        return ""
+        # ``</`` inside a script body needs to be escaped so any literal
+        # ``</script>`` in user input cannot break out of the <script> tag.
+        # ``json.dumps`` already escapes JS special chars but leaves ``</``.
+        defs_json = json.dumps(defs_by_name, separators=(",", ":")).replace("</", "<\\/")
+        active_json = json.dumps(active if isinstance(active, str) else "default")
+        return (
+            "<script>"
+            f"window.__HERMES_INITIAL_ACTIVE_THEME__={active_json};"
+            f"window.__HERMES_INITIAL_USER_THEMES__={defs_json};"
+            "</script>"
+        )
     except Exception:
-        _log.debug("theme bootstrap render failed", exc_info=True)
+        _log.debug("initial theme globals render failed", exc_info=True)
         return ""
 
 
@@ -3950,19 +3946,17 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        # Theme FOUC bootstrap: when the active theme is a user theme
-        # (``HERMES_HOME/dashboard-themes/<name>.yaml``), the backend already
-        # has its full ``definition`` (palette/typography/layout from
-        # ``_normalise_theme_definition``).  Inject minimal critical-CSS
-        # rules (background + base font + body color) inside ``<head>`` so
-        # the first paint matches the active theme — without this the SPA
-        # paints the default Hermes Teal canvas first, then
-        # ``ThemeProvider``'s ``/api/dashboard/themes`` round-trip flips it.
-        # Built-in themes already live in the bundle's ``presets.ts`` and
-        # apply before paint without a round-trip.
-        theme_bootstrap = _render_active_theme_bootstrap_css()
-        if theme_bootstrap:
-            html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
+        # Theme FOUC bootstrap: when there are user themes
+        # (``HERMES_HOME/dashboard-themes/*.yaml``) the backend already has
+        # their normalised definitions.  Inject them as
+        # ``window.__HERMES_INITIAL_USER_THEMES__`` + the active theme name
+        # so ``ThemeProvider`` can resolve a user-theme name to its full
+        # ``DashboardTheme`` on mount without waiting for
+        # ``/api/dashboard/themes`` — eliminating the green flash on
+        # reload.  No-op when no user themes are configured.
+        theme_globals = _render_initial_theme_globals()
+        if theme_globals:
+            html = html.replace("</head>", f"{theme_globals}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
         return HTMLResponse(
             html,

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from agent import conversation_loop
 from agent.stall_retry import (
+    EMPTY_AFTER_TOOL_RETRY_NUDGE,
     get_stall_retry_max_chars,
     get_stall_retry_max_per_turn,
     get_stall_retry_model,
@@ -178,6 +179,84 @@ def test_retry_on_stall_switches_model_and_returns_tool_calls(monkeypatch) -> No
     assert summary["recovered"] == 1
 
 
+def test_retry_on_stall_can_accept_visible_content(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    normalized = SimpleNamespace(
+        content="I processed the tool result and will continue.",
+        tool_calls=None,
+        finish_reason="stop",
+    )
+
+    def interruptible_api_call(kwargs: dict[str, object]) -> object:
+        captured["kwargs"] = dict(kwargs)
+        return normalized
+
+    agent = SimpleNamespace(
+        api_mode="openai",
+        _is_anthropic_oauth=False,
+        log_prefix="",
+        _build_api_kwargs=lambda messages: {
+            "model": "dflash",
+            "messages": messages,
+            "stream": True,
+        },
+        _interruptible_api_call=interruptible_api_call,
+        _get_transport=lambda: SimpleNamespace(
+            normalize_response=lambda response, **_kwargs: response
+        ),
+        _vprint=lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.setenv("HERMES_STALL_RETRY_MODEL", "qwen3.6-27b-256k")
+    monkeypatch.setenv("HERMES_STALL_RETRY_TELEMETRY", "0")
+    result = retry_on_stall(
+        agent,
+        [{"role": "user", "content": "go"}],
+        "stop",
+        accept_content=True,
+        retry_nudge=EMPTY_AFTER_TOOL_RETRY_NUDGE,
+    )
+
+    assert result is normalized
+    kwargs = captured["kwargs"]
+    assert kwargs["model"] == "qwen3.6-27b-256k"
+    assert kwargs["stream"] is False
+    assert kwargs["messages"][-1]["role"] == "user"
+    assert "after the tool results was empty" in kwargs["messages"][-1]["content"]
+
+
+def test_retry_on_stall_still_rejects_content_without_accept_content(monkeypatch) -> None:
+    normalized = SimpleNamespace(
+        content="I processed the tool result and will continue.",
+        tool_calls=None,
+        finish_reason="stop",
+    )
+
+    agent = SimpleNamespace(
+        api_mode="openai",
+        _is_anthropic_oauth=False,
+        log_prefix="",
+        _build_api_kwargs=lambda messages: {
+            "model": "dflash",
+            "messages": messages,
+            "stream": True,
+        },
+        _interruptible_api_call=lambda _kwargs: normalized,
+        _get_transport=lambda: SimpleNamespace(
+            normalize_response=lambda response, **_kwargs: response
+        ),
+        _vprint=lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.setenv("HERMES_STALL_RETRY_MODEL", "qwen3.6-27b-256k")
+    monkeypatch.setenv("HERMES_STALL_RETRY_TELEMETRY", "0")
+    assert retry_on_stall(
+        agent,
+        [{"role": "user", "content": "go"}],
+        "stop",
+    ) is None
+
+
 def test_retry_on_stall_uses_agent_config_when_env_is_absent(monkeypatch) -> None:
     captured: dict[str, object] = {}
     tool_call = SimpleNamespace(
@@ -330,6 +409,19 @@ def test_conversation_loop_adopts_retry_before_tool_call_branch() -> None:
     assert retry_idx < tool_branch_idx
     assert "continue  # re-enter loop top; tool-calls path handles it" not in source
     assert "stall_retry_failed_no_tool_call" in source
+
+
+def test_conversation_loop_retries_empty_post_tool_before_tool_branch() -> None:
+    source = inspect.getsource(conversation_loop.run_conversation)
+    empty_retry_idx = source.index("empty_after_tool_result")
+    generic_stall_idx = source.index("looks_like_stall(")
+    tool_branch_idx = source.index("# Check for tool calls")
+
+    assert empty_retry_idx < generic_stall_idx
+    assert empty_retry_idx < tool_branch_idx
+    assert "and not _empty_after_tool_result" in source
+    assert "EMPTY_AFTER_TOOL_RETRY_NUDGE" in source
+    assert "accept_content=True" in source
 
 
 def test_conversation_loop_allows_bounded_multiple_stall_retries() -> None:

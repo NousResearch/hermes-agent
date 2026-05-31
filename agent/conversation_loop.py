@@ -3633,6 +3633,7 @@ def run_conversation(
             # the planning-only text as a completed assistant message that
             # poisons future "continue" turns.
             from agent.stall_retry import (
+                EMPTY_AFTER_TOOL_RETRY_NUDGE,
                 get_stall_retry_max_chars,
                 get_stall_retry_model,
                 looks_like_stall,
@@ -3642,10 +3643,86 @@ def run_conversation(
             )
 
             retry_model = get_stall_retry_model(agent)
+            # dflash can also return a true empty response immediately after a
+            # substantive tool result. The normal empty-response path retries
+            # the same model, then falls through to the generic fallback chain.
+            # For local dflash that is backwards: first try the configured
+            # higher-quality local lane on the same exact turn so the agent can
+            # either continue with another tool call or produce visible text.
+            _empty_after_tool_result = (
+                getattr(agent, "tools", None)
+                and not getattr(assistant_message, "tool_calls", None)
+                and not agent._strip_think_blocks(
+                    assistant_message.content or ""
+                ).strip()
+                and any(
+                    isinstance(m, dict) and m.get("role") == "tool"
+                    for m in messages[-5:]
+                )
+            )
+            if (
+                retry_model
+                and _empty_after_tool_result
+                and _stall_retry_count < _stall_retry_max_per_turn
+            ):
+                try:
+                    record_stall_retry_event(
+                        agent,
+                        "detected",
+                        finish_reason=finish_reason,
+                        api_call=api_call_count,
+                        retry_count=_stall_retry_count,
+                        max_per_turn=_stall_retry_max_per_turn,
+                        content="empty_after_tool_result",
+                    )
+                    _stall_retry_count += 1
+                    retried = retry_on_stall(
+                        agent,
+                        api_messages,
+                        finish_reason,
+                        stalled_content="",
+                        retry_index=_stall_retry_count,
+                        accept_content=True,
+                        retry_nudge=EMPTY_AFTER_TOOL_RETRY_NUDGE,
+                    )
+                    if retried is not None:
+                        assistant_message = retried
+                        finish_reason = (
+                            getattr(retried, "finish_reason", None)
+                            or (
+                                "tool_calls"
+                                if getattr(retried, "tool_calls", None)
+                                else "stop"
+                            )
+                        )
+                        agent._empty_content_retries = 0
+                        agent._post_tool_empty_retried = False
+                    else:
+                        logger.warning(
+                            "Stall retry lane did not recover empty post-tool "
+                            "response; continuing empty-response recovery "
+                            "(model=%s provider=%s)",
+                            agent.model,
+                            agent.provider,
+                        )
+                except Exception as exc:
+                    record_stall_retry_event(
+                        agent,
+                        "exception",
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:300],
+                    )
+                    logger.warning(
+                        "Stall retry lane failed during empty post-tool "
+                        "recovery; continuing empty-response recovery",
+                        exc_info=True,
+                    )
+
             if (
                 retry_model
                 and getattr(agent, "tools", None)
                 and not getattr(assistant_message, "tool_calls", None)
+                and not _empty_after_tool_result
                 and not agent._detect_malformed_tool_final_response(
                     assistant_message.content or "",
                     finish_reason,
@@ -3775,7 +3852,6 @@ def run_conversation(
                         "failure_subclass": "stall_retry_exception",
                         "stall_retry": stall_retry_summary(agent),
                     }
-            
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:

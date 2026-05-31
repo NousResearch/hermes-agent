@@ -66,6 +66,12 @@ _STALL_RETRY_NUDGE = (
     "by making the tool call immediately. Do not summarize or apologize; call "
     "the tool that performs the action you just announced."
 )
+EMPTY_AFTER_TOOL_RETRY_NUDGE = (
+    "Your previous assistant response after the tool results was empty. "
+    "Continue the same task using the tool results above. If the next step "
+    "requires another tool, call it immediately; otherwise provide the next "
+    "concise response. Do not summarize or apologize."
+)
 
 
 def _as_positive_int(value: Any, default: int) -> int:
@@ -283,6 +289,7 @@ def _retry_messages_with_nudge(
     agent: Any,
     api_messages: list[dict[str, Any]],
     stalled_content: str,
+    retry_nudge: str | None = None,
 ) -> list[dict[str, Any]]:
     if not get_stall_retry_nudge_enabled(agent):
         return api_messages
@@ -290,7 +297,7 @@ def _retry_messages_with_nudge(
     visible = (stalled_content or "").strip()
     if visible:
         retry_messages.append({"role": "assistant", "content": visible})
-    retry_messages.append({"role": "user", "content": _STALL_RETRY_NUDGE})
+    retry_messages.append({"role": "user", "content": retry_nudge or _STALL_RETRY_NUDGE})
     return retry_messages
 
 
@@ -337,6 +344,9 @@ def retry_on_stall(
     finish_reason,
     stalled_content: str = "",
     retry_index: int | None = None,
+    *,
+    accept_content: bool = False,
+    retry_nudge: str | None = None,
 ):
     """If the just-finished no-tool-call turn looks like a stall and a retry
     lane is configured, re-issue the turn against that lane (same provider /
@@ -354,7 +364,12 @@ def retry_on_stall(
         return None
 
     try:
-        retry_messages = _retry_messages_with_nudge(agent, api_messages, stalled_content)
+        retry_messages = _retry_messages_with_nudge(
+            agent,
+            api_messages,
+            stalled_content,
+            retry_nudge=retry_nudge,
+        )
         # Build kwargs exactly as the normal turn would, then override only the
         # model name. Safe when the retry lane is served by the SAME provider/
         # endpoint as agent.model (e.g. taro serves both dflash and the Q6 lane),
@@ -409,14 +424,16 @@ def retry_on_stall(
         if getattr(agent, "api_mode", None) == "anthropic_messages":
             normalize_kwargs["strip_tool_prefix"] = getattr(agent, "_is_anthropic_oauth", False)
         normalized = transport.normalize_response(response, **normalize_kwargs)
-        if getattr(normalized, "tool_calls", None):
+        tool_calls = getattr(normalized, "tool_calls", None)
+        content = getattr(normalized, "content", "") or ""
+        if tool_calls or (accept_content and content.strip()):
             record_stall_retry_event(
                 agent,
                 "recovered",
                 retry_model=retry_model,
                 retry_index=retry_index,
-                tool_call_count=len(getattr(normalized, "tool_calls", []) or []),
-                content=getattr(normalized, "content", "") or "",
+                tool_call_count=len(tool_calls or []),
+                content=content,
             )
             return normalized
         record_stall_retry_event(

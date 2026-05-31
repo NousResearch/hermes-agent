@@ -986,6 +986,30 @@ class TestInit:
             )
             assert a._cache_ttl == "5m"
 
+    def test_prompt_caching_enabled_false_disables_cache_markers(self):
+        """prompt_caching.enabled=false is an escape hatch for strict providers."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter._anthropic_sdk"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"enabled": False}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                base_url="https://api.anthropic.com/v1/",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a.api_mode == "anthropic_messages"
+            assert a._use_prompt_caching is False
+            assert a._use_native_cache_layout is False
+
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
         tools = _make_tool_defs("web_search", "terminal")

@@ -2579,6 +2579,48 @@ class BasePlatformAdapter(ABC):
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
+
+    @staticmethod
+    def _mask_protected_spans(content: str) -> str:
+        """Replace content inside fenced code blocks, inline code spans,
+        and blockquotes with spaces to prevent MEDIA: false positives.
+
+        Preserves character count so regex match offsets stay valid.
+        Skips masking backtick-quoted paths in MEDIA: tags (e.g.
+        ``MEDIA:`/path/to/file.png` ``) to avoid breaking path extraction.
+        """
+        chars = list(content)
+        n = len(chars)
+
+        # Build list of (start, end) spans to mask
+        spans: list = []
+
+        # Fenced code blocks: ```...```
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            spans.append((m.start(), m.end()))
+
+        # Inline code: `...` but NOT backtick-quoted paths in MEDIA: tags
+        for m in re.finditer(r'`[^`\n]+`', content):
+            start = m.start()
+            # Check if this is a backtick-quoted path after MEDIA:
+            prefix = content[max(0, start - 20):start]
+            if re.search(r'MEDIA:\s*$', prefix):
+                continue  # This is a MEDIA path quote, not inline code
+            spans.append((start, m.end()))
+
+        # Blockquote lines: > at line start
+        for m in re.finditer(r'^>.*$', content, re.MULTILINE):
+            spans.append((m.start(), m.end()))
+
+        # Apply masking
+        for start, end in spans:
+            for i in range(start, end):
+                if chars[i] != '\n':
+                    chars[i] = ' '
+
+        return ''.join(chars)
+
+
     @staticmethod
     def _mask_json_string_media(content: str) -> str:
         """Blank out ``MEDIA:<bare-path>`` occurrences that sit inside a JSON
@@ -2661,9 +2703,14 @@ class BasePlatformAdapter(ABC):
         # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
         # MEDIA_TAG_CLEANUP_RE) so it can never drift from extract_local_files.
         media_pattern = MEDIA_TAG_CLEANUP_RE
-        # Mask MEDIA: embedded inside serialized JSON string values so stale
-        # paths from stored tool results are never re-delivered (#34375).
-        scan_content = BasePlatformAdapter._mask_json_string_media(content)
+        # Mask example/stored MEDIA: paths before scanning so they are never
+        # delivered as real attachments:
+        #  - code blocks / inline code / blockquotes hold prose examples (#35695)
+        #  - serialized JSON string values hold stored tool-result text (#34375)
+        # Both maskers are offset-preserving (chars -> spaces) so match offsets
+        # stay valid; chaining them masks the union of both protected regions.
+        scan_content = BasePlatformAdapter._mask_protected_spans(content)
+        scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
         for match in media_pattern.finditer(scan_content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
@@ -2677,15 +2724,17 @@ class BasePlatformAdapter(ABC):
                     # and dropping every other attachment in the response.
                     continue
 
-        # Remove the delivered MEDIA tags from the user-visible text. Mask
-        # ``cleaned`` (same length, so offsets line up with it), find the real
-        # tag spans there, and delete those spans from the *unmasked* ``cleaned``.
-        # This strips real tags while leaving JSON-embedded MEDIA: text intact —
-        # it is stored data, not a directive, and must read back verbatim
-        # (#34375). Masking ``cleaned`` (not ``content``) keeps offsets valid
-        # after the [[audio_as_voice]] / [[as_document]] directives are removed.
+        # Remove the delivered MEDIA tags from the user-visible text. Mask a
+        # length-equal copy of ``cleaned`` (same union of protected regions) to
+        # *locate* the real tag spans, then delete exactly those spans from the
+        # *unmasked* ``cleaned``. Masking is only a locator — protected spans
+        # (code blocks, quotes, JSON-embedded MEDIA: text) must survive verbatim
+        # in the delivered text, not be blanked to whitespace. Masking
+        # ``cleaned`` (not ``content``) keeps offsets valid after the
+        # [[audio_as_voice]] / [[as_document]] directives are removed.
         if media:
-            masked_cleaned = BasePlatformAdapter._mask_json_string_media(cleaned)
+            masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
+            masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
             spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
             if spans:
                 chars = list(cleaned)

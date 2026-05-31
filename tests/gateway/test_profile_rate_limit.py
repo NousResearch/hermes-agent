@@ -68,3 +68,26 @@ async def test_throttled_profile_is_not_dispatched():
     assert await r._maybe_dispatch_routed(ev, ev.source) is True  # 2nd: throttled
     r._dispatch_to_worker.assert_awaited_once()  # still once — not dispatched again
     assert "busy" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_control_commands_bypass_rate_limit():
+    """/reset must not be throttled — it carries no model cost and stranding a
+    stuck conversation behind the bucket would be the worst time to throttle."""
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    r = object.__new__(gateway_run.GatewayRunner)
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    r.adapters = {Platform.TELEGRAM: adapter}
+    r._profile_rate_limiter = ProfileRateLimiter(capacity=0, refill_per_sec=0)  # everything throttled
+    r._reset_routed_worker = AsyncMock()
+    r._dispatch_to_worker = AsyncMock()
+
+    src = SessionSource(platform=Platform.TELEGRAM, chat_id="100", chat_type="group", user_id="u1")
+    ev = MessageEvent(text="/reset", message_type=MessageType.TEXT, source=src)
+    ev.routed_profile = "coder"
+
+    assert await r._maybe_dispatch_routed(ev, src) is True
+    r._reset_routed_worker.assert_awaited_once()  # reset ran despite an exhausted bucket
+    assert all("busy" not in c.args[1] for c in adapter.send.await_args_list)

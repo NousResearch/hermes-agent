@@ -1330,6 +1330,29 @@ class APIServerAdapter(BasePlatformAdapter):
             return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
         return session, None
 
+    @staticmethod
+    def _continue_session_id(
+        body: Dict[str, Any],
+        conversation_history: List[Dict[str, Any]],
+        previous_response_id: Optional[str],
+    ) -> Optional[str]:
+        """Session id whose transcript should rehydrate this run, or None.
+
+        ``/v1/runs`` is otherwise stateless: it only uses history the caller
+        supplies (``conversation_history`` / ``previous_response_id``).  A
+        routed worker, however, holds the only copy of its transcript and the
+        front sends just a ``session_id``.  When the caller opts in with
+        ``continue_session`` and supplies no explicit history, load it from the
+        worker's own state.db so a routed conversation keeps memory across
+        turns.  Off by default → existing /v1/runs clients are unaffected.
+        """
+        if conversation_history or previous_response_id:
+            return None
+        if not body.get("continue_session"):
+            return None
+        sid = body.get("session_id")
+        return str(sid) if sid else None
+
     def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
         db = self._ensure_session_db()
         if db is None:
@@ -3679,6 +3702,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+
+        # Tier-2 continuity: a routed worker rehydrates its own transcript when
+        # the front opts in (continue_session) and sent no explicit history.
+        if (_resume_sid := self._continue_session_id(body, conversation_history, previous_response_id)):
+            conversation_history = self._conversation_history_for_session(_resume_sid)
+
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()

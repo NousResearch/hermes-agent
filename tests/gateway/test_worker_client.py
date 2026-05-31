@@ -64,3 +64,49 @@ async def test_run_failed_raises():
     events = [{"event": "run.failed", "error": "boom"}]
     with pytest.raises(WorkerRunError, match="boom"):
         await _client(events, posts=[]).dispatch(input="x", consumer=StubConsumer())
+
+
+@pytest.mark.asyncio
+async def test_continue_session_sets_body_flag():
+    posts = []
+    events = [{"event": "run.completed", "output": "ok", "usage": {}}]
+    await _client(events, posts=posts).dispatch(
+        input="hi", consumer=StubConsumer(), session_id="agent:coder:tg:dm:1", continue_session=True,
+    )
+    start_body = posts[0][1]
+    assert start_body["continue_session"] is True
+    assert start_body["session_id"] == "agent:coder:tg:dm:1"
+
+
+@pytest.mark.asyncio
+async def test_continue_session_omitted_when_no_session():
+    posts = []
+    events = [{"event": "run.completed", "output": "ok", "usage": {}}]
+    await _client(events, posts=posts).dispatch(
+        input="hi", consumer=StubConsumer(), continue_session=True,
+    )
+    assert "continue_session" not in posts[0][1]
+
+
+class _Status404(Exception):
+    status = 404
+
+
+@pytest.mark.asyncio
+async def test_reset_session_tolerates_404():
+    """/new before the first routed turn → no session yet → 404 is success."""
+    async def deleter(_url):
+        raise _Status404()
+
+    client = WorkerClient("http://127.0.0.1:5000", "key", delete=deleter)
+    await client.reset_session("agent:coder:tg:dm:1")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_reset_session_reraises_non_404():
+    async def deleter(_url):
+        raise RuntimeError("connection refused")
+
+    client = WorkerClient("http://127.0.0.1:5000", "key", delete=deleter)
+    with pytest.raises(RuntimeError, match="connection refused"):
+        await client.reset_session("agent:coder:tg:dm:1")

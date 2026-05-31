@@ -83,3 +83,72 @@ async def test_dispatch_uses_profile_prefixed_session_key():
     r._worker_pool.acquire.assert_awaited_once_with("research")
     assert client.dispatch.await_args.kwargs["session_id"].startswith("agent:research:")
     adapter.send.assert_awaited()  # final output delivered
+
+
+@pytest.mark.asyncio
+async def test_dispatch_requests_continuity_and_supplies_approval_handler():
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    r = _runner(adapter)
+    r._reply_anchor_for_event = MagicMock(return_value=None)
+
+    fake_worker = MagicMock(base_url="http://127.0.0.1:5001", key="k")
+    r._worker_pool = MagicMock()
+    r._worker_pool.acquire = AsyncMock(return_value=fake_worker)
+    client = MagicMock()
+    client.dispatch = AsyncMock(return_value={"output": "done"})
+    r._make_worker_client = MagicMock(return_value=client)
+
+    ev, src = _event(profile="research")
+    await r._dispatch_to_worker(ev, src, "research")
+
+    kw = client.dispatch.await_args.kwargs
+    assert kw["continue_session"] is True  # routed turns keep memory across turns
+    assert kw["approval_handler"] is not None  # approvals are handled (fail-closed), not dropped
+
+
+@pytest.mark.asyncio
+async def test_routed_approval_is_denied_with_visible_notice():
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    r = _runner(adapter)
+    r._reply_anchor_for_event = MagicMock(return_value=None)
+
+    fake_worker = MagicMock(base_url="http://127.0.0.1:5001", key="k")
+    r._worker_pool = MagicMock()
+    r._worker_pool.acquire = AsyncMock(return_value=fake_worker)
+
+    captured = {}
+
+    async def dispatch(**kwargs):
+        captured["choice"] = await kwargs["approval_handler"]({"tool": "shell"})
+        return {"output": "done"}
+
+    client = MagicMock()
+    client.dispatch = AsyncMock(side_effect=dispatch)
+    r._make_worker_client = MagicMock(return_value=client)
+
+    ev, src = _event(profile="research")
+    await r._dispatch_to_worker(ev, src, "research")
+
+    assert captured["choice"] == "deny"
+    assert any("approval" in c.args[1].lower() for c in adapter.send.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_maintain_worker_pool_reaps_and_sweeps():
+    r = _runner()
+    pool = MagicMock()
+    pool.reap_exited = AsyncMock()
+    pool.sweep_idle = AsyncMock()
+    r._worker_pool = pool
+    await r._maintain_worker_pool()
+    pool.reap_exited.assert_awaited_once()
+    pool.sweep_idle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_maintain_worker_pool_noop_without_pool():
+    r = _runner()
+    r._worker_pool = None
+    await r._maintain_worker_pool()  # must not raise

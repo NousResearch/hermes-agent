@@ -5127,6 +5127,10 @@ class GatewayRunner:
                     except Exception as _e:
                         logger.debug("SessionStore prune failed: %s", _e)
                     self._last_session_store_prune_ts = time.time()
+
+                # Routed-profile worker pool upkeep: reap crashed-while-idle
+                # workers (drives the circuit breaker) and evict idle ones.
+                await self._maintain_worker_pool()
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly
@@ -6492,6 +6496,17 @@ class GatewayRunner:
                         _entry[0] if isinstance(_entry, tuple) else _entry
                     )
                     self._cleanup_agent_resources(_agent)
+
+            # Tear down routed-profile workers we own: they are tracked
+            # (non-detached) child processes, so without this they leak as
+            # orphans on every gateway stop/restart.
+            _worker_pool = getattr(self, "_worker_pool", None)
+            if _worker_pool is not None:
+                try:
+                    await _worker_pool.shutdown()
+                    logger.info("✓ routed-profile worker pool shut down")
+                except Exception as e:
+                    logger.error("✗ worker pool shutdown error: %s", e)
 
             for platform, adapter in list(self.adapters.items()):
                 _adapter_started_at = time.monotonic()
@@ -8672,6 +8687,25 @@ class GatewayRunner:
 
         return WorkerClient(worker.base_url, worker.key)
 
+    async def _maintain_worker_pool(self) -> None:
+        """Periodic upkeep for the routed-profile worker pool.
+
+        ``reap_exited`` records crashes (driving the circuit breaker) for
+        workers that died while idle — i.e. between messages, where the
+        on-demand respawn path never runs — and ``sweep_idle`` evicts workers
+        past their idle TTL so they free their pool slot and stop holding the
+        profile's gateway.lock.  Without this the pool's evict/circuit-break
+        machinery only ever runs on the next inbound message.
+        """
+        pool = getattr(self, "_worker_pool", None)
+        if pool is None:
+            return
+        try:
+            await pool.reap_exited()
+            await pool.sweep_idle()
+        except Exception:
+            logger.debug("worker pool maintenance failed", exc_info=True)
+
     async def _dispatch_to_worker(self, event, source, profile: str) -> dict:
         """Dispatch one turn to *profile*'s isolated worker and deliver its reply.
 
@@ -8699,6 +8733,22 @@ class GatewayRunner:
         async def _media_handler(media_event):
             await self._deliver_worker_media(event, source, media_event)
 
+        async def _approval_handler(_request) -> str:
+            # Interactive approval relay to the routed user is not wired yet, so
+            # we fail closed: deny, but tell the user explicitly instead of a
+            # silent denial they can't explain.
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                try:
+                    await adapter.send(
+                        source.chat_id,
+                        f"⚠️ The '{profile}' profile asked to run a tool that needs approval — "
+                        "auto-denied (approvals aren't supported for routed profiles yet).",
+                    )
+                except Exception:
+                    logger.debug("failed to notify user of routed approval denial", exc_info=True)
+            return "deny"
+
         # Mint claim-check refs for any inbound media so the worker can
         # materialize them without ever seeing a front-local path.
         from gateway.media_spool import MediaSpool, mint_outbound, default_spool_root
@@ -8714,6 +8764,8 @@ class GatewayRunner:
                 media_refs=inbound,
                 consumer=_FrontConsumer(),
                 media_handler=_media_handler,
+                approval_handler=_approval_handler,
+                continue_session=True,
             )
         finally:
             for ref in inbound:
@@ -8783,16 +8835,19 @@ class GatewayRunner:
         profile = getattr(event, "routed_profile", None)
         if not profile:
             return False
-        if getattr(self, "_profile_rate_limiter", None) is None:
-            from gateway.rate_limit import ProfileRateLimiter
-
-            self._profile_rate_limiter = ProfileRateLimiter()
-        if not self._profile_rate_limiter.allow(profile):
-            adapter = self.adapters.get(source.platform)
-            if adapter:
-                await adapter.send(source.chat_id, f"⏳ '{profile}' is busy right now — please retry shortly.")
-            return True
         cmd = event.get_command() if hasattr(event, "get_command") else None
+        # Control commands (/new, /reset) carry no model cost and must not be
+        # throttled — rate-limiting a reset would strand a stuck conversation.
+        if cmd not in {"new", "reset"}:
+            if getattr(self, "_profile_rate_limiter", None) is None:
+                from gateway.rate_limit import ProfileRateLimiter
+
+                self._profile_rate_limiter = ProfileRateLimiter()
+            if not self._profile_rate_limiter.allow(profile):
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    await adapter.send(source.chat_id, f"⏳ '{profile}' is busy right now — please retry shortly.")
+                return True
         try:
             if cmd in {"new", "reset"}:
                 await self._reset_routed_worker(event, source, profile)

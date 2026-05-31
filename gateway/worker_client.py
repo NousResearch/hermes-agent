@@ -57,14 +57,21 @@ class WorkerClient:
         media_refs: list[dict] | None = None,
         approval_handler: Callable[[dict], Awaitable[str]] | None = None,
         media_handler: Callable[[dict], Awaitable[None]] | None = None,
+        continue_session: bool = False,
     ) -> dict:
-        """Run one turn on the worker; relay deltas, handle approvals, return the terminal event."""
+        """Run one turn on the worker; relay deltas, handle approvals, return the terminal event.
+
+        ``continue_session`` asks the worker to rehydrate its own transcript for
+        ``session_id`` from its state.db, so a routed conversation keeps memory
+        across turns (the front never holds the worker's history).
+        """
         body = {k: v for k, v in {
             "input": input,
             "instructions": instructions,
             "session_id": session_id,
             "model": model,
             "media_refs": media_refs or None,
+            "continue_session": True if (continue_session and session_id) else None,
         }.items() if v is not None}
         started = await self._post(f"{self.base_url}/v1/runs", body)
         run_id = started.get("run_id")
@@ -91,9 +98,16 @@ class WorkerClient:
         """Clear the worker's session (forwarded /new or /reset).
 
         Scopes the reset to the routed profile's own state.db — the host
-        profile's sessions are never touched.
+        profile's sessions are never touched.  Idempotent: a 404 (no session
+        yet — e.g. /new before the first routed turn) is treated as success so
+        the user sees a clean reset, not a scary "could not reach profile".
         """
-        await self._delete(f"{self.base_url}/api/sessions/{session_id}")
+        try:
+            await self._delete(f"{self.base_url}/api/sessions/{session_id}")
+        except Exception as e:
+            if getattr(e, "status", None) == 404:
+                return
+            raise
 
     async def _aiohttp_post(self, url: str, body: dict) -> dict:
         import aiohttp
@@ -108,6 +122,8 @@ class WorkerClient:
 
         async with aiohttp.ClientSession(headers=self._headers) as s:
             async with s.delete(url) as r:
+                if r.status == 404:
+                    return  # idempotent delete — already absent
                 r.raise_for_status()
 
     async def _aiohttp_sse(self, url: str) -> AsyncIterator[dict]:

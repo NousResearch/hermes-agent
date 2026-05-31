@@ -1335,6 +1335,15 @@ class AIAgent:
         punctuation_tail = re.search(r"[!?.,;:_=+\-*/#~`|\\]{16,}\s*$", tail)
         if repeated_tail or punctuation_tail:
             return "degenerate repeated punctuation at final-response tail"
+        if not self._has_natural_response_ending(visible_text):
+            open_connector_tail = re.search(
+                r"\b(?:and|but|or|because|since|while|although|though|if|"
+                r"when|where|with|without|to|for|from|into|as|by)\s*$",
+                visible_text,
+                re.IGNORECASE,
+            )
+            if open_connector_tail:
+                return "open connector at final-response tail"
         return None
 
     def _looks_like_codex_intermediate_ack(

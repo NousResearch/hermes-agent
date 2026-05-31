@@ -1169,3 +1169,224 @@ def test_record_decision_send_passes_trigger_slack_message_through(_clear_draft_
     assert ok is True
     assert captured["trigger"] == "slack:DXYZ:1700000000.42"
     assert captured["recipient"] == "bossman2"
+
+
+# ---------------------------------------------------------------------------
+# 030-E — Usage metric instrumentation
+# ---------------------------------------------------------------------------
+#
+# The CloudWatch Logs Insights rollup documented in
+# ``agentic-hub/docs/runbooks/030-usage-tracking.md`` scrapes structured
+# ``event=draft.<verb>`` and ``metric=draft.<verb>_ms`` lines from this
+# module. Tests below assert each of the six metric events lands on its
+# correct branch, that latency is recorded on success and NOT on error,
+# and that the context_found flag tracks the non-empty section count
+# rather than the section-list length.
+
+
+def _metric_lines(caplog) -> list[str]:
+    """Filter caplog records down to the metric-shaped INFO lines."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("event=draft.")
+        or r.getMessage().startswith("metric=draft.")
+    ]
+
+
+def test_metric_handle_draft_emits_invoked_and_latency_on_success(_clear_draft_store, caplog):
+    """030-E AC: ``event=draft.invoked`` + ``metric=draft.latency_ms`` both
+    fire on the happy path, with recipient_kind tag attached."""
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        handle_draft(
+            "sarah@example.com follow up",
+            ask_fn=_empty_ask,
+            compose_fn=lambda s, u: "Hi Sarah.",
+        )
+    msgs = _metric_lines(caplog)
+    invoked = [m for m in msgs if m.startswith("event=draft.invoked")]
+    latency = [m for m in msgs if m.startswith("metric=draft.latency_ms")]
+    assert len(invoked) == 1, msgs
+    assert "recipient_kind=email" in invoked[0]
+    assert "intent_len=9" in invoked[0]
+    assert len(latency) == 1, msgs
+    assert "value=" in latency[0]
+    assert "recipient_kind=email" in latency[0]
+
+
+def test_metric_context_found_flags_one_when_atlas_has_facts(_clear_draft_store, caplog):
+    """When at least one section comes back populated, the
+    ``event=draft.context_found`` line must have ``found=1`` and
+    ``sections_non_empty>=1``."""
+
+    def _rich_ask(question, **_):
+        return {"answer": f"Greg owes a follow-up on the term sheet [cite:t1]"}
+
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        handle_draft(
+            "greg@firm.co push on demo",
+            ask_fn=_rich_ask,
+            compose_fn=lambda s, u: "Hi Greg.",
+        )
+    msgs = _metric_lines(caplog)
+    cf = [m for m in msgs if m.startswith("event=draft.context_found")]
+    assert len(cf) == 1, msgs
+    assert "found=1" in cf[0]
+    # All 3 sections were populated by the rich ask
+    assert "sections_non_empty=3" in cf[0]
+
+
+def test_metric_context_found_flags_zero_on_empty_corpus(_clear_draft_store, caplog):
+    """Cold-start corpus → all three sections fall back to the empty
+    sentinel; ``found=0`` and ``sections_non_empty=0``."""
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        handle_draft(
+            "sarah@example.com ping",
+            ask_fn=_empty_ask,
+            compose_fn=lambda s, u: "Hi.",
+        )
+    msgs = _metric_lines(caplog)
+    cf = [m for m in msgs if m.startswith("event=draft.context_found")]
+    assert len(cf) == 1, msgs
+    assert "found=0" in cf[0]
+    assert "sections_non_empty=0" in cf[0]
+
+
+def test_metric_latency_not_recorded_on_compose_error(_clear_draft_store, caplog):
+    """030-E AC (error path): when the compose pipeline raises, the
+    latency distribution must NOT be polluted with the error
+    measurement. The ``event=draft.error`` counter fires instead."""
+
+    def _bad_ask(**_):
+        raise RuntimeError("atlas unreachable")
+
+    # fetch_atlas_context catches per-section errors → it won't raise.
+    # Force the failure deeper by making _compose_full_reply blow up
+    # through a compose_fn that raises and a monkeypatch on _safe_compose.
+    import plugins.slash.draft as dm
+
+    original = dm._compose_full_reply
+
+    def _boom(*a, **kw):
+        raise RuntimeError("kaboom inside compose")
+
+    dm._compose_full_reply = _boom
+    try:
+        with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+            with pytest.raises(RuntimeError, match="kaboom"):
+                handle_draft(
+                    "sarah@example.com ping",
+                    ask_fn=_empty_ask,
+                    compose_fn=lambda s, u: "x",
+                )
+    finally:
+        dm._compose_full_reply = original
+
+    msgs = _metric_lines(caplog)
+    # invoked fires; latency does NOT; error counter does.
+    assert any(m.startswith("event=draft.invoked") for m in msgs)
+    assert not any(m.startswith("metric=draft.latency_ms") for m in msgs), msgs
+    assert any(m.startswith("event=draft.error") for m in msgs), msgs
+
+
+def test_metric_send_decision_emits_sent_event(_clear_draft_store, caplog):
+    """``event=draft.sent`` fires on Send branch and carries recipient_kind."""
+    reply = handle_draft(
+        "@bossman2 ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Yo.",
+    )
+    draft_id = extract_action_draft_id(reply)
+
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        ok, _msg = record_draft_decision(
+            draft_id, "send",
+            probe_fn=lambda **_: None,
+            writeback_fn=lambda **kw: (True, {}),
+        )
+    assert ok
+    msgs = _metric_lines(caplog)
+    sent = [m for m in msgs if m.startswith("event=draft.sent")]
+    assert len(sent) == 1, msgs
+    assert "recipient_kind=handle" in sent[0]
+    # Contradiction flag emitted with contradiction=0 (probe returned None)
+    cflag = [m for m in msgs if m.startswith("event=draft.contradiction_on_send")]
+    assert len(cflag) == 1, msgs
+    assert "contradiction=0" in cflag[0]
+
+
+def test_metric_edit_decision_emits_edited_event(_clear_draft_store, caplog):
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi.",
+    )
+    draft_id = extract_action_draft_id(reply)
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        ok, _msg = record_draft_decision(draft_id, "edit")
+    assert ok
+    msgs = _metric_lines(caplog)
+    edited = [m for m in msgs if m.startswith("event=draft.edited")]
+    assert len(edited) == 1, msgs
+    assert "recipient_kind=email" in edited[0]
+
+
+def test_metric_discard_decision_emits_discarded_event(_clear_draft_store, caplog):
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi.",
+    )
+    draft_id = extract_action_draft_id(reply)
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        ok, _msg = record_draft_decision(draft_id, "discard")
+    assert ok
+    msgs = _metric_lines(caplog)
+    discarded = [m for m in msgs if m.startswith("event=draft.discarded")]
+    assert len(discarded) == 1, msgs
+    assert "recipient_kind=email" in discarded[0]
+
+
+def test_metric_send_contradiction_flag_set_when_probe_warns(_clear_draft_store, caplog):
+    """When the probe returns a warning, ``contradiction=1`` rides on
+    the contradiction_on_send line."""
+    reply = handle_draft(
+        "sarah@example.com ping",
+        ask_fn=_empty_ask,
+        compose_fn=lambda s, u: "Hi.",
+    )
+    draft_id = extract_action_draft_id(reply)
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        ok, _msg = record_draft_decision(
+            draft_id, "send",
+            probe_fn=lambda **_: "Heads up: you committed to X last week",
+            writeback_fn=lambda **kw: (True, {}),
+        )
+    assert ok
+    msgs = _metric_lines(caplog)
+    cflag = [m for m in msgs if m.startswith("event=draft.contradiction_on_send")]
+    assert len(cflag) == 1, msgs
+    assert "contradiction=1" in cflag[0]
+
+
+def test_metric_unknown_draft_id_does_not_emit_decision_metric(_clear_draft_store, caplog):
+    """Stale-button clicks (draft_id not in store) must not pad the
+    weekly counters."""
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        ok, _msg = record_draft_decision("does-not-exist", "send")
+    assert ok is False
+    msgs = _metric_lines(caplog)
+    assert not any(m.startswith("event=draft.sent") for m in msgs)
+    assert not any(m.startswith("event=draft.discarded") for m in msgs)
+    assert not any(m.startswith("event=draft.edited") for m in msgs)
+
+
+def test_metric_usage_reply_does_not_count_as_invocation(_clear_draft_store, caplog):
+    """``/draft`` with no args returns usage; that's a help fetch, not
+    a real invocation, and must not increment the weekly counter."""
+    with caplog.at_level(logging.INFO, logger="plugins.slash.draft"):
+        out = handle_draft("", ask_fn=_empty_ask, compose_fn=lambda s, u: "x")
+    assert "Usage:" in out
+    msgs = _metric_lines(caplog)
+    assert not any(m.startswith("event=draft.invoked") for m in msgs)
+    assert not any(m.startswith("metric=draft.latency_ms") for m in msgs)

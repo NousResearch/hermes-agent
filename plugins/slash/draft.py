@@ -65,6 +65,59 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# 030-E — Usage metric instrumentation
+# ---------------------------------------------------------------------------
+#
+# Plan 030 (R2 CP3) projects /draft as a 5–15x/week activity. To validate
+# that claim — and to monitor draft funnel health (invoked → sent vs
+# edited vs discarded, context-hit ratio, latency tail) — we emit
+# structured events at INFO. The events are scraped by the CloudWatch
+# Logs Insights query documented in
+# ``agentic-hub/docs/runbooks/030-usage-tracking.md`` and rolled up
+# weekly.
+#
+# Event grammar (matches the existing ``draft.<verb>`` prefix used
+# elsewhere in this module):
+#
+#   event=draft.invoked          recipient_kind=<email|handle|unresolved> intent_len=<n>
+#   event=draft.context_found    found=<1|0> sections_non_empty=<0..3>
+#   metric=draft.latency_ms      value=<int> recipient_kind=<...>
+#   event=draft.sent             recipient_kind=<...> contradiction=<1|0>
+#   event=draft.edited           recipient_kind=<...>
+#   event=draft.discarded        recipient_kind=<...>
+#
+# We use the existing stdlib ``logger.info`` path — Hermes does not use
+# structlog. CloudWatch Logs Insights parses ``key=value`` tokens for
+# free, so the line format is the structured surface.
+
+
+def _emit_metric(event_name: str, **fields: Any) -> None:
+    """Emit one structured metric line at INFO.
+
+    The first positional segment is ``event=<name>`` (or
+    ``metric=<name>`` for distribution-shaped events like latency, by
+    convention) followed by space-separated ``key=value`` pairs. Values
+    are coerced to strings; ``None`` becomes the literal string
+    ``"none"`` so the parser sees a valid token.
+
+    This helper is a no-IO, exception-safe shim — if logging itself
+    raises we swallow it so a metric path never breaks a user flow.
+    """
+    try:
+        prefix = "metric" if event_name.endswith("_ms") or event_name.startswith("metric.") else "event"
+        parts = [f"{prefix}={event_name}"]
+        for k, v in fields.items():
+            if v is None:
+                v = "none"
+            # Bool first (bool is a subclass of int).
+            if isinstance(v, bool):
+                v = 1 if v else 0
+            parts.append(f"{k}={v}")
+        logger.info(" ".join(parts))
+    except Exception:  # pragma: no cover — defensive
+        pass
+
 # Default Bedrock model id for Nova-Pro. Override with NOVA_PRO_MODEL_ID
 # to point at a regional inference profile (e.g. ``us.amazon.nova-pro-v1:0``).
 _DEFAULT_NOVA_PRO_MODEL = "amazon.nova-pro-v1:0"
@@ -398,6 +451,26 @@ def _compose_full_reply(
     """
     head = _compose_stub_reply(args)
     sections = fetch_atlas_context(args.recipient.display, ask_fn=ask_fn)
+
+    # 030-E: emit context_found ratio so we can validate the R2 CP3
+    # claim that the corpus is dense enough to be useful. A section is
+    # considered non-empty when its answer is not one of the
+    # _EMPTY_FALLBACKS sentinels and not an "(Atlas lookup failed: ...)"
+    # error string.
+    non_empty = sum(
+        1
+        for label, ans in sections
+        if ans
+        and ans != _EMPTY_FALLBACKS.get(label)
+        and not ans.startswith("(Atlas lookup failed")
+    )
+    _emit_metric(
+        "draft.context_found",
+        found=1 if non_empty > 0 else 0,
+        sections_non_empty=non_empty,
+        recipient_kind=args.recipient.kind,
+    )
+
     context_block = _compose_context_block(sections)
 
     draft_body, draft_error = _safe_compose(
@@ -947,6 +1020,14 @@ def record_draft_decision(
         draft = pop_stored_draft(draft_id)
         if draft is None:
             return False, "Draft not found (already actioned or expired)."
+        # 030-E: emit ``event=draft.sent`` BEFORE the writeback so the
+        # send-button click counts even if Atlas write fails. The
+        # ``contradiction`` flag is filled in after the probe below via a
+        # follow-up structured log line.
+        _emit_metric(
+            "draft.sent",
+            recipient_kind=draft.recipient_kind,
+        )
 
         # Per 030-D + Decision 7: probe first, warn but don't block.
         try:
@@ -960,6 +1041,13 @@ def record_draft_decision(
                 "draft.contradiction_detected draft_id=%s warning=%s",
                 draft_id, warning[:240],
             )
+        # 030-E: contradiction-on-send flag — feeds the runbook query
+        # that surfaces "% of sends that fired a ⚠️".
+        _emit_metric(
+            "draft.contradiction_on_send",
+            contradiction=1 if warning else 0,
+            recipient_kind=draft.recipient_kind,
+        )
 
         # Legacy 030-C spy signature → adapt to the new writeback shape
         # so old tests keep passing without a breaking surface change.
@@ -1001,7 +1089,15 @@ def record_draft_decision(
 
     if decision == "discard":
         # Per Decision 5 / AC: Discard does NOT write.
-        pop_stored_draft(draft_id)
+        popped = pop_stored_draft(draft_id)
+        # 030-E: emit the discard counter only when we actually found
+        # the draft — a duplicate Discard click on an already-actioned
+        # draft is not a new decision.
+        if popped is not None:
+            _emit_metric(
+                "draft.discarded",
+                recipient_kind=popped.recipient_kind,
+            )
         return True, "Draft discarded."
 
     if decision == "edit":
@@ -1010,6 +1106,12 @@ def record_draft_decision(
         draft = get_stored_draft(draft_id)
         if draft is None:
             return False, "Draft not found (already actioned or expired)."
+        # 030-E: emit edit counter — only on successful lookup so we
+        # don't double-count stale-button clicks.
+        _emit_metric(
+            "draft.edited",
+            recipient_kind=draft.recipient_kind,
+        )
         return True, f"Edit draft: {draft.body}"
 
     return False, f"Unknown decision: {decision}"
@@ -1040,11 +1142,42 @@ def handle_draft(
     """
     args = _parse_args(raw_args)
     if args is None:
+        # No metric — usage replies don't count as invocations against
+        # the 5–15x/week target; they're help-text fetches.
         return _usage()
+
+    # 030-E: emit one ``event=draft.invoked`` per real invocation so the
+    # CloudWatch Logs Insights rollup can count weekly /draft fires per
+    # recipient_kind. Latency is wall-clock around the compose path —
+    # excludes Slack round-trip on either side (the slash transport
+    # measures that separately).
+    started = time.monotonic()
+    _emit_metric(
+        "draft.invoked",
+        recipient_kind=args.recipient.kind,
+        intent_len=len(args.intent),
+    )
     logger.info(
         "draft.invoked recipient_kind=%s recipient_value=%s intent_len=%d",
         args.recipient.kind,
         args.recipient.value,
         len(args.intent),
     )
-    return _compose_full_reply(args, ask_fn=ask_fn, compose_fn=compose_fn)
+    try:
+        reply = _compose_full_reply(args, ask_fn=ask_fn, compose_fn=compose_fn)
+    except Exception:
+        # 030-E AC: latency metric is NOT recorded on error — error
+        # latency would skew the distribution. We still re-raise so the
+        # surface behavior is unchanged.
+        _emit_metric(
+            "draft.error",
+            recipient_kind=args.recipient.kind,
+        )
+        raise
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    _emit_metric(
+        "draft.latency_ms",
+        value=elapsed_ms,
+        recipient_kind=args.recipient.kind,
+    )
+    return reply

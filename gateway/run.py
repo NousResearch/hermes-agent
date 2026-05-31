@@ -12143,7 +12143,7 @@ class GatewayRunner:
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import BasePlatformAdapter, MediaKind, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
@@ -12186,7 +12186,14 @@ class GatewayRunner:
                 else:
                     non_image_local.append(file_path)
 
-            if image_paths:
+            # Skip-and-warn for kinds the adapter doesn't natively deliver, so
+            # the base send_* stub never leaks a local file path as chat text.
+            declared_kinds = getattr(adapter, "MEDIA_KINDS", frozenset())
+
+            if image_paths and MediaKind.IMAGE not in declared_kinds:
+                logger.warning("reply media: %s cannot deliver image; skipping %d image(s)",
+                               event.source.platform, len(image_paths))
+            elif image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(
@@ -12201,12 +12208,22 @@ class GatewayRunner:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
+                        kind = MediaKind.VOICE
+                    elif ext in _VIDEO_EXTS:
+                        kind = MediaKind.VIDEO
+                    else:
+                        kind = MediaKind.DOCUMENT
+                    if kind not in declared_kinds:
+                        logger.warning("reply media: %s cannot deliver %s; skipping %s",
+                                       event.source.platform, kind.value, media_path)
+                        continue
+                    if kind is MediaKind.VOICE:
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
-                    elif ext in _VIDEO_EXTS:
+                    elif kind is MediaKind.VIDEO:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
@@ -12224,7 +12241,12 @@ class GatewayRunner:
             for file_path in non_image_local:
                 try:
                     ext = Path(file_path).suffix.lower()
-                    if ext in _VIDEO_EXTS:
+                    kind = MediaKind.VIDEO if ext in _VIDEO_EXTS else MediaKind.DOCUMENT
+                    if kind not in declared_kinds:
+                        logger.warning("reply media: %s cannot deliver %s; skipping %s",
+                                       event.source.platform, kind.value, file_path)
+                        continue
+                    if kind is MediaKind.VIDEO:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,

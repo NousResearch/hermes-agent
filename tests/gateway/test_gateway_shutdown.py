@@ -284,3 +284,19 @@ class TestCronPreflight:
         import gateway.run as run
 
         assert run._cron_preflight_or_status() == (True, None)
+
+    def test_preflight_lets_keyboard_interrupt_propagate(self, monkeypatch):
+        """A Ctrl-C landing inside the import must NOT be swallowed as a failed
+        import — it propagates so startup actually aborts instead of silently
+        continuing cron-less."""
+        import importlib
+
+        import gateway.run as run
+        import pytest
+
+        monkeypatch.setattr(
+            importlib, "import_module",
+            lambda name: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            run._cron_preflight_or_status()

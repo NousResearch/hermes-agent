@@ -132,6 +132,14 @@ def cron_tick():
     tick(verbose=True)
 
 
+# A healthy ticker stamps every CRON_TICK_INTERVAL (60s); 3× gives margin for a
+# slow tick without false alarms. Intentionally distinct from the gateway's
+# HEARTBEAT_STALE_SECONDS (1800s) "alive-but-hung" threshold: this is the
+# liveness backstop for when the supervisor hasn't written state="stopped" yet,
+# so a dead ticker surfaces in ~3 min instead of 30.
+_TICKER_NOT_ALIVE_SECONDS = 180
+
+
 def _read_cron_ticker_health():
     """Return ``(state, age_seconds | None, last_error | None)`` from
     gateway_state.json, or ``(None, None, None)`` when unavailable."""
@@ -167,7 +175,7 @@ def cron_status():
         elif state is None or age is None:
             print(color("⚠ Gateway running but cron ticker status unknown", Colors.YELLOW))
             print(color("  If jobs aren't firing, run: hermes gateway restart", Colors.DIM))
-        elif state in {"stalled", "stopped"} or age >= 1800:  # 1800 == HEARTBEAT_STALE_SECONDS
+        elif state in {"stalled", "stopped"} or age >= _TICKER_NOT_ALIVE_SECONDS:
             print(color("⚠ Gateway running but cron ticker is NOT alive — jobs are NOT firing", Colors.RED))
             print(color(f"  Last tick {age:.0f}s ago. Run: hermes gateway restart", Colors.DIM))
         else:

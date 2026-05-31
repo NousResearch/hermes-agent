@@ -67,6 +67,27 @@ def test_supervisor_never_gives_up(monkeypatch):
     assert spawned["n"] >= 3
 
 
+def test_supervisor_survives_spawn_failure(monkeypatch):
+    """A transient _spawn_cron_worker failure (e.g. thread/fd exhaustion) must
+    NOT kill the supervisor — it logs and retries next cycle. Otherwise the
+    watchdog itself dies silently, recreating the un-watched dead-ticker bug
+    the supervisor exists to prevent."""
+    spawned = {"n": 0}
+    sup_stop = threading.Event()
+
+    def factory(*args, **kwargs):
+        spawned["n"] += 1
+        if spawned["n"] == 1:
+            raise RuntimeError("can't start new thread")  # resource limit hit
+        sup_stop.set()  # the retry succeeded → done
+        return _FakeWorker()
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(run, "_spawn_cron_worker", factory)
+    run._cron_supervisor_loop(sup_stop, _state(_FakeWorker()))
+    assert spawned["n"] >= 2  # raised once, supervisor survived and retried
+
+
 def test_supervisor_alerts_but_does_not_respawn_a_hung_worker(monkeypatch):
     """Alive but stale-heartbeat worker is recorded as stalled, never respawned
     (CPython cannot force-kill a thread)."""

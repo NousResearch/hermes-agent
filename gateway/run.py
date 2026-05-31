@@ -18832,33 +18832,42 @@ def _cron_supervisor_loop(sup_stop, state):
     """
     consecutive_deaths = 0
     while not sup_stop.wait(SUPERVISOR_CHECK_INTERVAL):
-        worker = state["worker"]
-        if not worker.is_alive():
-            consecutive_deaths += 1
-            backoff = min(_CRON_BACKOFF_BASE * 2 ** (consecutive_deaths - 1), _CRON_BACKOFF_CAP)
-            logger.critical("Cron ticker thread is DEAD; jobs are NOT firing. "
-                            "Respawn #%d in %ds.", consecutive_deaths, backoff)
-            try:
-                write_cron_ticker_status(state="stopped",
-                                         last_error=f"thread died; respawn #{consecutive_deaths}")
-            except Exception:
-                pass
-            if sup_stop.wait(backoff):
-                break
-            state["worker"] = _spawn_cron_worker(state["cron_stop"], state["adapters"],
-                                                 state["loop"], state["interval"])
-            continue
+        try:
+            worker = state["worker"]
+            if not worker.is_alive():
+                consecutive_deaths += 1
+                backoff = min(_CRON_BACKOFF_BASE * 2 ** (consecutive_deaths - 1), _CRON_BACKOFF_CAP)
+                logger.critical("Cron ticker thread is DEAD; jobs are NOT firing. "
+                                "Respawn #%d in %ds.", consecutive_deaths, backoff)
+                try:
+                    write_cron_ticker_status(state="stopped",
+                                             last_error=f"thread died; respawn #{consecutive_deaths}")
+                except Exception:
+                    pass
+                if sup_stop.wait(backoff):
+                    break
+                state["worker"] = _spawn_cron_worker(state["cron_stop"], state["adapters"],
+                                                     state["loop"], state["interval"])
+                continue
 
-        age = _cron_heartbeat_age()
-        if age is not None and age >= HEARTBEAT_STALE_SECONDS:
-            logger.error("Cron ticker alive but no tick for %.0fs (>%ds) — possible "
-                         "hang; jobs may not be firing.", age, HEARTBEAT_STALE_SECONDS)
-            try:
-                write_cron_ticker_status(state="stalled", last_error=f"no tick for {age:.0f}s")
-            except Exception:
-                pass
-        elif age is not None:
-            consecutive_deaths = 0  # healthy → reset backoff
+            age = _cron_heartbeat_age()
+            if age is not None and age >= HEARTBEAT_STALE_SECONDS:
+                logger.critical("Cron ticker alive but no tick for %.0fs (>%ds) — possible "
+                                "hang; jobs may not be firing.", age, HEARTBEAT_STALE_SECONDS)
+                try:
+                    write_cron_ticker_status(state="stalled", last_error=f"no tick for {age:.0f}s")
+                except Exception:
+                    pass
+            elif age is not None:
+                consecutive_deaths = 0  # healthy → reset backoff
+        except Exception:
+            # The watchdog must outlive a transient fault in its own loop —
+            # e.g. _spawn_cron_worker hitting a thread/fd limit. Dying here
+            # would silently recreate the un-watched dead-ticker bug this
+            # supervisor exists to prevent. Log loudly and retry next cycle;
+            # backoff state is preserved so we don't reset on a spawn failure.
+            logger.critical("Cron supervisor loop iteration failed; "
+                            "retrying next cycle.", exc_info=True)
 
 
 def _cron_preflight_or_status():
@@ -18873,7 +18882,10 @@ def _cron_preflight_or_status():
         if not callable(getattr(sched, "tick", None)):
             raise ImportError("cron.scheduler.tick is not callable")
         return True, None
-    except BaseException as e:  # surface ANY import-time fault, incl. SyntaxError
+    except (Exception, SystemExit) as e:  # surface ANY import-time fault (incl.
+        # SyntaxError, and a module that sys.exit()s at import) — but let a
+        # KeyboardInterrupt during the import propagate so Ctrl-C still aborts
+        # startup instead of silently continuing cron-less.
         reason = f"{type(e).__name__}: {e}"
         logger.critical("Cron scheduler preflight FAILED — ticker will NOT start; "
                         "cron jobs will not fire: %s", reason, exc_info=True)
@@ -19276,16 +19288,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_ok, _ = _cron_preflight_or_status()
     cron_stop = threading.Event()
     sup_stop = threading.Event()
-    cron_thread = None
+    cron_state = None
     sup_thread = None
     if cron_ok:
         loop = asyncio.get_running_loop()
-        cron_thread = _spawn_cron_worker(cron_stop, runner.adapters, loop, CRON_TICK_INTERVAL)
+        # Shared with the supervisor; it overwrites cron_state["worker"] on each
+        # respawn, so teardown must join cron_state["worker"] (the live one) —
+        # NOT the original handle, which is dead after any respawn.
+        cron_state = {"worker": _spawn_cron_worker(cron_stop, runner.adapters, loop, CRON_TICK_INTERVAL),
+                      "cron_stop": cron_stop, "adapters": runner.adapters,
+                      "loop": loop, "interval": CRON_TICK_INTERVAL}
         sup_thread = threading.Thread(
             target=_cron_supervisor_loop,
-            args=(sup_stop, {"worker": cron_thread, "cron_stop": cron_stop,
-                             "adapters": runner.adapters, "loop": loop,
-                             "interval": CRON_TICK_INTERVAL}),
+            args=(sup_stop, cron_state),
             daemon=True,
             name="cron-supervisor",
         )
@@ -19304,8 +19319,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if sup_thread is not None:
         sup_thread.join(timeout=5)
     cron_stop.set()
-    if cron_thread is not None:
-        cron_thread.join(timeout=5)
+    if cron_state is not None:
+        cron_state["worker"].join(timeout=5)
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()

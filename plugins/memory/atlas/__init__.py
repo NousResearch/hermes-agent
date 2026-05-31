@@ -138,6 +138,44 @@ ASK_SCHEMA = {
     },
 }
 
+CONTACT_SCHEMA = {
+    "name": "atlas_contact",
+    "description": (
+        "Look up structured context about a person Blake knows — canonical "
+        "name, organization, recent meetings, emails involving them, open "
+        "commitments, stable preferences, and any unresolved contradictions. "
+        "Routes through Atlas's /v1/contact/{iri}/context SPARQL aggregator "
+        "over the identity / events / emails named graphs. Use when Blake "
+        "asks 'brief me on <person>', 'what's the latest with <person>', or "
+        "before a meeting with someone in his network. Always returns a "
+        "well-formed schema even for unknown contacts (empty arrays = cold "
+        "corpus, not error). Person IRIs typically look like "
+        "'https://atlas.blakeaber.dev/person/<slug>' or "
+        "'https://atlas.blakeaber.dev/person/email:<address>'."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "person_iri": {
+                "type": "string",
+                "description": (
+                    "Atlas IRI of the contact, e.g. "
+                    "'https://atlas.blakeaber.dev/person/jane-doe' or "
+                    "'https://atlas.blakeaber.dev/person/email:greg@apex.com'."
+                ),
+            },
+            "recency": {
+                "type": "string",
+                "description": (
+                    "Time window for interaction filtering. Accepts shorthand "
+                    "('90d', '12w') or natural phrases ('last 30 days'). Default '90d'."
+                ),
+            },
+        },
+        "required": ["person_iri"],
+    },
+}
+
 REMEMBER_SCHEMA = {
     "name": "atlas_remember",
     "description": (
@@ -336,7 +374,7 @@ class AtlasMemoryProvider(MemoryProvider):
         return
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [RECALL_SCHEMA, REMEMBER_SCHEMA, ASK_SCHEMA]
+        return [RECALL_SCHEMA, REMEMBER_SCHEMA, ASK_SCHEMA, CONTACT_SCHEMA]
 
     def _ask(self, *, question: str, life_context: str | None = None,
              intent_hint: str | None = None, max_chunks: int | None = None) -> dict:
@@ -366,6 +404,30 @@ class AtlasMemoryProvider(MemoryProvider):
             body["intent_hint"] = ";".join(hint_parts)
         resp = httpx.post(
             url, json=body, headers=self._headers(), timeout=_ASK_TIMEOUT_SECS,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _contact(self, *, person_iri: str, recency: str | None = None) -> dict:
+        """GET /v1/contact/{iri}/context — Plan 025-C SPARQL aggregator.
+
+        Returns the structured contact context: canonical_name, org, recent
+        interactions, events, commitments, preferences, contradictions, and
+        last_touch. Empty arrays signal cold-corpus rather than missing-person.
+        """
+        import urllib.parse
+
+        import httpx
+        # Encode the IRI as a path segment. FastAPI's `{iri:path}` accepts
+        # raw slashes, but we URL-quote the colon/at-sign in the email:<addr>
+        # form so the bearer-protected route receives a clean path.
+        encoded = urllib.parse.quote(person_iri, safe="/:")
+        url = f"{self._base_url.rstrip('/')}/v1/contact/{encoded}/context"
+        params: dict[str, Any] = {}
+        if recency:
+            params["recency"] = recency
+        resp = httpx.get(
+            url, params=params, headers=self._headers(), timeout=_READ_TIMEOUT_SECS + 5.0,
         )
         resp.raise_for_status()
         return resp.json()
@@ -406,6 +468,21 @@ class AtlasMemoryProvider(MemoryProvider):
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Atlas ask failed: {e}")
+
+        elif tool_name == "atlas_contact":
+            person_iri = args.get("person_iri", "")
+            if not person_iri or not str(person_iri).strip():
+                return tool_error("Missing required parameter: person_iri")
+            try:
+                payload = self._contact(
+                    person_iri=str(person_iri).strip(),
+                    recency=args.get("recency"),
+                )
+                self._record_success()
+                return json.dumps(payload)
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Atlas contact lookup failed: {e}")
 
         elif tool_name == "atlas_remember":
             content = args.get("content", "")

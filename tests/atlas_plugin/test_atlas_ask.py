@@ -45,7 +45,7 @@ def provider(mod, monkeypatch):
 def test_ask_tool_in_schema_list(provider):
     names = {t["name"] for t in provider.get_tool_schemas()}
     assert "atlas_ask" in names
-    assert names == {"atlas_recall", "atlas_remember", "atlas_ask"}
+    assert names == {"atlas_recall", "atlas_remember", "atlas_ask", "atlas_contact"}
 
 
 def test_ask_schema_requires_question(provider):

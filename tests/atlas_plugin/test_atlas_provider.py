@@ -45,7 +45,7 @@ def test_conforms_to_abc(mod):
 def test_name_and_tools(provider):
     assert provider.name == "atlas"
     names = {t["name"] for t in provider.get_tool_schemas()}
-    assert names == {"atlas_recall", "atlas_remember", "atlas_ask"}
+    assert names == {"atlas_recall", "atlas_remember", "atlas_ask", "atlas_contact"}
 
 
 def test_is_available_requires_base_url(mod, monkeypatch):

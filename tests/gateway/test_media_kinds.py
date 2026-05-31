@@ -46,6 +46,15 @@ def test_media_kinds_pinned(ref, expected):
     assert adapter_cls.MEDIA_KINDS == expected
 
 
+def test_platform_entry_has_no_media_kinds_field():
+    # The descriptor lives on the adapter class only. Mirroring it onto
+    # PlatformEntry would couple the ungated out-of-process standalone path
+    # to a capability it cannot honor.
+    from gateway.platform_registry import PlatformEntry
+
+    assert "media_kinds" not in PlatformEntry.__dataclass_fields__
+
+
 def test_media_kind_has_four_members():
     assert {k.name for k in MediaKind} == {"IMAGE", "VIDEO", "VOICE", "DOCUMENT"}
 

@@ -3494,6 +3494,30 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        final_report_persisted = False
+
+        def _persist_final_report(content: str) -> None:
+            nonlocal final_report_persisted
+            if final_report_persisted or not session_key or not content:
+                return
+            try:
+                from gateway.active_task import ActiveTaskStore
+
+                store = ActiveTaskStore()
+                record = store.get(session_key)
+                if record is None or getattr(record, "mode", None) not in {
+                    "background_process",
+                    "approved_execute",
+                }:
+                    return
+                store.persist_final_report(
+                    session_key=session_key,
+                    content=content,
+                    status="pending",
+                )
+                final_report_persisted = True
+            except Exception:
+                logger.debug("[%s] Final report persistence failed", self.name, exc_info=True)
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -3502,6 +3526,28 @@ class BasePlatformAdapter(ABC):
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
+                if final_report_persisted and session_key:
+                    try:
+                        from gateway.active_task import ActiveTaskStore
+
+                        ActiveTaskStore().mark_final_report(
+                            session_key=session_key,
+                            status="sent",
+                            error=None,
+                        )
+                    except Exception:
+                        logger.debug("[%s] Final report sent-mark failed", self.name, exc_info=True)
+            elif final_report_persisted and session_key:
+                try:
+                    from gateway.active_task import ActiveTaskStore
+
+                    ActiveTaskStore().mark_final_report(
+                        session_key=session_key,
+                        status="failed",
+                        error=getattr(result, "error", None),
+                    )
+                except Exception:
+                    logger.debug("[%s] Final report failed-mark failed", self.name, exc_info=True)
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
@@ -3665,6 +3711,7 @@ class BasePlatformAdapter(ABC):
                         _thread_metadata["notify"] = True
                     else:
                         _thread_metadata = {"notify": True}
+                    _persist_final_report(text_content)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,

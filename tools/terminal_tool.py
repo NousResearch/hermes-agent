@@ -1978,6 +1978,10 @@ def terminal_tool(
                             status="active",
                             process_session_id=proc_session.id,
                             pid=proc_session.pid,
+                            start_time=str(proc_session.started_at),
+                            last_heartbeat_time=str(proc_session.started_at),
+                            last_observed_process_state="running",
+                            final_report_status="pending",
                         )
                     except Exception:
                         logger.debug("Failed to update active task store", exc_info=True)

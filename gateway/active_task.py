@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from utils import atomic_json_write
 
 DEFAULT_ACTIVE_TASK_TTL_SECONDS = 48 * 60 * 60
 ACTIVE_TASK_STATUSES = {"active", "interrupted", "detached", "unknown"}
+FINAL_REPORT_STATUSES = {"pending", "sent", "recovered", "failed"}
 FOREGROUND_SESSION_FIELDS = (
     "session_key",
     "repo_path",
@@ -71,6 +73,15 @@ class ActiveTaskRecord:
     process_session_id: Optional[str] = None
     latest_log_path: Optional[str] = None
     latest_summary_path: Optional[str] = None
+    start_time: Optional[str] = None
+    last_heartbeat_time: Optional[str] = None
+    last_observed_process_state: Optional[str] = None
+    final_report_status: Optional[str] = None
+    final_report_path: Optional[str] = None
+    final_report_error: Optional[str] = None
+    final_report_updated_at: Optional[str] = None
+    expected_commit: Optional[str] = None
+    expected_files: Optional[str] = None
     updated_at: str = ""
     resume_reason: Optional[str] = None
 
@@ -197,6 +208,9 @@ class ActiveTaskStore:
                     payload[key] = int(value) if value is not None else None
                 elif key == "status":
                     payload[key] = _clean_optional_str(value) or "unknown"
+                elif key == "final_report_status":
+                    status = _clean_optional_str(value)
+                    payload[key] = status if status in FINAL_REPORT_STATUSES else None
                 else:
                     payload[key] = _clean_optional_str(value)
             payload["updated_at"] = _utc_now_iso()
@@ -204,6 +218,53 @@ class ActiveTaskStore:
             data[session_key] = record.to_dict()
             self._write_unlocked(data)
             return record
+
+    def persist_final_report(
+        self,
+        *,
+        session_key: str,
+        content: str,
+        status: str = "pending",
+        error: Optional[str] = None,
+    ) -> ActiveTaskRecord:
+        """Persist a final report before attempting platform delivery."""
+        if not session_key:
+            raise ValueError("session_key is required")
+        if status not in FINAL_REPORT_STATUSES:
+            raise ValueError(f"invalid final report status: {status}")
+
+        reports_dir = self.path.parent / "final_reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        safe_key = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in session_key)
+        report_path = reports_dir / f"{safe_key}_{int(time.time() * 1000)}.txt"
+        tmp_path = report_path.with_suffix(report_path.suffix + ".tmp")
+        tmp_path.write_text(content or "", encoding="utf-8")
+        tmp_path.replace(report_path)
+        return self.upsert(
+            session_key=session_key,
+            final_report_status=status,
+            final_report_path=str(report_path),
+            final_report_error=error,
+            final_report_updated_at=_utc_now_iso(),
+        )
+
+    def mark_final_report(
+        self,
+        *,
+        session_key: str,
+        status: str,
+        error: Optional[str] = None,
+    ) -> Optional[ActiveTaskRecord]:
+        if not session_key:
+            return None
+        if status not in FINAL_REPORT_STATUSES:
+            raise ValueError(f"invalid final report status: {status}")
+        return self.upsert(
+            session_key=session_key,
+            final_report_status=status,
+            final_report_error=error,
+            final_report_updated_at=_utc_now_iso(),
+        )
 
     def replace_foreground_session(
         self,

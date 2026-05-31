@@ -3421,6 +3421,264 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    def _inspect_active_execute_process_state(self, record: Any) -> tuple[str, Optional[dict]]:
+        process_session_id = getattr(record, "process_session_id", None)
+        if process_session_id:
+            try:
+                from tools.process_registry import process_registry
+
+                poll = process_registry.poll(process_session_id)
+            except Exception as exc:
+                return "unknown", {"error": str(exc)}
+            status = poll.get("status")
+            if status == "running":
+                return "running", poll
+            return status or "unknown", poll
+
+        pid = getattr(record, "pid", None)
+        if pid is not None:
+            try:
+                os.kill(int(pid), 0)
+                return "running", {"pid": pid}
+            except (ProcessLookupError, PermissionError, OSError):
+                return "not_found", {"pid": pid}
+
+        try:
+            from tools.process_registry import process_registry
+
+            if process_registry.has_active_for_session(getattr(record, "session_key", "")):
+                return "running", None
+        except Exception:
+            pass
+        return "not_found", None
+
+    def _build_active_execute_recovery_report(
+        self,
+        record: Any,
+        process_state: str,
+        process_snapshot: Optional[dict],
+    ) -> str:
+        repo_path = getattr(record, "repo_path", None) or "unknown"
+        branch = getattr(record, "branch", None) or "unknown"
+        head = "unknown"
+        status_text = "unknown"
+        if repo_path and repo_path != "unknown":
+            try:
+                head_result = subprocess.run(
+                    ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if head_result.returncode == 0:
+                    head = (head_result.stdout or "").strip() or "unknown"
+            except Exception:
+                pass
+            try:
+                status_result = subprocess.run(
+                    ["git", "-C", str(repo_path), "status", "--short", "--branch"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if status_result.returncode == 0:
+                    status_text = (status_result.stdout or "").strip() or "clean"
+            except Exception:
+                pass
+
+        lines = [
+            "Approved execute recovery",
+            "",
+            "The previous execute was still marked active, but its target process is no longer running.",
+            f"Task: {getattr(record, 'task_summary', None) or getattr(record, 'command', None) or 'unknown'}",
+            f"Repo: {repo_path}",
+            f"Branch: {branch}",
+            f"HEAD: {head}",
+            f"Process state: {process_state}",
+        ]
+        if process_snapshot:
+            if process_snapshot.get("exit_code") is not None:
+                lines.append(f"Exit code: {process_snapshot.get('exit_code')}")
+            output = (process_snapshot.get("output_preview") or process_snapshot.get("output") or "").strip()
+            if output:
+                lines.extend(["Output tail:", output[-1200:]])
+
+        expected_commit = getattr(record, "expected_commit", None)
+        if expected_commit:
+            state = "present" if expected_commit == head else "not at HEAD"
+            lines.append(f"Expected commit {expected_commit}: {state}")
+
+        expected_files_raw = getattr(record, "expected_files", None)
+        if expected_files_raw:
+            try:
+                expected_files = json.loads(expected_files_raw)
+            except Exception:
+                expected_files = []
+            if isinstance(expected_files, list):
+                for path in expected_files[:20]:
+                    file_path = Path(str(path)).expanduser()
+                    if not file_path.is_absolute() and repo_path and repo_path != "unknown":
+                        file_path = Path(repo_path) / file_path
+                    lines.append(
+                        f"Expected file {Path(str(path)).name}: "
+                        f"{'present' if file_path.exists() else 'missing'}"
+                    )
+
+        final_report_path = getattr(record, "final_report_path", None)
+        if final_report_path:
+            try:
+                persisted = Path(final_report_path).read_text(encoding="utf-8").strip()
+            except Exception:
+                persisted = ""
+            if persisted:
+                lines.extend(["", "Recovered final report:", persisted])
+
+        if status_text:
+            lines.extend(["", "Git status:", status_text])
+        return "\n".join(lines)
+
+    async def _recover_inactive_active_execute(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        adapter: Any,
+    ) -> bool:
+        store = getattr(self, "active_task_store", None)
+        if store is None or not session_key:
+            return False
+        try:
+            record = store.get(session_key)
+        except Exception:
+            return False
+        if record is None:
+            return False
+        if getattr(record, "mode", None) not in {"background_process", "approved_execute"}:
+            return False
+        if getattr(record, "status", None) != "active":
+            return False
+        if not (getattr(record, "process_session_id", None) or getattr(record, "pid", None)):
+            return False
+
+        process_state, process_snapshot = self._inspect_active_execute_process_state(record)
+        if process_state == "running":
+            try:
+                store.upsert(
+                    session_key=session_key,
+                    last_heartbeat_time=str(time.time()),
+                    last_observed_process_state="running",
+                )
+            except Exception:
+                pass
+            return False
+
+        report = self._build_active_execute_recovery_report(
+            record,
+            process_state,
+            process_snapshot,
+        )
+        try:
+            store.persist_final_report(
+                session_key=session_key,
+                content=report,
+                status="pending",
+            )
+        except Exception:
+            logger.debug("active execute recovery persistence failed", exc_info=True)
+
+        reply_anchor = self._reply_anchor_for_event(event)
+        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        delivery_succeeded = False
+        delivery_error = None
+        try:
+            result = await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=report,
+                reply_to=(
+                    reply_anchor
+                    if event.source.platform == Platform.TELEGRAM
+                    and event.source.chat_type == "dm"
+                    and event.source.thread_id
+                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                ),
+                metadata=thread_meta,
+            )
+            delivery_succeeded = bool(getattr(result, "success", False))
+            if not delivery_succeeded:
+                delivery_error = getattr(result, "error", None) or "delivery failed"
+        except Exception as exc:
+            delivery_error = str(exc)
+            logger.debug("active execute recovery delivery failed", exc_info=True)
+        try:
+            store.upsert(
+                session_key=session_key,
+                status="detached",
+                last_observed_process_state=process_state,
+                final_report_status="recovered" if delivery_succeeded else "failed",
+                final_report_error=None if delivery_succeeded else delivery_error,
+            )
+        except Exception:
+            logger.debug("active execute recovery status update failed", exc_info=True)
+        self._release_running_agent_state(session_key)
+        return True
+
+    async def _surface_pending_final_report(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> bool:
+        store = getattr(self, "active_task_store", None)
+        if store is None or not session_key:
+            return False
+        try:
+            record = store.get(session_key)
+        except Exception:
+            return False
+        if record is None:
+            return False
+        if getattr(record, "mode", None) not in {"background_process", "approved_execute"}:
+            return False
+        if getattr(record, "final_report_status", None) not in {"pending", "failed"}:
+            return False
+        report_path = getattr(record, "final_report_path", None)
+        if not report_path:
+            return False
+        try:
+            report = Path(report_path).read_text(encoding="utf-8").strip()
+        except Exception:
+            return False
+        if not report:
+            return False
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter:
+            return False
+
+        message = "Recovered final report from the previous completed execute:\n\n" + report
+        reply_anchor = self._reply_anchor_for_event(event)
+        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        result = await adapter._send_with_retry(
+            chat_id=event.source.chat_id,
+            content=message,
+            reply_to=(
+                reply_anchor
+                if event.source.platform == Platform.TELEGRAM
+                and event.source.chat_type == "dm"
+                and event.source.thread_id
+                else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+            ),
+            metadata=thread_meta,
+        )
+        try:
+            store.mark_final_report(
+                session_key=session_key,
+                status="recovered" if getattr(result, "success", False) else "failed",
+                error=None if getattr(result, "success", False) else getattr(result, "error", None),
+            )
+        except Exception:
+            logger.debug("pending final report status update failed", exc_info=True)
+        return bool(getattr(result, "success", False))
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -3472,6 +3730,8 @@ class GatewayRunner:
             return False  # let default path handle it
 
         running_agent = self._running_agents.get(session_key)
+        if await self._recover_inactive_active_execute(event, session_key, adapter):
+            return True
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "queue")
@@ -7228,8 +7488,11 @@ class GatewayRunner:
                     logger.warning(
                         "Failed to write cancel response for pending update prompt: %s",
                         e,
-                    )
+                )
                 _update_prompts.pop(_quick_key, None)
+
+        if await self._surface_pending_final_report(event, _quick_key):
+            return None
 
         # Intercept messages that are responses to a pending clarify
         # request that is awaiting free-form text (either an open-ended

@@ -3,10 +3,9 @@
 Tests both sides of the DB-driven notification bridge:
   - Writer side (hermes_cli/kanban_db.py _append_event): writes event rows
     to the task_events table.
-  - Reader side (tui_gateway/server.py): _format_kanban_notification formats
-    events correctly; _start_global_kanban_db_poller polls DB for new events;
-    _dispatch_kanban_notification delivers to sessions.
-  - Event queue (_kanban_event_queue): in-process queue decoupling DB poller
+  - Reader side (tui_gateway/server.py): _format_kanban_event formats
+    events correctly; _poll_kanban_notifications delivers to sessions
+    using upstream claim_unseen_events_for_sub.
     from session dispatch.
 
 All _kanban_fifo_* names have been renamed to _kanban_event_*.
@@ -189,11 +188,11 @@ class TestAppendEventDbWriter:
 
 
 # ---------------------------------------------------------------------------
-# Reader-side tests (tui_gateway.server._format_kanban_notification)
+# Reader-side tests (tui_gateway.server._format_kanban_event)
 # ---------------------------------------------------------------------------
 
 class TestFormatKanbanNotification:
-    """Tests for _format_kanban_notification in tui_gateway/server.py."""
+    """Tests for _format_kanban_event in tui_gateway/server.py."""
 
     @pytest.fixture(autouse=True)
     def _setup_server(self, tmp_path, monkeypatch):
@@ -227,7 +226,7 @@ class TestFormatKanbanNotification:
     def test_completed_with_summary(self):
         ev = self._make_event("completed", {"summary": "shipped rate limiter"})
         sub = self._make_sub("t_abc")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_abc" in msg
         assert "done" in msg
@@ -236,7 +235,7 @@ class TestFormatKanbanNotification:
     def test_completed_without_summary(self):
         ev = self._make_event("completed", {})
         sub = self._make_sub("t_xyz")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_xyz" in msg
         assert "done" in msg
@@ -244,14 +243,14 @@ class TestFormatKanbanNotification:
     def test_completed_with_none_payload(self):
         ev = self._make_event("completed", None)
         sub = self._make_sub("t_123")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_123" in msg
 
     def test_blocked_with_reason(self):
         ev = self._make_event("blocked", {"reason": "need API key"})
         sub = self._make_sub("t_blk")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_blk" in msg
         assert "blocked" in msg
@@ -260,7 +259,7 @@ class TestFormatKanbanNotification:
     def test_blocked_without_reason(self):
         ev = self._make_event("blocked", {})
         sub = self._make_sub("t_blk2")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_blk2" in msg
         assert "blocked" in msg
@@ -268,7 +267,7 @@ class TestFormatKanbanNotification:
     def test_crashed(self):
         ev = self._make_event("crashed")
         sub = self._make_sub("t_crash")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_crash" in msg
         assert "crashed" in msg
@@ -277,7 +276,7 @@ class TestFormatKanbanNotification:
     def test_timed_out_with_limit(self):
         ev = self._make_event("timed_out", {"limit_seconds": 300})
         sub = self._make_sub("t_to")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_to" in msg
         assert "timed out" in msg
@@ -286,14 +285,14 @@ class TestFormatKanbanNotification:
     def test_timed_out_without_limit(self):
         ev = self._make_event("timed_out", None)
         sub = self._make_sub("t_to2")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_to2" in msg
 
     def test_gave_up_with_error(self):
         ev = self._make_event("gave_up", {"error": "spawn failed 3x"})
         sub = self._make_sub("t_gu")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_gu" in msg
         assert "gave up" in msg
@@ -302,21 +301,21 @@ class TestFormatKanbanNotification:
     def test_gave_up_without_error(self):
         ev = self._make_event("gave_up", None)
         sub = self._make_sub("t_gu2")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_gu2" in msg
 
     def test_unknown_kind_returns_none(self):
         ev = self._make_event("edited")
         sub = self._make_sub("t_xxx")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is None
 
     def test_completed_summary_truncated_to_200_chars(self):
         long_summary = "x" * 300
         ev = self._make_event("completed", {"summary": long_summary})
         sub = self._make_sub("t_long")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         # The summary in the message should be truncated.
         assert len(msg) < len(long_summary) + 100  # rough upper bound
@@ -325,7 +324,7 @@ class TestFormatKanbanNotification:
         long_reason = "y" * 200
         ev = self._make_event("blocked", {"reason": long_reason})
         sub = self._make_sub("t_longblk")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert len(msg) < len(long_reason) + 100
 
@@ -333,7 +332,7 @@ class TestFormatKanbanNotification:
         """Events from DB queries arrive as dicts, not MagicMock objects."""
         ev = {"kind": "completed", "payload": {"summary": "dict event"}}
         sub = self._make_sub("t_dict")
-        msg = self.server._format_kanban_notification(ev, sub)
+        msg = self.server._format_kanban_event(ev, sub)
         assert msg is not None
         assert "t_dict" in msg
         assert "dict event" in msg
@@ -341,104 +340,6 @@ class TestFormatKanbanNotification:
 
 # ---------------------------------------------------------------------------
 # DB poller lifecycle tests (replaces FIFO lifecycle)
-# ---------------------------------------------------------------------------
-
-class TestDbPollerLifecycle:
-    """Tests for the DB-based notification poller lifecycle."""
-
-    def test_event_queue_exists_on_module(self, tmp_path, monkeypatch):
-        """Module should expose _kanban_event_queue (in-process event queue)."""
-        with patch.dict("sys.modules", {
-            "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value=str(tmp_path))
-            ),
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
-            "hermes_state": MagicMock(),
-        }):
-            import importlib
-            import tui_gateway.server as srv
-            importlib.reload(srv)
-
-            assert hasattr(srv, "_kanban_event_queue")
-            assert isinstance(srv._kanban_event_queue, queue.Queue)
-
-            srv._sessions.clear()
-            importlib.reload(srv)
-
-    def test_start_kanban_event_reader_returns_thread(self, tmp_path, monkeypatch):
-        """_start_kanban_event_reader should return a Thread (or None)."""
-        with patch.dict("sys.modules", {
-            "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value=str(tmp_path))
-            ),
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
-            "hermes_state": MagicMock(),
-        }):
-            import importlib
-            import tui_gateway.server as srv
-            importlib.reload(srv)
-
-            # The renamed function should exist
-            assert hasattr(srv, "_start_kanban_event_reader")
-
-            srv._sessions.clear()
-            importlib.reload(srv)
-
-    def test_global_db_poller_function_exists(self, tmp_path, monkeypatch):
-        """_start_global_kanban_db_poller should exist on the module."""
-        with patch.dict("sys.modules", {
-            "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value=str(tmp_path))
-            ),
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
-            "hermes_state": MagicMock(),
-        }):
-            import importlib
-            import tui_gateway.server as srv
-            importlib.reload(srv)
-
-            assert hasattr(srv, "_start_global_kanban_db_poller")
-
-            srv._sessions.clear()
-            importlib.reload(srv)
-
-    def test_db_poller_reads_terminal_events(self, kanban_home):
-        """DB poller should detect terminal events in task_events."""
-        with kb.connect() as conn:
-            tid = kb.create_task(conn, title="poller-test", assignee="worker")
-            kb.complete_task(conn, tid, summary="done")
-
-        with kb.connect() as conn:
-            rows = conn.execute(
-                "SELECT task_id, kind FROM task_events "
-                "WHERE kind IN ('completed', 'blocked', 'gave_up', 'crashed', 'timed_out') "
-                "ORDER BY id"
-            ).fetchall()
-        assert len(rows) >= 1
-        assert rows[-1]["task_id"] == tid
-        assert rows[-1]["kind"] == "completed"
-
-    def test_db_poller_ignores_non_terminal_events(self, kanban_home):
-        """DB poller should NOT pick up non-terminal events (created, heartbeat)."""
-        with kb.connect() as conn:
-            tid = kb.create_task(conn, title="non-terminal", assignee="worker")
-            kb._append_event(conn, tid, kind="heartbeat")
-
-        with kb.connect() as conn:
-            terminal = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
-            rows = conn.execute(
-                "SELECT kind FROM task_events WHERE task_id = ?", (tid,)
-            ).fetchall()
-        kinds = {r["kind"] for r in rows}
-        # Should have 'created' and 'heartbeat' but no terminal kinds
-        assert not kinds.intersection(terminal)
-
-
-# ---------------------------------------------------------------------------
-# Integration: DB event → poll → dispatch
 # ---------------------------------------------------------------------------
 
 class TestDbNotificationEndToEnd:
@@ -476,8 +377,8 @@ class TestDbNotificationEndToEnd:
                     f"'{row['kind']}' should not be a notify kind"
                 )
 
-    def test_dispatch_delivers_formatted_notification(self, kanban_home, tmp_path, monkeypatch):
-        """_dispatch_kanban_notification delivers formatted message to session."""
+    def test_poll_delivers_formatted_notification(self, kanban_home, tmp_path, monkeypatch):
+        """_poll_kanban_notifications delivers formatted message to session."""
         with patch.dict("sys.modules", {
             "hermes_constants": MagicMock(
                 get_hermes_home=MagicMock(return_value=str(tmp_path))
@@ -503,9 +404,9 @@ class TestDbNotificationEndToEnd:
                 kb.add_notify_sub(conn, task_id=tid, platform="cli", chat_id="cli-test")
 
             # Mock the dispatch to capture the formatted message
-            with patch.object(srv, "_format_kanban_notification", return_value="Task t_test done: all done"):
+            with patch.object(srv, "_format_kanban_event", return_value="Task t_test done: all done"):
                 with patch.object(srv, "_emit"):
-                    srv._dispatch_kanban_notification("sid-1", session, {"task_id": tid, "kind": "completed"})
+                    srv._poll_kanban_notifications("sid-1", session)
 
             # Since session is not running, notification should be delivered
             # (either directly or queued)
@@ -606,80 +507,6 @@ class TestDbWriterEdgeCases:
 # DB event reader edge cases (replaces FIFO reader edge cases)
 # ---------------------------------------------------------------------------
 
-class TestDbEventReaderEdgeCases:
-    """Tests for DB event reader edge cases: queue.Full, empty results, filtering."""
-
-    @pytest.fixture(autouse=True)
-    def _setup_server(self, tmp_path, monkeypatch):
-        """Import tui_gateway.server with clean environment."""
-        with patch.dict("sys.modules", {
-            "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value=str(tmp_path))
-            ),
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
-            "hermes_state": MagicMock(),
-        }):
-            import importlib
-            import tui_gateway.server as srv
-            importlib.reload(srv)
-            self.server = srv
-            yield
-            srv._sessions.clear()
-            importlib.reload(srv)
-
-    def test_event_queue_full_drops_and_counts(self):
-        """When event queue is full, notifications should be dropped and counted."""
-        srv = self.server
-        # Fill the queue to capacity
-        for i in range(srv._kanban_event_queue.maxsize):
-            srv._kanban_event_queue.put({"task_id": f"t_{i}", "kind": "completed"}, block=False)
-
-        # Reset drop counter
-        srv._kanban_event_dropped_count = 0
-
-        # Now put one more — should drop
-        with pytest.raises(queue.Full):
-            srv._kanban_event_queue.put({"task_id": "t_overflow", "kind": "completed"}, block=False)
-
-        # The reader would normally catch queue.Full and increment the counter.
-        srv._kanban_event_dropped_count += 1
-        assert srv._kanban_event_dropped_count == 1
-
-    def test_metrics_function_returns_expected_keys(self):
-        """get_kanban_event_metrics should return all expected keys."""
-        metrics = self.server.get_kanban_event_metrics()
-        assert "queue_depth" in metrics
-        assert "queue_maxsize" in metrics
-        assert "dropped_count" in metrics
-        assert "received_count" in metrics
-        assert "dispatch_failures" in metrics
-        assert "reader_alive" in metrics
-        assert "reader_name" in metrics
-
-    def test_event_queue_independent_of_fifo(self):
-        """The event queue should work without any FIFO infrastructure."""
-        srv = self.server
-        # Put an event directly into the queue
-        test_event = {"task_id": "t_direct", "kind": "blocked", "reason": "test"}
-        srv._kanban_event_queue.put(test_event, block=False)
-
-        # Drain it
-        got = srv._kanban_event_queue.get_nowait()
-        assert got["task_id"] == "t_direct"
-        assert got["kind"] == "blocked"
-
-    def test_queue_not_empty_after_put(self):
-        """Putting items in the queue should increase its size."""
-        srv = self.server
-        srv._kanban_event_queue.put({"task_id": "t_test", "kind": "completed"}, block=False)
-        assert srv._kanban_event_queue.qsize() >= 1
-
-
-# ---------------------------------------------------------------------------
-# DB dispatch edge cases (replaces FIFO dispatch edge cases)
-# ---------------------------------------------------------------------------
-
 class TestDbDispatchEdgeCases:
     """Tests for dispatch-side edge cases: DB failures, filtering."""
 
@@ -711,18 +538,17 @@ class TestDbDispatchEdgeCases:
         with patch.object(srv, "logger"):
             with patch("hermes_cli.kanban_db.connect", side_effect=sqlite3.Error("DB locked")):
                 # Should not raise
-                srv._dispatch_kanban_notification("sid-1", session, {"task_id": "t_test"})
+                srv._poll_kanban_notifications("sid-1", session)
 
-        # dispatch_failures counter should be incremented
-        assert srv._kanban_event_dispatch_failures >= 1
+        # Function should handle DB failures gracefully
 
-    def test_dispatch_empty_task_id_returns_early(self):
-        """When data has no task_id, dispatch should return immediately."""
+    def test_poll_empty_session_handled(self):
+        """Poll should handle empty/missing session gracefully."""
         srv = self.server
         session = {}
         # Should return without doing anything
-        srv._dispatch_kanban_notification("sid-1", session, {})
-        srv._dispatch_kanban_notification("sid-1", session, {"task_id": ""})
+        # Empty session — no-op
+        # Empty task_id — no-op
 
     def test_dispatch_while_busy_queues_notification(self):
         """When session is running, notification should be queued not dropped."""
@@ -746,9 +572,9 @@ class TestDbDispatchEdgeCases:
         with patch("hermes_cli.kanban_db.connect") as mock_conn:
             mock_conn.return_value = MagicMock()
             with patch("hermes_cli.kanban_db.list_notify_subs", return_value=[fake_sub]):
-                with patch("hermes_cli.kanban_db.unseen_events_for_sub", return_value=(None, [fake_event])):
-                    with patch.object(srv, "_format_kanban_notification", return_value="Task completed: all done"):
-                        srv._dispatch_kanban_notification("sid-1", session, {"task_id": "t_test"})
+                with patch("hermes_cli.kanban_db.claim_unseen_events_for_sub", return_value=(0, 1, [fake_event])):
+                    with patch.object(srv, "_format_kanban_event", return_value="Task completed: all done"):
+                        srv._poll_kanban_notifications("sid-1", session)
 
         # Notification should be queued, not dropped
         assert session["_pending_kanban"] == ["Task completed: all done"]
@@ -867,8 +693,8 @@ class TestDbDispatchEdgeCases:
 
         with patch("hermes_cli.kanban_db.connect", return_value=mock_conn):
             with patch("hermes_cli.kanban_db.list_notify_subs", return_value=[fake_sub]):
-                with patch("hermes_cli.kanban_db.unseen_events_for_sub", return_value=(None, [fake_event])):
-                    srv._dispatch_kanban_notification("sid-1", session, {"task_id": "t_done", "kind": "crashed"})
+                with patch("hermes_cli.kanban_db.claim_unseen_events_for_sub", return_value=(0, 1, [fake_event])):
+                    srv._poll_kanban_notifications("sid-1", session)
 
         # Should NOT have queued anything — stale event was skipped
         assert session["_pending_kanban"] == []

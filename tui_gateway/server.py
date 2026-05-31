@@ -135,19 +135,10 @@ except (ValueError, TypeError):
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
-
-# ── Kanban→TUI notification bridge (DB poller, event-driven) ─────────
-# Global queue decouples DB poller from session dispatch.
-# The poller thread is eager (starts at import) and immortal.
-_kanban_event_queue: queue.Queue = queue.Queue(maxsize=10000)
-_kanban_global_poller_thread: threading.Thread | None = None
-
-# Module-level metrics counters for operational visibility.
-_kanban_event_dropped_count: int = 0
-_kanban_event_received_count: int = 0
-_kanban_event_dispatch_failures: int = 0
-_KANBAN_DISPATCH_MAX_RETRIES: int = 3
-_KANBAN_DISPATCH_RETRY_BACKOFF: float = 2.0  # seconds, multiplied by retry count
+# ── Kanban→TUI notification bridge (subscription-aware) ─────────────
+# Uses upstream's ``claim_unseen_events_for_sub`` for atomic cursor
+# advancement.  No separate DB poller thread — the per-session
+# notification poller loop polls subscriptions directly.
 
 # Terminal event kinds that trigger TUI notifications.
 _KANBAN_TERMINAL_KINDS = frozenset(
@@ -155,127 +146,92 @@ _KANBAN_TERMINAL_KINDS = frozenset(
 )
 
 
-def _start_global_kanban_db_poller() -> threading.Thread:
-    """Start the global kanban DB poller thread (idempotent, eager).
+def _poll_kanban_notifications(sid: str, session: dict) -> None:
+    """Poll kanban subscriptions for unseen terminal events.
 
-    Polls ``task_events`` for new terminal events and pushes them into
-    ``_kanban_event_queue``.  Each session's notification poller drains
-    the queue for matching subscriptions.
-
-    Replaces the old FIFO-based reader which was fragile:
-    - ``atexit`` cleanup deleted the FIFO while the gateway was still running
-    - Reader thread silently died on FIFO deletion, leaving no notifier
-    - Multiple gateway restarts created race conditions on FIFO lifecycle
+    Uses ``claim_unseen_events_for_sub`` (upstream's atomic cursor API)
+    instead of raw SQL polling.  Queues notifications immediately — no
+    defer-until-idle.  Called from ``_notification_poller_loop`` when
+    ``completion_queue`` is empty.
     """
-    global _kanban_global_poller_thread
-    if (
-        _kanban_global_poller_thread is not None
-        and _kanban_global_poller_thread.is_alive()
-    ):
-        return _kanban_global_poller_thread
+    try:
+        from hermes_cli import kanban_db as _kb
+    except Exception:
+        return
 
-    def _poller() -> None:
-        global _kanban_event_received_count, _kanban_event_dropped_count
-        _last_event_id: int | None = None  # None = first-run, skip to latest
-        _conn = None
+    try:
+        _conn = _kb.connect()
+    except Exception:
+        return
 
-        while True:
-            try:
-                # Lazy import to avoid circular deps at module load time.
-                if _conn is None:
-                    try:
-                        from hermes_cli import kanban_db as _kb
-                        _conn = _kb.connect()
-                    except Exception:
-                        logger.debug("kanban_db_poller: cannot connect, retrying")
-                        time.sleep(5.0)
+    try:
+        _subs = _kb.list_notify_subs(_conn)
+        for _sub in _subs:
+            if _sub.get("platform") != "cli":
+                continue
+
+            _task_id = _sub["task_id"]
+            _chat_id = _sub.get("chat_id", "")
+            _thread_id = _sub.get("thread_id") or ""
+
+            old_cursor, new_cursor, events = _kb.claim_unseen_events_for_sub(
+                _conn,
+                task_id=_task_id,
+                platform="cli",
+                chat_id=_chat_id,
+                thread_id=_thread_id,
+                kinds=_KANBAN_TERMINAL_KINDS,
+            )
+            if not events:
+                continue
+
+            for ev in events:
+                _msg = _format_kanban_event(ev, _task_id)
+                if not _msg:
+                    continue
+                # Queue immediately — no defer-until-idle.
+                with session["history_lock"]:
+                    if session.get("running"):
+                        session.setdefault("_pending_kanban", []).append(_msg)
+                        _emit("status.update", sid,
+                              {"kind": "process", "text": _msg})
                         continue
-
-                # On first run, skip to the latest event ID to avoid
-                # replaying hundreds of stale terminal events from history.
-                if _last_event_id is None:
-                    _row = _conn.execute(
-                        "SELECT COALESCE(MAX(id), 0) FROM task_events "
-                        "WHERE kind IN ({})".format(
-                            ",".join("?" for _ in _KANBAN_TERMINAL_KINDS)
-                        ),
-                        (*_KANBAN_TERMINAL_KINDS,),
-                    ).fetchone()
-                    _last_event_id = _row[0] if _row else 0
-                    logger.debug(
-                        "kanban_db_poller: first run, skipping to event %d",
-                        _last_event_id,
-                    )
-
-                _rows = _conn.execute(
-                    "SELECT id, task_id, kind FROM task_events "
-                    "WHERE id > ? AND kind IN ({}) "
-                    "ORDER BY id LIMIT 100".format(
-                        ",".join("?" for _ in _KANBAN_TERMINAL_KINDS)
-                    ),
-                    (_last_event_id, *_KANBAN_TERMINAL_KINDS),
-                ).fetchall()
-
-                for _row in _rows:
-                    _eid, _tid, _kind = _row
-                    _data = {"task_id": _tid, "kind": _kind}
-                    try:
-                        _kanban_event_queue.put(_data, block=False)
-                        _kanban_event_received_count += 1
-                    except queue.Full:
-                        _kanban_event_dropped_count += 1
-                        logger.debug(
-                            "kanban_db_poller: queue full, dropped notification"
-                        )
-                    _last_event_id = _eid
-
-                time.sleep(2.0)
-
-            except Exception:
-                logger.debug("kanban_db_poller error, reconnecting", exc_info=True)
-                _conn = None
-                time.sleep(3.0)
-
-    _t = threading.Thread(target=_poller, daemon=True, name="kanban-db-poller")
-    _t.start()
-    _kanban_global_poller_thread = _t
-    return _t
+                    session["running"] = True
+                _rid = f"__kanban__{int(time.time() * 1000)}"
+                try:
+                    _emit("message.start", sid)
+                    _run_prompt_submit(_rid, sid, session, _msg)
+                except Exception:
+                    with session["history_lock"]:
+                        session["running"] = False
+    except Exception:
+        pass
+    finally:
+        try:
+            _conn.close()
+        except Exception:
+            pass
 
 
-# Eager start: the DB poller always runs as long as the gateway process lives.
-_start_global_kanban_db_poller()
+def _format_kanban_event(ev, task_id: str) -> "str | None":
+    """Format a kanban event into an ``[IMPORTANT: ...]`` message.
 
-
-def _format_kanban_notification(ev, sub) -> "str | None":
-    """Format a kanban task event into a ``[IMPORTANT: ...]`` message.
-
-    Accepts either an ORM row (``ev.kind``) or a plain dict (``ev["kind"]``)
-    so callers can pass whatever the DB layer returns.  Returns ``None``
-    for unrecognised event kinds — the caller should silently skip those.
-
-    Args:
-        ev: Event object or dict with at least ``kind`` and optionally
-            ``payload`` (containing ``summary``, ``reason``, ``error``, etc.).
-        sub: Subscription dict with ``task_id`` (required), ``chat_id``,
-            and ``thread_id``.
-
-    Returns:
-        Formatted ``[IMPORTANT: ...]`` string, or ``None`` for unknown kinds.
+    Uses upstream's Event object attributes (``ev.kind``, ``ev.payload``).
     """
-    kind = ev.kind if hasattr(ev, 'kind') else ev.get('kind')
-    task_id = sub["task_id"]
+    kind = ev.kind if hasattr(ev, "kind") else ev.get("kind", "")
+    payload = ev.payload if hasattr(ev, "payload") else (ev.get("payload") or {})
+    if payload is None:
+        payload = {}
 
     if kind == "completed":
         handoff = ""
-        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
-        if payload and payload.get("summary"):
+        if payload.get("summary"):
             h = str(payload["summary"]).strip().splitlines()[0][:200]
             handoff = f"\n{h}"
         return f"[IMPORTANT: Kanban task {task_id} done{handoff}]"
     elif kind == "blocked":
         reason = ""
-        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
-        if payload and payload.get("reason"):
+        if payload.get("reason"):
             reason = f": {str(payload['reason'])[:160]}"
         return f"[IMPORTANT: Kanban task {task_id} blocked{reason}]"
     elif kind == "crashed":
@@ -284,195 +240,20 @@ def _format_kanban_notification(ev, sub) -> "str | None":
             " dispatcher will retry]"
         )
     elif kind == "timed_out":
-        payload = (
-            ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
-        )
         limit = int(payload.get("limit_seconds", 0)) if payload else 0
         return (
             f"[IMPORTANT: Kanban task {task_id} timed out"
             f" (max_runtime={limit}s); will retry]"
         )
     elif kind == "gave_up":
-        payload = (
-            ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
-        )
         err = ""
-        if payload and payload.get("error"):
+        if payload.get("error"):
             err = f"\n{str(payload['error'])[:200]}"
         return (
             f"[IMPORTANT: Kanban task {task_id} gave up after"
             f" repeated spawn failures{err}]"
         )
     return None
-
-
-def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
-    """Query DB for CLI subscriptions matching ``data["task_id"]``.
-
-    Injects a formatted notification into the agent session.
-    Non-fatal — exceptions are logged at debug level so the poller loop
-    keeps running.
-    """
-    _task_id = data.get("task_id", "")
-    if not _task_id:
-        return
-
-    _fmt_kinds = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
-
-    try:
-        from hermes_cli import kanban_db as _kb
-        _conn = _kb.connect()
-        try:
-            _subs = _kb.list_notify_subs(_conn)
-            for _sub in _subs:
-                if _sub.get("platform") != "cli":
-                    continue
-                if _sub["task_id"] != _task_id:
-                    continue
-
-                # Skip stale noise (crash/gave_up/timed_out) for tasks that
-                # are already terminal.  But ALWAYS deliver the actual
-                # "completed" event — by definition the task is "done" by
-                # the time we poll it, so the old check killed every
-                # completion notification before it could reach the user.
-                _ev_kind = data.get("kind", "")
-                _task_status = _conn.execute(
-                    "SELECT status FROM tasks WHERE id = ?", (_task_id,)
-                ).fetchone()
-                if (
-                    _task_status
-                    and _task_status["status"] in ("done", "archived")
-                    and _ev_kind not in ("completed",)
-                ):
-                    continue
-
-                _cursors = session.setdefault("_kanban_cursors", {})
-                _ckey = (_task_id, _sub.get("chat_id", sid))
-                _last = _cursors.get(_ckey, _sub.get("last_event_id", 0))
-                _, _events = _kb.unseen_events_for_sub(
-                    _conn, task_id=_task_id,
-                    platform="cli", chat_id=_sub["chat_id"],
-                    thread_id=_sub.get("thread_id") or "",
-                    kinds=_fmt_kinds,
-                )
-                _max_id = _last  # stays at _last when there are no new events
-                if _events:
-                    _max_id = max(
-                        _last,
-                        max(
-                            e.id if hasattr(e, "id") else e["id"]
-                            for e in _events
-                        ),
-                    )
-                    _cursors[_ckey] = _max_id
-                for _ev in _events:
-                    _msg = _format_kanban_notification(_ev, _sub)
-                    if _msg:
-                        with session["history_lock"]:
-                            if session.get("running"):
-                                # Session is busy — queue for later and show a
-                                # brief status update so the user knows something
-                                # happened.  Full message is injected when the
-                                # session goes idle via _pending_kanban drain.
-                                session.setdefault("_pending_kanban", []).append(_msg)
-                                _emit("status.update", sid, {"kind": "process", "text": _msg})
-                                continue
-                            session["running"] = True
-                        _rid = f"__kanban__{int(time.time() * 1000)}"
-                        try:
-                            _emit("message.start", sid)
-                            _run_prompt_submit(_rid, sid, session, _msg)
-                        except Exception:
-                            with session["history_lock"]:
-                                session["running"] = False
-                            # Retry: re-queue with retry count instead of
-                            # silently dropping the notification.
-                            _retry = data.get("_retry_count", 0) + 1
-                            if _retry <= _KANBAN_DISPATCH_MAX_RETRIES:
-                                data["_retry_count"] = _retry
-                                delay = _KANBAN_DISPATCH_RETRY_BACKOFF * _retry
-                                logger.warning(
-                                    "kanban dispatch failed, retry %d/%d in %.1fs "
-                                    "for task %s",
-                                    _retry, _KANBAN_DISPATCH_MAX_RETRIES,
-                                    delay, _task_id,
-                                )
-                                time.sleep(delay)
-                                try:
-                                    _kanban_event_queue.put(data, block=False)
-                                except queue.Full:
-                                    logger.error(
-                                        "kanban retry queue full, "
-                                        "dropping notification for task %s",
-                                        _task_id,
-                                    )
-                            else:
-                                logger.error(
-                                    "kanban dispatch failed after %d retries "
-                                    "for task %s — giving up",
-                                    _KANBAN_DISPATCH_MAX_RETRIES, _task_id,
-                                )
-                # Advance the DB subscription cursor so completed-gateway
-                # events are not re-delivered on session restart.  Without
-                # this the ephemeral _kanban_cursors dict is the only dedup
-                # mechanism and it resets when the session ends.
-                if _events:
-                    try:
-                        _kb.advance_notify_cursor(
-                            _conn,
-                            task_id=_task_id,
-                            platform="cli",
-                            chat_id=_sub["chat_id"],
-                            thread_id=_sub.get("thread_id") or "",
-                            new_cursor=_max_id,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "kanban cursor advance failed: task_id=%s cursor=%s "
-                            "chat_id=%s thread_id=%s",
-                            _task_id, _max_id,
-                            _sub.get("chat_id"), _sub.get("thread_id"),
-                            exc_info=True,
-                        )
-        finally:
-            _conn.close()
-    except Exception:
-        logger.debug("kanban_notification_dispatch failed", exc_info=True)
-        global _kanban_event_dispatch_failures
-        _kanban_event_dispatch_failures += 1
-
-
-def _start_kanban_event_reader(sid: str, session: dict) -> threading.Thread:
-    """Ensure the global kanban DB poller is running.
-
-    Per-session readers are replaced by a single global poller
-    that feeds a shared queue.  Each session's notification poller
-    drains the queue for matching subscriptions.  This function is
-    kept for backward compatibility at existing call sites.
-    """
-    return _start_global_kanban_db_poller()
-
-
-def get_kanban_event_metrics() -> dict:
-    """Return operational metrics for the kanban notification bridge."""
-    return {
-        "queue_depth": _kanban_event_queue.qsize(),
-        "queue_maxsize": _kanban_event_queue.maxsize,
-        "dropped_count": _kanban_event_dropped_count,
-        "received_count": _kanban_event_received_count,
-        "dispatch_failures": _kanban_event_dispatch_failures,
-        "reader_alive": (
-            _kanban_global_poller_thread.is_alive()
-            if _kanban_global_poller_thread is not None
-            else False
-        ),
-        "reader_name": (
-            _kanban_global_poller_thread.name
-            if _kanban_global_poller_thread is not None
-            else None
-        ),
-    }
-
 
 def get_kanban_fifo_metrics() -> dict:
     """Return operational metrics for the kanban FIFO notification bridge."""
@@ -960,7 +741,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
             _wire_callbacks(sid)
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
-            _sessions[sid]["_kanban_event_thread"] = _start_kanban_event_reader(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent, current)
@@ -2812,7 +2592,6 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         pass
     _wire_callbacks(sid)
     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
-    _sessions[sid]["_kanban_event_thread"] = _start_kanban_event_reader(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent, _sessions[sid]))
 
@@ -4323,62 +4102,9 @@ def _notification_poller_loop(
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except queue.Empty:
-            # No process event — drain ALL pending kanban events from the
-            # global queue.  If more than _KANBAN_BATCH_THRESHOLD arrive at
-            # once (backlog), collapse into a single summary to prevent
-            # flooding the user with dozens of individual notifications.
-            _KANBAN_BATCH_THRESHOLD = 5
-            _batch_events: list[dict] = []
-            try:
-                while True:
-                    _batch_events.append(_kanban_event_queue.get_nowait())
-            except queue.Empty:
-                pass
-            if _batch_events:
-                if len(_batch_events) <= _KANBAN_BATCH_THRESHOLD:
-                    for _kanban_evt in _batch_events:
-                        _dispatch_kanban_notification(sid, session, _kanban_evt)
-                else:
-                    # Rate-limited: batch into a single summary message.
-                    _completed = sum(
-                        1 for e in _batch_events if e.get("kind") == "completed"
-                    )
-                    _blocked = sum(
-                        1 for e in _batch_events if e.get("kind") == "blocked"
-                    )
-                    _other = len(_batch_events) - _completed - _blocked
-                    _parts = []
-                    if _completed:
-                        _parts.append(f"{_completed} completed")
-                    if _blocked:
-                        _parts.append(f"{_blocked} blocked")
-                    if _other:
-                        _parts.append(f"{_other} other events")
-                    _summary_msg = (
-                        f"[IMPORTANT: {len(_batch_events)} kanban task updates: "
-                        f"{', '.join(_parts)}. Use 'hermes kanban list' to review.]"
-                    )
-                    with session["history_lock"]:
-                        if session.get("running"):
-                            session.setdefault(
-                                "_pending_kanban", []
-                            ).append(_summary_msg)
-                            _emit(
-                                "status.update",
-                                sid,
-                                {"kind": "process", "text": _summary_msg},
-                            )
-                        else:
-                            session["running"] = True
-                            _rid = f"__kanban__{int(time.time() * 1000)}"
-                            try:
-                                _emit("message.start", sid)
-                                _run_prompt_submit(
-                                    _rid, sid, session, _summary_msg
-                                )
-                            except Exception:
-                                with session["history_lock"]:
-                                    session["running"] = False
+            # No process event — poll kanban subscriptions directly
+            # using upstream's claim_unseen_events_for_sub.
+            _poll_kanban_notifications(sid, session)
             continue
 
         _evt_sid = evt.get("session_id", "")

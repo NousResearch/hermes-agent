@@ -11863,6 +11863,12 @@ def main():
     # gateway list
     gateway_subparsers.add_parser("list", help="List all profiles and their gateway status")
 
+    gateway_write_planned_stop = gateway_subparsers.add_parser(
+        "_write-planned-stop",
+        help=argparse.SUPPRESS,
+    )
+    gateway_write_planned_stop.add_argument("--pid", required=True)
+
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 

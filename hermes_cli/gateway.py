@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import textwrap
@@ -2241,6 +2242,7 @@ Type=simple
 User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStop={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway _write-planned-stop --pid $MAINPID
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2279,6 +2281,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStop={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway _write-planned-stop --pid $MAINPID
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -2301,6 +2304,52 @@ WantedBy=default.target
 
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _ensure_planned_stop_marker_readable() -> None:
+    """Relax marker permissions so a different service user can consume it.
+
+    `hermes gateway stop --system` commonly runs under sudo/root while the
+    service itself runs as an unprivileged `User=`. The gateway only needs
+    read access to detect a planned stop, so make the marker world-readable
+    without otherwise changing marker semantics.
+    """
+    marker_path = get_hermes_home() / ".gateway-planned-stop.json"
+    try:
+        current_mode = stat.S_IMODE(marker_path.stat().st_mode)
+    except OSError:
+        return
+    target_mode = current_mode | stat.S_IRGRP | stat.S_IROTH
+    if target_mode != current_mode:
+        try:
+            os.chmod(marker_path, target_mode)
+        except OSError:
+            pass
+
+
+def _write_planned_stop_only(pid: int | str | None) -> bool:
+    """Write the planned-stop marker for `pid` and exit without signalling.
+
+    Used by systemd `ExecStop` so the service user can mark the stop as
+    intentional before PID 1 delivers SIGTERM to the main gateway process.
+    """
+    try:
+        target_pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if target_pid <= 0:
+        return False
+
+    try:
+        from gateway.status import write_planned_stop_marker
+
+        wrote = write_planned_stop_marker(target_pid)
+    except Exception:
+        return False
+
+    if wrote:
+        _ensure_planned_stop_marker_readable()
+    return wrote
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
@@ -2605,10 +2654,10 @@ def systemd_stop(system: bool = False):
     _require_service_installed("stop", system=system)
     _sync_hermes_home_from_systemd_unit(system=system)
     try:
-        from gateway.status import get_running_pid, write_planned_stop_marker
+        from gateway.status import get_running_pid
         pid = get_running_pid(cleanup_stale=False)
         if pid is not None:
-            write_planned_stop_marker(pid)
+            _write_planned_stop_only(pid)
     except Exception:
         pass
     try:
@@ -3020,10 +3069,10 @@ def launchd_stop():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     try:
-        from gateway.status import get_running_pid, write_planned_stop_marker
+        from gateway.status import get_running_pid
         pid = get_running_pid(cleanup_stale=False)
         if pid is not None:
-            write_planned_stop_marker(pid)
+            _write_planned_stop_only(pid)
     except Exception:
         pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
@@ -5251,6 +5300,12 @@ def _gateway_command_inner(args):
 
     if subcmd == "setup":
         gateway_setup()
+        return
+
+    if subcmd == "_write-planned-stop":
+        pid = getattr(args, "pid", None)
+        if not _write_planned_stop_only(pid):
+            sys.exit(1)
         return
 
     # Service management commands

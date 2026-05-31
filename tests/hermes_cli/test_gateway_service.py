@@ -1,6 +1,8 @@
 """Tests for gateway service management helpers."""
 
 import os
+import pwd
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +40,43 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    def test_generate_systemd_unit_includes_execstop_helper(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("hermes", "hermes", "/home/hermes"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_hermes_home_for_target_user",
+            lambda home_dir: f"{home_dir}/.hermes/profiles/karting",
+        )
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/home/hermes/.local/bin/python")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home: "--profile karting")
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="hermes")
+
+        assert (
+            "ExecStop=/home/hermes/.local/bin/python -m hermes_cli.main --profile karting "
+            "gateway _write-planned-stop --pid $MAINPID"
+        ) in unit
+
+    def test_write_planned_stop_only_makes_marker_world_readable(self, tmp_path, monkeypatch):
+        marker_path = tmp_path / ".gateway-planned-stop.json"
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        def fake_write_planned_stop_marker(pid):
+            marker_path.write_text('{"target_pid":123}', encoding="utf-8")
+            marker_path.chmod(0o600)
+            return True
+
+        monkeypatch.setattr(status, "write_planned_stop_marker", fake_write_planned_stop_marker)
+
+        assert gateway_cli._write_planned_stop_only(123) is True
+        assert stat.S_IMODE(marker_path.stat().st_mode) == 0o644
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -125,8 +164,8 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: 321)
         monkeypatch.setattr(
-            status,
-            "write_planned_stop_marker",
+            gateway_cli,
+            "_write_planned_stop_only",
             lambda pid: markers.append(pid) or True,
         )
 
@@ -148,8 +187,8 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: 321)
         monkeypatch.setattr(
-            status,
-            "write_planned_stop_marker",
+            gateway_cli,
+            "_write_planned_stop_only",
             lambda pid: markers.append(pid) or True,
         )
 

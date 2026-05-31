@@ -163,6 +163,28 @@ def test_run_gateway_windows_detached_absorbs_console_controls(monkeypatch):
     assert calls == [(False, 0)]
     assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
 
+def test_gateway_write_planned_stop_internal_command_dispatches(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        gateway,
+        "_write_planned_stop_only",
+        lambda pid: calls.append(pid) or True,
+    )
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="_write-planned-stop", pid="321"))
+
+    assert calls == ["321"]
+
+
+def test_gateway_write_planned_stop_internal_command_exits_nonzero_on_failure(monkeypatch):
+    monkeypatch.setattr(gateway, "_write_planned_stop_only", lambda pid: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.gateway_command(SimpleNamespace(gateway_command="_write-planned-stop", pid="0"))
+
+    assert exc_info.value.code == 1
+
 
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):

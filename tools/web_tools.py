@@ -130,7 +130,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in set(_KNOWN_WEB_BACKENDS):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -139,6 +139,9 @@ def _get_backend() -> str:
     # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
     # existing paid setups are unaffected.
     backend_candidates = (
+        ("zo-ask", _has_env("ZO_TOKEN")),
+        ("minimax", _has_env("MINIMAX_API_KEY")),
+        ("serper", _has_env("SERPER_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
@@ -218,6 +221,12 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "zo-ask":
+        return _has_env("ZO_TOKEN")
+    if backend == "minimax":
+        return _has_env("MINIMAX_API_KEY")
+    if backend == "serper":
+        return _has_env("SERPER_API_KEY")
     return False
 
 
@@ -818,15 +827,27 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
-        # delegation. Sync only — every provider's search() is sync.
+        # Dispatch through the web search registry. Search providers live as
+        # plugins; the dispatcher is a registry lookup + delegation. Sync only
+        # — every provider's search() is sync.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
         )
+
+        def _usable_search_response(payload: dict) -> bool:
+            return bool(
+                payload.get("success") is True
+                and payload.get("data", {}).get("web")
+            )
+
+        def _search_with_provider(provider_obj) -> dict:
+            logger.info(
+                "Web search via %s: '%s' (limit: %d)",
+                provider_obj.name, query, limit,
+            )
+            return provider_obj.search(query, limit)
 
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
@@ -835,7 +856,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             # configured backend isn't a registered search provider (typo,
             # uninstalled plugin, or capability mismatch).
             provider = get_active_search_provider()
+            backend = getattr(provider, "name", backend)
 
+        fallback_errors = []
         if provider is None:
             response_data = {
                 "success": False,
@@ -845,11 +868,33 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 ),
             }
         else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
+            response_data = _search_with_provider(provider)
+            if not _usable_search_response(response_data):
+                fallback_errors.append({
+                    "provider": provider.name,
+                    "error": response_data.get("error") or "empty results",
+                })
+                for fallback_backend in _SEARCH_FALLBACK_ORDER:
+                    if fallback_backend == provider.name or fallback_backend == backend:
+                        continue
+                    if not _is_backend_available(fallback_backend):
+                        continue
+                    fallback_provider = _wsp_get_provider(fallback_backend)
+                    if fallback_provider is None or not fallback_provider.supports_search():
+                        continue
+                    fallback_response = _search_with_provider(fallback_provider)
+                    if _usable_search_response(fallback_response):
+                        response_data = fallback_response
+                        response_data.setdefault("provider", fallback_provider.name)
+                        response_data["fallback_errors"] = fallback_errors
+                        break
+                    fallback_errors.append({
+                        "provider": fallback_provider.name,
+                        "error": fallback_response.get("error") or "empty results",
+                    })
+                else:
+                    if fallback_errors:
+                        response_data["fallback_errors"] = fallback_errors
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1152,14 +1197,18 @@ async def web_extract_tool(
 
 
 # Convenience function to check Firecrawl credentials
+_KNOWN_WEB_BACKENDS = ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "zo-ask", "minimax", "serper")
+_SEARCH_FALLBACK_ORDER = ("minimax", "serper", "ddgs", "brave-free", "searxng")
+
+
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured in set(_KNOWN_WEB_BACKENDS):
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in _KNOWN_WEB_BACKENDS
     )
 
 

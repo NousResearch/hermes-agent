@@ -200,6 +200,28 @@ class TestPerCapabilityBackendSelection:
         assert web_tools._get_search_backend() == "tavily"
         assert web_tools._get_extract_backend() == "tavily"
 
+    def test_minimax_search_backend_is_selectable(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "search_backend": "minimax",
+        })
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+
+        assert web_tools._is_backend_available("minimax") is True
+        assert web_tools._get_search_backend() == "minimax"
+
+    def test_serper_search_backend_is_selectable(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "search_backend": "serper",
+        })
+        monkeypatch.setenv("SERPER_API_KEY", "test-key")
+
+        assert web_tools._is_backend_available("serper") is True
+        assert web_tools._get_search_backend() == "serper"
+
 
 # ---------------------------------------------------------------------------
 # Config key presence in DEFAULT_CONFIG
@@ -256,6 +278,44 @@ class TestWebSearchUsesSearchBackend:
         assert len(called_with) > 0
         assert called_with[0][0] == "search"
 
+    def test_search_tool_falls_back_on_empty_results(self, monkeypatch):
+        import json
+        from tools import web_tools
+        import agent.web_search_registry as registry
+
+        class DummyProvider:
+            def __init__(self, name, response):
+                self.name = name
+                self.display_name = name
+                self._response = response
+
+            def supports_search(self):
+                return True
+
+            def search(self, query, limit=5):
+                return self._response
+
+        providers = {
+            "minimax": DummyProvider("minimax", {"success": True, "data": {"web": []}}),
+            "serper": DummyProvider("serper", {
+                "success": True,
+                "data": {"web": [{"title": "ok", "url": "https://example.com", "description": "fallback"}]},
+            }),
+        }
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"search_backend": "minimax"})
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        monkeypatch.setenv("SERPER_API_KEY", "test-key")
+        monkeypatch.setattr(registry, "get_provider", lambda name: providers.get(name))
+        monkeypatch.setattr(registry, "get_active_search_provider", lambda: providers["minimax"])
+
+        result = json.loads(web_tools.web_search_tool("fallback test", 1))
+
+        assert result["success"] is True
+        assert result["provider"] == "serper"
+        assert result["data"]["web"][0]["url"] == "https://example.com"
+        assert result["fallback_errors"][0]["provider"] == "minimax"
+
 
 class TestUnconfiguredErrorEnvelopeParity:
     """Regression tests for PR #25182: the post-migration dispatcher must
@@ -288,6 +348,9 @@ class TestUnconfiguredErrorEnvelopeParity:
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
             "TOOL_GATEWAY_DOMAIN",
+            "ZO_TOKEN",
+            "MINIMAX_API_KEY",
+            "SERPER_API_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 

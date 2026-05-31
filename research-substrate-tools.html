@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Research Substrate — API Tools</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Newsreader:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #faf9f5;
+    color: #3d3929;
+    font-family: 'Hanken Grotesk', ui-sans-serif, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Banner ── */
+  .banner {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(250, 249, 245, 0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+    padding: 14px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .banner-left { display: flex; align-items: center; gap: 8px; }
+  .banner-logo {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: linear-gradient(135deg, #3d3929 0%, #6b6550 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: #faf9f5; font-weight: 600; font-size: 14px;
+  }
+  .banner-title { font-weight: 600; font-size: 15px; color: #3d3929; }
+  .banner-links { display: flex; gap: 20px; }
+  .banner-links a {
+    font-size: 14px; color: #83827d; text-decoration: none; font-weight: 500;
+    transition: color 0.15s;
+  }
+  .banner-links a:hover { color: #3d3929; }
+
+  /* ── Hero ── */
+  .hero {
+    max-width: 1344px;
+    margin: 0 auto;
+    padding: 80px 24px 40px;
+    text-align: center;
+  }
+  .hero h1 {
+    font-family: 'Newsreader', 'Iowan Old Style', Georgia, serif;
+    font-size: clamp(36px, 6vw, 60px);
+    font-weight: 400;
+    color: #3d3929;
+    line-height: 1.1;
+    margin-bottom: 16px;
+  }
+  .hero p {
+    font-size: 16px; color: #83827d; max-width: 520px; margin: 0 auto;
+    line-height: 1.6;
+  }
+  .hero .version {
+    display: inline-block; margin-top: 20px;
+    font-size: 12px; font-weight: 500; color: #83827d;
+    background: rgba(0,0,0,0.04); padding: 4px 12px; border-radius: 20px;
+  }
+
+  /* ── Section ── */
+  .section {
+    max-width: 1344px;
+    margin: 0 auto;
+    padding: 0 24px 64px;
+  }
+  .section-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+    color: #a3a29d; margin-bottom: 20px; padding-left: 4px;
+  }
+
+  /* ── Grid ── */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+
+  /* ── Card ── */
+  .card {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 16px;
+    border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 12px;
+    background: #faf9f5;
+    text-decoration: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    cursor: pointer;
+  }
+  .card:hover {
+    border-color: rgba(0,0,0,0.12);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+  .card-icon {
+    flex-shrink: 0;
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+  }
+  .card-body { min-width: 0; }
+  .card-title {
+    font-size: 14px; font-weight: 500; color: #3d3929;
+    margin-bottom: 3px; line-height: 1.3;
+  }
+  .card-desc {
+    font-size: 12px; color: #83827d; line-height: 1.5;
+  }
+  .card-method {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    padding: 1px 6px; border-radius: 4px; margin-right: 4px;
+    vertical-align: middle;
+  }
+  .method-get { background: #e8f5e9; color: #2e7d32; }
+  .method-post { background: #e3f2fd; color: #1565c0; }
+
+  /* ── Card icon colors ── */
+  .icon-search { background: #fef3c7; }
+  .icon-research { background: #ede9fe; }
+  .icon-finance { background: #dcfce7; }
+  .icon-yahoo { background: #dbeafe; }
+  .icon-company { background: #fce7f3; }
+  .icon-macro { background: #e0f2fe; }
+  .icon-generate { background: #fef9c3; }
+  .icon-models { background: #f3e8ff; }
+  .icon-health { background: #d1fae5; }
+  .icon-read { background: #ffedd5; }
+
+  /* ── Footer ── */
+  .footer {
+    max-width: 1344px; margin: 0 auto;
+    padding: 24px 24px 48px;
+    border-top: 1px solid rgba(0,0,0,0.06);
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; color: #a3a29d;
+  }
+  .footer a { color: #83827d; text-decoration: none; }
+  .footer a:hover { color: #3d3929; }
+</style>
+</head>
+<body>
+
+<!-- Banner -->
+<div class="banner">
+  <div class="banner-left">
+    <div class="banner-logo">R</div>
+    <span class="banner-title">Research Substrate</span>
+  </div>
+  <div class="banner-links">
+    <a href="https://research.alyoechosys.dev/docs">API Docs</a>
+    <a href="https://research.alyoechosys.dev/openapi.json">OpenAPI</a>
+  </div>
+</div>
+
+<!-- Hero -->
+<div class="hero">
+  <h1>API Tools</h1>
+  <p>34 endpoints for research, financial data, search, and generation — all behind a single API key.</p>
+  <span class="version">v0.7.2</span>
+</div>
+
+<!-- Model Discovery -->
+<div class="section">
+  <div class="section-label">Model Discovery</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/v1_models_v1_models_get">
+      <div class="card-icon icon-models">🧠</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-get">GET</span> List models</div>
+        <div class="card-desc">OpenAI-compatible model list — discover available LLMs through LiteLLM</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/providers_providers_get">
+      <div class="card-icon icon-models">🔌</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-get">GET</span> Provider details</div>
+        <div class="card-desc">Detailed provider info with base URLs and parameter counts</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Search -->
+<div class="section">
+  <div class="section-label">Search</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/search_search_get">
+      <div class="card-icon icon-search">🔍</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-get">GET</span> Web search</div>
+        <div class="card-desc">Multi-provider cascade — MiniMax → Serper → SearXNG fallback</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/read_url_read_url_post">
+      <div class="card-icon icon-read">📄</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Read URL</div>
+        <div class="card-desc">Extract readable text from any webpage, PDF, or document URL</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Research -->
+<div class="section">
+  <div class="section-label">Research</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/research_ask_research_ask_post">
+      <div class="card-icon icon-research">🧪</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Research synthesis</div>
+        <div class="card-desc">Full pipeline — search → read sources → GLM synthesis with citations (~15–60s)</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/research_academic_research_academic_post">
+      <div class="card-icon icon-research">📚</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Academic search</div>
+        <div class="card-desc">arXiv + Google Scholar via Kimi — papers, abstracts, citation data</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Yahoo Finance -->
+<div class="section">
+  <div class="section-label">Yahoo Finance — US stocks, crypto, ETFs, indices</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_stock_info_yahoo_stock_info_post">
+      <div class="card-icon icon-yahoo">📈</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Stock info</div>
+        <div class="card-desc">Company profile, sector, market cap, key stats</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_stock_history_yahoo_stock_history_post">
+      <div class="card-icon icon-yahoo">📊</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Price history</div>
+        <div class="card-desc">OHLCV candle data — configurable period and interval</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_financials_yahoo_financials_post">
+      <div class="card-icon icon-yahoo">📋</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Financials</div>
+        <div class="card-desc">Income statement, balance sheet, cash flow</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_holders_yahoo_holders_post">
+      <div class="card-icon icon-yahoo">🏦</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Holders</div>
+        <div class="card-desc">Institutional and major holders breakdown</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_news_yahoo_news_post">
+      <div class="card-icon icon-yahoo">📰</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> News</div>
+        <div class="card-desc">Latest news articles for any ticker</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_option_chain_yahoo_option_chain_post">
+      <div class="card-icon icon-yahoo">🎯</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Option chain</div>
+        <div class="card-desc">Calls/puts with auto-expiry — no date needed</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_option_dates_yahoo_option_dates_post">
+      <div class="card-icon icon-yahoo">📅</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Option dates</div>
+        <div class="card-desc">Available expiration dates for a ticker's options</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_recommendations_yahoo_recommendations_post">
+      <div class="card-icon icon-yahoo">💡</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Recommendations</div>
+        <div class="card-desc">Analyst upgrades, downgrades, and consensus</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/yahoo_stock_actions_yahoo_stock_actions_post">
+      <div class="card-icon icon-yahoo">💹</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Stock actions</div>
+        <div class="card-desc">Dividend history and stock splits</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Finance (Kimi) -->
+<div class="section">
+  <div class="section-label">Finance (Kimi) — Global markets with exchange suffix (.O .SH .SZ .HK)</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_info_finance_stock_info_post">
+      <div class="card-icon icon-finance">💹</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Stock info</div>
+        <div class="card-desc">Company details for global markets (Kimi datasource)</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_price_finance_stock_price_post">
+      <div class="card-icon icon-finance">💲</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Stock price</div>
+        <div class="card-desc">Real-time and historical price quotes</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_forecast_finance_stock_forecast_post">
+      <div class="card-icon icon-finance">🔮</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Forecast</div>
+        <div class="card-desc">AI-generated price predictions and targets</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_financials_finance_stock_financials_post">
+      <div class="card-icon icon-finance">📑</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Financials</div>
+        <div class="card-desc">Income, balance sheet, cash flow — all periods</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_history_finance_stock_history_post">
+      <div class="card-icon icon-finance">📉</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Price history</div>
+        <div class="card-desc">Historical OHLCV for date range with interval control</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_holders_finance_stock_holders_post">
+      <div class="card-icon icon-finance">🏛️</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Holders</div>
+        <div class="card-desc">Top institutional and mutual fund holders</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_index_finance_stock_index_post">
+      <div class="card-icon icon-finance">🔢</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Stock index</div>
+        <div class="card-desc">Index profitability data — auto-reroutes SPX/DJI/NDX to Yahoo</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_screener_finance_stock_screener_post">
+      <div class="card-icon icon-finance">🔎</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Stock screener</div>
+        <div class="card-desc">Search stocks by keyword across global markets</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_segments_finance_stock_segments_post">
+      <div class="card-icon icon-finance">🧩</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Segments</div>
+        <div class="card-desc">Business segment revenue breakdown</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/finance_stock_announcements_finance_stock_announcements_post">
+      <div class="card-icon icon-finance">📢</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Announcements</div>
+        <div class="card-desc">Corporate announcements within a date range</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Company -->
+<div class="section">
+  <div class="section-label">Company (天眼查 Tianyancha)</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/company_search_company_search_post">
+      <div class="card-icon icon-company">🏢</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Search companies</div>
+        <div class="card-desc">Chinese company data — 华为, 腾讯, 比亚迪, etc.</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/company_query_company_query_post">
+      <div class="card-icon icon-company">🔍</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Query company</div>
+        <div class="card-desc">Targeted API queries — specific datapoints by api_name</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/company_search_apis_company_search_apis_post">
+      <div class="card-icon icon-company">📡</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Search APIs</div>
+        <div class="card-desc">Discover available Tianyancha API endpoints for a query</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Macro -->
+<div class="section">
+  <div class="section-label">Macro — World Bank</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/macro_world_bank_search_macro_world_bank_search_post">
+      <div class="card-icon icon-macro">🌐</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Indicator search</div>
+        <div class="card-desc">Find World Bank indicators — GDP, CO2, population, etc.</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/macro_world_bank_macro_world_bank_post">
+      <div class="card-icon icon-macro">📊</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> World Bank data</div>
+        <div class="card-desc">Time-series data by country and indicator</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Generate -->
+<div class="section">
+  <div class="section-label">Generate</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/generate_speech_generate_speech_post">
+      <div class="card-icon icon-generate">🎙️</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Speech</div>
+        <div class="card-desc">Text-to-speech — MiniMax speech-2.8-hd, multiple voices</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/generate_image_generate_image_post">
+      <div class="card-icon icon-generate">🖼️</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Image</div>
+        <div class="card-desc">Text-to-image with prompt optimization and aspect ratios</div>
+      </div>
+    </a>
+    <a class="card" href="https://research.alyoechosys.dev/docs#/default/generate_music_generate_music_post">
+      <div class="card-icon icon-generate">🎵</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-post">POST</span> Music</div>
+        <div class="card-desc">Text-to-music — lyrics, genre, mood, BPM, instruments</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Health -->
+<div class="section">
+  <div class="section-label">System</div>
+  <div class="grid">
+    <a class="card" href="https://research.alyoechosys.dev/healthz">
+      <div class="card-icon icon-health">💓</div>
+      <div class="card-body">
+        <div class="card-title"><span class="card-method method-get">GET</span> Health check</div>
+        <div class="card-desc">Service status — no auth required</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <span>Research Substrate v0.7.2 — 34 endpoints</span>
+  <a href="https://research.alyoechosys.dev/docs">Interactive API docs →</a>
+</div>
+
+</body>
+</html>

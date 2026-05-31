@@ -13,6 +13,11 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Alyosha Runtime Defaults
+
+- Kimi fallback must use `kimi-coding` model `k2p6` with base URL `https://api.kimi.com/coding/v1`. Do not use the retired `kimi-for-coding` or `kimi-k2-turbo-preview` aliases.
+
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.

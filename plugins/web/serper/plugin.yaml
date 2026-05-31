@@ -1,0 +1,7 @@
+name: web-serper
+version: 1.0.0
+description: "Serper Google SERP web search provider. Requires SERPER_API_KEY."
+author: Alyosha/Hermes
+kind: backend
+provides_web_providers:
+  - serper

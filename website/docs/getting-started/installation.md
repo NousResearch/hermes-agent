@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 ```
 
 The installer detects Termux automatically and switches to a tested Android flow:
-- uses Termux `pkg` for system dependencies (`git`, `python`, `nodejs`, `ripgrep`, `ffmpeg`, build tools)
+- uses Termux `pkg` for system dependencies (`git`, `python`, `nodejs-lts`, `ripgrep`, `ffmpeg`, build tools)
 - creates the virtualenv with `python -m venv`
 - exports `ANDROID_API_LEVEL` automatically for Android wheel builds
 - prefers the broad `.[termux-all]` extra and falls back to the smaller `.[termux]` extra (and finally a base install) if the first attempt fails to compile

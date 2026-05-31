@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 ```
 
 安装程序会自动检测 Termux 并切换到经过测试的 Android 流程：
-- 使用 Termux `pkg` 安装系统依赖（`git`、`python`、`nodejs`、`ripgrep`、`ffmpeg`、构建工具）
+- 使用 Termux `pkg` 安装系统依赖（`git`、`python`、`nodejs-lts`、`ripgrep`、`ffmpeg`、构建工具）
 - 使用 `python -m venv` 创建虚拟环境
 - 自动导出 `ANDROID_API_LEVEL` 以用于 Android wheel 构建
 - 优先使用较宽泛的 `.[termux-all]` extra，若首次编译失败则回退到较小的 `.[termux]` extra（最终回退到基础安装）

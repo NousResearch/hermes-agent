@@ -66,14 +66,14 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 ```bash
 pkg update
-pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgrep ffmpeg
+pkg install -y git python clang rust make pkg-config libffi openssl nodejs-lts ripgrep ffmpeg
 ```
 
 各包用途说明：
 - `python` — 运行时 + 虚拟环境支持
 - `git` — 克隆/更新仓库
 - `clang`、`rust`、`make`、`pkg-config`、`libffi`、`openssl` — 在 Android 上构建部分 Python 依赖所需
-- `nodejs` — 可选的 Node 运行时，用于已验证核心路径之外的实验
+- `nodejs-lts` — 可选的 Node.js LTS 运行时，用于已验证核心路径之外的实验
 - `ripgrep` — 快速文件搜索
 - `ffmpeg` — 媒体 / TTS 转换
 
@@ -208,7 +208,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 使用 Termux 包安装：
 
 ```bash
-pkg install ripgrep nodejs
+pkg install ripgrep nodejs-lts
 ```
 
 ### 安装 Python 包时构建失败

@@ -98,8 +98,8 @@ _nb_try_nvm() {
 
 _nb_try_termux_pkg() {
     _nb_is_termux || return 1
-    _nb_log "Installing Node.js via pkg..."
-    pkg install -y nodejs >/dev/null 2>&1 || return 1
+    _nb_log "Installing Node.js LTS via pkg..."
+    pkg install -y nodejs-lts >/dev/null 2>&1 || return 1
     _nb_have_modern_node || return 1
     _nb_ok "Node $(node --version) installed via pkg"
     return 0

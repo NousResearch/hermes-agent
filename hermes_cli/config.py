@@ -1198,6 +1198,19 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
     },
+
+    # Backend-only WebSocket listener that lets a mobile/web/native client attach
+    # to the live in-memory sessions owned by a running `hermes --tui` process.
+    # Off by default. Non-loopback binds (0.0.0.0, LAN/Tailscale hostnames, etc.)
+    # require a bearer token and still enforce Host/Origin guardrails.
+    "tui_remote_bridge": {
+        "enabled": False,
+        "host": "127.0.0.1",
+        "port": 8769,
+        "path": "/api/tui/ws",
+        "token": "",
+        "trusted_origins": [],
+    },
     
     "display": {
         "compact": False,

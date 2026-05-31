@@ -182,10 +182,8 @@ class TurnController {
     resetFlowOverlays()
   }
 
-  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
+  private archiveInterruptedState({ appendMessage, sys }: Pick<InterruptDeps, 'appendMessage' | 'sys'>) {
     this.interrupted = true
-    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
-
     this.closeReasoningSegment()
 
     const segments = this.segmentMessages
@@ -217,6 +215,15 @@ class TurnController {
     } else {
       sys('interrupted')
     }
+  }
+
+  archiveInterruptedTurn(deps: Pick<InterruptDeps, 'appendMessage' | 'sys'>) {
+    this.archiveInterruptedState(deps)
+  }
+
+  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
+    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
+    this.archiveInterruptedState({ appendMessage, sys })
 
     patchUiState({ status: 'interrupted' })
     this.clearStatusTimer()

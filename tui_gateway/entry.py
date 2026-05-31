@@ -19,6 +19,7 @@ import traceback
 
 from tui_gateway import server
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
+from tui_gateway.remote_bridge import start_remote_bridge_if_enabled
 from tui_gateway.transport import TeeTransport
 
 logger = logging.getLogger(__name__)
@@ -157,11 +158,11 @@ def _log_signal(signum: int, frame) -> None:
 # ``hermes --tui``) imports cleanly there.  SIGBREAK (Windows' Ctrl+Break)
 # is installed when available as a weaker equivalent of SIGHUP.
 if hasattr(signal, "SIGPIPE"):
-    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)  # windows-footgun: ok - guarded by hasattr
 if hasattr(signal, "SIGTERM"):
     signal.signal(signal.SIGTERM, _log_signal)
 if hasattr(signal, "SIGHUP"):
-    signal.signal(signal.SIGHUP, _log_signal)
+    signal.signal(signal.SIGHUP, _log_signal)  # windows-footgun: ok - guarded by hasattr
 elif hasattr(signal, "SIGBREAK"):
     # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
     # Route it through the same handler so kills are diagnosable.
@@ -212,6 +213,7 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
 
 def main():
     _install_sidecar_publisher()
+    remote_bridge = start_remote_bridge_if_enabled()
 
     # MCP tool discovery — runs in a background daemon thread so a slow or
     # unreachable MCP server can't freeze TUI startup.  Previously this ran
@@ -263,10 +265,14 @@ def main():
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
 
+    ready_payload = {"skin": resolve_skin()}
+    if remote_bridge is not None:
+        ready_payload["remote_bridge"] = remote_bridge.public_info()
+
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",
-        "params": {"type": "gateway.ready", "payload": {"skin": resolve_skin()}},
+        "params": {"type": "gateway.ready", "payload": ready_payload},
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)

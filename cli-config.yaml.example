@@ -900,6 +900,35 @@ delegation:
 # honcho: {}
 
 # =============================================================================
+# TUI Remote Bridge (backend-only live WebSocket attach)
+# =============================================================================
+# Starts an opt-in WebSocket listener inside a running `hermes --tui` gateway.
+# Remote clients speak the same JSON-RPC protocol as ui-tui's stdio transport:
+# connect, wait for gateway.ready, call session.active_list, then
+# session.activate to mirror/control an in-memory live TUI session.
+#
+# Defaults are loopback-only and disabled. To reach it from a phone over
+# Tailscale/LAN, bind to 0.0.0.0 (or a specific host) AND set a token; Hermes
+# refuses non-loopback binds without one. Native clients may pass the token as
+# `?token=...`, `Authorization: Bearer YOUR_TOKEN`, or `X-Hermes-TUI-Remote-Token`.
+# Browser clients should also set trusted_origins for their app origin.
+#
+# Equivalent environment overrides:
+#   HERMES_TUI_REMOTE_BRIDGE=1
+#   HERMES_TUI_REMOTE_BRIDGE_HOST=0.0.0.0
+#   HERMES_TUI_REMOTE_BRIDGE_PORT=8769
+#   HERMES_TUI_REMOTE_BRIDGE_TOKEN=...
+#   HERMES_TUI_REMOTE_BRIDGE_ORIGINS=http://localhost:5174,https://app.example
+#
+# tui_remote_bridge:
+#   enabled: false
+#   host: "127.0.0.1"
+#   port: 8769
+#   path: "/api/tui/ws"
+#   token: ""
+#   trusted_origins: []
+
+# =============================================================================
 # Display
 # =============================================================================
 display:

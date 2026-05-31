@@ -28,7 +28,7 @@ A scheduled GitHub Actions workflow ([`.github/workflows/sync-upstream.yml`](.gi
    - `tests/hermes_cli/test_plugins.py`
 7. Clones `pebble-tech/hermes-plugin-gateway-policy` and runs its test suite (smoke-test catches plugin-side drift).
 8. On success → `push --force-with-lease` every source branch and `main`.
-9. On **any** failure → opens (or comments on) a `sync-failure`-labelled issue with the run URL and upstream SHA. Never force-pushes a broken state.
+9. On **any** failure → opens (or comments on) a `sync-failure`-labelled issue with the run URL, upstream SHA, failed step/branch, and a machine-readable `sync-failure` YAML block. Optionally POSTs the same payload to a Cursor automation webhook (see [FORK_SYNC_AUTOMATION.md](FORK_SYNC_AUTOMATION.md)). Never force-pushes a broken state.
 
 ### Why focused tests, not the full suite
 
@@ -43,22 +43,26 @@ The full upstream `pytest tests/` would catch noise unrelated to our deploy targ
 
 When an upstream PR merges, drop its branch from `FEATURE_BRANCHES` via an `ops-overlay` commit and delete the branch from the fork. The cherry-pick becomes a no-op once upstream absorbs the change.
 
-## Manually recovering from a sync failure
+## Recovering from a sync failure
 
-The workflow files an issue when it can't complete. Fix locally:
+When sync fails, the workflow files a `sync-failure` issue with structured metadata. Recovery options:
+
+1. **Cursor automation** (recommended once configured) — webhook triggers a cloud agent that follows [`.cursor/skills/recover-fork-sync/SKILL.md`](.cursor/skills/recover-fork-sync/SKILL.md). One-time setup: [FORK_SYNC_AUTOMATION.md](FORK_SYNC_AUTOMATION.md).
+2. **Manual** — fix the failing **source branch** (`ops-overlay` or a `FEATURE_BRANCHES` entry), not integration `main`:
 
 ```bash
 git fetch upstream
-# Identify the failing source branch from the issue body, then:
+# Identify failed_branch from the issue sync-failure block, then:
 git checkout <branch>              # ops-overlay or feature/*
-git rebase upstream/main           # resolve conflicts
+git rebase upstream/main           # resolve conflicts, or drop branch if upstream absorbed it
 python -m pytest tests/gateway/test_pre_gateway_dispatch.py \
                  tests/gateway/test_session.py \
                  tests/hermes_cli/test_plugins.py -q
 git push --force-with-lease origin <branch>
+gh workflow run sync-upstream.yml --repo pebble-tech/hermes-agent --ref main
 ```
 
-Close the open `sync-failure` issue. The next scheduled run will rebuild `main` on top of the healthy source branches.
+Close the open `sync-failure` issue after the next sync succeeds.
 
 ## Consuming this fork
 

@@ -1,0 +1,20 @@
+---
+description: Fork upstream sync recovery — read when fixing sync-failure issues or editing sync-upstream.yml / FORK.md
+globs:
+  - FORK.md
+  - FORK_SYNC_AUTOMATION.md
+  - .github/workflows/sync-upstream.yml
+  - .cursor/skills/recover-fork-sync/**
+alwaysApply: false
+---
+
+# Fork sync recovery
+
+This repo is **pebble-tech/hermes-agent**, a deploy fork — not vanilla NousResearch.
+
+Before fixing sync failures:
+
+1. Read [FORK.md](../../FORK.md)
+2. Follow [.cursor/skills/recover-fork-sync/SKILL.md](../skills/recover-fork-sync/SKILL.md)
+
+Fix **source branches** (`ops-overlay`, `FEATURE_BRANCHES` entries). Never patch integration `main` — the sync workflow rebuilds it.

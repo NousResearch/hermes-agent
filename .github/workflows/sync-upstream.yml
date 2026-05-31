@@ -95,6 +95,9 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SYNC_PUSH_TOKEN }}
 
+      - name: Prepare sync failure recorder
+        run: chmod +x .github/scripts/record-sync-failure.sh
+
       - name: Configure git + upstream remote
         run: |
           git config user.name  "pebble-tech-bot"
@@ -108,6 +111,7 @@ jobs:
         run: |
           git checkout -B "$OPS_OVERLAY_BRANCH" "origin/$OPS_OVERLAY_BRANCH"
           if ! git rebase upstream/main; then
+            bash .github/scripts/record-sync-failure.sh rebase-ops-overlay "$OPS_OVERLAY_BRANCH"
             {
               echo "::error::Conflict rebasing $OPS_OVERLAY_BRANCH onto upstream/main"
               echo "Conflicted files:"
@@ -123,6 +127,7 @@ jobs:
             echo "::group::Rebase $branch"
             git checkout -B "$branch" "origin/$branch"
             if ! git rebase upstream/main; then
+              bash .github/scripts/record-sync-failure.sh rebase-feature-branch "$branch"
               {
                 echo "::error::Conflict rebasing $branch onto upstream/main"
                 echo "Conflicted files:"
@@ -139,12 +144,17 @@ jobs:
           git checkout -B "$INTEGRATION_BRANCH" upstream/main
 
           echo "::group::Cherry-pick ops-overlay"
-          git cherry-pick "upstream/main..$OPS_OVERLAY_BRANCH"
+          if ! git cherry-pick "upstream/main..$OPS_OVERLAY_BRANCH"; then
+            bash .github/scripts/record-sync-failure.sh cherry-pick-main "$OPS_OVERLAY_BRANCH"
+            git cherry-pick --abort || true
+            exit 1
+          fi
           echo "::endgroup::"
 
           for branch in $FEATURE_BRANCHES; do
             echo "::group::Cherry-pick $branch"
             if ! git cherry-pick "upstream/main..$branch"; then
+              bash .github/scripts/record-sync-failure.sh cherry-pick-main "$branch"
               {
                 echo "::error::Conflict cherry-picking $branch into $INTEGRATION_BRANCH"
                 echo "Conflicted files:"
@@ -185,11 +195,14 @@ jobs:
           NOUS_API_KEY: ""
         run: |
           source .venv/bin/activate
-          python -m pytest \
+          if ! python -m pytest \
             tests/gateway/test_pre_gateway_dispatch.py \
             tests/gateway/test_session.py \
             tests/hermes_cli/test_plugins.py \
-            -q --tb=short
+            -q --tb=short; then
+            bash .github/scripts/record-sync-failure.sh focused-tests "$INTEGRATION_BRANCH"
+            exit 1
+          fi
 
       - name: Smoke-test gateway-policy plugin against integration branch
         if: inputs.skip_tests != 'true'
@@ -199,29 +212,77 @@ jobs:
           cd /tmp/plugin
           # Plugin tests stub what they need via conftest.py; the smoke-test
           # catches manifest drift and confirms the plugin still loads.
-          python -m pytest -q --tb=short
+          if ! python -m pytest -q --tb=short; then
+            bash "$GITHUB_WORKSPACE/.github/scripts/record-sync-failure.sh" plugin-smoke-test "$INTEGRATION_BRANCH"
+            exit 1
+          fi
 
       - name: Push rebased source branches and integration branch
         run: |
-          git push --force-with-lease origin "$OPS_OVERLAY_BRANCH"
+          if ! git push --force-with-lease origin "$OPS_OVERLAY_BRANCH"; then
+            bash .github/scripts/record-sync-failure.sh push "$OPS_OVERLAY_BRANCH"
+            exit 1
+          fi
           for branch in $FEATURE_BRANCHES; do
-            git push --force-with-lease origin "$branch"
+            if ! git push --force-with-lease origin "$branch"; then
+              bash .github/scripts/record-sync-failure.sh push "$branch"
+              exit 1
+            fi
           done
-          git push --force-with-lease origin "$INTEGRATION_BRANCH"
+          if ! git push --force-with-lease origin "$INTEGRATION_BRANCH"; then
+            bash .github/scripts/record-sync-failure.sh push "$INTEGRATION_BRANCH"
+            exit 1
+          fi
 
       - name: Open / update sync-failure issue
         if: failure()
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require("fs");
+            const path = require("path");
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const upstreamSha = process.env.upstream_sha || "(unknown)";
             const today = new Date().toISOString().slice(0, 10);
+
+            let failure = {
+              failed_step: "unknown",
+              failed_branch: "",
+              upstream_sha: upstreamSha,
+              conflict_files: [],
+            };
+            const failurePath = path.join(process.env.GITHUB_WORKSPACE, ".sync-failure.json");
+            if (fs.existsSync(failurePath)) {
+              failure = { ...failure, ...JSON.parse(fs.readFileSync(failurePath, "utf8")) };
+            }
+
+            const yamlBlock = [
+              "```yaml",
+              "sync-failure:",
+              `  upstream_sha: ${failure.upstream_sha}`,
+              `  failed_step: ${failure.failed_step}`,
+              `  failed_branch: ${failure.failed_branch || ""}`,
+              failure.conflict_files?.length
+                ? `  conflict_files:\n${failure.conflict_files.map((f) => `    - ${f}`).join("\n")}`
+                : "  conflict_files: []",
+              `  workflow_run_url: ${runUrl}`,
+              "```",
+            ].join("\n");
+
             const body = [
               `The scheduled upstream-sync workflow failed.`,
               ``,
               `- Run: ${runUrl}`,
               `- Upstream \`main\` at: \`${upstreamSha}\``,
+              `- Failed step: \`${failure.failed_step}\``,
+              failure.failed_branch ? `- Source branch: \`${failure.failed_branch}\`` : null,
+              failure.conflict_files?.length
+                ? `- Conflicted files: ${failure.conflict_files.map((f) => `\`${f}\``).join(", ")}`
+                : null,
+              ``,
+              `**Cursor agent:** follow [.cursor/skills/recover-fork-sync/SKILL.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/.cursor/skills/recover-fork-sync/SKILL.md) (see \`sync-failure\` block below).`,
+              ``,
+              yamlBlock,
               ``,
               `Likely causes (in rough order of frequency):`,
               `1. Rebase conflict on a feature branch — upstream refactored the code the patch touches.`,
@@ -230,17 +291,12 @@ jobs:
               `4. Plugin smoke-test failed — \`pebble-tech/hermes-plugin-gateway-policy\` no longer loads cleanly.`,
               `5. Rebase conflict on \`ops-overlay\` — rare; only touches \`.github/workflows/sync-upstream.yml\` and \`FORK.md\`.`,
               ``,
-              `**Manual recovery:**`,
+              `If upstream absorbed the patch (closed/superseded PR), drop the branch from \`FEATURE_BRANCHES\` via \`ops-overlay\` — do not rebase the dead branch.`,
               ``,
-              `\`\`\``,
-              `git fetch upstream`,
-              `# Rebase the offending source branch (ops-overlay or a feature/*) onto upstream/main,`,
-              `# resolve conflicts, run focused tests, then:`,
-              `git push --force-with-lease origin <branch>`,
-              `\`\`\``,
-              ``,
-              `Subsequent scheduled runs will rebuild \`main\` once the source branches are healthy.`,
-            ].join("\n");
+              `Setup: [FORK_SYNC_AUTOMATION.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/FORK_SYNC_AUTOMATION.md)`,
+            ]
+              .filter(Boolean)
+              .join("\n");
 
             function issuesDisabledError(err) {
               const msg = String(err?.message || err || "");
@@ -248,6 +304,7 @@ jobs:
               return status === 410 || /issues has been disabled/i.test(msg);
             }
 
+            let issueNumber = null;
             try {
               const { data: openIssues } = await github.rest.issues.listForRepo({
                 owner: context.repo.owner,
@@ -256,20 +313,22 @@ jobs:
                 labels: "sync-failure",
               });
               if (openIssues.length > 0) {
+                issueNumber = openIssues[0].number;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: openIssues[0].number,
-                  body: `Another sync failure (${today}) at upstream \`${upstreamSha}\`: ${runUrl}`,
+                  issue_number: issueNumber,
+                  body: `Another sync failure (${today}) at upstream \`${upstreamSha}\`: ${runUrl}\n\n${yamlBlock}`,
                 });
               } else {
-                await github.rest.issues.create({
+                const { data: issue } = await github.rest.issues.create({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   title: `Upstream sync failed (${today})`,
                   body,
                   labels: ["sync-failure"],
                 });
+                issueNumber = issue.number;
               }
             } catch (err) {
               if (issuesDisabledError(err)) {
@@ -277,7 +336,50 @@ jobs:
                   "Upstream sync failed, but this repository has GitHub Issues disabled — cannot open or update a sync-failure issue. " +
                     `See the workflow log at ${runUrl}`,
                 );
-                return;
+              } else {
+                throw err;
               }
-              throw err;
             }
+
+            core.setOutput("issue_number", issueNumber ?? "");
+            core.setOutput("failed_step", failure.failed_step);
+            core.setOutput("failed_branch", failure.failed_branch || "");
+            core.setOutput("conflict_files", JSON.stringify(failure.conflict_files || []));
+        id: sync_failure_issue
+
+      - name: Notify Cursor sync recovery automation
+        if: failure() && secrets.CURSOR_SYNC_RECOVERY_WEBHOOK_URL != ''
+        continue-on-error: true
+        env:
+          WEBHOOK_URL: ${{ secrets.CURSOR_SYNC_RECOVERY_WEBHOOK_URL }}
+          WEBHOOK_KEY: ${{ secrets.CURSOR_SYNC_RECOVERY_WEBHOOK_KEY }}
+          UPSTREAM_SHA: ${{ env.upstream_sha }}
+          FAILED_STEP: ${{ steps.sync_failure_issue.outputs.failed_step }}
+          FAILED_BRANCH: ${{ steps.sync_failure_issue.outputs.failed_branch }}
+          CONFLICT_FILES: ${{ steps.sync_failure_issue.outputs.conflict_files }}
+          ISSUE_NUMBER: ${{ steps.sync_failure_issue.outputs.issue_number }}
+        run: |
+          payload=$(jq -n \
+            --arg event "sync-failure" \
+            --arg repository "${{ github.repository }}" \
+            --arg upstream_sha "$UPSTREAM_SHA" \
+            --arg failed_step "$FAILED_STEP" \
+            --arg failed_branch "$FAILED_BRANCH" \
+            --argjson conflict_files "$CONFLICT_FILES" \
+            --arg workflow_run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg issue_number "$ISSUE_NUMBER" \
+            '{
+              event: $event,
+              repository: $repository,
+              upstream_sha: $upstream_sha,
+              failed_step: $failed_step,
+              failed_branch: $failed_branch,
+              conflict_files: $conflict_files,
+              workflow_run_url: $workflow_run_url,
+              issue_number: (if $issue_number == "" then null else ($issue_number | tonumber) end)
+            }')
+          curl -sf -X POST "$WEBHOOK_URL" \
+            -H "Authorization: Bearer $WEBHOOK_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$payload"
+          echo "Cursor sync recovery webhook delivered"

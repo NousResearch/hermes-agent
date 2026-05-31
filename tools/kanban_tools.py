@@ -489,14 +489,11 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     note = args.get("note")
+    health = args.get("health")
     try:
         kb, conn = _connect()
         try:
-            # Extend the claim TTL first. The dispatcher pins
-            # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
-            # (see _default_spawn in kanban_db.py); falling back to the
-            # default _claimer_id() covers locally-driven workers that
-            # never went through the dispatcher path.
+            # Extend the claim TTL first.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             kb.heartbeat_claim(conn, tid, claimer=claim_lock)
 
@@ -504,6 +501,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 conn,
                 tid,
                 note=note,
+                health=health,
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -612,6 +610,10 @@ def _handle_create(args: dict, **kw) -> str:
                 ),
                 skills=skills,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                acceptance_criteria=args.get("acceptance_criteria"),
+                verification_plan=args.get("verification_plan"),
+                recovery_policy=args.get("recovery_policy"),
+                subagent_type=args.get("subagent_type"),
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -867,6 +869,25 @@ KANBAN_HEARTBEAT_SCHEMA = {
                     "Shown in the event log."
                 ),
             },
+            "health": {
+                "type": "object",
+                "description": (
+                    "Optional structured health data for freshness "
+                    "detection. Fields: 'transport_alive' (bool, "
+                    "whether message channel is responsive), "
+                    "'api_responsive' (bool, whether LLM API is "
+                    "responding), 'last_tool_call_at' (int, unix "
+                    "timestamp of most recent tool call). The "
+                    "dispatcher uses this to distinguish Healthy / "
+                    "Stalled / TransportDead states. Omit for simple "
+                    "text-only heartbeats."
+                ),
+                "properties": {
+                    "transport_alive": {"type": "boolean"},
+                    "api_responsive": {"type": "boolean"},
+                    "last_tool_call_at": {"type": "integer"},
+                },
+            },
         },
         "required": [],
     },
@@ -1009,6 +1030,62 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "acceptance_criteria": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Verifiable conditions the worker MUST satisfy "
+                    "before calling kanban_complete. Each criterion "
+                    "is a concrete, checkable statement (e.g. 'all "
+                    "tests pass', 'output matches schema X'). The "
+                    "completion gate verifies these against the "
+                    "worker's summary and metadata; unmet criteria "
+                    "block completion with a structured error. "
+                    "Omit when no formal acceptance check is needed."
+                ),
+            },
+            "verification_plan": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Commands or checks that a downstream verifier "
+                    "profile can execute to validate this task's "
+                    "output (e.g. ['pytest tests/', 'cargo test', "
+                    "'mypy src/']). Advisory for the worker — the "
+                    "verifier reads this from kanban_show when "
+                    "it picks up a verification task."
+                ),
+            },
+            "recovery_policy": {
+                "type": "string",
+                "enum": [
+                    "retry_once", "retry_twice",
+                    "escalate", "block_on_first"
+                ],
+                "description": (
+                    "Named failure-recovery policy. 'retry_once' / "
+                    "'retry_twice' allow the dispatcher to retry "
+                    "after crash/timeout. 'escalate' auto-blocks "
+                    "the task for human review on first failure. "
+                    "'block_on_first' blocks immediately without "
+                    "retry. Omit for default behavior (respects "
+                    "the dispatcher's max_retries / failure_limit)."
+                ),
+            },
+            "subagent_type": {
+                "type": "string",
+                "enum": ["Explore", "Plan", "Verification", "Implement"],
+                "description": (
+                    "Tool-whitelist profile for the worker. "
+                    "'Explore' = read-only (no write, no bash). "
+                    "'Plan' = read + TodoWrite + SendUserMessage "
+                    "(can plan and notify, cannot execute). "
+                    "'Verification' = read + bash + test (can run "
+                    "tests and validate, cannot write code). "
+                    "'Implement' = read + write + bash (full access). "
+                    "Omit for the profile's default toolset."
                 ),
             },
         },

@@ -606,11 +606,21 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    # === TaskPacket structured contract fields ===
+    # JSON array of strings — verifiable conditions for completion gate.
+    acceptance_criteria: Optional[list] = None
+    # JSON array of strings — verification commands for downstream verifiers.
+    verification_plan: Optional[list] = None
+    # Named recovery policy: null (default), "retry_once", "retry_twice",
+    # "escalate", "block_on_first".
+    recovery_policy: Optional[str] = None
+    # Tool-whitelist type: null (full), "Explore", "Plan", "Verification",
+    # "Implement".
+    subagent_type: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         keys = set(row.keys())
-        # Parse skills JSON blob if present
         skills_value: Optional[list] = None
         if "skills" in keys and row["skills"]:
             try:
@@ -670,7 +680,52 @@ class Task:
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
+            # --- TaskPacket structured contract fields ---
+            acceptance_criteria=(
+                _parse_json_list(row["acceptance_criteria"])
+                if "acceptance_criteria" in keys and row["acceptance_criteria"]
+                else None
+            ),
+            verification_plan=(
+                _parse_json_list(row["verification_plan"])
+                if "verification_plan" in keys and row["verification_plan"]
+                else None
+            ),
+            recovery_policy=(
+                row["recovery_policy"]
+                if "recovery_policy" in keys and row["recovery_policy"]
+                else None
+            ),
+            subagent_type=(
+                row["subagent_type"]
+                if "subagent_type" in keys and row["subagent_type"]
+                else None
+            ),
         )
+
+
+def _parse_json_list(raw: Optional[str]) -> Optional[list]:
+    """Parse a JSON-encoded list of strings from a TEXT column.
+
+    Returns a ``list[str]`` on success, ``None`` for NULL/empty input,
+    or ``None`` for malformed JSON (logged to stderr).  Graceful so a
+    corrupted blob doesn't crash ``from_row`` for an entire board.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if item is not None]
+        return None
+    except Exception:
+        import sys
+        print(
+            f"kanban_db._parse_json_list: invalid JSON in column, "
+            f"returning None (raw={raw[:120]!r})",
+            file=sys.stderr,
+        )
+        return None
 
 
 @dataclass
@@ -841,6 +896,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     worker_pid          INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    last_heartbeat_health TEXT,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
@@ -1076,6 +1132,41 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
+    # === TaskPacket structured contract fields (hermes-agent claw-code reliability layer) ===
+    # acceptance_criteria: JSON array of strings — verifiable conditions the
+    #   worker MUST satisfy before calling kanban_complete. The completion gate
+    #   checks these against the worker's summary/metadata; unmet criteria
+    #   block the completion with a structured error.
+    if "acceptance_criteria" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "acceptance_criteria", "acceptance_criteria TEXT"
+        )
+    # verification_plan: JSON array of strings — commands or checks that
+    #   downstream verifier profiles can execute to validate the task output.
+    #   Populated by the task author; advisory for the worker.
+    if "verification_plan" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "verification_plan", "verification_plan TEXT"
+        )
+    # recovery_policy: string enum — what the dispatcher should do on failure.
+    #   Values: null (default), "retry_once", "retry_twice", "escalate",
+    #   "block_on_first".  Overrides the per-task max_retries when set, by
+    #   providing a named policy that the circuit breaker interprets.
+    if "recovery_policy" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "recovery_policy", "recovery_policy TEXT"
+        )
+    # subagent_type: string enum — tool-whitelist profile for the worker.
+    #   Values: null (default = full toolset), "Explore" (read-only),
+    #   "Plan" (read+todo+notify), "Verification" (read+bash+test),
+    #   "Implement" (read+write+bash).  The dispatcher passes this to the
+    #   worker via HERMES_KANBAN_SUBAGENT_TYPE env; the worker's prompt
+    #   builder adjusts the allowed-tools list accordingly.
+    if "subagent_type" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "subagent_type", "subagent_type TEXT"
+        )
+
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
@@ -1085,6 +1176,24 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_events_run "
             "ON task_events(run_id, id)"
         )
+
+    # task_runs gained last_heartbeat_health for structured freshness.
+    # Guard: some test fixtures use a minimal schema without task_runs.
+    run_tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+        )
+    }
+    if "task_runs" in run_tables:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "last_heartbeat_health" not in run_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "last_heartbeat_health",
+                "last_heartbeat_health TEXT",
+            )
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
@@ -1244,6 +1353,10 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    acceptance_criteria: Optional[Iterable[str]] = None,
+    verification_plan: Optional[Iterable[str]] = None,
+    recovery_policy: Optional[str] = None,
+    subagent_type: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1324,6 +1437,33 @@ def create_task(
             )
         skills_list = cleaned
 
+    # Validate TaskPacket structured fields
+    _VALID_SUBAGENT_TYPES = {"Explore", "Plan", "Verification", "Implement"}
+    if subagent_type is not None and subagent_type not in _VALID_SUBAGENT_TYPES:
+        raise ValueError(
+            f"subagent_type must be one of {sorted(_VALID_SUBAGENT_TYPES)}, "
+            f"got {subagent_type!r}"
+        )
+    _VALID_RECOVERY_POLICIES = {
+        "retry_once", "retry_twice", "escalate", "block_on_first"
+    }
+    if recovery_policy is not None and recovery_policy not in _VALID_RECOVERY_POLICIES:
+        raise ValueError(
+            f"recovery_policy must be one of {sorted(_VALID_RECOVERY_POLICIES)}, "
+            f"got {recovery_policy!r}"
+        )
+    # Serialize list fields
+    acceptance_criteria_json: Optional[str] = None
+    if acceptance_criteria is not None:
+        ac_list = [str(c).strip() for c in acceptance_criteria if c]
+        if ac_list:
+            acceptance_criteria_json = json.dumps(ac_list)
+    verification_plan_json: Optional[str] = None
+    if verification_plan is not None:
+        vp_list = [str(v).strip() for v in verification_plan if v]
+        if vp_list:
+            verification_plan_json = json.dumps(vp_list)
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -1377,8 +1517,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, acceptance_criteria, verification_plan,
+                        recovery_policy, subagent_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1396,6 +1537,10 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        acceptance_criteria_json,
+                        verification_plan_json,
+                        recovery_policy,
+                        subagent_type,
                     ),
                 )
                 for pid in parents:
@@ -1413,6 +1558,18 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
+                        "acceptance_criteria": (
+                            json.loads(acceptance_criteria_json)
+                            if acceptance_criteria_json
+                            else None
+                        ),
+                        "verification_plan": (
+                            json.loads(verification_plan_json)
+                            if verification_plan_json
+                            else None
+                        ),
+                        "recovery_policy": recovery_policy,
+                        "subagent_type": subagent_type,
                     },
                 )
             return task_id
@@ -2348,6 +2505,37 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _check_acceptance_criteria(
+    criteria: list,
+    summary: str,
+    metadata: dict,
+) -> list[str]:
+    """Check acceptance criteria against the worker's handoff.
+
+    Returns a list of unmet criteria strings (empty = all met).
+    Each criterion is a string like "all tests pass" — we check for
+    keyword presence in the combined summary + metadata text. This is
+    intentionally lenient: the gate catches workers that completely
+    forgot about a criterion, not workers with slightly imprecise
+    wording. Stricter checking belongs in a downstream verifier task.
+    """
+    combined = (
+        (summary or "").lower()
+        + " "
+        + json.dumps(metadata, default=str).lower()
+    )
+    unmet: list[str] = []
+    for criterion in criteria:
+        if not criterion or not criterion.strip():
+            continue
+        # Simple keyword-presence check. For multi-word criteria
+        # (e.g. "output matches schema X"), all keywords must appear.
+        keywords = criterion.strip().lower().split()
+        if not all(kw in combined for kw in keywords):
+            unmet.append(criterion.strip())
+    return unmet
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2414,6 +2602,44 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # --- TaskPacket gate: acceptance_criteria ---
+    # Verify the task's acceptance criteria against the worker's summary
+    # and metadata BEFORE the main write txn. Unmet criteria block
+    # completion with a structured error so the worker can retry.
+    task = get_task(conn, task_id)
+    if task and task.acceptance_criteria:
+        unmet = _check_acceptance_criteria(
+            task.acceptance_criteria,
+            summary or result or "",
+            metadata or {},
+        )
+        if unmet:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_blocked_acceptance",
+                    {
+                        "unmet_criteria": unmet,
+                        "total_criteria": len(task.acceptance_criteria),
+                        "summary_preview": (
+                            (summary or result or "").strip().splitlines()[0][:200]
+                            if (summary or result)
+                            else None
+                        ),
+                    },
+                )
+            raise ValueError(
+                "completion blocked: unmet acceptance criteria — "
+                + "; ".join(f"'{c}'" for c in unmet)
+            )
+        # All criteria met — record the verification pass
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "acceptance_criteria_met",
+                {
+                    "criteria_count": len(task.acceptance_criteria),
+                },
+            )
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -3115,6 +3341,7 @@ def heartbeat_worker(
     task_id: str,
     *,
     note: Optional[str] = None,
+    health: Optional[dict] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
@@ -3123,6 +3350,14 @@ def heartbeat_worker(
     the PID check. A worker that forks a long-lived child (train loop,
     video encode, web crawl) can have its Python still alive while the
     actual work process is stuck; periodic heartbeats catch that.
+
+    ``health`` is an optional dict with structured freshness fields:
+      - transport_alive: bool — whether the message channel is responsive
+      - api_responsive: bool — whether the LLM API is responding
+      - last_tool_call_at: int — unix timestamp of most recent tool call
+
+    The dispatcher uses these to distinguish Healthy / Stalled /
+    TransportDead states in ``detect_crashed_workers``.
 
     Returns True on success, False if the task is not in a state that
     should be heartbeating (not running, or claim expired).
@@ -3153,9 +3388,21 @@ def heartbeat_worker(
                 "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
                 (now, run_id),
             )
+            # Store health data on the run for freshness detection
+            if health and isinstance(health, dict):
+                conn.execute(
+                    "UPDATE task_runs SET last_heartbeat_health = ? WHERE id = ?",
+                    (json.dumps(health), run_id),
+                )
+        event_payload: dict = {"note": note} if note else {}
+        if health and isinstance(health, dict):
+            event_payload["health"] = {
+                k: v for k, v in health.items()
+                if k in ("transport_alive", "api_responsive", "last_tool_call_at")
+            }
         _append_event(
             conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            event_payload if event_payload else None,
             run_id=run_id,
         )
     return True
@@ -3289,10 +3536,84 @@ def set_max_runtime(
     return cur.rowcount == 1
 
 
+def _latest_run_heartbeat_health(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[dict]:
+    """Return the most recent structured health data from task_runs.
+
+    Returns None if no run has stored health data.
+    """
+    row = conn.execute(
+        "SELECT last_heartbeat_health FROM task_runs "
+        "WHERE task_id = ? AND last_heartbeat_health IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["last_heartbeat_health"]:
+        return None
+    try:
+        return json.loads(row["last_heartbeat_health"])
+    except Exception:
+        return None
+
+
+def _handle_transport_dead(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    error_text: str,
+    health: Optional[dict] = None,
+) -> None:
+    """Auto-block a task whose worker reported transport death.
+
+    Unlike normal crashes (which drop to 'ready' for retry), transport
+    death means the worker explicitly signaled it cannot communicate —
+    retrying would produce the same result.  Auto-block immediately.
+    """
+    conn.execute(
+        "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+        "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+        (task_id,),
+    )
+    run_id = _end_run(
+        conn, task_id,
+        outcome="blocked", status="blocked",
+        error=error_text,
+        metadata={"pid": pid, "health": health} if health else {"pid": pid},
+    )
+    _append_event(
+        conn, task_id, "transport_dead",
+        {
+            "pid": pid,
+            "error": error_text,
+            "health": health,
+        },
+        run_id=run_id,
+    )
+    _append_event(
+        conn, task_id, "auto_blocked",
+        {"reason": error_text},
+    )
+
+
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
+
+    Before checking PID liveness, evaluates heartbeat freshness for each
+    running task.  Workers that have been sending structured health
+    heartbeats are classified as:
+
+      - **Healthy** — recent heartbeat with transport_alive=true
+      - **Stalled** — heartbeat aged past threshold but transport still
+        alive (PID alive, work is stuck — logged, not reclaimed)
+      - **TransportDead** — heartbeat aged past threshold with
+        transport_alive=false or no health data → auto-blocked immediately
+
+    Only tasks with no structured health heartbeat fall through to the
+    PID liveness check (backward-compatible path).
+
     Different from ``release_stale_claims``: this checks liveness
     immediately rather than waiting for the claim TTL.
 
@@ -3300,37 +3621,71 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     are meaningless here. The host-local check is enough because
     ``_default_spawn`` always runs the worker on the same host as the
     dispatcher (the whole design is single-host).
-
-    When the reap registry shows the worker exited cleanly (rc=0) but
-    the task was still ``running`` in the DB, treat it as a protocol
-    violation (worker answered conversationally without calling
-    ``kanban_complete`` / ``kanban_block``) and trip the circuit breaker
-    on the first occurrence — retrying a worker whose CLI keeps
-    returning 0 without a terminal transition just loops forever.
     """
+    # --- Freshness thresholds (seconds) ---
+    # Heartbeat older than this → considered stale for freshness analysis.
+    HEARTBEAT_STALE_SECONDS = int(
+        os.environ.get("HERMES_KANBAN_HEARTBEAT_STALE", "300")
+    )  # 5 minutes
+
     crashed: list[str] = []
-    # Per-crash details collected inside the main txn, used after it
-    # closes to run ``_record_task_failure`` (which needs its own
-    # write_txn so can't nest). ``protocol_violation`` flags the
-    # clean-exit-but-still-running case so we can trip the breaker
-    # immediately instead of incrementing by 1.
     crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock FROM tasks "
+            "SELECT id, worker_pid, claim_lock, last_heartbeat_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+        now = int(time.time())
+
         for row in rows:
-            # Only check liveness for claims owned by this host.
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
                 continue
-            if _pid_alive(row["worker_pid"]):
-                continue
 
             pid = int(row["worker_pid"])
+
+            # --- Freshness analysis via structured heartbeats ---
+            last_hb = row["last_heartbeat_at"]
+            if last_hb is not None:
+                hb_age = now - int(last_hb)
+                if hb_age > HEARTBEAT_STALE_SECONDS:
+                    # Check health data from the most recent run
+                    health = _latest_run_heartbeat_health(conn, row["id"])
+                    if health is not None:
+                        transport_alive = health.get("transport_alive", True)
+                        if transport_alive:
+                            # Stalled: transport alive but no recent heartbeat.
+                            # PID is still alive, so don't reclaim — just log.
+                            _append_event(
+                                conn, row["id"], "heartbeat_stalled",
+                                {
+                                    "pid": pid,
+                                    "heartbeat_age_seconds": hb_age,
+                                    "health": health,
+                                },
+                            )
+                            continue  # Skip PID check for stalled workers
+                        else:
+                            # TransportDead: worker explicitly reported
+                            # transport failure. Auto-block immediately.
+                            error_text = (
+                                f"transport dead (heartbeat age={hb_age}s, "
+                                f"transport_alive=false)"
+                            )
+                            _handle_transport_dead(
+                                conn, row["id"], pid, error_text, health,
+                            )
+                            crashed.append(row["id"])
+                            continue
+
+            # --- PID liveness check (backward-compatible path) ---
+            if _pid_alive(pid):
+                continue
+
+            # ... rest of existing PID crash logic ...
+
             kind, code = _classify_worker_exit(pid)
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -3831,6 +4186,12 @@ def dispatch_once(
                 pid = _spawn(claimed, str(workspace))
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
+            # Schedule boot observer to verify worker actually started.
+            # Runs as a daemon thread — does not block the dispatcher.
+            log_path = str(worker_log_path(task_id=claimed.id, board=board))
+            _schedule_boot_observer(
+                claimed.id, int(pid) if pid else 0, log_path, board=board,
+            )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -3975,6 +4336,17 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    # --- TaskPacket structured contract fields ---
+    if task.subagent_type:
+        env["HERMES_KANBAN_SUBAGENT_TYPE"] = task.subagent_type
+    if task.acceptance_criteria:
+        env["HERMES_KANBAN_ACCEPTANCE_CRITERIA"] = json.dumps(
+            task.acceptance_criteria
+        )
+    if task.verification_plan:
+        env["HERMES_KANBAN_VERIFICATION_PLAN"] = json.dumps(
+            task.verification_plan
+        )
 
     cmd = [
         *_resolve_hermes_argv(),
@@ -4037,6 +4409,213 @@ def _default_spawn(
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
     return proc.pid
+
+
+# ---------------------------------------------------------------------------
+# Boot State Machine — worker startup verification
+# ---------------------------------------------------------------------------
+
+# Configurable via env; default matches typical Hermes cold-start latency.
+_BOOT_OBSERVER_TIMEOUT_SECONDS = int(
+    os.environ.get("HERMES_KANBAN_BOOT_TIMEOUT", "45")
+)
+# Minimum log bytes that suggest successful startup (system prompt injection
+# + first assistant response). Below this threshold the worker likely
+# crashed or failed to authenticate.
+_BOOT_MIN_LOG_BYTES = int(
+    os.environ.get("HERMES_KANBAN_BOOT_MIN_LOG_BYTES", "500")
+)
+
+# Log markers that signal a healthy worker startup.  Each tuple is
+# (pattern_lowercase, description).  At least one must match.
+_BOOT_HEALTH_MARKERS: list[tuple[str, str]] = [
+    ("tool call", "worker issued a tool call"),
+    ("assistant:", "worker produced assistant response"),
+    ("kanban_show", "worker called kanban_show (orientation step)"),
+    ("tool_use", "worker tool use detected"),
+    ("iteration", "agent iteration started"),
+]
+
+# Log markers that signal a failing worker.  If any of these appear
+# *before* any health marker, the boot is considered failed.
+_BOOT_FAILURE_MARKERS: list[tuple[str, str]] = [
+    ("authenticationerror", "API authentication failed"),
+    ("invalid api key", "invalid API key"),
+    ("rate limit", "rate limited"),
+    ("profile", "profile error"),
+    ("no such file", "file not found (likely binary missing)"),
+    ("traceback (most recent call last)", "Python traceback (crash)"),
+]
+
+
+def _check_boot_evidence(
+    log_path: str,
+    pid: int,
+) -> dict:
+    """Inspect a worker's log file and process status for boot evidence.
+
+    Returns a dict with:
+      - healthy: bool
+      - stage: str (one of "healthy", "failed", "unknown", "process_dead")
+      - evidence: str (human-readable summary)
+      - failure_marker: str or None (matched failure pattern description)
+      - log_bytes: int
+    """
+    result: dict = {
+        "healthy": False,
+        "stage": "unknown",
+        "evidence": "",
+        "failure_marker": None,
+        "log_bytes": 0,
+    }
+
+    # 1. Check process liveness
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        result["stage"] = "process_dead"
+        result["evidence"] = f"worker PID {pid} is no longer alive"
+        return result
+
+    # 2. Read log
+    log_bytes = 0
+    log_text = ""
+    if os.path.isfile(log_path):
+        try:
+            log_bytes = os.path.getsize(log_path)
+            if log_bytes > 0:
+                with open(log_path, "rb") as f:
+                    # Read last 64KB — enough for startup diagnostics
+                    f.seek(max(0, log_bytes - 65536))
+                    log_text = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            pass
+    result["log_bytes"] = log_bytes
+
+    if not log_text.strip():
+        result["stage"] = "unknown"
+        result["evidence"] = (
+            f"worker PID {pid} is alive but log is empty "
+            f"({log_bytes} bytes)"
+        )
+        return result
+
+    log_lower = log_text.lower()
+
+    # 3. Check failure markers first (they take priority)
+    for pattern, desc in _BOOT_FAILURE_MARKERS:
+        if pattern in log_lower:
+            result["stage"] = "failed"
+            result["failure_marker"] = desc
+            result["evidence"] = f"failure marker '{desc}' detected in log"
+            return result
+
+    # 4. Check health markers
+    for pattern, desc in _BOOT_HEALTH_MARKERS:
+        if pattern in log_lower:
+            result["healthy"] = True
+            result["stage"] = "healthy"
+            result["evidence"] = f"health marker '{desc}' detected"
+            return result
+
+    # 5. No clear signal — fall back to log size heuristic
+    if log_bytes >= _BOOT_MIN_LOG_BYTES:
+        result["healthy"] = True
+        result["stage"] = "healthy"
+        result["evidence"] = (
+            f"no explicit marker but log has {log_bytes} bytes "
+            f"(>= threshold {_BOOT_MIN_LOG_BYTES})"
+        )
+    else:
+        result["stage"] = "unknown"
+        result["evidence"] = (
+            f"no evidence of successful startup in {log_bytes} bytes "
+            f"(threshold: {_BOOT_MIN_LOG_BYTES})"
+        )
+
+    return result
+
+
+def _schedule_boot_observer(
+    task_id: str,
+    pid: int,
+    log_path: str,
+    *,
+    timeout: int = _BOOT_OBSERVER_TIMEOUT_SECONDS,
+    board: Optional[str] = None,
+) -> None:
+    """Schedule a background boot observer for a freshly spawned worker.
+
+    After ``timeout`` seconds, checks the worker's log and process
+    status. If the worker shows no evidence of healthy startup, the
+    task is auto-blocked with a diagnostic event.
+
+    Runs in a daemon thread — non-blocking, fire-and-forget.
+    """
+    import threading
+
+    def _observe() -> None:
+        import time as _time
+        _time.sleep(timeout)
+
+        conn = connect(board=board)
+        try:
+            task = get_task(conn, task_id)
+            # Only check tasks that are still 'running' — if the worker
+            # already completed/blocked/crashed, don't interfere.
+            if task is None or task.status != "running":
+                return
+
+            evidence = _check_boot_evidence(log_path, pid)
+
+            if evidence["healthy"]:
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "boot_healthy",
+                        {
+                            "pid": pid,
+                            "log_bytes": evidence["log_bytes"],
+                            "evidence": evidence["evidence"],
+                            "timeout_seconds": timeout,
+                        },
+                    )
+            else:
+                reason = (
+                    f"Boot observer: {evidence['evidence']} "
+                    f"(stage={evidence['stage']}, timeout={timeout}s)"
+                )
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "boot_failed",
+                        {
+                            "pid": pid,
+                            "stage": evidence["stage"],
+                            "evidence": evidence["evidence"],
+                            "failure_marker": evidence["failure_marker"],
+                            "log_bytes": evidence["log_bytes"],
+                            "timeout_seconds": timeout,
+                        },
+                    )
+                    # Auto-block the task — boot failure means the
+                    # worker won't recover on its own.
+                    conn.execute(
+                        "UPDATE tasks SET status = 'blocked', "
+                        "claim_lock = NULL, claim_expires = NULL, "
+                        "worker_pid = NULL WHERE id = ?",
+                        (task_id,),
+                    )
+                    _append_event(
+                        conn, task_id, "auto_blocked",
+                        {"reason": reason},
+                    )
+        except Exception:
+            # Boot observer failures must never crash the dispatcher.
+            pass
+        finally:
+            conn.close()
+
+    t = threading.Thread(target=_observe, daemon=True)
+    t.start()
 
 
 # ---------------------------------------------------------------------------
@@ -4151,6 +4730,34 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
+        lines.append("")
+
+    # --- TaskPacket: acceptance criteria ---
+    if task.acceptance_criteria:
+        lines.append("## Acceptance Criteria")
+        lines.append(
+            "You MUST satisfy ALL of the following before calling "
+            "kanban_complete. The completion gate verifies these "
+            "against your summary and metadata."
+        )
+        for i, criterion in enumerate(task.acceptance_criteria, 1):
+            lines.append(f"{i}. {criterion}")
+        lines.append("")
+
+    # --- TaskPacket: verification plan ---
+    if task.verification_plan:
+        lines.append("## Verification Plan (for downstream verifier)")
+        for i, cmd in enumerate(task.verification_plan, 1):
+            lines.append(f"{i}. `{cmd}`")
+        lines.append("")
+
+    # --- TaskPacket: subagent type ---
+    if task.subagent_type:
+        lines.append(f"## Subagent Type: {task.subagent_type}")
+        lines.append(
+            f"You have been assigned the '{task.subagent_type}' tool profile. "
+            f"Your available tools are restricted accordingly."
+        )
         lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the

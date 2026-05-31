@@ -27,12 +27,205 @@ import asyncio
 import logging
 import threading
 import time
+import concurrent.futures
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Tool Safety Configuration — Timeout, Truncation, Validation
+# =============================================================================
+# All three safety layers are additive, gated, and backward-compatible.
+# Defaults are conservative — explicitly enable via config.yaml or env vars.
+# =============================================================================
+
+_TOOL_SAFETY_CONFIG = None
+_TOOL_SAFETY_CONFIG_LOCK = threading.Lock()
+_TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool_exec")
+
+
+def _load_tool_safety_config() -> dict:
+    """Load tool safety configuration from config.yaml (lazy, cached).
+
+    Returns a dict with keys:
+        tool_timeout_seconds (float):  default 0.0 (disabled)
+        tool_max_output_chars (int):   default 0 (disabled)
+        tool_validate_input (bool):    default False
+    """
+    global _TOOL_SAFETY_CONFIG
+    if _TOOL_SAFETY_CONFIG is not None:
+        return _TOOL_SAFETY_CONFIG
+
+    with _TOOL_SAFETY_CONFIG_LOCK:
+        if _TOOL_SAFETY_CONFIG is not None:
+            return _TOOL_SAFETY_CONFIG
+
+        cfg = {
+            "tool_timeout_seconds": 0.0,
+            "tool_max_output_chars": 0,
+            "tool_validate_input": False,
+        }
+        try:
+            from hermes_cli.config import load_config
+            user_cfg = load_config()
+            tool_cfg = user_cfg.get("tools", {})
+            safes = tool_cfg.get("safety", {})
+            if isinstance(safes, dict):
+                cfg["tool_timeout_seconds"] = float(safes.get("timeout_seconds", 0.0))
+                cfg["tool_max_output_chars"] = int(safes.get("max_output_chars", 0))
+                cfg["tool_validate_input"] = bool(safes.get("validate_input", False))
+        except Exception:
+            pass
+
+        # Env var overrides (backward-compatible with existing setups)
+        try:
+            cfg["tool_timeout_seconds"] = float(
+                os.environ.get("HERMES_TOOL_TIMEOUT", str(cfg["tool_timeout_seconds"]))
+            )
+        except (ValueError, TypeError):
+            cfg["tool_timeout_seconds"] = 0.0
+        try:
+            cfg["tool_max_output_chars"] = int(
+                os.environ.get("HERMES_TOOL_MAX_OUTPUT", str(cfg["tool_max_output_chars"]))
+            )
+        except (ValueError, TypeError):
+            cfg["tool_max_output_chars"] = 0
+        env_validate = os.environ.get("HERMES_TOOL_VALIDATE_INPUT", "")
+        if env_validate in ("1", "true", "yes"):
+            cfg["tool_validate_input"] = True
+
+        _TOOL_SAFETY_CONFIG = cfg
+        return cfg
+
+
+def _validate_tool_args_against_schema(function_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Validate tool arguments against the registered JSON Schema.
+
+    Returns an error string if validation fails, or None if valid.
+    Only checks for missing required fields and basic type mismatches.
+    """
+    schema = registry.get_schema(function_name)
+    if not schema:
+        return None
+
+    params = (schema.get("parameters") or {})
+    properties = params.get("properties") or {}
+    required = params.get("required") or []
+
+    # Check required fields
+    for field in required:
+        if field not in args or args[field] is None or (isinstance(args[field], str) and args[field].strip() == ""):
+            field_desc = ""
+            if field in properties:
+                field_desc = f" ({properties[field].get('description', '')})"
+            return (
+                f"Validation failed for '{function_name}': "
+                f"missing required field '{field}'{field_desc}. "
+                f"Please provide this parameter."
+            )
+
+    # Basic type checks on provided fields
+    for key, value in list(args.items()):
+        if key not in properties:
+            continue
+        prop = properties[key]
+        expected_type = prop.get("type")
+        if expected_type == "string" and not isinstance(value, str):
+            return (
+                f"Validation failed for '{function_name}': "
+                f"field '{key}' expected string, got {type(value).__name__}. "
+                f"Please provide a valid string value."
+            )
+        if expected_type == "integer" and not isinstance(value, int):
+            if isinstance(value, (float, str)):
+                try:
+                    int(value)
+                    continue
+                except (ValueError, TypeError):
+                    pass
+            return (
+                f"Validation failed for '{function_name}': "
+                f"field '{key}' expected integer, got {type(value).__name__}. "
+                f"Please provide a valid integer."
+            )
+        if expected_type in ("array",) and not isinstance(value, (list, tuple)):
+            return (
+                f"Validation failed for '{function_name}': "
+                f"field '{key}' expected array, got {type(value).__name__}. "
+                f"Please provide a list of values."
+            )
+
+    return None
+
+
+def _execute_tool_with_timeout(function_name: str, function_args: Dict[str, Any],
+                                task_id: str = None, user_task: str = None,
+                                enabled_tools: List[str] = None,
+                                timeout_seconds: float = 0.0) -> str:
+    """Execute ``registry.dispatch`` with optional timeout.
+
+    When *timeout_seconds* <= 0, runs synchronously (no timeout overhead).
+    Uses a shared ``ThreadPoolExecutor`` to enforce the deadline.
+    """
+    if timeout_seconds <= 0.0:
+        if function_name == "execute_code":
+            return registry.dispatch(
+                function_name, function_args,
+                task_id=task_id,
+                enabled_tools=enabled_tools,
+            )
+        return registry.dispatch(
+            function_name, function_args,
+            task_id=task_id,
+            user_task=user_task,
+        )
+
+    future = _TOOL_EXECUTOR.submit(
+        _execute_tool_with_timeout,  # recursive — runs synchronously via fallthrough
+        function_name, function_args,
+        task_id=task_id, user_task=user_task,
+        enabled_tools=enabled_tools,
+        timeout_seconds=0.0,
+    )
+    try:
+        return future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "Tool '%s' timed out after %.1fs (task_id=%s)",
+            function_name, timeout_seconds, task_id or "",
+        )
+        return json.dumps({
+            "error": (
+            f"The '{function_name}' tool did not complete within "
+                        f"{timeout_seconds:.1f} seconds. "
+                f"Try a simpler query or check if the required service is available."
+            ),
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("Tool '%s' execution error: %s", function_name, e)
+        return json.dumps({
+            "error": f"Tool '{function_name}' failed: {_sanitize_tool_error(str(e))}",
+        }, ensure_ascii=False)
+
+
+def _truncate_tool_result(function_name: str, result: str, max_chars: int) -> str:
+    """Truncate tool result to *max_chars* if it exceeds the limit.
+
+    Appends a truncation marker so the LLM knows data was omitted.
+    When *max_chars* <= 0, returns the result unchanged.
+    """
+    if max_chars <= 0 or not result or len(result) <= max_chars:
+        return result
+
+    truncated = result[:max_chars]
+    logger.info(
+        "Tool '%s' result truncated from %d to %d chars",
+        function_name, len(result), max_chars,
+    )
+    return truncated + f"\n... (truncated {len(result) - max_chars} chars)"
 
 
 # =============================================================================
@@ -965,30 +1158,60 @@ def handle_function_call(
             except Exception:
                 pass  # file_tools may not be loaded yet
 
-        # Measure tool dispatch latency so post_tool_call and
-        # transform_tool_result hooks can observe per-tool duration.
-        # Inspired by Claude Code 2.1.119, which added ``duration_ms`` to
-        # PostToolUse hook inputs so plugin authors can build latency
-        # dashboards, budget alerts, and regression canaries without having
-        # to wrap every tool manually.  We use monotonic() so the value is
-        # unaffected by wall-clock adjustments during the call.
+        # ── Tool Safety Layer 1: Input Validation ──────────────────────
+        # Validate tool arguments against the registered JSON Schema before
+        # dispatching.  Catches missing required fields and basic type
+        # mismatches early, before the tool handler runs.  Gated by
+        # ``tools.safety.validate_input`` in config.yaml (default: off).
+        # ------------------------------------------------------------------
+        _safety_config = _load_tool_safety_config()
+        if _safety_config.get("tool_validate_input"):
+            validation_error = _validate_tool_args_against_schema(function_name, function_args)
+            if validation_error is not None:
+                logger.info(
+                    "Tool '%s' input validation rejected: %s",
+                    function_name, validation_error,
+                )
+                return json.dumps({"error": validation_error}, ensure_ascii=False)
+
+        # ── Tool Safety Layer 2: Timeout Enforcement ───────────────────
+        # Wrap the registry.dispatch() call with an optional wall-clock
+        # timeout via a shared ThreadPoolExecutor.  When timeout is 0
+        # (default) the dispatch runs synchronously with zero overhead.
+        # Gated by ``tools.safety.timeout_seconds`` in config.yaml or the
+        # ``HERMES_TOOL_TIMEOUT`` env var.
+        # ------------------------------------------------------------------
+        _timeout = _safety_config.get("tool_timeout_seconds", 0.0)
         _dispatch_start = time.monotonic()
+
         if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            result = registry.dispatch(
+            result = _execute_tool_with_timeout(
                 function_name, function_args,
-                task_id=task_id,
+                task_id=task_id, user_task=None,
                 enabled_tools=sandbox_enabled,
+                timeout_seconds=_timeout,
             )
         else:
-            result = registry.dispatch(
+            result = _execute_tool_with_timeout(
                 function_name, function_args,
-                task_id=task_id,
-                user_task=user_task,
+                task_id=task_id, user_task=user_task,
+                enabled_tools=None,
+                timeout_seconds=_timeout,
             )
+
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        # ── Tool Safety Layer 3: Output Truncation ─────────────────────
+        # Trim oversized tool results so the LLM's context window isn't
+        # wasted on a single verbose output.  A truncation marker is
+        # appended so the LLM knows data was omitted.  Gated by
+        # ``tools.safety.max_output_chars`` in config.yaml or the
+        # ``HERMES_TOOL_MAX_OUTPUT`` env var (default: 0 = disabled).
+        # ------------------------------------------------------------------
+        _max_output = _safety_config.get("tool_max_output_chars", 0)
+        if _max_output > 0:
+            result = _truncate_tool_result(function_name, result, _max_output)
 
         try:
             from hermes_cli.plugins import invoke_hook

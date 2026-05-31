@@ -1822,6 +1822,22 @@ DEFAULT_CONFIG = {
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
         },
+        # Tool execution safety guardrails.
+        # All three layers (timeout, truncation, validation) are *disabled by
+        # default* to preserve backward compatibility.  Enable them via
+        # config.yaml (or env vars for timeout / max_output) when needed.
+        "safety": {
+            # Wall-clock timeout per tool call, in seconds.  0 = disabled.
+            # Also settable via the HERMES_TOOL_TIMEOUT env var.
+            "timeout_seconds": 0,
+            # Maximum characters in a tool result.  0 = disabled.
+            # Also settable via the HERMES_TOOL_MAX_OUTPUT env var.
+            "max_output_chars": 0,
+            # Whether to validate tool arguments against the registered JSON
+            # Schema before dispatching.  Also settable via the
+            # HERMES_TOOL_VALIDATE_INPUT env var ("1" / "true" / "yes").
+            "validate_input": False,
+        },
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.
@@ -2100,7 +2116,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 24,
+    "_config_version": 25,
 }
 
 # =============================================================================

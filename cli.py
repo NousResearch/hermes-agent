@@ -3577,8 +3577,17 @@ class HermesCLI:
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
+            # last_prompt_tokens is parked at the -1 sentinel right after a
+            # compression, until the next real API call reports a prompt count
+            # (awaiting_real_usage_after_compression). The status bar must not
+            # render that sentinel verbatim — it produced "-1/200K" / "-1%".
+            # Clamp it to 0 so the one transitional turn reads as empty context.
             context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            if context_tokens < 0:
+                context_tokens = 0
             context_length = getattr(compressor, "context_length", 0) or 0
+            if context_length < 0:
+                context_length = 0
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0

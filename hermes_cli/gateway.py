@@ -2314,12 +2314,15 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     import re
 
     normalized = _normalize_service_definition(text)
-    return re.sub(
+    normalized = re.sub(
         r'(<key>PATH</key>\s*<string>)(.*?)(</string>)',
         r'\1__HERMES_PATH__\3',
         normalized,
         flags=re.S,
     )
+    # launchd/plutil may rewrite tabs/spaces; formatting is not semantic.
+    normalized = re.sub(r">\s+<", "><", normalized)
+    return normalized
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:
@@ -2835,10 +2838,13 @@ def _launchd_domain() -> str:
 
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
-    # Stable cwd anchor — never the volatile source checkout. See
-    # _stable_service_working_dir() for the rationale (same rot risk applies
-    # to launchd's WorkingDirectory as to systemd's).
-    working_dir = _stable_service_working_dir()
+    # launchd on macOS has historically run Hermes from the project checkout;
+    # keep that stable host-local shape so `hermes gateway status` does not
+    # oscillate between a freshly generated plist and the running launchd job.
+    # If the checkout is a transient worktree, fall back to HERMES_HOME to avoid
+    # status=200 CHDIR crash-loops after worktree cleanup.
+    project_root = str(PROJECT_ROOT.resolve())
+    working_dir = _stable_service_working_dir() if "/.worktrees/" in project_root else project_root
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -2863,12 +2869,25 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
+    # Build ProgramArguments array, including --profile when using a named profile.
+    # Nathan's macOS host intentionally runs gateway launchd jobs through a
+    # local proxy-wait wrapper when it exists, so Telegram/LLM traffic does not
+    # start until the Mihomo proxy is listening. Preserve that site-local
+    # hardening instead of overwriting it with the vanilla python invocation.
+    hermes_home_path = get_hermes_home()
+    proxy_wait = hermes_home_path / "bin" / "hermes-proxy-wait"
+    if not proxy_wait.exists():
+        default_proxy_wait = Path.home() / ".hermes" / "bin" / "hermes-proxy-wait"
+        if default_proxy_wait.exists():
+            proxy_wait = default_proxy_wait
+    if proxy_wait.exists():
+        prog_args = [f"<string>{proxy_wait}</string>"]
+    else:
+        prog_args = [
+            f"<string>{python_path}</string>",
+            "<string>-m</string>",
+            "<string>hermes_cli.main</string>",
+        ]
     if profile_arg:
         for part in profile_arg.split():
             prog_args.append(f"<string>{part}</string>")
@@ -2878,6 +2897,28 @@ def generate_launchd_plist() -> str:
         "<string>--replace</string>",
     ])
     prog_args_xml = "\n        ".join(prog_args)
+
+    proxy_env_xml = ""
+    if proxy_wait.exists():
+        proxy_env_xml = f"""
+        <key>HTTP_PROXY</key>
+        <string>http://127.0.0.1:1082</string>
+        <key>HTTPS_PROXY</key>
+        <string>http://127.0.0.1:1082</string>
+        <key>ALL_PROXY</key>
+        <string>http://127.0.0.1:1082</string>
+        <key>NO_PROXY</key>
+        <string>localhost,127.0.0.1,::1,.local,.ts.net</string>
+        <key>http_proxy</key>
+        <string>http://127.0.0.1:1082</string>
+        <key>https_proxy</key>
+        <string>http://127.0.0.1:1082</string>
+        <key>all_proxy</key>
+        <string>http://127.0.0.1:1082</string>
+        <key>no_proxy</key>
+        <string>localhost,127.0.0.1,::1,.local,.ts.net</string>
+        <key>HERMES_PROXY_WAIT_SECONDS</key>
+        <string>180</string>"""
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2901,7 +2942,7 @@ def generate_launchd_plist() -> str:
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{hermes_home}</string>{proxy_env_xml}
     </dict>
     
     <key>RunAtLoad</key>
@@ -2911,6 +2952,18 @@ def generate_launchd_plist() -> str:
     <dict>
         <key>SuccessfulExit</key>
         <false/>
+    </dict>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
     </dict>
     
     <key>StandardOutPath</key>

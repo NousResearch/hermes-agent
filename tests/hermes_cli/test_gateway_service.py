@@ -65,6 +65,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
@@ -88,6 +89,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
@@ -741,6 +743,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
@@ -786,6 +789,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 10.0)
@@ -845,6 +849,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -875,6 +880,7 @@ class TestGatewaySystemServiceRouting:
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(
@@ -2568,7 +2574,7 @@ class TestServiceWorkingDirIsStable:
         # The bug class: never pin cwd inside a transient worktree checkout.
         assert "/.worktrees/" not in value
 
-    def test_launchd_workingdirectory_is_hermes_home(self, tmp_path, monkeypatch):
+    def test_launchd_workingdirectory_uses_project_root_on_normal_checkout(self, tmp_path, monkeypatch):
         import re
 
         home = tmp_path / ".hermes"
@@ -2577,5 +2583,42 @@ class TestServiceWorkingDirIsStable:
         plist = gateway_cli.generate_launchd_plist()
         m = re.search(r"<key>WorkingDirectory</key>\s*<string>(.*?)</string>", plist)
         assert m, "plist has no WorkingDirectory entry"
-        assert Path(m.group(1)).resolve() == home.resolve()
+        assert Path(m.group(1)).resolve() == gateway_cli.PROJECT_ROOT.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_uses_proxy_wait_wrapper_when_present(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        wrapper = home / "bin" / "hermes-proxy-wait"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        wrapper.chmod(0o700)
+        home.mkdir(exist_ok=True)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{wrapper}</string>" in plist
+        assert "<string>gateway</string>" in plist
+        assert "<string>run</string>" in plist
+        assert "<key>HERMES_PROXY_WAIT_SECONDS</key>" in plist
+        assert "<key>HTTP_PROXY</key>" in plist
+
+    def test_launchd_profile_uses_global_proxy_wait_wrapper_when_present(self, tmp_path, monkeypatch):
+        global_home = tmp_path / ".hermes"
+        profile_home = global_home / "profiles" / "home"
+        wrapper = global_home / "bin" / "hermes-proxy-wait"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        wrapper.chmod(0o700)
+        profile_home.mkdir(parents=True)
+        import hermes_constants
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: global_home)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{wrapper}</string>" in plist
+        assert "<string>--profile</string>" in plist
+        assert "<string>home</string>" in plist

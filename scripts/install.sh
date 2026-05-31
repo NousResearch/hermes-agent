@@ -2354,8 +2354,14 @@ run_stage_protocol() {
         return 0
     fi
 
+    # Run the stage body in a subshell so a stage helper that calls `exit 1`
+    # on failure (clone_repo, install_deps, etc. were written for the monolithic
+    # flow) only exits the subshell — the parent still reaches the JSON result
+    # frame below. Without this, a failed --stage would terminate the process
+    # before emitting the frame and the Rust/Electron parser would see "no
+    # result frame" instead of a clean {ok:false} contract response.
     set +e
-    run_stage_body "$stage"
+    ( run_stage_body "$stage" )
     local code=$?
     set -e
 

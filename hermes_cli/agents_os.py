@@ -316,6 +316,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "capabilities": "'[]'",
         "allowed_paths": "'[]'",
         "blocked_paths": "'[]'",
+        "approval_risks": "'[]'",
+        "precheck": "'[]'",
+        "execute": "'[]'",
+        "verify": "'[]'",
+        "review": "'[]'",
+        "close": "'[]'",
     }.items():
         if col not in workflow_cols:
             conn.execute(f"ALTER TABLE workflows ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
@@ -1104,8 +1110,24 @@ def workflow_import_cmd(args: argparse.Namespace) -> int:
     now = utc_now()
     with connect(paths) as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO workflows(id,kind,requires_approval,template,route,capabilities,allowed_paths,blocked_paths,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (data["id"], data["kind"], 1 if data.get("requires_approval") else 0, data["template"], data.get("route", "doni:direct"), json.dumps(data.get("capabilities", []), ensure_ascii=False), json.dumps(data.get("allowed_paths", []), ensure_ascii=False), json.dumps(data.get("blocked_paths", []), ensure_ascii=False), now),
+            "INSERT OR REPLACE INTO workflows(id,kind,requires_approval,template,route,capabilities,allowed_paths,blocked_paths,approval_risks,precheck,execute,verify,review,close,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                data["id"],
+                data["kind"],
+                1 if data.get("requires_approval") else 0,
+                data["template"],
+                data.get("route", "doni:direct"),
+                json.dumps(data.get("capabilities", []), ensure_ascii=False),
+                json.dumps(data.get("allowed_paths", []), ensure_ascii=False),
+                json.dumps(data.get("blocked_paths", []), ensure_ascii=False),
+                json.dumps(data.get("approval_risks", []), ensure_ascii=False),
+                json.dumps(data.get("precheck", []), ensure_ascii=False),
+                json.dumps(data.get("execute", []), ensure_ascii=False),
+                json.dumps(data.get("verify", []), ensure_ascii=False),
+                json.dumps(data.get("review", []), ensure_ascii=False),
+                json.dumps(data.get("close", []), ensure_ascii=False),
+                now,
+            ),
         )
         conn.execute(
             "INSERT OR REPLACE INTO routing_rules(id,workflow,route,requires_approval,priority,created_at) VALUES(?,?,?,?,?,?)",
@@ -1117,11 +1139,34 @@ def workflow_import_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _decode_workflow_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = row_to_dict(row)
+    for key in ["capabilities", "allowed_paths", "blocked_paths", "approval_risks", "precheck", "execute", "verify", "review", "close"]:
+        try:
+            payload[key] = json.loads(payload.get(key) or "[]")
+        except json.JSONDecodeError:
+            payload[key] = []
+    payload["requires_approval"] = bool(payload.get("requires_approval"))
+    return payload
+
+
 def workflow_list_cmd(args: argparse.Namespace) -> int:
     paths = resolve_paths(args)
     with connect(paths) as conn:
-        rows = [row_to_dict(r) for r in conn.execute("SELECT * FROM workflows ORDER BY id ASC").fetchall()]
+        rows = [_decode_workflow_row(r) for r in conn.execute("SELECT * FROM workflows ORDER BY id ASC").fetchall()]
     print(json.dumps(rows, ensure_ascii=False, indent=2))
+    return 0
+
+
+def workflow_show_cmd(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        row = conn.execute("SELECT * FROM workflows WHERE id=?", (args.id,)).fetchone()
+    if row is None:
+        print(json.dumps({"status": "error", "reason": "workflow_not_found", "id": args.id}, ensure_ascii=False, indent=2))
+        return 2
+    payload = _decode_workflow_row(row)
+    print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else payload["id"])
     return 0
 
 
@@ -1418,6 +1463,10 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     p = workflow_sub.add_parser("list", help="List workflows")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=workflow_list_cmd)
+    p = workflow_sub.add_parser("show", help="Show workflow")
+    p.add_argument("id")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=workflow_show_cmd)
 
     p = sub.add_parser("execute", help="Execute a safe local task")
     p.add_argument("id")

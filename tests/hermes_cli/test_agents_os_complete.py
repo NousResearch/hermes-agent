@@ -239,6 +239,48 @@ def test_agents_os_agent_crud_and_routing_policy(tmp_path, monkeypatch, capsys):
 
 
 
+def test_agents_os_workflow_schema_v1_show_persists_contract(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    assert agents_os.main(["--vault-root", str(vault), "init", "--no-vault"]) == 0
+    capsys.readouterr()
+
+    wf_path = tmp_path / "schema-v1.json"
+    contract = {
+        "id": "schema-v1-proof",
+        "kind": "implementation",
+        "requires_approval": False,
+        "template": "Schema v1 proof",
+        "route": "doni:direct",
+        "capabilities": ["code"],
+        "allowed_paths": [str(tmp_path)],
+        "blocked_paths": [],
+        "approval_risks": ["runtime-config-change"],
+        "precheck": ["doctor"],
+        "execute": ["local-only"],
+        "verify": ["pytest"],
+        "review": ["qa"],
+        "close": ["evidence-required"],
+    }
+    wf_path.write_text(json.dumps(contract), encoding="utf-8")
+    assert agents_os.main(["--vault-root", str(vault), "workflow", "validate", str(wf_path), "--json"]) == 0
+    validated = _json_out(capsys)
+    assert validated["valid"] is True
+    assert agents_os.main(["--vault-root", str(vault), "workflow", "import", str(wf_path), "--json"]) == 0
+    capsys.readouterr()
+    assert agents_os.main(["--vault-root", str(vault), "workflow", "show", "schema-v1-proof", "--json"]) == 0
+    shown = _json_out(capsys)
+    assert shown["id"] == "schema-v1-proof"
+    assert shown["approval_risks"] == ["runtime-config-change"]
+    assert shown["precheck"] == ["doctor"]
+    assert shown["execute"] == ["local-only"]
+    assert shown["verify"] == ["pytest"]
+    assert shown["review"] == ["qa"]
+    assert shown["close"] == ["evidence-required"]
+
+
+
 def test_agents_os_execute_blocks_approval_gated_task(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     vault = tmp_path / "vault"

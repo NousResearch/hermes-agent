@@ -345,21 +345,34 @@ class TestJWTTokens:
 class TestDiscordMentions:
     """Discord snowflake IDs in <@ID> or <@!ID> format."""
 
-    def test_normal_mention(self):
-        result = redact_sensitive_text("Hello <@222589316709220353>")
-        assert "222589316709220353" not in result
-        assert "<@***>" in result
-
-    def test_nickname_mention(self):
-        result = redact_sensitive_text("Ping <@!1331549159177846844>")
-        assert "1331549159177846844" not in result
-        assert "<@!***>" in result
-
-    def test_multiple_mentions(self):
-        text = "<@111111111111111111> and <@222222222222222222>"
+    def test_normal_mention_preserved(self):
+        """Discord mention IDs are public syntax, not secrets — preserved by default."""
+        text = "Hello " + "<@" + "222589316709220353" + ">"
         result = redact_sensitive_text(text)
-        assert "111111111111111111" not in result
-        assert "222222222222222222" not in result
+        assert result == text
+        assert "222589316709220353" in result
+
+    def test_nickname_mention_preserved(self):
+        text = "Ping " + "<@!" + "1331549159177846844" + ">"
+        result = redact_sensitive_text(text)
+        assert result == text
+
+    def test_multiple_mentions_preserved(self):
+        text = "<@" + "111111111111111111" + ">" + " and " + "<@" + "222222222222222222" + ">"
+        result = redact_sensitive_text(text)
+        assert "111111111111111111" in result
+        assert "222222222222222222" in result
+
+    def test_opt_in_redaction(self):
+        """When env var is set, mentions ARE redacted (export use case)."""
+        import os
+        os.environ["HERMES_REDACT_DISCORD_MENTIONS"] = "1"
+        try:
+            text = "Hello " + "<@" + "222589316709220353" + ">"
+            result = redact_sensitive_text(text)
+            assert "222589316709220353" not in result
+        finally:
+            del os.environ["HERMES_REDACT_DISCORD_MENTIONS"]
 
     def test_short_id_not_matched(self):
         """IDs shorter than 17 digits are not Discord snowflakes."""

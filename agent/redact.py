@@ -402,7 +402,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_form_body(text)
 
     # Discord user/role mentions (<@snowflake_id>)
-    if "<@" in text:
+    # Default OFF: Discord mention IDs are PUBLIC syntax, not secrets.
+    # Masking them breaks cross-bot @-pings. Opt-in via env var for export use cases.
+    if "<@" in text and os.environ.get("HERMES_REDACT_DISCORD_MENTIONS", "").lower() in {"1", "true", "yes", "on"}:
         text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
 
     # E.164 phone numbers (Signal, WhatsApp)

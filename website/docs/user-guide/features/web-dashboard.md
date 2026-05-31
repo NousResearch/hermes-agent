@@ -1090,7 +1090,7 @@ When you run `hermes update`, the web frontend is automatically rebuilt if `npm`
 
 ## Themes & plugins
 
-The dashboard ships with six built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
+The dashboard ships with seven built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
 
 **Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load.
 

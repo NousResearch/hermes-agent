@@ -845,6 +845,7 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     DOCUMENT_CACHE_DIR,
     SCREENSHOT_CACHE_DIR,
     _HERMES_HOME / "image_cache",
+    _HERMES_HOME / "media_cache",
     _HERMES_HOME / "audio_cache",
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",

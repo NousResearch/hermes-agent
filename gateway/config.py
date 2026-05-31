@@ -1443,7 +1443,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_pwd = os.getenv("EMAIL_PASSWORD")
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    email_enabled = os.getenv("EMAIL_ENABLED", "true").lower() not in {"0", "false", "no", "off"}
+    if email_enabled and all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True

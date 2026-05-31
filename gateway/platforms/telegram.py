@@ -3823,6 +3823,25 @@ class TelegramAdapter(BasePlatformAdapter):
         from urllib.parse import unquote as _unquote
         _thread = self._metadata_thread_id(metadata)
 
+        if len(photos) == 1:
+            image_url, alt_text = photos[0]
+            caption = alt_text[:1024] if alt_text else None
+            if image_url.startswith("file://"):
+                await self.send_image_file(
+                    chat_id=chat_id,
+                    image_path=_unquote(image_url[7:]),
+                    caption=caption,
+                    metadata=metadata,
+                )
+            else:
+                await self.send_image(
+                    chat_id=chat_id,
+                    image_url=image_url,
+                    caption=caption,
+                    metadata=metadata,
+                )
+            return
+
         # Chunk into groups of 10 (Telegram's album limit)
         CHUNK = 10
         chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
@@ -5384,6 +5403,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
+                if "file is too big" in str(e).lower():
+                    size = getattr(msg.audio, "file_size", None)
+                    duration = getattr(msg.audio, "duration", None)
+                    filename = getattr(msg.audio, "file_name", None) or "audio"
+                    details = []
+                    if size:
+                        details.append(f"size={size / (1024 * 1024):.1f} MB")
+                    if duration:
+                        details.append(f"duration={duration // 60}:{duration % 60:02d}")
+                    detail_text = f" ({', '.join(details)})" if details else ""
+                    event.text = (
+                        f"[Telegram audio attachment '{filename}' could not be downloaded by the bot"
+                        f"{detail_text}: Telegram Bot API returned 'File is too big'. "
+                        "Ask the user to split/compress the audio below the bot download limit, "
+                        "send it through another channel, or place the file directly on this machine "
+                        "and provide the local path.]"
+                    )
 
         elif msg.video:
             try:

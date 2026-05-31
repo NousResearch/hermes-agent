@@ -249,11 +249,15 @@ class EmailAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.EMAIL)
 
         self._address = os.getenv("EMAIL_ADDRESS", "")
+        self._login = os.getenv("EMAIL_LOGIN", self._address)
+        self._from_address = os.getenv("EMAIL_FROM_ADDRESS", self._address)
         self._password = os.getenv("EMAIL_PASSWORD", "")
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
         self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+        self._smtp_use_ssl = os.getenv("EMAIL_SMTP_USE_SSL", "").lower() in {"1", "true", "yes", "on"}
+        self._smtp_required = os.getenv("EMAIL_SMTP_REQUIRED", "true").lower() not in {"0", "false", "no", "off"}
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
 
         # Skip attachments — configured via config.yaml:
@@ -272,6 +276,19 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
         logger.info("[Email] Adapter initialized for %s", self._address)
+
+    def _open_smtp(self) -> smtplib.SMTP:
+        if self._smtp_use_ssl or self._smtp_port == 465:
+            return smtplib.SMTP_SSL(
+                self._smtp_host,
+                self._smtp_port,
+                timeout=30,
+                context=ssl.create_default_context(),
+            )
+
+        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp.starttls(context=ssl.create_default_context())
+        return smtp
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -298,7 +315,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
+            imap.login(self._login, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
@@ -316,14 +333,15 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test SMTP connection
-            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp = self._open_smtp()
+            smtp.login(self._login, self._password)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
-            return False
+            if self._smtp_required:
+                return False
+            logger.warning("[Email] Continuing without SMTP because EMAIL_SMTP_REQUIRED=false")
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -367,7 +385,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
-                imap.login(self._address, self._password)
+                imap.login(self._login, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
@@ -383,7 +401,9 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    # PEEK reads the message without setting the IMAP \Seen flag,
+                    # so messages that were unread stay unread in the mailbox.
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
                     if status != "OK":
                         continue
 
@@ -433,7 +453,7 @@ class EmailAdapter(BasePlatformAdapter):
         sender_addr = msg_data["sender_addr"]
 
         # Skip self-messages
-        if sender_addr == self._address.lower():
+        if sender_addr in {self._address.lower(), self._from_address.lower()}:
             return
 
         # Never reply to automated senders
@@ -526,7 +546,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = self._from_address
         msg["To"] = to_addr
 
         # Thread context for reply
@@ -543,15 +563,14 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._from_address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._open_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._login, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -637,7 +656,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = self._from_address
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -652,7 +671,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._from_address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -670,10 +689,9 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._open_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._login, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -718,7 +736,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = self._from_address
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -733,7 +751,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._from_address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -749,10 +767,9 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._open_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._login, self._password)
             smtp.send_message(msg)
         finally:
             try:

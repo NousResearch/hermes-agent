@@ -1,3 +1,5 @@
+import inspect
+
 from agent.workflow_orchestrator import WorkflowPlan, WorkflowResult, WorkflowSubtask
 from cli import HermesCLI
 from hermes_cli.commands import resolve_command
@@ -8,6 +10,15 @@ def test_workflow_command_registered():
 
     assert resolved is not None
     assert resolved.name == "workflow"
+
+
+def test_ultracode_chat_uses_workflow_orchestrator_not_directive():
+    src = inspect.getsource(HermesCLI.chat)
+
+    assert "_ULTRACODE_DIRECTIVE" not in src
+    assert "delegate_task (batch mode)" not in src
+    assert "if _ultracode_active:" in src
+    assert "self._workflow_result_dict(str(agent_message))" in src
 
 
 def test_workflow_result_dict_preserves_turn_history(monkeypatch):

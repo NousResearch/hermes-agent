@@ -99,15 +99,30 @@ def _extract_system(messages: list[dict]) -> str | None:
     return None
 
 
+def _subscription_type() -> str:
+    """Read subscription tier from ~/.claude/.credentials.json without a network call."""
+    try:
+        p = Path.home() / ".claude" / ".credentials.json"
+        if p.exists():
+            return json.loads(p.read_text()).get("claudeAiOauth", {}).get("subscriptionType", "")
+    except Exception:
+        pass
+    return ""
+
+
 async def _stream_claude(
     prompt: str,
     session_id: str | None,
     system: str | None,
+    *,
+    emit_status: bool = False,
 ) -> AsyncGenerator[tuple[str, str, str], None]:
     """
     Async generator yielding (chunk_text, model, new_session_id).
     Uses include_partial_messages=True for real-time streaming.
     Thinking blocks are streamed inside <think>...</think> tags.
+    emit_status=True: first chunk is login info from the init SystemMessage,
+    emitted before any Claude thinking or text (no extra network call).
     """
     if system and not session_id:
         prompt = f"<context>\n{system}\n</context>\n\n{prompt}"
@@ -131,6 +146,14 @@ async def _stream_claude(
                 model = msg.data.get("model", model)
                 if not sid:
                     sid = msg.data.get("session_id", "")
+                if emit_status:
+                    ver = msg.data.get("claude_code_version", "")
+                    src = msg.data.get("apiKeySource", "none")
+                    sub = _subscription_type()
+                    auth = "OAuth" if src == "none" else f"key:{src}"
+                    if sub:
+                        auth = f"{auth} ({sub})"
+                    yield (f"`🔑 {model} · {auth} · v{ver}`\n\n", model, sid)
 
             elif isinstance(msg, StreamEvent):
                 ev = msg.event
@@ -181,7 +204,7 @@ async def _run_claude(
     parts: list[str] = []
     model = "claude-sonnet-4-6"
     sid = session_id or ""
-    async for chunk, m, s in _stream_claude(prompt, session_id, system):
+    async for chunk, m, s in _stream_claude(prompt, session_id, system, emit_status=False):
         parts.append(chunk)
         model, sid = m, s
     return "".join(parts).strip() or "(no response)", model, sid
@@ -248,7 +271,7 @@ async def chat_completions(request: Request):
         async def sse():
             state = {"model": "claude-sonnet-4-6", "sid": sid or ""}
             try:
-                async for chunk, m, s in _stream_claude(prompt, sid, system):
+                async for chunk, m, s in _stream_claude(prompt, sid, system, emit_status=True):
                     if not chunk:
                         continue
                     state["model"], state["sid"] = m, s

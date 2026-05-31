@@ -212,7 +212,11 @@ TOOLSETS = {
         "description": "Agent-native CRM backed by the shared Agent Core DB",
         "tools": [
             "crm_status", "crm_organization_upsert", "crm_contact_upsert",
-            "crm_interaction_record", "crm_search",
+            "crm_opportunity_upsert", "crm_product_upsert", "crm_quote_create",
+            "crm_invoice_create", "crm_relationship_upsert",
+            "crm_interaction_record", "crm_follow_up_create",
+            "crm_customer_timeline", "crm_search", "crm_twenty_sync",
+            "crm_twenty_raw_request",
         ],
         "includes": []
     },

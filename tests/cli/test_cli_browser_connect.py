@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from cli import HermesCLI
 from hermes_cli.browser_connect import (
+    _wait_for_browser_debug_ready_or_exit,
     get_chrome_debug_candidates,
     is_browser_debug_ready,
     manual_chrome_debug_command,
@@ -65,6 +66,7 @@ class TestChromeDebugLaunch:
 
         with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: r"C:\Chrome\chrome.exe" if name == "chrome.exe" else None), \
              patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == r"C:\Chrome\chrome.exe"), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", return_value="ready"), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9333, "Windows") is True
 
@@ -94,6 +96,7 @@ class TestChromeDebugLaunch:
 
         with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
              patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == installed), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", return_value="ready"), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9222, "Windows") is True
 
@@ -194,6 +197,40 @@ class TestChromeDebugLaunch:
             return object()
 
         with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[brave, chrome]), \
+             patch("subprocess.Popen", side_effect=fake_popen):
+            assert HermesCLI._try_launch_chrome_debug(9222, "Linux") is True
+
+        assert attempts == [brave, chrome]
+
+    def test_wait_for_browser_debug_ready_or_exit_detects_early_exit(self, monkeypatch):
+        class _Proc:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return 1 if self.calls >= 2 else None
+
+        monkeypatch.setattr("hermes_cli.browser_connect.time.sleep", lambda _seconds: None)
+        with patch("hermes_cli.browser_connect.is_browser_debug_ready", return_value=False):
+            state = _wait_for_browser_debug_ready_or_exit(_Proc(), 9222, timeout=0.3, interval=0.01)
+
+        assert state == "exited"
+
+    def test_launch_tries_next_browser_when_first_candidate_exits_before_debug_ready(self):
+        brave = "/usr/bin/brave-browser"
+        chrome = "/usr/bin/google-chrome"
+        attempts = []
+
+        class _Proc:
+            pass
+
+        def fake_popen(cmd, **kwargs):
+            attempts.append(cmd[0])
+            return _Proc()
+
+        with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[brave, chrome]), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", side_effect=["exited", "ready"]), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9222, "Linux") is True
 

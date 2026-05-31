@@ -7,6 +7,7 @@ import platform
 import shlex
 import shutil
 import subprocess
+import time
 
 from hermes_constants import get_hermes_home
 
@@ -196,6 +197,31 @@ def _detach_kwargs(system: str) -> dict:
     return {"creationflags": flags} if flags else {}
 
 
+def _wait_for_browser_debug_ready_or_exit(
+    proc: subprocess.Popen,
+    port: int,
+    timeout: float = 2.0,
+    interval: float = 0.1,
+) -> str:
+    """Classify a launched browser as ready, exited, or still starting.
+
+    We only need to wait long enough to catch the common failure mode where a
+    candidate binary exists but exits immediately before exposing the CDP port.
+    Slower browsers can still finish starting after this grace window.
+    """
+    cdp_url = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        if is_browser_debug_ready(cdp_url, timeout=min(interval, 0.2)):
+            return "ready"
+        if proc.poll() is not None:
+            return "exited"
+        time.sleep(interval)
+
+    return "starting"
+
+
 def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
     system = system or platform.system()
     candidates = get_chrome_debug_candidates(system)
@@ -205,13 +231,15 @@ def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | 
     os.makedirs(chrome_debug_data_dir(), exist_ok=True)
     for candidate in candidates:
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [candidate, *_chrome_debug_args(port)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **_detach_kwargs(system),
             )
-            return True
+            state = _wait_for_browser_debug_ready_or_exit(proc, port)
+            if state != "exited":
+                return True
         except Exception:
             continue
     return False

@@ -2815,6 +2815,42 @@ def _make_task(**overrides) -> "kb.Task":
     return kb.Task(**defaults)
 
 
+def test_default_spawn_passes_routed_provider_model_and_effort(kanban_home, monkeypatch, tmp_path):
+    _make_profile(kanban_home, "coder")
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+
+    task = _make_task(
+        id="t_route",
+        assignee="coder",
+        model_override="gpt-5.5",
+        model_provider_override="openai-codex",
+        model_reasoning_effort="xhigh",
+    )
+
+    assert kb._default_spawn(task, str(tmp_path), board=None) == 4242
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
+    assert cmd[cmd.index("--provider") + 1] == "openai-codex"
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "xhigh"
+    env = captured["env"]
+    assert env["HERMES_MODEL"] == "gpt-5.5"
+    assert env["HERMES_PROVIDER"] == "openai-codex"
+    assert env["HERMES_MODEL_PROVIDER"] == "openai-codex"
+    assert env["HERMES_REASONING_EFFORT"] == "xhigh"
+
+
 def test_safe_int_accepts_int_and_int_string():
     """Sanity: well-typed values pass through."""
     # PR d8ad431de renamed _safe_int → _to_epoch (now also handles ISO-8601).

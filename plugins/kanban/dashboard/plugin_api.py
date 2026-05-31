@@ -564,6 +564,8 @@ class CreateTaskBody(BaseModel):
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
     model_override: Optional[str] = None
+    model_provider_override: Optional[str] = None
+    model_reasoning_effort: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -587,6 +589,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
             model_override=payload.model_override,
+            model_provider_override=payload.model_provider_override,
+            model_reasoning_effort=payload.model_reasoning_effort,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}

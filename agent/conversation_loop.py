@@ -62,6 +62,11 @@ from agent.nous_rate_guard import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
+from agent.routing_contract import (
+    active_reasoning_effort,
+    check_route_contract,
+    record_route_contract_event,
+)
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
@@ -455,6 +460,7 @@ def run_conversation(
     agent._codex_incomplete_retries = 0
     agent._thinking_prefill_retries = 0
     agent._post_tool_empty_retried = False
+    agent._route_contract_retries = 0
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False
@@ -3738,6 +3744,55 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
+                _route_check = check_route_contract(
+                    text=assistant_message.content or "",
+                    tool_calls=assistant_message.tool_calls,
+                    active_provider=getattr(agent, "provider", None),
+                    active_model=getattr(agent, "model", None),
+                    active_effort=active_reasoning_effort(agent),
+                )
+                if _route_check.declared is not None:
+                    record_route_contract_event(
+                        agent,
+                        "route.mismatch" if _route_check.violation else "route.executed",
+                        _route_check,
+                    )
+                if _route_check.violation is not None:
+                    agent._route_contract_retries += 1
+                    msg = _route_check.violation.recovery_prompt
+                    agent._buffer_status(
+                        f"⚠️ Route contract mismatch — asking model to reroute "
+                        f"({agent._route_contract_retries}/3)"
+                    )
+                    if agent._route_contract_retries >= 3:
+                        agent._flush_status_buffer()
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": _route_check.violation.message,
+                        }
+                    recovery_assistant = agent._build_assistant_message(
+                        assistant_message, finish_reason
+                    )
+                    messages.append(recovery_assistant)
+                    for tc in assistant_message.tool_calls:
+                        messages.append({
+                            "role": "tool",
+                            "name": tc.function.name,
+                            "tool_call_id": tc.id,
+                            "content": (
+                                f"{msg} No tools were executed from this "
+                                "assistant turn. Retry with a route that matches "
+                                "the actual execution surface."
+                            ),
+                        })
+                    continue
+                agent._route_contract_retries = 0
+
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
                 # If this turn has both content AND tool_calls, capture the content
@@ -4213,6 +4268,43 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                _route_check = check_route_contract(
+                    text=final_response,
+                    tool_calls=[],
+                    active_provider=getattr(agent, "provider", None),
+                    active_model=getattr(agent, "model", None),
+                    active_effort=active_reasoning_effort(agent),
+                )
+                if _route_check.declared is not None:
+                    record_route_contract_event(
+                        agent,
+                        "route.mismatch" if _route_check.violation else "route.executed",
+                        _route_check,
+                    )
+                if _route_check.violation is not None:
+                    agent._route_contract_retries += 1
+                    agent._buffer_status(
+                        f"⚠️ Route contract mismatch — asking model to reroute "
+                        f"({agent._route_contract_retries}/3)"
+                    )
+                    if agent._route_contract_retries >= 3:
+                        agent._flush_status_buffer()
+                        final_response = _route_check.violation.message
+                        messages.append({"role": "assistant", "content": final_response})
+                        _turn_exit_reason = "route_contract_exhausted"
+                        break
+                    recovery_assistant = agent._build_assistant_message(
+                        assistant_message, finish_reason
+                    )
+                    messages.append(recovery_assistant)
+                    messages.append({
+                        "role": "user",
+                        "content": _route_check.violation.recovery_prompt,
+                    })
+                    agent._session_messages = messages
+                    continue
+                agent._route_contract_retries = 0
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

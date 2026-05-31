@@ -74,6 +74,9 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "model_override": t.model_override,
+        "model_provider_override": t.model_provider_override,
+        "model_reasoning_effort": t.model_reasoning_effort,
         "max_retries": t.max_retries,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
@@ -1512,6 +1515,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
         print(f"  model:     {task.model_override}")
+    if task.model_provider_override:
+        print(f"  provider:  {task.model_provider_override}")
+    if task.model_reasoning_effort:
+        print(f"  effort:    {task.model_reasoning_effort}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see

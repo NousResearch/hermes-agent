@@ -961,12 +961,16 @@ def test_create_model_routing_preset_persists_override_and_logs_decision(monkeyp
     d = json.loads(out)
     assert d["ok"] is True
     assert d["model_override"] == "deepseek/deepseek-v4-flash:free"
+    assert d["model_provider_override"] == "nous"
+    assert d["model_reasoning_effort"] == "low"
     assert d["model_routing"]["preset"] == "verification_leaf"
 
     with kb.connect() as conn:
         task = kb.get_task(conn, d["task_id"])
     assert task is not None
     assert task.model_override == "deepseek/deepseek-v4-flash:free"
+    assert task.model_provider_override == "nous"
+    assert task.model_reasoning_effort == "low"
 
     from orchestration_telemetry import read_events, telemetry_path
     events = read_events(path=telemetry_path())
@@ -1004,6 +1008,32 @@ def test_create_model_routing_privacy_escalates_sensitive_public_lane(worker_env
         task = kb.get_task(conn, d["task_id"])
     assert task is not None
     assert task.model_override == "gpt-5.5"
+
+
+def test_create_model_routing_persists_xhigh_route_tuple(worker_env):
+    _write_model_routing_table(os.environ["HERMES_HOME"])
+
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "security review",
+        "assignee": "reviewer",
+        "model_routing": "security_review",
+        "data_sensitivity": "security",
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    assert d["model_override"] == "gpt-5.5"
+    assert d["model_provider_override"] == "openai-codex"
+    assert d["model_reasoning_effort"] == "xhigh"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, d["task_id"])
+    assert task is not None
+    assert task.model_override == "gpt-5.5"
+    assert task.model_provider_override == "openai-codex"
+    assert task.model_reasoning_effort == "xhigh"
 
 
 def test_create_model_routing_quota_uses_budget_route_for_budget_ok_lane(monkeypatch, worker_env):

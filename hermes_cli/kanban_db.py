@@ -673,6 +673,8 @@ class Task:
     # list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    model_provider_override: Optional[str] = None
+    model_reasoning_effort: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -750,6 +752,16 @@ class Task:
             ),
             skills=skills_value,
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
+            model_provider_override=(
+                row["model_provider_override"]
+                if "model_provider_override" in keys and row["model_provider_override"]
+                else None
+            ),
+            model_reasoning_effort=(
+                row["model_reasoning_effort"]
+                if "model_reasoning_effort" in keys and row["model_reasoning_effort"]
+                else None
+            ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
@@ -882,6 +894,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to the worker, overriding the profile's default model. NULL = use
     -- the profile default.
     model_override       TEXT,
+    -- Per-task provider / reasoning overrides resolved from model_routing.
+    -- These travel with model_override so a routed task can pin the full
+    -- provider/model/reasoning tuple instead of only the model id.
+    model_provider_override TEXT,
+    model_reasoning_effort  TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1507,6 +1524,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
+    if "model_provider_override" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN model_provider_override TEXT")
+    if "model_reasoning_effort" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN model_reasoning_effort TEXT")
 
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
@@ -2026,6 +2047,8 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     model_override: Optional[str] = None,
+    model_provider_override: Optional[str] = None,
+    model_reasoning_effort: Optional[str] = None,
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
@@ -2059,10 +2082,19 @@ def create_task(
     different from the assignee profile default. Blank strings are
     treated as ``None`` so callers can omit/clear the override without
     changing dispatch semantics.
+
+    ``model_provider_override`` and ``model_reasoning_effort`` complete that
+    route tuple when a higher-level model-routing preset resolved them. They
+    are optional so legacy callers and manually-created tasks keep using the
+    assignee profile defaults.
     """
     assignee = _canonical_assignee(assignee)
     if model_override is not None:
         model_override = str(model_override).strip() or None
+    if model_provider_override is not None:
+        model_provider_override = str(model_provider_override).strip() or None
+    if model_reasoning_effort is not None:
+        model_reasoning_effort = str(model_reasoning_effort).strip().lower() or None
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2205,8 +2237,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, model_override, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, model_override, model_provider_override,
+                        model_reasoning_effort, max_retries, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2225,6 +2258,8 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         model_override,
+                        model_provider_override,
+                        model_reasoning_effort,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
                     ),
@@ -2245,6 +2280,9 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "model_override": model_override,
+                        "model_provider_override": model_provider_override,
+                        "model_reasoning_effort": model_reasoning_effort,
                     },
                 )
             return task_id
@@ -6316,6 +6354,14 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
+        env["HERMES_MODEL"] = task.model_override
+    if task.model_provider_override:
+        cmd.extend(["--provider", task.model_provider_override])
+        env["HERMES_PROVIDER"] = task.model_provider_override
+        env["HERMES_MODEL_PROVIDER"] = task.model_provider_override
+    if task.model_reasoning_effort:
+        cmd.extend(["--reasoning-effort", task.model_reasoning_effort])
+        env["HERMES_REASONING_EFFORT"] = task.model_reasoning_effort
     cmd.extend([
         "chat",
         "-q", prompt,

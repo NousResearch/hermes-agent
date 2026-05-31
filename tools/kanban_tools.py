@@ -1187,6 +1187,8 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
                 model_override=model_override,
+                model_provider_override=(model_routing_decision or {}).get("provider"),
+                model_reasoning_effort=(model_routing_decision or {}).get("reasoning_effort"),
             )
             new_task = kb.get_task(conn, new_tid)
             task_status = new_task.status if new_task else None
@@ -1233,6 +1235,8 @@ def _handle_create(args: dict, **kw) -> str:
                 task_id=new_tid,
                 status=task_status,
                 model_override=model_override,
+                model_provider_override=(model_routing_decision or {}).get("provider"),
+                model_reasoning_effort=(model_routing_decision or {}).get("reasoning_effort"),
                 model_routing=model_routing_decision,
             )
         finally:
@@ -1702,10 +1706,12 @@ KANBAN_CREATE_SCHEMA = {
             "model_routing": {
                 "type": "string",
                 "description": (
-                    "Optional routing preset to resolve model_override from the "
-                    "profile model-routing table, e.g. 'verification_leaf', "
-                    "'public_research', 'code_implementation', or "
-                    "'front_door_or_uncertain'. Explicit model_override wins."
+                    "Optional routing preset to resolve provider, model_override, "
+                    "and reasoning effort from the profile model-routing table, "
+                    "e.g. 'verification_leaf', 'public_research', "
+                    "'code_implementation', 'architecture_design', or "
+                    "'front_door_or_uncertain'. Explicit model_override wins the "
+                    "model id while the preset still supplies provider/effort."
                 ),
             },
             "task_category": {

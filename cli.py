@@ -2900,6 +2900,7 @@ class HermesCLI:
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        reasoning_effort: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -2915,6 +2916,7 @@ class HermesCLI:
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            reasoning_effort: Per-process reasoning effort override
         """
         # Initialize Rich console
         self.console = Console()
@@ -3106,7 +3108,9 @@ class HermesCLI:
         
         # Reasoning config (OpenRouter reasoning effort level)
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            reasoning_effort
+            if reasoning_effort is not None
+            else CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
@@ -14986,6 +14990,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    reasoning_effort: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -15008,6 +15013,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        reasoning_effort: Override the configured reasoning effort for this process
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -15105,6 +15111,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        reasoning_effort=reasoning_effort,
     )
 
     if parsed_skills:

@@ -139,21 +139,31 @@ class TestIsVoiceContentType:
     def test_audio_content_type(self):
         assert self._fn("audio/mp3", "file.mp3") is True
 
-    def test_voice_extension_ignored_when_content_type_empty(self):
-        """content_type='' with audio extension → False (no extension sniffing)."""
-        assert self._fn("", "file.silk") is False
+    def test_voice_extension_fallback_when_content_type_empty(self):
+        """content_type='' with audio extension → True (extension fallback)."""
+        assert self._fn("", "file.silk") is True
 
     def test_non_voice(self):
         assert self._fn("image/jpeg", "photo.jpg") is False
 
-    def test_audio_extension_amr_ignored_when_content_type_empty(self):
-        """content_type='' with .amr extension → False (no extension sniffing)."""
-        assert self._fn("", "recording.amr") is False
+    def test_audio_extension_amr_fallback_when_content_type_empty(self):
+        """content_type='' with .amr extension → True (extension fallback)."""
+        assert self._fn("", "recording.amr") is True
 
     def test_file_upload_with_audio_extension(self):
         """File upload with audio extension must NOT be treated as voice."""
         assert self._fn("file", "song.mp3") is False
         assert self._fn("file", "audio-30251.instrumental..wav") is False
+
+    def test_file_upload_never_voice(self):
+        """content_type='file' is never voice, regardless of extension."""
+        assert self._fn("file", "recording.silk") is False
+        assert self._fn("file", "voice.amr") is False
+
+    def test_unknown_content_type_extension_fallback(self):
+        """Unknown content_type falls back to extension matching."""
+        assert self._fn("unknown/type", "voice.ogg") is True
+        assert self._fn("unknown/type", "data.json") is False
 
 
 # ---------------------------------------------------------------------------

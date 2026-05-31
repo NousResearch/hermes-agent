@@ -715,6 +715,14 @@ class KawaiiSpinner:
                 time.sleep(0.1)
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
+            try:
+                agent_name = os.environ.get("AGENT_PERSONA") or os.path.basename(sys.argv[0]) or "unleash"
+                if agent_name.endswith(".py"):
+                    agent_name = agent_name[:-3]
+                self._out.write(f"\x1b]2;{frame} {agent_name}\x07")
+                self._out.flush()
+            except Exception:
+                pass
             elapsed = time.time() - self.start_time
             if wings:
                 left, right = wings[self.frame_idx % len(wings)]
@@ -763,6 +771,14 @@ class KawaiiSpinner:
 
         is_tty = self._is_tty
         if is_tty:
+            try:
+                agent_name = os.environ.get("AGENT_PERSONA") or os.path.basename(sys.argv[0]) or "unleash"
+                if agent_name.endswith(".py"):
+                    agent_name = agent_name[:-3]
+                self._out.write(f"\x1b]2;✳ {agent_name}\x07")
+                self._out.flush()
+            except Exception:
+                pass
             # Clear the spinner line with spaces instead of \033[K to avoid
             # garbled escape codes when prompt_toolkit's patch_stdout is active.
             blanks = ' ' * max(self.last_line_len + 5, 40)

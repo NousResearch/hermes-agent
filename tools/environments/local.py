@@ -232,11 +232,10 @@ def _find_bash() -> str:
 _find_shell = _find_bash
 
 
-# Standard PATH entries for environments with minimal PATH.
-_SANE_PATH = (
-    "/opt/homebrew/bin:/opt/homebrew/sbin:"
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-)
+# Standard PATH entries for environments with minimal PATH. User-writable
+# package-manager prefixes such as Homebrew are intentionally not injected when
+# absent from the operator-provided PATH.
+_SANE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 def _make_run_env(env: dict) -> dict:

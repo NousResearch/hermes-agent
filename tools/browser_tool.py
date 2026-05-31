@@ -99,16 +99,131 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Evaluated once at import time so tests can patch ``browser_tool._IS_WINDOWS``
+# without mutating the global ``os.name`` attribute (which would also affect
+# pathlib.Path's class selection and break other test-fixture infrastructure).
+_IS_WINDOWS = os.name == "nt"
+_BROWSER_EVAL_URL_RE = re.compile(r"https?://[^\s\'\"<>`)]+", re.IGNORECASE)
+_BROWSER_EVAL_NAV_OR_NETWORK_RE = re.compile(
+    r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|Worker|SharedWorker|importScripts)\b"
+    r"|\bsendBeacon\b"
+    r"|\bwindow\s*\.\s*open\b"
+    r"|\blocation\s*="
+    r"|\blocation\s*\.\s*(?:assign|replace|reload)\s*\("
+    r"|\b(?:href|src|action)\s*="
+    r"|\.\s*submit\s*\("
+    r"|\.\s*setAttribute\s*\(\s*['\"](?:href|src|action)['\"]",
+    re.IGNORECASE,
+)
+
+
+def _browser_url_security_block(url: str, *, auto_local_this_nav: bool = False) -> Optional[Dict[str, Any]]:
+    """Return a browser policy block response for a URL, or None when allowed."""
+    from agent.redact import url_contains_secret
+
+    if url_contains_secret(url):
+        return {
+            "success": False,
+            "error": (
+                "Blocked: URL contains what appears to be an API key or token. "
+                "Secrets must not be sent in URLs."
+            ),
+        }
+
+    if not _is_local_backend() and _is_always_blocked_url(url):
+        return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
+
+    if _is_camofox_mode():
+        if _is_always_blocked_url(url):
+            return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
+        if not _is_safe_url(url):
+            return {"success": False, "error": "Blocked: URL targets a private or internal address"}
+
+    if (
+        not auto_local_this_nav
+        and not _allow_private_urls()
+        and not _is_safe_url(url)
+    ):
+        return {"success": False, "error": "Blocked: URL targets a private or internal address"}
+
+    blocked = check_website_access(url)
+    if blocked:
+        return {
+            "success": False,
+            "error": blocked["message"],
+            "blocked_by_policy": {
+                "host": blocked["host"],
+                "rule": blocked["rule"],
+                "source": blocked["source"],
+            },
+        }
+
+    return None
+
+
+def _browser_url_security_error(url: str, *, auto_local_this_nav: bool = False) -> Optional[str]:
+    """Return a browser policy error for a URL, or None when it is allowed."""
+    block = _browser_url_security_block(url, auto_local_this_nav=auto_local_this_nav)
+    return str(block["error"]) if block else None
+
+
+def _browser_eval_security_error(expression: str) -> Optional[str]:
+    """Return a policy error when a browser eval expression is unsafe."""
+    import urllib.parse
+    from agent.redact import _PREFIX_RE
+
+    expression_decoded = urllib.parse.unquote(expression)
+    if _PREFIX_RE.search(expression) or _PREFIX_RE.search(expression_decoded):
+        return (
+            "Blocked: URL contains what appears to be an API key or token. "
+            "Secrets must not be sent in URLs."
+        )
+
+    for url in _BROWSER_EVAL_URL_RE.findall(expression):
+        error = _browser_url_security_error(url.rstrip(".,;"))
+        if error:
+            return error
+
+    if not _is_local_backend() and _BROWSER_EVAL_NAV_OR_NETWORK_RE.search(expression):
+        return (
+            "Blocked: browser JavaScript evaluation cannot perform navigation "
+            "or network requests in cloud browser sessions. Use browser_navigate "
+            "for navigation so URL safety checks are enforced."
+        )
+
+    return None
+
+
+def _browser_eval_final_url_error(effective_task_id: str) -> Optional[str]:
+    """Validate the browser's current URL after eval-triggered side effects."""
+    if _is_local_backend():
+        return None
+
+    result = _run_browser_command(effective_task_id, "eval", ["location.href"], timeout=10)
+    if not result.get("success"):
+        return None
+
+    current_url = str(result.get("data", {}).get("result") or "").strip()
+    if not current_url.lower().startswith(("http://", "https://")):
+        return None
+
+    return _browser_url_security_error(current_url)
+
+
+def _blank_browser_after_block(effective_task_id: str) -> None:
+    """Best-effort blanking after an unsafe eval side effect is detected."""
+    try:
+        _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
+    except Exception:
+        logger.debug("Failed to blank browser after unsafe eval side effect", exc_info=True)
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
-# Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
-# npx, node, and Android's glibc runner (grun).
+# Includes Android/Termux locations needed for agent-browser and Android's
+# glibc runner (grun), plus system directories. User-writable package-manager
+# prefixes such as Homebrew are intentionally not injected when absent from the
+# operator-provided PATH.
 _SANE_PATH_DIRS = (
     "/data/data/com.termux/files/usr/bin",
     "/data/data/com.termux/files/usr/sbin",
-    "/opt/homebrew/bin",
-    "/opt/homebrew/sbin",
-    "/usr/local/sbin",
-    "/usr/local/bin",
     "/usr/sbin",
     "/usr/bin",
     "/sbin",
@@ -122,8 +237,8 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     """Find Homebrew versioned Node.js bin directories (e.g. node@20, node@24).
 
     When Node is installed via ``brew install node@24`` and NOT linked into
-    /opt/homebrew/bin, agent-browser isn't discoverable on the default PATH.
-    This function finds those directories so they can be prepended.
+    /opt/homebrew/bin, this discovers versioned bin directories. Callers only
+    add them when the operator-provided PATH already opts into Homebrew.
     """
     dirs: list[str] = []
     homebrew_opt = "/opt/homebrew/opt"
@@ -140,20 +255,32 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     return tuple(dirs)
 
 
-def _browser_candidate_path_dirs() -> list[str]:
-    """Return ordered browser CLI PATH candidates shared by discovery and execution."""
+def _browser_candidate_path_dirs(existing_path: str = "") -> list[str]:
+    """Return safe browser CLI PATH candidates shared by discovery and execution."""
+    path_parts = [p for p in (existing_path or "").split(os.pathsep) if p]
+    candidates = list(_SANE_PATH_DIRS)
+
+    # Only expand user-writable toolchain prefixes when the operator already
+    # included that trust root in PATH. This preserves restricted-PATH launches
+    # while still supporting normal interactive Homebrew/Hermes installs.
+    if any(p.startswith("/opt/homebrew/") or p == "/opt/homebrew" for p in path_parts):
+        candidates.extend(_discover_homebrew_node_dirs())
+
     hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
-    return [hermes_node_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    if hermes_node_bin in path_parts:
+        candidates.append(hermes_node_bin)
+
+    return candidates
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
-    """Prepend browser-specific PATH fallbacks without reordering existing entries."""
+    """Prepend safe browser PATH fallbacks without reordering existing entries."""
     path_parts = [p for p in (existing_path or "").split(os.pathsep) if p]
     existing_parts = set(path_parts)
     prefix_parts: list[str] = []
 
-    for part in _browser_candidate_path_dirs():
+    for part in _browser_candidate_path_dirs(existing_path):
         if not part or part in existing_parts or part in prefix_parts:
             continue
         if os.path.isdir(part):
@@ -488,6 +615,77 @@ def _requires_real_termux_browser_install(browser_cmd: str) -> bool:
     return _is_termux_environment() and _is_local_mode() and browser_cmd.strip() == "npx agent-browser"
 
 
+def _resolve_npx_agent_browser_prefix(search_path: Optional[str] = None) -> List[str]:
+    """Return a safe argv prefix for the synthetic ``npx agent-browser`` fallback.
+
+    Parameters
+    ----------
+    search_path:
+        PATH string used to search for ``npx`` and ``node`` binaries.  Defaults
+        to ``_merge_browser_path(os.environ.get("PATH", ""))`` so that the same
+        extended set of directories the child subprocess will inherit is consulted
+        here too, preventing false fail-closed errors when npx lives only in a
+        browser-tool-specific directory not yet in the live process environment.
+        Pass an explicit value when the caller has already computed the merged
+        PATH (avoids a redundant computation).
+    """
+    effective_path = (
+        search_path
+        if search_path is not None
+        else _merge_browser_path(os.environ.get("PATH", ""))
+    )
+    npx_bin = shutil.which("npx", path=effective_path) or "npx"
+    if not _IS_WINDOWS:
+        return [npx_bin, "agent-browser"]
+
+    # Use os.path string functions rather than pathlib.Path so that patching
+    # os.name in tests does not cause pathlib to attempt WindowsPath
+    # instantiation on non-Windows platforms.
+    _, npx_ext = os.path.splitext(npx_bin)
+    npx_suffix = npx_ext.lower()
+    if npx_suffix in {".exe", ".com"}:
+        return [npx_bin, "agent-browser"]
+    if npx_suffix not in {".cmd", ".bat"}:
+        raise FileNotFoundError(
+            "Refusing to launch unresolved npx on Windows; install agent-browser "
+            "locally with 'npm install' or ensure Node.js/npm are installed correctly."
+        )
+
+    # Windows batch shims reinterpret cmd.exe metacharacters in later argv
+    # entries. Bypass npx.cmd by invoking npm's JS CLI through node.exe.
+    npx_dir = os.path.dirname(npx_bin)
+    npx_cli = os.path.join(npx_dir, "node_modules", "npm", "bin", "npx-cli.js")
+    if not os.path.isfile(npx_cli):
+        raise FileNotFoundError(
+            "Refusing to launch npx.cmd with browser arguments on Windows; "
+            "could not locate npm's npx-cli.js. Install agent-browser locally "
+            "with 'npm install' or ensure Node.js/npm are installed correctly."
+        )
+
+    def _valid_windows_node(candidate: Optional[str]) -> Optional[str]:
+        if not candidate:
+            return None
+        _, ext = os.path.splitext(candidate)
+        if ext.lower() in {".exe", ".com"} and os.path.isfile(candidate):
+            return candidate
+        sibling_exe = os.path.join(os.path.dirname(candidate), "node.exe")
+        if os.path.isfile(sibling_exe):
+            return sibling_exe
+        return None
+
+    node_bin = (
+        _valid_windows_node(shutil.which("node.exe", path=effective_path))
+        or _valid_windows_node(shutil.which("node", path=effective_path))
+        or _valid_windows_node(os.path.join(npx_dir, "node.exe"))
+    )
+    if not node_bin:
+        raise FileNotFoundError(
+            "Refusing to launch npx.cmd with browser arguments on Windows; "
+            "could not locate a real node.exe for npm's npx-cli.js."
+        )
+    return [node_bin, npx_cli, "agent-browser"]
+
+
 def _termux_browser_install_error() -> str:
     return (
         "Local browser automation on Termux cannot rely on the bare npx fallback. "
@@ -726,22 +924,21 @@ def _run_chrome_fallback_command(
             )
         return {"success": False, "error": hint}
 
-    # On Windows npx is npx.cmd — use shutil.which so CreateProcessW can
-    # execute the batch shim.  shutil.which honours PATHEXT on Windows and
-    # returns the plain executable on POSIX.  If npx isn't on PATH (Termux,
-    # bare container), fall back to the bare name and let Popen raise with
-    # a readable "FileNotFoundError: 'npx'" rather than WinError 193.
     if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
+        try:
+            browser_merged_path = _merge_browser_path(os.environ.get("PATH", ""))
+            cmd_prefix = _resolve_npx_agent_browser_prefix(search_path=browser_merged_path)
+        except FileNotFoundError as e:
+            return {"success": False, "error": str(e)}
     else:
         cmd_prefix = [browser_cmd]
+        browser_merged_path = None
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
-    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    browser_env["PATH"] = browser_merged_path or _merge_browser_path(browser_env.get("PATH", ""))
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -1633,8 +1830,8 @@ def _find_agent_browser() -> str:
     """
     Find the agent-browser CLI executable.
 
-    Checks in order: current PATH, Homebrew/common bin dirs, Hermes-managed
-    node, local node_modules/.bin/, npx fallback.
+    Checks in order: current PATH, safe fallback dirs, operator-provided
+    Homebrew/Hermes-managed paths, local node_modules/.bin/, npx fallback.
 
     Returns:
         Path to agent-browser executable
@@ -1664,9 +1861,9 @@ def _find_agent_browser() -> str:
         _agent_browser_resolved = True
         return which_result
 
-    # Build an extended search PATH including Hermes-managed Node, macOS
-    # versioned Homebrew installs, and fallback system dirs like Termux.
-    extended_path = _merge_browser_path("")
+    # Build an extended search PATH from safe fallback dirs and any toolchain
+    # prefixes the operator already included in the process PATH.
+    extended_path = _merge_browser_path(os.environ.get("PATH", ""))
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
         if which_result:
@@ -1854,12 +2051,16 @@ def _run_browser_command(
 
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
-    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
     if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
+        try:
+            browser_merged_path = _merge_browser_path(os.environ.get("PATH", ""))
+            cmd_prefix = _resolve_npx_agent_browser_prefix(search_path=browser_merged_path)
+        except FileNotFoundError as e:
+            logger.warning("agent-browser npx fallback unavailable: %s", e)
+            return {"success": False, "error": str(e)}
     else:
         cmd_prefix = [browser_cmd]
+        browser_merged_path = None
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",
@@ -1884,8 +2085,9 @@ def _run_browser_command(
         browser_env = {**os.environ}
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
-        browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+        # used during CLI discovery.  Reuse the already-computed merged path
+        # when available to avoid a redundant computation.
+        browser_env["PATH"] = browser_merged_path or _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
 
         # Tell the agent-browser daemon to self-terminate after being idle

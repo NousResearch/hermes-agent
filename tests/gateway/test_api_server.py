@@ -29,6 +29,8 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _CORS_HEADERS,
     _new_chat_session_id,
+    _derive_chat_session_id,
+    _make_request_fingerprint,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -326,6 +328,15 @@ class TestAuth:
         adapter = APIServerAdapter(config)
         mock_request = MagicMock()
         mock_request.headers = {"Authorization": "Basic dXNlcjpwYXNz"}
+        result = adapter._check_auth(mock_request)
+        assert result is not None
+        assert result.status == 401
+
+    def test_placeholder_key_never_authenticates(self):
+        config = PlatformConfig(enabled=True, extra={"key": "${API_SERVER_KEY}"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer ${API_SERVER_KEY}"}
         result = adapter._check_auth(mock_request)
         assert result is not None
         assert result.status == 401

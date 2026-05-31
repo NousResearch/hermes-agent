@@ -586,6 +586,11 @@ class ProcessRegistry:
             # descendants spawned via setsid) before re-raising so they do not
             # leak as untracked background processes.
             try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:
+                pass
+            try:
                 self._terminate_host_pid(proc.pid)
             except Exception:
                 pass

@@ -13,8 +13,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_constants import display_hermes_home
-
 logger = logging.getLogger(__name__)
 
 # Import from cron module (will be available when properly installed)
@@ -311,6 +309,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    allow_script: bool = False,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -318,6 +317,14 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+
+        if not allow_script and (script is not None or no_agent is not None):
+            return tool_error(
+                "Cron script execution is an operator-approved admin capability. "
+                "It cannot be configured through the model-callable cronjob tool; "
+                "use the `hermes cron` CLI to set or clear script/no_agent fields.",
+                success=False,
+            )
 
         if normalized == "create":
             if not schedule:
@@ -598,28 +605,6 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     }
                 },
                 "required": ["model"]
-            },
-            "script": {
-                "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
-            },
-            "no_agent": {
-                "type": "boolean",
-                "default": False,
-                "description": (
-                    "Default: False (LLM-driven job — the agent runs the prompt each tick). "
-                    "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
-                    "\n\n"
-                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
-                    "\n\n"
-                    "DELIVERY SEMANTICS when True: "
-                    "(a) non-empty stdout is sent verbatim as the message; "
-                    "(b) EMPTY stdout means SILENT — nothing is sent to the user and they won't see anything happened, so design your script to stay quiet when there's nothing to report (the watchdog pattern); "
-                    "(c) non-zero exit / timeout sends an error alert so a broken watchdog can't fail silently. "
-                    "\n\n"
-                    "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
-                    "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
-                ),
             },
             "context_from": {
                 "type": "array",

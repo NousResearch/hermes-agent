@@ -72,6 +72,11 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._accepted_count = 0
         self._duplicate_count = 0
 
+    @property
+    def client_state_configured(self) -> bool:
+        """Return whether webhook notifications require a clientState secret."""
+        return self._client_state is not None
+
     @staticmethod
     def _string_or_none(value: Any) -> Optional[str]:
         if value is None:

@@ -828,6 +828,90 @@ class TestNpmBareSpawnsResolved:
                 )
 
 
+class TestBrowserNpxWindowsLaunchHardening:
+    """The browser npx fallback must not pass untrusted args through npx.cmd."""
+
+    def test_windows_npx_cmd_uses_node_cli_instead_of_batch_shim(self, tmp_path, monkeypatch):
+        from tools import browser_tool
+
+        node_root = tmp_path / "nodejs"
+        npx_cmd = node_root / "npx.cmd"
+        npx_cli = node_root / "node_modules" / "npm" / "bin" / "npx-cli.js"
+        node_exe = node_root / "node.exe"
+        npx_cli.parent.mkdir(parents=True)
+        npx_cmd.write_text("@echo off\n", encoding="utf-8")
+        npx_cli.write_text("// npm npx cli\n", encoding="utf-8")
+        node_exe.write_text("", encoding="utf-8")
+
+        def fake_which(name, path=None):
+            if name == "npx":
+                return str(npx_cmd)
+            if name in {"node", "node.exe"}:
+                return str(node_exe)
+            return None
+
+        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
+        monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
+
+        prefix = browser_tool._resolve_npx_agent_browser_prefix()
+
+        assert prefix == [str(node_exe), str(npx_cli), "agent-browser"]
+        assert not prefix[0].lower().endswith((".cmd", ".bat"))
+
+    def test_windows_npx_cmd_fails_closed_without_npx_cli(self, tmp_path, monkeypatch):
+        from tools import browser_tool
+
+        npx_cmd = tmp_path / "nodejs" / "npx.cmd"
+        npx_cmd.parent.mkdir()
+        npx_cmd.write_text("@echo off\n", encoding="utf-8")
+
+        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            browser_tool.shutil,
+            "which",
+            lambda name, path=None: str(npx_cmd) if name == "npx" else None,
+        )
+
+        with pytest.raises(FileNotFoundError, match="Refusing to launch npx.cmd"):
+            browser_tool._resolve_npx_agent_browser_prefix()
+
+    def test_windows_npx_found_only_via_merged_path(self, tmp_path, monkeypatch):
+        """npx.cmd absent from the default process PATH but present in the
+        browser-merged PATH must not cause a false fail-closed error."""
+        from tools import browser_tool
+
+        node_root = tmp_path / "nodejs"
+        npx_cmd = node_root / "npx.cmd"
+        npx_cli = node_root / "node_modules" / "npm" / "bin" / "npx-cli.js"
+        node_exe = node_root / "node.exe"
+        npx_cli.parent.mkdir(parents=True)
+        npx_cmd.write_text("@echo off\n", encoding="utf-8")
+        npx_cli.write_text("// npm npx cli\n", encoding="utf-8")
+        node_exe.write_text("", encoding="utf-8")
+
+        merged_path = str(node_root)
+
+        def fake_which(name, path=None):
+            # Binaries are only visible via the extended merged path,
+            # not via the bare default process PATH.
+            if path and str(node_root) in path:
+                if name == "npx":
+                    return str(npx_cmd)
+                if name in {"node", "node.exe"}:
+                    return str(node_exe)
+            return None
+
+        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
+        monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
+        # Simulate _merge_browser_path returning the extra dir that contains npx.cmd
+        monkeypatch.setattr(browser_tool, "_merge_browser_path", lambda p="": merged_path)
+
+        prefix = browser_tool._resolve_npx_agent_browser_prefix()
+
+        assert prefix == [str(node_exe), str(npx_cli), "agent-browser"]
+        assert not prefix[0].lower().endswith((".cmd", ".bat"))
+
+
 # ---------------------------------------------------------------------------
 # tools/environments/local.py Windows temp dir & PATH injection
 # ---------------------------------------------------------------------------

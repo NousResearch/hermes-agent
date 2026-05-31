@@ -39,6 +39,13 @@ from utils import atomic_replace
 logger = logging.getLogger(__name__)
 
 
+# Skills in this set are not synced from the repo bundle. They were shipped
+# briefly but retracted because their instructions/scripts crossed Hermes
+# security boundaries (for example by encouraging secret-file loading from
+# execute_code or persistent agent-wide jailbreak configuration).
+_SECURITY_RETRACTED_BUNDLED_SKILLS = frozenset({"godmode"})
+
+
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
@@ -137,7 +144,11 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
     return fallback
 
 
-def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
+def _discover_bundled_skills(
+    bundled_dir: Path,
+    *,
+    include_retracted: bool = False,
+) -> List[Tuple[str, Path]]:
     """
     Find all SKILL.md files in the bundled directory.
     Returns list of (skill_name, skill_directory_path) tuples.
@@ -152,6 +163,8 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
             continue
         skill_dir = skill_md.parent
         skill_name = _read_skill_name(skill_md, skill_dir.name)
+        if skill_name in _SECURITY_RETRACTED_BUNDLED_SKILLS and not include_retracted:
+            continue
         skills.append((skill_name, skill_dir))
 
     return skills
@@ -165,6 +178,42 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     rel = skill_dir.relative_to(bundled_dir)
     return SKILLS_DIR / rel
 
+
+
+def _remove_retracted_bundled_skills(
+    manifest: Dict[str, str],
+    bundled_skills: List[Tuple[str, Path]],
+) -> None:
+    """Remove unmodified local copies of security-retracted bundled skills.
+
+    A retracted bundled skill should not remain available merely because an
+    earlier Hermes version already synced it into the user's skill directory.
+    We only delete copies that still match the tracked origin hash; customized
+    local copies are left untouched and simply untracked.
+    """
+    bundled_by_name = dict(bundled_skills)
+    bundled_dir = _get_bundled_dir()
+    for skill_name in _SECURITY_RETRACTED_BUNDLED_SKILLS:
+        origin_hash = manifest.pop(skill_name, None)
+        if origin_hash is None:
+            continue
+
+        skill_src = bundled_by_name.get(skill_name)
+        if skill_src is None:
+            continue
+
+        dest = _compute_relative_dest(skill_src, bundled_dir)
+        if not dest.exists():
+            continue
+
+        user_hash = _dir_hash(dest)
+        safe_to_remove = (
+            user_hash == origin_hash
+            if origin_hash
+            else user_hash == _dir_hash(skill_src)
+        )
+        if safe_to_remove:
+            shutil.rmtree(dest, ignore_errors=True)
 
 def _dir_hash(directory: Path) -> str:
     """Compute a hash of all file contents in a directory for change detection."""
@@ -197,7 +246,16 @@ def sync_skills(quiet: bool = False) -> dict:
 
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
-    bundled_skills = _discover_bundled_skills(bundled_dir)
+    all_bundled_skills = _discover_bundled_skills(
+        bundled_dir,
+        include_retracted=True,
+    )
+    _remove_retracted_bundled_skills(manifest, all_bundled_skills)
+    bundled_skills = [
+        (name, path)
+        for name, path in all_bundled_skills
+        if name not in _SECURITY_RETRACTED_BUNDLED_SKILLS
+    ]
     bundled_names = {name for name, _ in bundled_skills}
 
     copied = []

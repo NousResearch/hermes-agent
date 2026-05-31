@@ -262,21 +262,21 @@ def _read_final_score(db_path: str) -> Dict[str, Any]:
         try:
             cur.execute(
                 "SELECT event_type FROM sim_events "
-                "WHERE event_type IN ('bankruptcy', 'horizon_end') "
+                "WHERE LOWER(TRIM(event_type)) IN ('bankruptcy', 'horizon_end') "
                 "ORDER BY scheduled_at DESC LIMIT 1"
             )
             event_row = cur.fetchone()
             if event_row:
-                terminal_reason = event_row[0]
+                terminal_reason = str(event_row[0]).strip().lower()
         except sqlite3.OperationalError:
             # Table may not exist if simulation didn't progress
             pass
 
-        survived = funds >= 0 and terminal_reason != "bankruptcy"
+        survived = bool(funds >= 0 and terminal_reason != "bankruptcy")
         return {
-            "final_funds_cents": funds,
+            "final_funds_cents": int(funds),
             "survived": survived,
-            "terminal_reason": terminal_reason,
+            "terminal_reason": str(terminal_reason),
         }
 
     except Exception as e:

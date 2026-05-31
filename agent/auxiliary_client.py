@@ -1439,6 +1439,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if is_native_gemini_base_url(base_url):
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
+            # Set a longer timeout for auxiliary calls (default 30s is too short for slow local LLMs)
+            extra["timeout"] = 600.0
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):

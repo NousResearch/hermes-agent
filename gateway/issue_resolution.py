@@ -36,6 +36,9 @@ MASTER_PLAN_HEADING = "# Master Project Plan"
 ISSUE_RUN_MAX_ATTEMPTS = 3
 ISSUE_RUN_RETRY_DELAYS_SECONDS = (60, 300)
 ISSUE_RUN_IDLE_POLL_SECONDS = 5.0
+REVIEW_TAG_MAX_PARSE_ATTEMPTS = 2
+REVIEW_TAG_STATES = {"ready_for_merge", "review_findings", "review_inconclusive"}
+REVIEW_TAG_NEXT_ACTIONS = {"coding_subagent", "rerun_reviewer", "ready_for_merge"}
 MANAGED_REPO_POLICIES = {
     "m0nklabs/cryptotrader": {
         "name": "CryptoTrader",
@@ -83,6 +86,10 @@ class IssueRunType(str, Enum):
 
 class ReviewFindingsRetry(RuntimeError):
     """Reviewer found actionable findings that should requeue coder work."""
+
+
+class ReviewTagParseError(RuntimeError):
+    """Reviewer output did not contain a valid kyber routing tag."""
 
 
 @dataclass(frozen=True)
@@ -300,6 +307,14 @@ async def _issue_queue_worker() -> None:
         notify = _RUN_NOTIFIERS.get(run.id) or _DEFAULT_NOTIFY or _noop_notify
         try:
             await _execute_run(store, run, notify)
+        except ReviewTagParseError as exc:
+            store.mark_failed(run.id, str(exc))
+            await notify(
+                f"Hermes: Issue run #{run.id} failed review tag validation: {exc}"
+            )
+            logger.exception(
+                "issue-resolution run %s failed review tag validation", run.id
+            )
         except Exception as exc:
             if store.mark_retry_or_failed(run, str(exc)):
                 retrying = store.get_run(run.id)
@@ -402,19 +417,10 @@ async def _execute_single_issue(
     store.record_pr(run.id, pr)
     await notify(f"Hermes: PR #{pr.number} created, triggering reviewer: {pr.url}")
 
-    reviewer_prompt = _cloud_reviewer_prompt(run.repo, pr)
-    reviewer_invocation = build_aider_invocation(
-        AiderRole.CLOUD_REVIEWER, run.workdir, reviewer_prompt
+    review_output, routing_tag = await _run_cloud_reviewer_with_tag(
+        run.repo, run.workdir, pr, notify
     )
-    reviewer_output = await _run(
-        reviewer_invocation.command,
-        cwd=reviewer_invocation.cwd,
-        env=reviewer_invocation.env,
-    )
-
-    review_output = reviewer_output.stdout
     await _post_pr_feedback(run.repo, pr, _review_body(review_output))
-    routing_tag = parse_review_routing_tag(review_output)
     if is_review_findings_for_coder(routing_tag):
         await notify(
             f"Hermes: Reviewer found fix work on PR #{pr.number}; keeping run #{run.id} "
@@ -423,6 +429,42 @@ async def _execute_single_issue(
         raise ReviewFindingsRetry("review_findings queued same-branch coding fix")
     store.mark_completed(run.id)
     await notify(f"Hermes: Cloud reviewer posted feedback on PR #{pr.number}.")
+
+
+async def _run_cloud_reviewer_with_tag(
+    repo: str,
+    workdir: Path,
+    pr: PullRequestMetadata,
+    notify: Callable[[str], Awaitable[None]],
+) -> tuple[str, ReviewRoutingTag]:
+    """Run the cloud reviewer and require a valid routing tag with one retry."""
+    last_output = ""
+    for attempt in range(1, REVIEW_TAG_MAX_PARSE_ATTEMPTS + 1):
+        reviewer_prompt = _cloud_reviewer_prompt(
+            repo, pr, retry_tag_required=attempt > 1
+        )
+        reviewer_invocation = build_aider_invocation(
+            AiderRole.CLOUD_REVIEWER, workdir, reviewer_prompt
+        )
+        reviewer_output = await _run(
+            reviewer_invocation.command,
+            cwd=reviewer_invocation.cwd,
+            env=reviewer_invocation.env,
+        )
+        last_output = reviewer_output.stdout
+        routing_tag = parse_review_routing_tag(last_output)
+        if routing_tag is not None:
+            return last_output, routing_tag
+        if attempt < REVIEW_TAG_MAX_PARSE_ATTEMPTS:
+            await notify(
+                f"Hermes: Reviewer output for PR #{pr.number} had no valid kyber-tag; "
+                "retrying once."
+            )
+
+    raise ReviewTagParseError(
+        f"reviewer output for PR #{pr.number} lacked a valid kyber-tag after "
+        f"{REVIEW_TAG_MAX_PARSE_ATTEMPTS} attempt(s)"
+    )
 
 
 async def _complete_ready_masters(
@@ -1020,15 +1062,29 @@ def _local_coder_prompt(repo: str, issue: IssueMetadata, branch: str) -> str:
     )
 
 
-def _cloud_reviewer_prompt(repo: str, pr: PullRequestMetadata) -> str:
+def _cloud_reviewer_prompt(
+    repo: str, pr: PullRequestMetadata, *, retry_tag_required: bool = False
+) -> str:
+    retry_note = ""
+    if retry_tag_required:
+        retry_note = (
+            "\nYour previous response lacked a valid kyber-tag. Return the review again "
+            "with a valid routing tag.\n"
+        )
     return (
         "Review this new PR and create an inline comment thread directly inside "
         "the GitHub PR with feedback.\n\n"
         f"Repository: {repo}\n"
         f"PR: #{pr.number}\n"
-        f"PR URL: {pr.url}\n\n"
+        f"PR URL: {pr.url}\n"
+        f"Current PR head SHA: {pr.head_ref_oid}\n"
+        f"{retry_note}\n"
         "Return concise feedback suitable for one GitHub inline review comment. "
-        "Do not edit files or create commits."
+        "Do not edit files or create commits.\n\n"
+        "End with a routing tag on separate lines using exactly one of these states:\n"
+        "kyber-tag.state=review_findings | ready_for_merge | review_inconclusive\n"
+        "next_action=coding_subagent | rerun_reviewer | ready_for_merge\n"
+        f"head_ref_oid={pr.head_ref_oid}"
     )
 
 
@@ -1042,7 +1098,7 @@ def _review_body(output: str) -> str:
 
 
 def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
-    """Extract the kyber-tag routing state from reviewer output."""
+    """Extract and validate the kyber-tag routing state from reviewer output."""
     state: str | None = None
     next_action: str | None = None
     head_ref_oid: str | None = None
@@ -1056,12 +1112,16 @@ def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
             next_action = line.split("=", 1)[1].strip()
         elif line.startswith("head_ref_oid="):
             head_ref_oid = line.split("=", 1)[1].strip()
-    if not state:
+    if state not in REVIEW_TAG_STATES:
+        return None
+    if next_action not in REVIEW_TAG_NEXT_ACTIONS:
+        return None
+    if not head_ref_oid:
         return None
     return ReviewRoutingTag(
         state=state,
-        next_action=next_action or None,
-        head_ref_oid=head_ref_oid or None,
+        next_action=next_action,
+        head_ref_oid=head_ref_oid,
     )
 
 

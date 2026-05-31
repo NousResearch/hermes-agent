@@ -16,6 +16,7 @@ from gateway.issue_resolution import (
     IssueRunType,
     PullRequestMetadata,
     ReviewFindingsRetry,
+    ReviewTagParseError,
     IssueStateStore,
     _execute_master_issue,
     _execute_single_issue,
@@ -165,7 +166,7 @@ def test_parse_review_routing_tag_detects_findings_for_coder():
 def test_parse_review_routing_tag_ignores_non_coder_next_action():
     """Only coding_subagent findings should create same-branch fix work."""
     tag = parse_review_routing_tag(
-        "kyber-tag.state=review_findings\nnext_action=rerun_reviewer"
+        "kyber-tag.state=review_findings\nnext_action=rerun_reviewer\nhead_ref_oid=abc123"
     )
 
     assert is_review_findings_for_coder(tag) is False
@@ -183,7 +184,7 @@ def test_can_merge_pr_requires_ready_for_current_head():
     assert (
         can_merge_pr(
             parse_review_routing_tag(
-                "kyber-tag.state=ready_for_merge\nhead_ref_oid=abc123"
+                "kyber-tag.state=ready_for_merge\nnext_action=ready_for_merge\nhead_ref_oid=abc123"
             ),
             pr,
         )
@@ -192,7 +193,7 @@ def test_can_merge_pr_requires_ready_for_current_head():
     assert (
         can_merge_pr(
             parse_review_routing_tag(
-                "kyber-tag.state=ready_for_merge\nhead_ref_oid=stale"
+                "kyber-tag.state=ready_for_merge\nnext_action=ready_for_merge\nhead_ref_oid=stale"
             ),
             pr,
         )
@@ -208,6 +209,29 @@ def test_can_merge_pr_requires_ready_for_current_head():
         is False
     )
     assert can_merge_pr(None, pr) is False
+
+
+def test_parse_review_routing_tag_rejects_malformed_tags():
+    """Malformed reviewer tags should fail closed instead of implying success."""
+    assert parse_review_routing_tag("review looks fine") is None
+    assert (
+        parse_review_routing_tag(
+            "kyber-tag.state=review_clean\nnext_action=ready_for_merge\nhead_ref_oid=abc123"
+        )
+        is None
+    )
+    assert (
+        parse_review_routing_tag(
+            "kyber-tag.state=ready_for_merge\nnext_action=merge_now\nhead_ref_oid=abc123"
+        )
+        is None
+    )
+    assert (
+        parse_review_routing_tag(
+            "kyber-tag.state=ready_for_merge\nnext_action=ready_for_merge"
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -276,7 +300,11 @@ async def test_execute_single_issue_queues_fix_run_on_review_findings(
                 return CompletedProcess(
                     command,
                     0,
-                    stdout="kyber-tag.state=review_findings\nnext_action=coding_subagent\n",
+                    stdout=(
+                        "kyber-tag.state=review_findings\n"
+                        "next_action=coding_subagent\n"
+                        "head_ref_oid=abc123\n"
+                    ),
                     stderr="",
                 )
             return CompletedProcess(command, 0, stdout="local coder done", stderr="")
@@ -295,6 +323,177 @@ async def test_execute_single_issue_queues_fix_run_on_review_findings(
     assert original.status is IssueRunStatus.RUNNING
     assert original.branch == "issue/cryptotrader-42-add-pnl-summary"
     assert any("keeping run #" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_execute_single_issue_retries_malformed_review_tag_once(
+    tmp_path, monkeypatch
+):
+    """Malformed review tags should get one bounded reviewer rerun."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    run = store.claim_next_run()
+    assert run is not None
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+    messages: list[str] = []
+    review_calls = 0
+
+    async def notify(message: str):
+        messages.append(message)
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        nonlocal review_calls
+        if command[:4] == ["gh", "repo", "view", "m0nklabs/cryptotrader"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
+                stderr="",
+            )
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "checkout", "-B"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "push", "-u"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "create"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout="https://github.com/m0nklabs/cryptotrader/pull/77\n",
+                stderr="",
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            payload = [
+                {
+                    "number": 77,
+                    "url": "https://github.com/m0nklabs/cryptotrader/pull/77",
+                    "headRefName": "issue/cryptotrader-42-add-pnl-summary",
+                    "headRefOid": "abc123",
+                }
+            ]
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "pr", "diff"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "review"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if "--message" in command:
+            message = command[command.index("--message") + 1]
+            if "Review this new PR" in message:
+                review_calls += 1
+                if review_calls == 1:
+                    return CompletedProcess(command, 0, stdout="looks clean", stderr="")
+                return CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        "kyber-tag.state=ready_for_merge\n"
+                        "next_action=ready_for_merge\n"
+                        "head_ref_oid=abc123\n"
+                    ),
+                    stderr="",
+                )
+            return CompletedProcess(command, 0, stdout="local coder done", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+    monkeypatch.setenv("AIDER_BIN", "/opt/aider/bin/aider")
+    monkeypatch.setenv("AIDER_GUARDIAN_API_KEY", "local-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "cloud-key")
+    monkeypatch.setenv("KYBERM0NK_ENV", str(tmp_path / "missing.env"))
+
+    await _execute_single_issue(store, run, issue, notify)
+
+    assert review_calls == 2
+    assert store.get_run(run.id).status is IssueRunStatus.COMPLETED
+    assert any("retrying once" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_execute_single_issue_fails_after_repeated_malformed_review_tag(
+    tmp_path, monkeypatch
+):
+    """Repeated malformed tags should escalate as a failed review parse."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    run = store.claim_next_run()
+    assert run is not None
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+    review_calls = 0
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        nonlocal review_calls
+        if command[:4] == ["gh", "repo", "view", "m0nklabs/cryptotrader"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
+                stderr="",
+            )
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "checkout", "-B"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "push", "-u"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "create"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout="https://github.com/m0nklabs/cryptotrader/pull/77\n",
+                stderr="",
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            payload = [
+                {
+                    "number": 77,
+                    "url": "https://github.com/m0nklabs/cryptotrader/pull/77",
+                    "headRefName": "issue/cryptotrader-42-add-pnl-summary",
+                    "headRefOid": "abc123",
+                }
+            ]
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if "--message" in command:
+            message = command[command.index("--message") + 1]
+            if "Review this new PR" in message:
+                review_calls += 1
+                return CompletedProcess(command, 0, stdout="still malformed", stderr="")
+            return CompletedProcess(command, 0, stdout="local coder done", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+    monkeypatch.setenv("AIDER_BIN", "/opt/aider/bin/aider")
+    monkeypatch.setenv("AIDER_GUARDIAN_API_KEY", "local-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "cloud-key")
+    monkeypatch.setenv("KYBERM0NK_ENV", str(tmp_path / "missing.env"))
+
+    async def notify(_message: str):
+        return None
+
+    with pytest.raises(ReviewTagParseError):
+        await _execute_single_issue(store, run, issue, notify)
+
+    assert review_calls == 2
 
 
 def test_master_issue_label_detection():

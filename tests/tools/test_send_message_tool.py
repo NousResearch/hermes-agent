@@ -2968,3 +2968,61 @@ class TestUnifiedCapabilityMedia:
             media_files=[("/tmp/EVIL.png", False)],
         ))
         assert res["error"]  # non-empty, explains nothing was delivered
+
+
+class TestSevenBranchMediaRegression:
+    """The seven hand-tuned media branches keep handling media themselves and
+    must never fall through to the unified capability branch (which is the
+    only path that consults _resolve_live_adapter)."""
+
+    @pytest.mark.parametrize("platform,sender", [
+        (Platform.TELEGRAM, "_send_telegram"),
+        (Platform.WEIXIN, "_send_weixin"),
+        (Platform.MATRIX, "_send_matrix_via_adapter"),
+        (Platform.SIGNAL, "_send_signal"),
+        (Platform.YUANBAO, "_send_yuanbao"),
+        (Platform.FEISHU, "_send_feishu"),
+    ])
+    def test_dedicated_branch_handles_media(self, platform, sender, monkeypatch):
+        recorded = {}
+
+        async def fake_sender(*args, **kwargs):
+            recorded["media"] = kwargs.get("media_files")
+            return {"success": True, "message_id": "x"}
+
+        resolve_calls = []
+        monkeypatch.setattr(f"tools.send_message_tool.{sender}", fake_sender)
+        monkeypatch.setattr("tools.send_message_tool._resolve_live_adapter",
+                            lambda p: resolve_calls.append(p))
+
+        res = asyncio.run(_send_to_platform(
+            platform, SimpleNamespace(token="t", extra={}), "c", "hi",
+            media_files=[("/tmp/a.png", False)],
+        ))
+        assert recorded["media"] == [("/tmp/a.png", False)]
+        assert res["success"]
+        assert resolve_calls == []  # unified branch never entered
+
+    def test_discord_branch_handles_media(self, monkeypatch):
+        resolve_calls = []
+        monkeypatch.setattr("tools.send_message_tool._resolve_live_adapter",
+                            lambda p: resolve_calls.append(p))
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "d1"})
+        with _patch_discord_sender(send_mock):
+            res = asyncio.run(_send_to_platform(
+                Platform.DISCORD, SimpleNamespace(token="tok", extra={}), "chat", "hi",
+                media_files=[("/tmp/a.png", False)],
+            ))
+        assert res["success"]
+        assert send_mock.await_args.kwargs["media_files"] == [("/tmp/a.png", False)]
+        assert resolve_calls == []
+
+    def test_incapable_platform_no_live_adapter_warns_omitted_media(self, monkeypatch):
+        monkeypatch.setattr("tools.send_message_tool._resolve_live_adapter", lambda p: None)
+        with patch("tools.send_message_tool._send_dingtalk",
+                   new=AsyncMock(return_value={"success": True, "message_id": "t"})):
+            res = asyncio.run(_send_to_platform(
+                Platform.DINGTALK, SimpleNamespace(extra={}), "c", "hi",
+                media_files=[("/tmp/a.png", False)],
+            ))
+        assert any("omitted" in w for w in res["warnings"])

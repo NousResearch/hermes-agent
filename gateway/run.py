@@ -4465,7 +4465,12 @@ class GatewayRunner:
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
             from tools.process_registry import process_registry
+            # Detach the current batch atomically: reassigning to a fresh list
+            # takes ownership of exactly the watchers present now, so any watcher
+            # appended concurrently during the yield below isn't silently dropped
+            # by a clear() on the shared list.
             watchers = process_registry.pending_watchers
+            process_registry.pending_watchers = []
             # Process in batches of 100 with event-loop yield points to avoid
             # O(n^2) event-loop blocking when recovering thousands of watchers.
             for i, watcher in enumerate(watchers):
@@ -4473,7 +4478,6 @@ class GatewayRunner:
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
                 if i % 100 == 99:
                     await asyncio.sleep(0)
-            watchers.clear()
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
@@ -9166,12 +9170,15 @@ class GatewayRunner:
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
+                # Detach the current batch atomically (see crash-recovery drain
+                # above): reassign to a fresh list so a watcher appended by a
+                # concurrent session during the yield isn't dropped by clear().
                 watchers = process_registry.pending_watchers
+                process_registry.pending_watchers = []
                 for i, watcher in enumerate(watchers):
                     asyncio.create_task(self._run_process_watcher(watcher))
                     if i % 100 == 99:
                         await asyncio.sleep(0)
-                watchers.clear()
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 

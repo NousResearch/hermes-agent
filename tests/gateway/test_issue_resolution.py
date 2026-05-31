@@ -16,6 +16,7 @@ from gateway.issue_resolution import (
     IssueRunType,
     PullRequestMetadata,
     ReviewFindingsRetry,
+    ReviewLoopCircuitBreaker,
     ReviewTagParseError,
     IssueStateStore,
     _execute_master_issue,
@@ -322,7 +323,97 @@ async def test_execute_single_issue_queues_fix_run_on_review_findings(
     original = store.get_run(run.id)
     assert original.status is IssueRunStatus.RUNNING
     assert original.branch == "issue/cryptotrader-42-add-pnl-summary"
+    assert original.review_findings_count == 1
     assert any("keeping run #" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_execute_single_issue_trips_review_findings_circuit_breaker(
+    tmp_path, monkeypatch
+):
+    """Repeated review findings should escalate instead of ping-ponging forever."""
+    store = IssueStateStore(tmp_path / "issues.db")
+    store.enqueue_run(
+        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        run_type=IssueRunType.ISSUE,
+    )
+    run = store.claim_next_run()
+    assert run is not None
+    store.record_review_findings(run.id)
+    store.record_review_findings(run.id)
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+
+    async def notify(_message: str):
+        return None
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command[:4] == ["gh", "repo", "view", "m0nklabs/cryptotrader"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
+                stderr="",
+            )
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "checkout", "-B"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["git", "push", "-u"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "create"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout="https://github.com/m0nklabs/cryptotrader/pull/77\n",
+                stderr="",
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            payload = [
+                {
+                    "number": 77,
+                    "url": "https://github.com/m0nklabs/cryptotrader/pull/77",
+                    "headRefName": "issue/cryptotrader-42-add-pnl-summary",
+                    "headRefOid": "abc123",
+                }
+            ]
+            return CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        if command[:3] == ["gh", "pr", "diff"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "review"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if "--message" in command:
+            message = command[command.index("--message") + 1]
+            if "Review this new PR" in message:
+                return CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        "kyber-tag.state=review_findings\n"
+                        "next_action=coding_subagent\n"
+                        "head_ref_oid=abc123\n"
+                    ),
+                    stderr="",
+                )
+            return CompletedProcess(command, 0, stdout="local coder done", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+    monkeypatch.setenv("AIDER_BIN", "/opt/aider/bin/aider")
+    monkeypatch.setenv("AIDER_GUARDIAN_API_KEY", "local-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "cloud-key")
+    monkeypatch.setenv("KYBERM0NK_ENV", str(tmp_path / "missing.env"))
+
+    with pytest.raises(ReviewLoopCircuitBreaker):
+        await _execute_single_issue(store, run, issue, notify)
+
+    assert store.get_run(run.id).review_findings_count == 3
 
 
 @pytest.mark.asyncio

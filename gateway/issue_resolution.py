@@ -12,8 +12,8 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -36,6 +36,7 @@ MASTER_PLAN_HEADING = "# Master Project Plan"
 ISSUE_RUN_MAX_ATTEMPTS = 3
 ISSUE_RUN_RETRY_DELAYS_SECONDS = (60, 300)
 ISSUE_RUN_IDLE_POLL_SECONDS = 5.0
+REVIEW_FINDINGS_MAX_FIX_ATTEMPTS = 2
 REVIEW_TAG_MAX_PARSE_ATTEMPTS = 2
 REVIEW_TAG_STATES = {"ready_for_merge", "review_findings", "review_inconclusive"}
 REVIEW_TAG_NEXT_ACTIONS = {"coding_subagent", "rerun_reviewer", "ready_for_merge"}
@@ -90,6 +91,10 @@ class ReviewFindingsRetry(RuntimeError):
 
 class ReviewTagParseError(RuntimeError):
     """Reviewer output did not contain a valid kyber routing tag."""
+
+
+class ReviewLoopCircuitBreaker(RuntimeError):
+    """Reviewer findings repeated too many times for one issue run."""
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,7 @@ class IssueRun:
     pr_number: int | None
     pr_url: str | None
     error: str | None
+    review_findings_count: int = 0
     attempt_count: int = 0
     next_attempt_at: float = 0.0
 
@@ -307,13 +313,13 @@ async def _issue_queue_worker() -> None:
         notify = _RUN_NOTIFIERS.get(run.id) or _DEFAULT_NOTIFY or _noop_notify
         try:
             await _execute_run(store, run, notify)
-        except ReviewTagParseError as exc:
+        except (ReviewTagParseError, ReviewLoopCircuitBreaker) as exc:
             store.mark_failed(run.id, str(exc))
             await notify(
-                f"Hermes: Issue run #{run.id} failed review tag validation: {exc}"
+                f"Hermes: Issue run #{run.id} failed review safety gate: {exc}"
             )
             logger.exception(
-                "issue-resolution run %s failed review tag validation", run.id
+                "issue-resolution run %s failed review safety gate", run.id
             )
         except Exception as exc:
             if store.mark_retry_or_failed(run, str(exc)):
@@ -422,9 +428,16 @@ async def _execute_single_issue(
     )
     await _post_pr_feedback(run.repo, pr, _review_body(review_output))
     if is_review_findings_for_coder(routing_tag):
+        findings_count = store.record_review_findings(run.id)
+        if findings_count > REVIEW_FINDINGS_MAX_FIX_ATTEMPTS:
+            raise ReviewLoopCircuitBreaker(
+                f"review_findings repeated {findings_count} times for PR #{pr.number}; "
+                "manual escalation required"
+            )
         await notify(
             f"Hermes: Reviewer found fix work on PR #{pr.number}; keeping run #{run.id} "
-            "queued for same-branch coding."
+            f"queued for same-branch coding ({findings_count}/"
+            f"{REVIEW_FINDINGS_MAX_FIX_ATTEMPTS})."
         )
         raise ReviewFindingsRetry("review_findings queued same-branch coding fix")
     store.mark_completed(run.id)
@@ -679,6 +692,25 @@ class IssueStateStore:
             )
             conn.commit()
 
+    def record_review_findings(self, run_id: int) -> int:
+        """Increment and return the review-findings loop count for this run."""
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE issue_runs
+                SET review_findings_count = review_findings_count + 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, run_id),
+            )
+            row = conn.execute(
+                "SELECT review_findings_count FROM issue_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            conn.commit()
+        return int(row["review_findings_count"] if row else 0)
+
     def record_subissue(
         self,
         master_run_id: int,
@@ -759,6 +791,7 @@ class IssueStateStore:
                     pr_number INTEGER,
                     pr_url TEXT,
                     error TEXT,
+                    review_findings_count INTEGER NOT NULL DEFAULT 0,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     next_attempt_at REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
@@ -783,6 +816,12 @@ class IssueStateStore:
                     UNIQUE(master_run_id, position)
                 );
                 """
+            )
+            self._ensure_column(
+                conn,
+                "issue_runs",
+                "review_findings_count",
+                "INTEGER NOT NULL DEFAULT 0",
             )
             self._ensure_column(
                 conn, "issue_runs", "attempt_count", "INTEGER NOT NULL DEFAULT 0"
@@ -823,6 +862,7 @@ class IssueStateStore:
             pr_number=int(row["pr_number"]) if row["pr_number"] is not None else None,
             pr_url=str(row["pr_url"]) if row["pr_url"] else None,
             error=str(row["error"]) if row["error"] else None,
+            review_findings_count=int(row["review_findings_count"] or 0),
             attempt_count=int(row["attempt_count"] or 0),
             next_attempt_at=float(row["next_attempt_at"] or 0.0),
         )

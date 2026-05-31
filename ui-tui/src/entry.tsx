@@ -23,7 +23,12 @@ if (!process.stdin.isTTY) {
 // `process.stdout.columns`/`rows` at the source so the Ink renderer, its
 // resize handler, and every component read see sane values. Must run before
 // `ink.render` constructs the renderer.
-clampStdoutDimensions()
+// Only apply in WSL — patching process.stdout via Object.defineProperty breaks
+// some terminals (e.g. Warp) that use non-standard stdout objects.
+// See: https://github.com/NousResearch/hermes-agent/issues/35738
+if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) {
+  clampStdoutDimensions()
+}
 
 // Start from a clean slate. If a previous TUI crashed or was kill -9'd, the
 // terminal tab can still have mouse/focus/paste modes enabled.

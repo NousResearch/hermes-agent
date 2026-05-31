@@ -4102,6 +4102,18 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_MANAGED_DISPATCH_REPOS = {
+    "cryptotrader": {
+        "name": "CryptoTrader",
+        "protected_branches": ("master", "main"),
+        "allowed_dirty_prefixes": (
+            ".aider.chat.history.md",
+            ".aider.input.history",
+            ".aider.tags.cache.v4/",
+        ),
+    }
+}
+
 
 @dataclass
 class DispatchResult:
@@ -4136,6 +4148,8 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    managed_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks skipped by the managed-repo dispatch guard, as ``(task_id, reason)`` pairs."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5068,6 +5082,67 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+def check_managed_dispatch_guard(task: Task, *, board: Optional[str] = None) -> Optional[str]:
+    """Return a guard reason when a managed repo task must not auto-dispatch."""
+    board_slug = (board or get_current_board()).casefold()
+    policy = _MANAGED_DISPATCH_REPOS.get(board_slug)
+    if policy is None:
+        return None
+    if task.workspace_kind not in {"dir", "worktree"} or not task.workspace_path:
+        return None
+
+    workspace = Path(task.workspace_path).expanduser()
+    if not workspace.is_absolute():
+        return None
+
+    try:
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        status_output = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except Exception:
+        return None
+
+    protected_branches = tuple(str(value) for value in policy["protected_branches"])
+    if branch not in protected_branches:
+        return None
+
+    allowed_prefixes = tuple(str(value) for value in policy["allowed_dirty_prefixes"])
+    dirty_paths = [
+        _normalize_git_status_path(line) for line in status_output.splitlines() if line.strip()
+    ]
+    violating_paths = [
+        path for path in dirty_paths if not _is_allowed_managed_dirty_path(path, allowed_prefixes)
+    ]
+    if not violating_paths:
+        return None
+
+    return "managed_cryptotrader_protected_dirty"
+
+
+def _normalize_git_status_path(line: str) -> str:
+    """Extract the path portion from git status --porcelain output."""
+    raw = line[3:] if len(line) > 3 else line
+    if " -> " in raw:
+        raw = raw.split(" -> ", 1)[1]
+    return raw.strip()
+
+
+def _is_allowed_managed_dirty_path(path: str, prefixes: tuple[str, ...]) -> bool:
+    """Return true when a dirty path is allowed local tool noise."""
+    return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in prefixes)
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -5300,6 +5375,20 @@ def dispatch_once(
                         {"reason": guard_reason},
                     )
             continue
+        task_for_guard = get_task(conn, row["id"])
+        if task_for_guard is not None:
+            managed_reason = check_managed_dispatch_guard(task_for_guard, board=board)
+            if managed_reason is not None:
+                result.managed_guarded.append((row["id"], managed_reason))
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            row["id"],
+                            "managed_dispatch_guarded",
+                            {"reason": managed_reason},
+                        )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue

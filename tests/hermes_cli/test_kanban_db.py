@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -1452,6 +1453,153 @@ def test_dispatch_respawn_guard_emits_event_for_skipped_task(
     # Event.payload is already parsed as a dict by list_events.
     assert isinstance(guarded_evt.payload, dict)
     assert guarded_evt.payload.get("reason") == "recent_success"
+
+
+def test_dispatch_managed_cryptotrader_guard_blocks_dirty_protected_branch(
+    kanban_home, tmp_path, monkeypatch, all_assignees_spawnable
+):
+    """CryptoTrader board tasks should not claim/spawn from dirty master/main."""
+    repo = tmp_path / "cryptotrader"
+    repo.mkdir()
+    spawned_ids = []
+
+    def fake_run(command, *, cwd=None, capture_output=None, text=None, check=None):
+        if command == ["git", "branch", "--show-current"]:
+            return subprocess.CompletedProcess(command, 0, stdout="master\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, stdout=" M api/main.py\n", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="ship CryptoTrader change",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            board="cryptotrader",
+        )
+        res = kb.dispatch_once(
+            conn,
+            board="cryptotrader",
+            spawn_fn=lambda task, ws: spawned_ids.append(task.id),
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert (t, "managed_cryptotrader_protected_dirty") in res.managed_guarded
+    assert spawned_ids == []
+    assert task.status == "ready"
+    assert task.claim_lock is None
+    guarded_evt = next(e for e in events if e.kind == "managed_dispatch_guarded")
+    assert isinstance(guarded_evt.payload, dict)
+    assert guarded_evt.payload.get("reason") == "managed_cryptotrader_protected_dirty"
+
+
+def test_dispatch_managed_cryptotrader_guard_allows_aider_noise(
+    kanban_home, tmp_path, monkeypatch, all_assignees_spawnable
+):
+    """Aider history/cache files are allowed local noise on protected branches."""
+    repo = tmp_path / "cryptotrader"
+    repo.mkdir()
+    spawned_ids = []
+
+    def fake_run(command, *, cwd=None, capture_output=None, text=None, check=None):
+        if command == ["git", "branch", "--show-current"]:
+            return subprocess.CompletedProcess(command, 0, stdout="master\n", stderr="")
+        if command == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="?? .aider.chat.history.md\n?? .aider.tags.cache.v4/foo\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="resume CryptoTrader lane",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            board="cryptotrader",
+        )
+        res = kb.dispatch_once(
+            conn,
+            board="cryptotrader",
+            spawn_fn=lambda task, ws: spawned_ids.append(task.id),
+        )
+        task = kb.get_task(conn, t)
+
+    assert res.managed_guarded == []
+    assert t in spawned_ids
+    assert task.status == "running"
+
+
+def test_dispatch_managed_guard_skips_unmanaged_board(
+    kanban_home, tmp_path, monkeypatch, all_assignees_spawnable
+):
+    """Dirty protected checkouts on non-managed boards keep existing dispatch behavior."""
+    repo = tmp_path / "other"
+    repo.mkdir()
+    spawned_ids = []
+
+    def fake_run(*args, **kwargs):
+        raise AssertionError("unmanaged board should not inspect git status")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="other repo task",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            board="other",
+        )
+        res = kb.dispatch_once(
+            conn,
+            board="other",
+            spawn_fn=lambda task, ws: spawned_ids.append(task.id),
+        )
+
+    assert res.managed_guarded == []
+    assert t in spawned_ids
+
+
+def test_dispatch_managed_cryptotrader_guard_ignores_scratch_tasks(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    """Scratch workspaces must not be interpreted as the managed source checkout."""
+    spawned_ids = []
+
+    def fake_run(*args, **kwargs):
+        raise AssertionError("scratch task should not inspect git status")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="scratch CryptoTrader task",
+            assignee="alice",
+            workspace_kind="scratch",
+            board="cryptotrader",
+        )
+        res = kb.dispatch_once(
+            conn,
+            board="cryptotrader",
+            spawn_fn=lambda task, ws: spawned_ids.append(task.id),
+        )
+
+    assert res.managed_guarded == []
+    assert t in spawned_ids
 
 
 # ---------------------------------------------------------------------------

@@ -2464,6 +2464,12 @@ class SlackAdapter(BasePlatformAdapter):
         profile = event.get("user_profile")
         if isinstance(profile, dict) and bool(profile.get("is_bot")):
             return True
+        # Some Slack app-originated events arrive without subtype=bot_message
+        # or bot_id, but they still carry app_id and no client_msg_id. Real
+        # human-authored messages normally carry client_msg_id, so treat the
+        # combination as app/bot-authored (#35777).
+        if event.get("app_id") and not event.get("client_msg_id"):
+            return True
         return False
 
     def _resolve_thread_ts(
@@ -4104,11 +4110,29 @@ class SlackAdapter(BasePlatformAdapter):
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
-        # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
-        #   "none"     — ignore all bot messages (default, backward-compatible)
-        #   "mentions" — accept bot messages only when they @mention us
-        #   "all"      — accept all bot messages (except our own)
-        if self._event_declares_bot_sender(event):
+        # Bot/app-authored message filtering (SLACK_ALLOW_BOTS / config
+        # allow_bots):
+        #   "none"     — ignore all bot/app-authored messages (default,
+        #                backward-compatible)
+        #   "mentions" — accept bot/app-authored messages only when they
+        #                @mention us
+        #   "all"      — accept all bot/app-authored messages (except our own)
+        #
+        # Some Slack app-originated events arrive without subtype=bot_message
+        # or bot_id but still carry app_id and no client_msg_id
+        # (_event_declares_bot_sender covers those markers). Others carry only
+        # a bot *user* id — probe users.info for suspicious unlabeled events:
+        # real human-authored Slack messages normally carry client_msg_id;
+        # bot/app-originated events that slip past the markers often do not.
+        msg_user = event.get("user", "")
+        sender_is_bot = self._event_declares_bot_sender(event)
+        if not sender_is_bot and msg_user and not event.get("client_msg_id"):
+            sender_is_bot = await self._resolve_user_is_bot(
+                msg_user,
+                chat_id=event.get("channel", ""),
+                team_id=str(event.get("team") or event.get("team_id") or ""),
+            )
+        if sender_is_bot:
             allow_bots = self._slack_allow_bots()
             if allow_bots == "none":
                 return
@@ -4124,7 +4148,6 @@ class SlackAdapter(BasePlatformAdapter):
                     return
             # "all" falls through to process the message
             # Always ignore our own messages to prevent echo loops
-            msg_user = event.get("user", "")
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
                 return
 

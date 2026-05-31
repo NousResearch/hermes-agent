@@ -483,7 +483,12 @@ class AIAgent:
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=self._user_id,
+                user_id_alt=self._user_id_alt,
+                chat_type=self._chat_type,
+                chat_id=self._chat_id,
+                thread_id=self._thread_id,
+                session_key=self._gateway_session_key,
                 parent_session_id=self._parent_session_id,
             )
             self._session_db_created = True

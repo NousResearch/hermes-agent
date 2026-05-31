@@ -937,6 +937,11 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "user_id_alt": source.user_id_alt,
+                "chat_type": source.chat_type,
+                "chat_id": str(source.chat_id) if source.chat_id is not None else None,
+                "thread_id": str(source.thread_id) if source.thread_id is not None else None,
+                "session_key": session_key,
             }
 
         # SQLite operations outside the lock
@@ -1163,6 +1168,11 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "user_id_alt": old_entry.origin.user_id_alt if old_entry.origin else None,
+                "chat_type": old_entry.origin.chat_type if old_entry.origin else old_entry.chat_type,
+                "chat_id": str(old_entry.origin.chat_id) if old_entry.origin and old_entry.origin.chat_id is not None else None,
+                "thread_id": str(old_entry.origin.thread_id) if old_entry.origin and old_entry.origin.thread_id is not None else None,
+                "session_key": session_key,
             }
 
         if self._db and db_end_session_id:

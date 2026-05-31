@@ -39,7 +39,7 @@ import pytest
 from hermes_state import SessionDB
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str):
+def _build_agent_with_db(db: SessionDB, session_id: str, **agent_kwargs):
     """Build an AIAgent that's wired to ``db`` and pinned to ``session_id``."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
@@ -53,6 +53,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
+            **agent_kwargs,
         )
 
     # Stub the compressor so it returns deterministic output and DOESN'T make
@@ -171,6 +172,47 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert agent.session_id == parent_sid
     # Compressor was never called (the skip happens before .compress())
     agent.context_compressor.compress.assert_not_called()
+
+
+def test_compression_child_inherits_gateway_scope(tmp_path: Path) -> None:
+    """Compression-created child sessions must stay in the same gateway scope."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "SCOPED_PARENT"
+    db.create_session(
+        parent_sid,
+        source="discord",
+        user_id="user-a",
+        user_id_alt="alt-a",
+        chat_type="group",
+        chat_id="chat-1",
+        thread_id="thread-1",
+        session_key="agent:main:discord:group:chat-1:user-a",
+    )
+
+    agent = _build_agent_with_db(
+        db,
+        parent_sid,
+        platform="discord",
+        user_id="user-a",
+        user_id_alt="alt-a",
+        chat_type="group",
+        chat_id="chat-1",
+        thread_id="thread-1",
+        gateway_session_key="agent:main:discord:group:chat-1:user-a",
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    child = db.get_session(agent.session_id)
+    assert child["parent_session_id"] == parent_sid
+    assert child["source"] == "discord"
+    assert child["user_id"] == "user-a"
+    assert child["user_id_alt"] == "alt-a"
+    assert child["chat_type"] == "group"
+    assert child["chat_id"] == "chat-1"
+    assert child["thread_id"] == "thread-1"
+    assert child["session_key"] == "agent:main:discord:group:chat-1:user-a"
 
 
 class _NoLockSubsystemDB:

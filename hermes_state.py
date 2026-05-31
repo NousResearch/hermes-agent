@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -235,6 +235,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    user_id_alt TEXT,
+    chat_type TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    session_key TEXT,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -754,6 +759,21 @@ class SessionDB:
             # recreates them.
             self._drop_fts_triggers(cursor)
 
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_scope_recent "
+                "ON sessions(source, chat_type, chat_id, thread_id, ended_at, started_at)"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_sessions_scope_recent create skipped: %s", exc)
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_session_key "
+                "ON sessions(session_key) WHERE session_key IS NOT NULL"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_sessions_session_key create skipped: %s", exc)
+
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
         # version.  No version-gated column additions remain.
@@ -889,18 +909,29 @@ class SessionDB:
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
         user_id: str = None,
+        user_id_alt: str = None,
+        chat_type: str = None,
+        chat_id: str = None,
+        thread_id: str = None,
+        session_key: str = None,
         parent_session_id: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                """INSERT OR IGNORE INTO sessions (id, source, user_id, user_id_alt,
+                   chat_type, chat_id, thread_id, session_key, model, model_config,
                    system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
                     user_id,
+                    user_id_alt,
+                    chat_type,
+                    chat_id,
+                    thread_id,
+                    session_key,
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,

@@ -717,8 +717,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     around_message_id=function_args.get("around_message_id"),
                     window=function_args.get("window", 5),
                     sort=function_args.get("sort"),
+                    mode=function_args.get("mode"),
+                    scope=function_args.get("scope"),
                     db=session_db,
                     current_session_id=agent.session_id,
+                    current_source=agent.platform or getattr(agent, "_platform", None),
+                    current_user_id=getattr(agent, "_user_id", None),
+                    current_user_id_alt=getattr(agent, "_user_id_alt", None),
+                    current_chat_type=getattr(agent, "_chat_type", None),
+                    current_chat_id=getattr(agent, "_chat_id", None),
+                    current_thread_id=getattr(agent, "_thread_id", None),
+                    current_session_key=getattr(agent, "_gateway_session_key", None),
                 )
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():

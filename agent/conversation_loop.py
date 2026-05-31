@@ -264,6 +264,24 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id, exc,
             )
 
+    user_turn_count = getattr(agent, "_user_turn_count", 0)
+    if isinstance(user_turn_count, int) and user_turn_count > 1:
+        # Subsequent turn: rebuild dynamically (diff-only mode) using Turn 1
+        # stored prompt to retrieve starting memory state.
+        if stored_prompt and agent._memory_store:
+            try:
+                agent._memory_store.load_initial_memories_from_prompt(stored_prompt)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load initial memories from stored prompt (session=%s): %s",
+                    agent.session_id, exc,
+                )
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+        # We do NOT persist the subsequent-turn system prompts in SQLite,
+        # so the SQLite session database continues to hold the Turn 1 prompt
+        # containing the full snapshots.
+        return
+
     if stored_prompt:
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
@@ -579,6 +597,10 @@ def run_conversation(
     # from disk that the model already knows about (it wrote them!),
     # producing a different system prompt and breaking the Anthropic
     # prefix cache.
+    user_turn_count = getattr(agent, "_user_turn_count", 0)
+    if isinstance(user_turn_count, int) and user_turn_count > 1 and not getattr(agent, "_system_prompt_is_diff", False):
+        agent._cached_system_prompt = None
+
     if agent._cached_system_prompt is None:
         _restore_or_build_system_prompt(agent, system_message, conversation_history)
 

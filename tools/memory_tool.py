@@ -157,6 +157,12 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Keep track of initial entries for session diffing (only set on first load of the session)
+        if not hasattr(self, "_initial_memory_entries"):
+            self._initial_memory_entries = list(self.memory_entries)
+        if not hasattr(self, "_initial_user_entries"):
+            self._initial_user_entries = list(self.user_entries)
+
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
         # can see + remove poisoned entries via the memory tool.
@@ -168,6 +174,76 @@ class MemoryStore:
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+
+    @staticmethod
+    def parse_entries_from_prompt(prompt: str, target: str) -> List[str]:
+        """Extract memory/user profile entries from a saved system prompt string."""
+        import re
+        if target == "user":
+            pattern = r"═{46}\nUSER PROFILE \(who the user is\) \[.*?\]\n═{46}\n(.*?)(?=\n═{46}|\Z)"
+        else:
+            pattern = r"═{46}\nMEMORY \(your personal notes\) \[.*?\]\n═{46}\n(.*?)(?=\n═{46}|\Z)"
+
+        match = re.search(pattern, prompt, re.DOTALL)
+        if not match:
+            return []
+        content = match.group(1).strip()
+        if not content:
+            return []
+
+        # Split by the entry delimiter
+        entries = [e.strip() for e in content.split(ENTRY_DELIMITER)]
+        return [e for e in entries if e]
+
+    def load_initial_memories_from_prompt(self, prompt: str):
+        """Populate the initial entries from the Turn 1 system prompt loaded from the session DB."""
+        self._initial_memory_entries = self.parse_entries_from_prompt(prompt, "memory")
+        self._initial_user_entries = self.parse_entries_from_prompt(prompt, "user")
+
+    def format_diff_for_system_prompt(self, target: str) -> Optional[str]:
+        """Format a structured + / - diff of changes made since the start of the session.
+
+        Returns None if no changes were made.
+        """
+        initial = getattr(self, f"_initial_{target}_entries", None)
+        current = getattr(self, f"{target}_entries", None)
+        if initial is None or current is None:
+            return None
+
+        # Sanitize entries (like load_from_disk does) for safety, since we match against raw
+        # entries but we want placeholders in the prompt if they are malicious.
+        sanitized_initial = self._sanitize_entries_for_snapshot(initial, f"{target.upper()}.md (initial)")
+        sanitized_current = self._sanitize_entries_for_snapshot(current, f"{target.upper()}.md (current)")
+
+        added = [e for e in sanitized_current if e not in sanitized_initial]
+        removed = [e for e in sanitized_initial if e not in sanitized_current]
+
+        if not added and not removed:
+            return None
+
+        lines = []
+        if added:
+            lines.append("Added entries:")
+            for e in added:
+                lines.append(f"+ {e}")
+        if removed:
+            lines.append("Removed/Updated entries:")
+            for e in removed:
+                lines.append(f"- {e}")
+
+        content = "\n".join(lines)
+        limit = self._char_limit(target)
+        char_len = len(content)
+        pct = min(100, int((char_len / limit) * 100)) if limit > 0 else 0
+
+        if target == "user":
+            header = f"USER PROFILE UPDATES (this session) [{pct}% — {char_len:,}/{limit:,} chars]"
+        else:
+            header = f"MEMORY UPDATES (this session) [{pct}% — {char_len:,}/{limit:,} chars]"
+
+        separator = "═" * 46
+        return f"{separator}\n{header}\n{separator}\n{content}"
+
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:

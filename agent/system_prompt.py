@@ -302,13 +302,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: List[str] = []
 
     if agent._memory_store:
+        user_turn_count = getattr(agent, "_user_turn_count", 0)
+        is_subsequent = isinstance(user_turn_count, int) and user_turn_count > 1
         if agent._memory_enabled:
-            mem_block = agent._memory_store.format_for_system_prompt("memory")
+            if is_subsequent:
+                mem_block = agent._memory_store.format_diff_for_system_prompt("memory")
+            else:
+                mem_block = agent._memory_store.format_for_system_prompt("memory")
             if mem_block:
                 volatile_parts.append(mem_block)
         # USER.md is always included when enabled.
         if agent._user_profile_enabled:
-            user_block = agent._memory_store.format_for_system_prompt("user")
+            if is_subsequent:
+                user_block = agent._memory_store.format_diff_for_system_prompt("user")
+            else:
+                user_block = agent._memory_store.format_for_system_prompt("user")
             if user_block:
                 volatile_parts.append(user_block)
 
@@ -361,6 +369,9 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     warm across turns.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
+    # Track whether the built prompt contains diffs rather than full snapshots
+    user_turn_count = getattr(agent, "_user_turn_count", 0)
+    agent._system_prompt_is_diff = isinstance(user_turn_count, int) and user_turn_count > 1
     return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
 

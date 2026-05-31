@@ -130,6 +130,17 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
+def _positive_int_arg(value: str) -> int:
+    """Argparse type for positive integer count flags like ``--limit``."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _check_dispatcher_presence() -> tuple[bool, str]:
     """Return ``(running, message)``.
 
@@ -396,6 +407,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                              "(set on tasks created from inside an ACP loop)")
     p_list.add_argument("--archived", action="store_true",
                         help="Include archived tasks")
+    p_list.add_argument("--limit", type=_positive_int_arg, default=None,
+                        help="Maximum number of tasks to list")
     p_list.add_argument("--json", action="store_true")
     p_list.add_argument(
         "--sort",
@@ -1426,6 +1439,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             tenant=args.tenant,
             session_id=args.session,
             include_archived=args.archived,
+            limit=getattr(args, "limit", None),
             order_by=getattr(args, "sort", None),
             workflow_template_id=args.workflow_template_id,
             current_step_key=args.current_step_key,

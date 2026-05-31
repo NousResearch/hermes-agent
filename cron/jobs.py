@@ -2,7 +2,7 @@
 Cron job storage and management.
 
 Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}_{uuid}.md
 """
 
 import copy
@@ -42,8 +42,11 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.Lock()
+_output_prune_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+DEFAULT_MAX_OUTPUT_FILES_PER_JOB = 100
+MAX_OUTPUT_FILES_PER_JOB_ENV = "HERMES_CRON_MAX_OUTPUT_FILES_PER_JOB"
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -66,6 +69,65 @@ def _job_output_dir(job_id: str) -> Path:
     if Path(text).is_absolute() or Path(text).drive:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     return OUTPUT_DIR / text
+
+
+def _max_output_files_per_job() -> int:
+    """Return the per-job cron output retention cap."""
+    raw = os.getenv(MAX_OUTPUT_FILES_PER_JOB_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_OUTPUT_FILES_PER_JOB
+
+    try:
+        limit = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; using default %d",
+            MAX_OUTPUT_FILES_PER_JOB_ENV,
+            raw,
+            DEFAULT_MAX_OUTPUT_FILES_PER_JOB,
+        )
+        return DEFAULT_MAX_OUTPUT_FILES_PER_JOB
+
+    if limit < 1:
+        logger.warning(
+            "%s must be >= 1; using default %d",
+            MAX_OUTPUT_FILES_PER_JOB_ENV,
+            DEFAULT_MAX_OUTPUT_FILES_PER_JOB,
+        )
+        return DEFAULT_MAX_OUTPUT_FILES_PER_JOB
+
+    return limit
+
+
+def _output_file_sort_key(path: Path):
+    """Sort output files from oldest to newest for retention pruning."""
+    try:
+        stat = path.stat()
+        return (stat.st_mtime_ns, path.name)
+    except OSError:
+        return (0, path.name)
+
+
+def _prune_job_outputs(job_output_dir: Path, max_files: int, keep: Optional[Path] = None) -> None:
+    """Prune oldest markdown outputs in one job directory down to ``max_files``."""
+    if max_files < 1:
+        return
+
+    files = [path for path in job_output_dir.glob("*.md") if path.is_file()]
+    excess = len(files) - max_files
+    if excess <= 0:
+        return
+
+    candidates = [path for path in files if keep is None or path != keep]
+    candidates.sort(key=_output_file_sort_key)
+
+    for path in candidates[:excess]:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("Failed to prune cron output %s: %s", path, exc)
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -1093,14 +1155,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
 
 def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
+    """Save job output to a collision-safe file and prune old outputs."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     
-    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_file = job_output_dir / f"{timestamp}.md"
+    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+    output_file = job_output_dir / f"{timestamp}_{uuid.uuid4().hex}.md"
     
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:
@@ -1108,8 +1170,14 @@ def save_job_output(job_id: str, output: str):
             f.write(output)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, output_file)
-        _secure_file(output_file)
+        with _output_prune_lock:
+            atomic_replace(tmp_path, output_file)
+            _secure_file(output_file)
+            _prune_job_outputs(
+                job_output_dir,
+                _max_output_files_per_job(),
+                keep=output_file,
+            )
     except BaseException:
         try:
             os.unlink(tmp_path)

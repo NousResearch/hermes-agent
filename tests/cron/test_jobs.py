@@ -4,6 +4,7 @@ import threading
 import pytest
 from datetime import datetime, timedelta, timezone
 
+import cron.jobs as cron_jobs
 from cron.jobs import (
     parse_duration,
     parse_schedule,
@@ -179,7 +180,9 @@ class TestComputeNextRun:
 
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
-    """Redirect cron storage to a temp directory."""
+    """Redirect cron storage to a temp HERMES_HOME."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.HERMES_DIR", tmp_path)
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
@@ -978,6 +981,103 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+    def test_concurrent_same_second_outputs_use_unique_readable_filenames(self, tmp_cron_dir, monkeypatch):
+        fixed_now = datetime(2026, 5, 29, 22, 0, 1, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: fixed_now)
+        paths = []
+        errors = []
+
+        def write_output(index):
+            try:
+                paths.append(save_job_output("test123", f"output {index}"))
+            except Exception as exc:  # pragma: no cover - assertion below reports details
+                errors.append(exc)
+
+        threads = [threading.Thread(target=write_output, args=(i,)) for i in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors
+        assert len(paths) == 8
+        assert len({path.name for path in paths}) == 8
+        for path in paths:
+            assert path.exists()
+            assert path.name.startswith("2026-05-29_22-00-01")
+        assert {path.read_text() for path in paths} == {f"output {i}" for i in range(8)}
+
+    def test_prunes_old_outputs_to_env_override_per_job(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_MAX_OUTPUT_FILES_PER_JOB", "2")
+        output_times = iter(
+            datetime(2026, 5, 29, 22, minute, tzinfo=timezone.utc)
+            for minute in range(4)
+        )
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: next(output_times))
+
+        paths = [save_job_output("retention-job", f"output {i}") for i in range(4)]
+
+        job_output_dir = tmp_cron_dir / "cron" / "output" / "retention-job"
+        remaining = sorted(job_output_dir.glob("*.md"))
+        assert len(remaining) == 2
+        assert {path.read_text() for path in remaining} == {"output 2", "output 3"}
+        assert not paths[0].exists()
+        assert not paths[1].exists()
+
+    def test_concurrent_retention_pruning_keeps_current_save_output(self, tmp_cron_dir, monkeypatch):
+        """A save must not return after another pruner deleted its own output."""
+        monkeypatch.setenv("HERMES_CRON_MAX_OUTPUT_FILES_PER_JOB", "1")
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: datetime(2026, 5, 29, 22, 0, 1, tzinfo=timezone.utc),
+        )
+        first_prune_started = threading.Event()
+        second_publish_seen = threading.Event()
+        real_atomic_replace = cron_jobs.atomic_replace
+        real_prune = cron_jobs._prune_job_outputs
+        publish_count = 0
+        observe_lock = threading.Lock()
+        errors = []
+        returned = []
+
+        def observed_atomic_replace(tmp_path, output_file):
+            nonlocal publish_count
+            real_atomic_replace(tmp_path, output_file)
+            with observe_lock:
+                publish_count += 1
+                if publish_count == 2:
+                    second_publish_seen.set()
+
+        def observed_prune(*args, **kwargs):
+            if not first_prune_started.is_set():
+                first_prune_started.set()
+                second_publish_seen.wait(timeout=0.2)
+            return real_prune(*args, **kwargs)
+
+        monkeypatch.setattr("cron.jobs.atomic_replace", observed_atomic_replace)
+        monkeypatch.setattr("cron.jobs._prune_job_outputs", observed_prune)
+
+        def write_output(index):
+            try:
+                path = save_job_output("race-job", f"output {index}")
+                returned.append((index, path, path.exists()))
+            except Exception as exc:  # pragma: no cover - assertion below reports details
+                errors.append(exc)
+
+        first = threading.Thread(target=write_output, args=(0,))
+        first.start()
+        assert first_prune_started.wait(timeout=5)
+        second = threading.Thread(target=write_output, args=(1,))
+        second.start()
+        first.join()
+        second.join()
+
+        assert not errors
+        assert len(returned) == 2
+        assert all(exists_at_return for _, _, exists_at_return in returned)
+        remaining = list((tmp_cron_dir / "cron" / "output" / "race-job").glob("*.md"))
+        assert len(remaining) == 1
 
     @pytest.mark.parametrize("bad_job_id", ["../escape", "nested/escape", ".", "..", ""])
     def test_rejects_unsafe_job_id(self, tmp_cron_dir, bad_job_id):

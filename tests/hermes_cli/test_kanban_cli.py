@@ -23,6 +23,12 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _list_json_titles(rest: str = "") -> list[str]:
+    suffix = f" {rest}" if rest else ""
+    payload = json.loads(kc.run_slash(f"list --json{suffix}"))
+    return [row["title"] for row in payload]
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
@@ -233,6 +239,48 @@ def test_kanban_list_json_includes_session_id(kanban_home):
         and row.get("session_id") == "acp-x"
         for row in payload
     )
+
+
+def test_run_slash_list_sort_priority_desc_and_limit(kanban_home):
+    """CLI list wires --sort/--limit into the canonical DB ordering."""
+    with kb.connect() as conn:
+        kb.create_task(conn, title="high-priority", assignee="ops", priority=30)
+        kb.create_task(conn, title="low-priority", assignee="ops", priority=1)
+        kb.create_task(conn, title="mid-priority", assignee="ops", priority=10)
+
+    # Canonical priority-desc is the reverse of the default high-priority-first
+    # order: lower priority values first, then created_at as the tiebreaker.
+    assert _list_json_titles("--sort priority-desc --limit 2") == [
+        "low-priority",
+        "mid-priority",
+    ]
+
+
+def test_run_slash_list_archived_default_and_explicit_status(kanban_home):
+    with kb.connect() as conn:
+        live = kb.create_task(conn, title="live task", assignee="ops", priority=10)
+        archived = kb.create_task(conn, title="archived task", assignee="ops", priority=20)
+        assert kb.archive_task(conn, archived)
+
+    default_titles = _list_json_titles()
+    assert "live task" in default_titles
+    assert "archived task" not in default_titles
+
+    archived_titles = _list_json_titles("--status archived")
+    assert archived_titles == ["archived task"]
+
+    include_archived_titles = _list_json_titles("--archived")
+    assert "live task" in include_archived_titles
+    assert "archived task" in include_archived_titles
+    assert live != archived
+
+
+def test_run_slash_list_invalid_sort_reports_allowed_choices(kanban_home):
+    out = kc.run_slash("list --sort newest")
+    assert "usage error" in out
+    assert "invalid choice" in out
+    assert "created-desc" in out
+    assert "priority-desc" in out
 
 
 def test_run_slash_usage_error_returns_message(kanban_home):

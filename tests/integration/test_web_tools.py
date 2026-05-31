@@ -34,7 +34,32 @@ from tools.web_tools import (
     check_web_api_key,
     check_auxiliary_model,
     _get_backend,
+    _get_extract_backend,
+    _ensure_web_plugins_loaded,
 )
+
+_LIVE_CREDENTIAL_ENV = {
+    name: value
+    for name in (
+        "PARALLEL_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
+        "EXA_API_KEY",
+        "TAVILY_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "SEARXNG_URL",
+        "OPENROUTER_API_KEY",
+        "NOUS_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+    )
+    if (value := os.getenv(name))
+}
 
 
 class Colors:
@@ -476,6 +501,82 @@ class WebToolsTester:
             print_info(f"Test results saved to: {filename}")
         except Exception as e:
             print_warning(f"Failed to save results: {e}")
+
+
+def _require_web_backend() -> str:
+    """Skip live web integration tests unless a backend credential is configured."""
+    os.environ.update(_LIVE_CREDENTIAL_ENV)
+    if not check_web_api_key():
+        pytest.skip("No live web backend credentials configured")
+    return _get_backend()
+
+
+def _require_extract_backend() -> str:
+    """Skip live extraction tests unless an extract-capable backend is configured."""
+    _require_web_backend()
+    _ensure_web_plugins_loaded()
+
+    from agent.web_search_registry import get_active_extract_provider, get_provider
+
+    backend = _get_extract_backend()
+    provider = get_provider(backend) if backend else None
+    if provider is None or not provider.supports_extract():
+        provider = get_active_extract_provider()
+    if provider is None or not provider.supports_extract():
+        pytest.skip("No web extract provider configured")
+    return provider.name
+
+
+def _failure_summary(tester: WebToolsTester) -> str:
+    failures = tester.test_results["failed"]
+    return "; ".join(f"{item['test']}: {item['details']}" for item in failures)
+
+
+def test_environment_check_is_collectable():
+    """Pytest should execute the environment check instead of collecting zero tests."""
+    backend = _require_web_backend()
+    tester = WebToolsTester(test_llm=False)
+
+    assert tester.test_environment() is True
+    assert not tester.test_results["failed"], _failure_summary(tester)
+    assert any(backend in item["details"] for item in tester.test_results["passed"])
+
+
+def test_web_search_returns_structured_results():
+    """Run the live search checks through pytest assertions."""
+    _require_web_backend()
+    tester = WebToolsTester(test_llm=False)
+
+    urls = tester.test_web_search()
+
+    assert not tester.test_results["failed"], _failure_summary(tester)
+    assert urls, "Expected search tests to collect URLs for extraction checks"
+
+
+@pytest.mark.asyncio
+async def test_web_extract_returns_content():
+    """Run the live extraction checks through pytest assertions."""
+    _require_extract_backend()
+    tester = WebToolsTester(test_llm=False)
+
+    await tester.test_web_extract()
+
+    assert not tester.test_results["failed"], _failure_summary(tester)
+    assert tester.test_results["passed"], "Expected at least one extraction check to pass"
+
+
+@pytest.mark.asyncio
+async def test_web_extract_with_llm_processing():
+    """Run the optional LLM extraction check when an auxiliary model is available."""
+    _require_extract_backend()
+    if not check_auxiliary_model():
+        pytest.skip("No auxiliary LLM provider available")
+
+    tester = WebToolsTester(test_llm=True)
+    await tester.test_web_extract_with_llm()
+
+    assert not tester.test_results["failed"], _failure_summary(tester)
+    assert tester.test_results["passed"], "Expected LLM extraction check to pass"
 
 
 async def main():

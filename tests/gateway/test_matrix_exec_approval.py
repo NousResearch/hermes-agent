@@ -165,7 +165,8 @@ class TestMatrixExecApprovalReactions:
         assert "sess-1" not in adapter._approval_prompt_by_session
 
     @pytest.mark.asyncio
-    async def test_model_picker_reaction_selects_model(self):
+    async def test_model_picker_reaction_selects_model(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@alice:example.org")
         from gateway.platforms.matrix import MatrixAdapter
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))

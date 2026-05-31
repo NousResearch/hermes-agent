@@ -8138,6 +8138,18 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "yt":
+            return await self._handle_yt_command(event)
+
+        if canonical == "spectrogram":
+            return await self._handle_spectrogram_command(event)
+
+        if canonical == "analyze":
+            res = await self._handle_analyze_command(event)
+            if res:
+                return res
+            # Fall through to _handle_message_with_agent below so the vision agent analyzes it!
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -8949,6 +8961,12 @@ class GatewayRunner:
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in {"true", "1", "yes"}
+                        _raw_threshold = _comp_cfg.get("threshold")
+                        if _raw_threshold is not None:
+                            try:
+                                _hyg_threshold_pct = float(_raw_threshold)
+                            except (TypeError, ValueError):
+                                pass
                         _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
                         if _raw_hard_limit is not None:
                             try:
@@ -11756,6 +11774,7 @@ class GatewayRunner:
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
+
         chat_id = event.source.chat_id
         platform = event.source.platform
         voice_key = self._voice_key(platform, chat_id)
@@ -11897,6 +11916,280 @@ class GatewayRunner:
             adapter._voice_input_callback = None
         return "Left voice channel."
 
+    async def _handle_yt_command(self, event: MessageEvent) -> str:
+        """Handle /yt <url> command."""
+        args = event.get_command_args().strip()
+        if not args:
+            return "Please provide a YouTube URL: `/yt https://youtube.com/watch?v=...`"
+            
+        platform = event.source.platform
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            return "Platform adapter not found."
+            
+        if str(getattr(platform, "value", platform)).lower() != "discord":
+            return "This command only works in a Discord server."
+            
+        guild_id = self._get_guild_id(event)
+        if not guild_id:
+            return "This command only works in a Discord server."
+            
+        from gateway.youtube_audio import extract_youtube_url, download_youtube_audio
+        url = extract_youtube_url(args)
+        if not url:
+            return "No valid YouTube URL found."
+            
+        await adapter.send(event.source.chat_id, "Downloading audio... This might take a few moments.")
+        
+        import tempfile
+        import os
+        import asyncio
+        temp_dir = tempfile.mkdtemp(prefix="hermes_yt_")
+        
+        try:
+            success, result_or_error = await download_youtube_audio(url, temp_dir)
+            if not success:
+                return f"Failed to process YouTube link: {result_or_error}"
+                
+            audio_path = result_or_error
+            played = False
+            
+            if hasattr(adapter, "is_in_voice_channel") and adapter.is_in_voice_channel(guild_id):
+                if hasattr(adapter, "play_in_voice_channel"):
+                    await adapter.send(event.source.chat_id, "Audio downloaded successfully. Playing in voice channel...")
+                    # Fire and forget playback
+                    asyncio.create_task(self._play_yt_audio_and_cleanup(adapter, guild_id, audio_path))
+                    played = True
+                    return "Playing audio in the voice channel."
+            
+            if not played:
+                # If not in voice channel, see if we can send it as a voice message/attachment
+                if hasattr(adapter, "send_voice"):
+                    try:
+                        await adapter.send_voice(event.source.chat_id, audio_path)
+                        # Clean up since we sent it immediately
+                        try:
+                            if os.path.exists(audio_path):
+                                os.remove(audio_path)
+                            import shutil
+                            if os.path.exists(temp_dir):
+                                shutil.rmtree(temp_dir)
+                        except Exception as e:
+                            logger.error(f"[YouTube] Cleanup failed: {e}")
+                        return ""
+                    except Exception as e:
+                        logger.error(f"[YouTube] send_voice failed: {e}")
+                
+                return f"Audio downloaded to {audio_path}. I can't play it because I'm not in a voice channel, but it is available locally."
+        except Exception as e:
+            logger.error(f"[YouTube] Command error: {e}", exc_info=True)
+            return f"An error occurred while processing the command: {e}"
+        return "Audio extracted successfully."
+
+    async def _play_yt_audio_and_cleanup(self, adapter, guild_id: int, audio_path: str):
+        """Background task to play audio and clean up the file afterwards."""
+        try:
+            await adapter.play_in_voice_channel(guild_id, audio_path)
+        except Exception as e:
+            logger.error(f"[YouTube] Playback failed: {e}")
+        finally:
+            try:
+                import os
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
+                import shutil
+                temp_dir = os.path.dirname(audio_path)
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.error(f"[YouTube] Cleanup failed: {e}")
+
+    async def _get_audio_file_from_event(self, event: MessageEvent, adapter) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Extracts audio file path, download directory (to cleanup), and error message from event.
+        Returns (audio_path, temp_dir, error_msg).
+        """
+        import os
+        audio_extensions = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm"}
+        audio_path = None
+        temp_dir = None
+        
+        # 1. Check if there is an audio attachment in the message
+        if event.media_urls:
+            for url in event.media_urls:
+                if url:
+                    _, ext = os.path.splitext(url.split("?")[0])
+                    if ext.lower() in audio_extensions:
+                        if os.path.exists(url):
+                            audio_path = url
+                            break
+                            
+        # 2. If no attachment, check for YouTube URL in the arguments
+        if not audio_path:
+            args = event.get_command_args().strip()
+            if args:
+                from gateway.youtube_audio import extract_youtube_url, download_youtube_audio
+                url = extract_youtube_url(args)
+                if url:
+                    await adapter.send(event.source.chat_id, "Downloading YouTube audio... This might take a few moments.")
+                    import tempfile
+                    temp_dir = tempfile.mkdtemp(prefix="hermes_spec_audio_")
+                    success, result_or_error = await download_youtube_audio(url, temp_dir)
+                    if not success:
+                        import shutil
+                        if os.path.exists(temp_dir):
+                            shutil.rmtree(temp_dir)
+                        return None, None, f"Failed to download YouTube audio: {result_or_error}"
+                    audio_path = result_or_error
+                    
+        if not audio_path:
+            return None, None, "No audio source found. Please provide a YouTube link: `/spectrogram <url>` or upload/reply to an audio file (.mp3, .wav, .ogg, .flac, .m4a) with `/spectrogram`."
+            
+        return audio_path, temp_dir, None
+
+    async def _handle_spectrogram_command(self, event: MessageEvent) -> str:
+        """Handle /spectrogram [youtube_url_or_empty_if_attachment] command."""
+        platform = event.source.platform
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            return "Platform adapter not found."
+            
+        if str(getattr(platform, "value", platform)).lower() != "discord":
+            return "This command only works in a Discord server."
+            
+        audio_path, temp_audio_dir, error_msg = await self._get_audio_file_from_event(event, adapter)
+        if error_msg:
+            return error_msg
+            
+        await adapter.send(event.source.chat_id, "Extracting audio features and generating spectrogram...")
+        
+        import tempfile
+        import os
+        import asyncio
+        import shutil
+        
+        temp_dir = tempfile.mkdtemp(prefix="hermes_spec_out_")
+        output_img = os.path.join(temp_dir, "spectrogram.png")
+        songsee_bin = "/home/ameobius/go/bin/songsee"
+        
+        try:
+            # Generate the visualization with magma style (viscoelastic neurodance flesh simulation palette :3)
+            proc = await asyncio.create_subprocess_exec(
+                songsee_bin,
+                audio_path,
+                "--viz", "spectrogram,mel,chroma,hpss,selfsim,loudness",
+                "--style", "magma",
+                "-o", output_img,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            
+            if os.path.exists(output_img) and os.path.getsize(output_img) > 0:
+                caption = "Here is the audio spectrogram & feature visualization grid: Mel-scale, Chroma (pitch), HPSS (harmonic/percussive), Self-similarity, and Loudness Profile. :3 💅"
+                if hasattr(adapter, "_send_file_attachment"):
+                    await adapter._send_file_attachment(event.source.chat_id, output_img, caption=caption)
+                else:
+                    await adapter.send(event.source.chat_id, f"Spectrogram generated at {output_img}")
+                return ""
+            else:
+                err_text = stderr.decode(errors='ignore').strip()
+                logger.error(f"[Spectrogram] songsee failed: {err_text}")
+                return f"Failed to generate spectrogram: {err_text}"
+        except Exception as e:
+            logger.error(f"[Spectrogram] Error: {e}", exc_info=True)
+            return f"An error occurred: {e}"
+        finally:
+            try:
+                # Cleanup temp output dir
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                # Cleanup temp audio dir (if downloaded from YouTube)
+                if temp_audio_dir and os.path.exists(temp_audio_dir):
+                    shutil.rmtree(temp_audio_dir)
+            except Exception as e:
+                logger.error(f"[Spectrogram] Cleanup failed: {e}")
+
+    async def _handle_analyze_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /analyze [youtube_url_or_empty_if_attachment] command."""
+        platform = event.source.platform
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            return "Platform adapter not found."
+            
+        if str(getattr(platform, "value", platform)).lower() != "discord":
+            return "This command only works in a Discord server."
+            
+        audio_path, temp_audio_dir, error_msg = await self._get_audio_file_from_event(event, adapter)
+        if error_msg:
+            return error_msg
+            
+        await adapter.send(event.source.chat_id, "Generating audio features spectrogram for multi-modal analysis...")
+        
+        import tempfile
+        import os
+        import asyncio
+        import shutil
+        
+        temp_dir = tempfile.mkdtemp(prefix="hermes_analysis_")
+        output_img = os.path.join(temp_dir, "spectrogram.png")
+        songsee_bin = "/home/ameobius/go/bin/songsee"
+        
+        try:
+            # Generate the visualization
+            proc = await asyncio.create_subprocess_exec(
+                songsee_bin,
+                audio_path,
+                "--viz", "spectrogram,mel,chroma,hpss,selfsim,loudness",
+                "--style", "magma",
+                "-o", output_img,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            
+            if os.path.exists(output_img) and os.path.getsize(output_img) > 0:
+                # 1. Send the image to the channel first so the user sees it immediately
+                caption = "Generating spectrogram... Initiating track-analysis pipeline. 📊"
+                if hasattr(adapter, "_send_file_attachment"):
+                    await adapter._send_file_attachment(event.source.chat_id, output_img, caption=caption)
+                
+                # 2. Modify the event in-place so that the agent receives the spectrogram image and prompt!
+                event.text = (
+                    "Проанализируй спектрограмму этого трека (spectrogram, mel, chroma, hpss, selfsim, loudness). "
+                    "Оцени баланс частот, стереополе, гармоническую и перкуссионную составляющие (HPSS), динамику громкости и структуру (self-similarity). "
+                    "Дай конкретные, профессиональные советы по сведению, аранжировке и текстуре в нашей фирменной продюсерской манере."
+                )
+                
+                event.media_urls = [output_img]
+                event.media_types = ["image/png"]
+                
+                # 3. Clean up the temp audio files (if downloaded from YouTube) right now,
+                # since we only need the generated image from now on.
+                if temp_audio_dir and os.path.exists(temp_audio_dir):
+                    try:
+                        shutil.rmtree(temp_audio_dir)
+                    except Exception as e:
+                        logger.error(f"[Analyze] Audio cleanup failed: {e}")
+                        
+                # 4. We return None so it falls through to the agent!
+                return None
+            else:
+                err_text = stderr.decode(errors='ignore').strip()
+                logger.error(f"[Analyze] songsee failed: {err_text}")
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                if temp_audio_dir and os.path.exists(temp_audio_dir):
+                    shutil.rmtree(temp_audio_dir)
+                return f"Failed to generate spectrogram: {err_text}"
+        except Exception as e:
+            logger.error(f"[Analyze] Error: {e}", exc_info=True)
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            if temp_audio_dir and os.path.exists(temp_audio_dir):
+                shutil.rmtree(temp_audio_dir)
+            return f"An error occurred: {e}"
+
     def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
         """Called by the adapter when a voice channel times out.
 
@@ -11985,6 +12278,29 @@ class GatewayRunner:
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
 
+        # Wake word check: require wake words to avoid reacting to background chatter.
+        wake_words = ["робот", "гермес", "робок", "кработ", "крабик"]
+        transcript_lower = transcript.lower()
+        has_wake_word = any(w in transcript_lower for w in wake_words)
+
+        chat_id = str(text_ch_id)
+        voice_mode = self._voice_mode.get(self._voice_key(Platform.DISCORD, chat_id), "off")
+        if voice_mode != "all_no_wake" and not has_wake_word:
+            logger.info("Voice input ignored (no wake word found): %r", transcript)
+            return
+
+        # Clean the wake words from the transcript for a more natural model response
+        cleaned_transcript = transcript
+        if has_wake_word:
+            import re
+            for w in wake_words:
+                cleaned_transcript = re.sub(rf"^\s*{w}\b[^\w\s]*\s*", "", cleaned_transcript, flags=re.IGNORECASE)
+                cleaned_transcript = re.sub(rf"\b{w}\b[^\w\s]*\s*", "", cleaned_transcript, flags=re.IGNORECASE)
+            cleaned_transcript = cleaned_transcript.strip()
+            if not cleaned_transcript:
+                cleaned_transcript = "Да?"
+            transcript = cleaned_transcript
+
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
             logger.info(
                 "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
@@ -11995,13 +12311,22 @@ class GatewayRunner:
             return
 
         # Show transcript in text channel (after auth, with mention sanitization)
-        try:
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
-        except Exception:
-            pass
+        # Skip posting if in a private room ("Тихий Холл")
+        is_private_room = False
+        vc = getattr(adapter, "_voice_clients", {}).get(guild_id)
+        if vc and vc.channel:
+            vc_name = vc.channel.name.lower()
+            if "тихий" in vc_name and "холл" in vc_name:
+                is_private_room = True
+
+        if not is_private_room:
+            try:
+                channel = adapter._client.get_channel(text_ch_id)
+                if channel:
+                    safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                    await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+            except Exception:
+                pass
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract

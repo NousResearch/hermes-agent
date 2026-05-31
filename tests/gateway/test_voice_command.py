@@ -925,11 +925,13 @@ class TestVoiceChannelCommands:
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
+        mock_adapter._voice_clients = {}
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_mode["discord:123"] = "all_no_wake"
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
         mock_adapter.handle_message.assert_called_once()
         event = mock_adapter.handle_message.call_args[0][0]
@@ -955,11 +957,13 @@ class TestVoiceChannelCommands:
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: bound_source.to_dict()}
+        mock_adapter._voice_clients = {}
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_mode["discord:123"] = "all_no_wake"
 
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
 
@@ -977,11 +981,13 @@ class TestVoiceChannelCommands:
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
+        mock_adapter._voice_clients = {}
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_mode["discord:123"] = "all_no_wake"
         await runner._handle_voice_channel_input(111, 42, "Test transcript")
         mock_channel.send.assert_called_once()
         msg = mock_channel.send.call_args[0][0]
@@ -996,11 +1002,13 @@ class TestVoiceChannelCommands:
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
+        mock_adapter._voice_clients = {}
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_mode["discord:123"] = "all_no_wake"
 
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
@@ -1016,11 +1024,13 @@ class TestVoiceChannelCommands:
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
+        mock_adapter._voice_clients = {}
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_mode["discord:123"] = "all_no_wake"
 
         await runner._handle_voice_channel_input(111, 42, "This is a test of the voice system")
         await runner._handle_voice_channel_input(111, 42, "This is a test for the voice system")
@@ -1055,6 +1065,99 @@ class TestVoiceChannelCommands:
         event.raw_message = SimpleNamespace(guild_id=None, guild=None)
         result = runner._get_guild_id(event)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_spectrogram_command_with_attachment(self, runner):
+        """/spectrogram command generates and sends a spectrogram for an audio attachment."""
+        from gateway.config import Platform
+        import os
+        from unittest.mock import patch, mock_open
+
+        mock_adapter = AsyncMock()
+        mock_adapter._send_file_attachment = AsyncMock(return_value=AsyncMock())
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        event = _make_event()
+        event.source.platform = Platform.DISCORD
+        event.raw_message = SimpleNamespace(guild_id=123, guild=None)
+        event.media_urls = ["/tmp/test_audio.mp3"]
+        event.media_types = ["audio/mpeg"]
+
+        # Mock os.path.exists to return True for the audio and the generated image
+        orig_exists = os.path.exists
+        def mock_exists(path):
+            if path in ["/tmp/test_audio.mp3", "/tmp/test_audio.wav"]:
+                return True
+            if "spectrogram.png" in path:
+                return True
+            return orig_exists(path)
+
+        # Mock os.path.getsize to return > 0
+        def mock_getsize(path):
+            if "spectrogram.png" in path:
+                return 1024
+            return 1024
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        with patch("os.path.exists", mock_exists), \
+             patch("os.path.getsize", mock_getsize), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            res = await runner._handle_spectrogram_command(event)
+            assert res == ""
+            mock_exec.assert_called_once()
+            mock_adapter._send_file_attachment.assert_called_once()
+            # The first arg is chat_id, second is the path to the output image, third is caption
+            args = mock_adapter._send_file_attachment.call_args[0]
+            assert args[0] == event.source.chat_id
+            assert "spectrogram.png" in args[1]
+            assert "Here is the audio spectrogram" in mock_adapter._send_file_attachment.call_args[1]["caption"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_command_with_attachment(self, runner):
+        """/analyze command generates spectrogram, attaches it, updates prompt, and falls through."""
+        from gateway.config import Platform
+        import os
+        from unittest.mock import patch
+
+        mock_adapter = AsyncMock()
+        mock_adapter._send_file_attachment = AsyncMock(return_value=AsyncMock())
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        event = _make_event()
+        event.source.platform = Platform.DISCORD
+        event.raw_message = SimpleNamespace(guild_id=123, guild=None)
+        event.media_urls = ["/tmp/test_audio.mp3"]
+        event.media_types = ["audio/mpeg"]
+
+        # Mock os.path.exists
+        orig_exists = os.path.exists
+        def mock_exists(path):
+            if path in ["/tmp/test_audio.mp3"]:
+                return True
+            if "spectrogram.png" in path:
+                return True
+            return orig_exists(path)
+
+        def mock_getsize(path):
+            if "spectrogram.png" in path:
+                return 1024
+            return 1024
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        with patch("os.path.exists", mock_exists), \
+             patch("os.path.getsize", mock_getsize), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            res = await runner._handle_analyze_command(event)
+            assert res is None  # Falls through!
+            mock_exec.assert_called_once()
+            mock_adapter._send_file_attachment.assert_called_once()
+            assert "spectrogram.png" in event.media_urls[0]
+            assert "Проанализируй спектрограмму" in event.text
+            assert event.media_types == ["image/png"]
 
 
 # =====================================================================

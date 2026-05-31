@@ -1295,6 +1295,41 @@ def close_task(args: argparse.Namespace) -> int:
 
 
 
+def mirror_validate(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    dashboard_path = paths.vault_root / "00-command-center" / "RUNTIME-DASHBOARD.md"
+    issues = []
+    if not dashboard_path.exists():
+        issues.append("missing_dashboard")
+    credential_like_matches = 0
+    if paths.vault_root.exists():
+        for md_path in paths.vault_root.rglob("*.md"):
+            try:
+                text = md_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            credential_like_matches += leak_scan_text(text)
+    if credential_like_matches:
+        issues.append("credential_like_markdown")
+    payload = {"status": "ok" if not issues else "attention", "dashboard_path": str(dashboard_path), "issues": issues, "credential_like_matches": credential_like_matches}
+    print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else payload["status"])
+    return 0 if not issues else 1
+
+
+def mirror_rebuild(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    dashboard_path = paths.vault_root / "00-command-center" / "RUNTIME-DASHBOARD.md"
+    # Reuse dashboard generator for canonical command-center read-back without leaking its stdout into JSON mode.
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        dashboard(argparse.Namespace(vault_root=str(paths.vault_root), json=False, markdown=False))
+    payload = {"status": "ok", "dashboard_path": str(dashboard_path)}
+    print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else str(dashboard_path))
+    return 0
+
+
+
 def maintenance(args: argparse.Namespace) -> int:
     paths = resolve_paths(args)
     md_args = argparse.Namespace(vault_root=str(paths.vault_root), markdown=True)
@@ -1524,6 +1559,15 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     p = sub.add_parser("maintenance", help="Run local maintenance checks")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=maintenance)
+
+    mirror = sub.add_parser("mirror", help="Validate or rebuild vault mirror")
+    mirror_sub = mirror.add_subparsers(dest="mirror_command")
+    p = mirror_sub.add_parser("validate", help="Validate vault mirror")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=mirror_validate)
+    p = mirror_sub.add_parser("rebuild", help="Rebuild vault mirror read-back files")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=mirror_rebuild)
 
     service = sub.add_parser("service", help="Local importable service adapter")
     service_sub = service.add_subparsers(dest="service_command")

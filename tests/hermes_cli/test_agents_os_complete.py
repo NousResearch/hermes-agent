@@ -312,6 +312,30 @@ def test_agents_os_policy_blocks_credential_paths_and_bad_home(tmp_path, monkeyp
 
 
 
+def test_agents_os_mirror_validate_detects_missing_dashboard(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    assert agents_os.main(["--vault-root", str(vault), "init", "--no-vault"]) == 0
+    capsys.readouterr()
+    assert agents_os.main(["--vault-root", str(vault), "dashboard", "--json"]) == 0
+    dashboard = _json_out(capsys)
+    Path(dashboard["dashboard_path"]).unlink()
+
+    assert agents_os.main(["--vault-root", str(vault), "mirror", "validate", "--json"]) == 1
+    invalid = _json_out(capsys)
+    assert invalid["status"] == "attention"
+    assert "missing_dashboard" in invalid["issues"]
+
+    assert agents_os.main(["--vault-root", str(vault), "mirror", "rebuild", "--json"]) == 0
+    rebuilt = _json_out(capsys)
+    assert Path(rebuilt["dashboard_path"]).exists()
+    assert agents_os.main(["--vault-root", str(vault), "mirror", "validate", "--json"]) == 0
+    valid = _json_out(capsys)
+    assert valid["status"] == "ok"
+
+
+
 def test_agents_os_execute_blocks_approval_gated_task(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     vault = tmp_path / "vault"

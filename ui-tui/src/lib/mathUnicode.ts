@@ -460,10 +460,6 @@ const { letter: LETTER_CMDS, punct: PUNCT_CMDS } = splitByEnding(Object.keys(SYM
 const SYMBOL_LETTER_RE = new RegExp('(?:' + buildAlt(LETTER_CMDS) + ')(?![A-Za-z])', 'g')
 const SYMBOL_PUNCT_RE = new RegExp('(?:' + buildAlt(PUNCT_CMDS) + ')', 'g')
 
-// Keep recursive balanced-brace TeX helpers well below the JS stack limit.
-// Inputs beyond this budget are preserved as raw TeX rather than crashing.
-const MAX_TEX_PARSE_DEPTH = 128
-
 const convertScript = (input: string, table: Record<string, string>, sigil: '^' | '_'): string => {
   let out = ''
   let allMapped = true
@@ -545,16 +541,7 @@ const readBraced = (s: string, start: number): { content: string; end: number } 
 // `render` callback receives the inner content already recursed-into, so
 // `\boxed{\boxed{x}}` resolves outside-in cleanly. Unmatched `\command`
 // (no following `{...}`) is preserved verbatim.
-const replaceBracedCommand = (
-  input: string,
-  command: string,
-  render: (content: string) => string,
-  depth = 0,
-): string => {
-  if (depth >= MAX_TEX_PARSE_DEPTH) {
-    return input
-  }
-
+const replaceBracedCommand = (input: string, command: string, render: (content: string) => string): string => {
   const cmdLen = command.length
   let out = ''
   let i = 0
@@ -590,7 +577,7 @@ const replaceBracedCommand = (
       continue
     }
 
-    out += render(replaceBracedCommand(arg.content, command, render, depth + 1))
+    out += render(replaceBracedCommand(arg.content, command, render))
     i = arg.end
   }
 
@@ -601,11 +588,7 @@ const replaceBracedCommand = (
 // side when its precedence demands it). The recursion handles nested
 // fractions naturally: `\frac{1}{\frac{1}{x}}` collapses to `1/(1/x)`
 // because we recurse into `den` before deciding whether to parenthesise.
-const replaceFracs = (input: string, depth = 0): string => {
-  if (depth >= MAX_TEX_PARSE_DEPTH) {
-    return input
-  }
-
+const replaceFracs = (input: string): string => {
   let out = ''
   let i = 0
 
@@ -653,7 +636,7 @@ const replaceFracs = (input: string, depth = 0): string => {
       continue
     }
 
-    out += `${wrapForFrac(replaceFracs(num.content, depth + 1))}/${wrapForFrac(replaceFracs(den.content, depth + 1))}`
+    out += `${wrapForFrac(replaceFracs(num.content))}/${wrapForFrac(replaceFracs(den.content))}`
     i = den.end
   }
 

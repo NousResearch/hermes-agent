@@ -14,7 +14,6 @@ import yaml
 from hermes_cli.plugins_cmd import (
     PluginOperationError,
     _copy_example_files,
-    _toggle_plugin_toolset,
     _read_manifest,
     _repo_name_from_url,
     _resolve_git_executable,
@@ -22,53 +21,6 @@ from hermes_cli.plugins_cmd import (
     _sanitize_plugin_name,
     plugins_command,
 )
-
-
-# ── _toggle_plugin_toolset ─────────────────────────────────────────────────
-
-
-def test_toggle_plugin_toolset_enable_only_updates_cli(monkeypatch):
-    """Dashboard enable must not grant plugin tools to gateway/API platforms."""
-    import hermes_cli.config as config_mod
-    import hermes_cli.plugins_cmd as pc
-
-    config = {
-        "platform_toolsets": {
-            "cli": ["memory"],
-            "api_server": ["memory"],
-            "slack": ["memory"],
-        }
-    }
-    saved = []
-
-    monkeypatch.setattr(pc, "_get_plugin_toolset_key", lambda name: "poc_sensitive_tools")
-    monkeypatch.setattr(config_mod, "load_config", lambda: config)
-    monkeypatch.setattr(config_mod, "save_config", lambda cfg: saved.append(cfg.copy()))
-
-    _toggle_plugin_toolset("poc-sensitive", enable=True)
-
-    assert config["platform_toolsets"]["cli"] == ["memory", "poc_sensitive_tools"]
-    assert config["platform_toolsets"]["api_server"] == ["memory"]
-    assert config["platform_toolsets"]["slack"] == ["memory"]
-    assert len(saved) == 1
-
-
-def test_toggle_plugin_toolset_enable_creates_cli_only(monkeypatch):
-    """A plugin can be made visible locally without creating gateway grants."""
-    import hermes_cli.config as config_mod
-    import hermes_cli.plugins_cmd as pc
-
-    config = {"platform_toolsets": {}}
-    saved = []
-
-    monkeypatch.setattr(pc, "_get_plugin_toolset_key", lambda name: "poc_sensitive_tools")
-    monkeypatch.setattr(config_mod, "load_config", lambda: config)
-    monkeypatch.setattr(config_mod, "save_config", lambda cfg: saved.append(cfg.copy()))
-
-    _toggle_plugin_toolset("poc-sensitive", enable=True)
-
-    assert config["platform_toolsets"] == {"cli": ["poc_sensitive_tools"]}
-    assert len(saved) == 1
 
 
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────

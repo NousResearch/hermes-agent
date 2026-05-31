@@ -12,7 +12,6 @@ Verifies that the agent cache correctly:
 import hashlib
 import json
 import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -441,42 +440,6 @@ class TestAgentCacheLifecycle:
         # Simulate second turn — prompt should be frozen
         prompt2 = agent._cached_system_prompt
         assert prompt1 is prompt2  # same object, not rebuilt
-
-    def test_cached_agent_source_context_refreshes_each_turn(self):
-        """Cached agents must expose the current sender to per-user plugin ACLs."""
-        from gateway.config import Platform
-        from gateway.run import GatewayRunner
-
-        agent = SimpleNamespace(
-            platform="discord",
-            _user_id="alice",
-            _user_name="Alice",
-            _chat_id="chat-1",
-            _chat_name="General",
-            _chat_type="group",
-            _thread_id="thread-42",
-            _gateway_session_key="agent:main:discord:group:chat-1:thread-42",
-        )
-        source = SimpleNamespace(
-            platform=Platform.DISCORD,
-            user_id="bob",
-            user_name="Bob",
-            chat_id="chat-1",
-            chat_name="General",
-            chat_type="group",
-            thread_id="thread-42",
-        )
-
-        GatewayRunner._refresh_agent_source_context(
-            agent, source, "agent:main:discord:group:chat-1:thread-42"
-        )
-
-        assert agent._user_id == "bob"
-        assert agent._user_name == "Bob"
-        assert agent.platform == "discord"
-        assert agent._chat_id == "chat-1"
-        assert agent._thread_id == "thread-42"
-        assert agent._gateway_session_key == "agent:main:discord:group:chat-1:thread-42"
 
     def test_callbacks_update_without_cache_eviction(self):
         """Per-message callbacks can be set on cached agent."""

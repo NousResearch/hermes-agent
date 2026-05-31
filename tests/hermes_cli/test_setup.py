@@ -579,6 +579,7 @@ def test_offer_launch_chat_relaunches_via_bin(monkeypatch):
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/local/bin/hermes")
+    monkeypatch.setattr(sys, "argv", ["hermes"])  # prevent pytest flags from bleeding in
 
     exec_calls = []
 
@@ -600,6 +601,7 @@ def test_offer_launch_chat_falls_back_to_module(monkeypatch):
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["hermes"])  # prevent pytest flags from bleeding in
 
     exec_calls = []
 

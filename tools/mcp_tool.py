@@ -87,14 +87,9 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Collection, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-
-# Maximum decoded size for a single MCP ImageContent payload. MCP servers can
-# be remote or compromised, so cap image blocks before caching them locally.
-_MCP_IMAGE_MAX_BYTES = 10 * 1024 * 1024
-_MCP_IMAGE_MAX_BASE64_CHARS = ((_MCP_IMAGE_MAX_BYTES + 2) // 3) * 4
 
 
 # ---------------------------------------------------------------------------
@@ -464,33 +459,9 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     try:
-        encoded_len = len(data)
-    except TypeError as exc:
-        logger.warning("MCP image block decode failed (%s): %s", normalized_mime, exc)
-        return ""
-
-    if encoded_len > _MCP_IMAGE_MAX_BASE64_CHARS:
-        logger.warning(
-            "MCP image block rejected (%s): base64 payload is %d chars; max is %d chars",
-            normalized_mime,
-            encoded_len,
-            _MCP_IMAGE_MAX_BASE64_CHARS,
-        )
-        return ""
-
-    try:
-        raw_bytes = base64.b64decode(data, validate=True)
+        raw_bytes = base64.b64decode(data)
     except (TypeError, ValueError) as exc:
         logger.warning("MCP image block decode failed (%s): %s", normalized_mime, exc)
-        return ""
-
-    if len(raw_bytes) > _MCP_IMAGE_MAX_BYTES:
-        logger.warning(
-            "MCP image block rejected (%s): decoded payload is %d bytes; max is %d",
-            normalized_mime,
-            len(raw_bytes),
-            _MCP_IMAGE_MAX_BYTES,
-        )
         return ""
 
     try:
@@ -1179,14 +1150,11 @@ class MCPServerTask:
                 # Timeout — no lifecycle event fired.  Send a keepalive
                 # to exercise the connection and detect stale sockets.
                 if self.session:
-                    if self._rpc_lock.locked():
-                        continue
                     try:
-                        async with self._rpc_lock:
-                            await asyncio.wait_for(
-                                self.session.list_tools(),
-                                timeout=30.0,
-                            )
+                        await asyncio.wait_for(
+                            self.session.list_tools(),
+                            timeout=30.0,
+                        )
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
@@ -1678,8 +1646,8 @@ def _reset_server_error(server_name: str) -> None:
     """Fully close the breaker for ``server_name``.
 
     Clears both the failure count and the breaker-open timestamp. Call
-    this on any unambiguous success signal (successful tool call or
-    manual /mcp refresh).
+    this on any unambiguous success signal (successful tool call,
+    successful reconnect, manual /mcp refresh).
     """
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
@@ -1821,6 +1789,16 @@ def _handle_auth_error_and_retry(
                     if srv.session is not None and srv._ready.is_set():
                         break
                     time.sleep(0.25)
+
+        # A successful OAuth recovery is independent evidence that the
+        # server is viable again, so close the circuit breaker here —
+        # not only on retry success. Without this, a reconnect
+        # followed by a failing retry would leave the breaker pinned
+        # above threshold forever (the retry-exception branch below
+        # bumps the count again).  The post-reset retry still goes
+        # through _bump_server_error on failure, so a genuinely broken
+        # server will re-trip the breaker as normal.
+        _reset_server_error(server_name)
 
         try:
             result = retry_call()
@@ -2646,21 +2624,13 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return strip_nullable_unions(node, keep_nullable_hint=True)
 
     def _repair_object_shape(node):
-        """Recursively repair schema nodes without mutating container maps."""
+        """Recursively repair object-shaped nodes: fill type, prune required."""
         if isinstance(node, list):
             return [_repair_object_shape(item) for item in node]
         if not isinstance(node, dict):
             return node
 
-        repaired = {}
-        for key, value in node.items():
-            if key in {"properties", "$defs"} and isinstance(value, dict):
-                repaired[key] = {
-                    prop_name: _repair_object_shape(prop_schema)
-                    for prop_name, prop_schema in value.items()
-                }
-            else:
-                repaired[key] = _repair_object_shape(value)
+        repaired = {k: _repair_object_shape(v) for k, v in node.items()}
 
         # Coerce missing / null type when the shape is clearly an object
         # (has properties or required but no type).
@@ -3158,7 +3128,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools(allowed_server_names: Collection[str] | None = None) -> List[str]:
+def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
@@ -3166,10 +3136,6 @@ def discover_mcp_tools(allowed_server_names: Collection[str] | None = None) -> L
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
-
-    Args:
-        allowed_server_names: Optional MCP server-name allowlist. When provided,
-            only matching configured servers may be connected.
 
     Returns:
         List of all registered MCP tool names.
@@ -3179,9 +3145,6 @@ def discover_mcp_tools(allowed_server_names: Collection[str] | None = None) -> L
         return []
 
     servers = _load_mcp_config()
-    if allowed_server_names is not None:
-        allowed = {str(name) for name in allowed_server_names}
-        servers = {name: cfg for name, cfg in servers.items() if str(name) in allowed}
     if not servers:
         logger.debug("No MCP servers configured")
         return []

@@ -43,7 +43,7 @@ _HERMES_CORE_TOOLS = [
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_dialog",
+    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -134,18 +134,6 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
-
-    "curator": {
-        "description": "Curator review tools for reading and managing Hermes skills only",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
-        "includes": []
-    },
-
-    "curator_readonly": {
-        "description": "Read-only curator review tools for dry-run reports",
-        "tools": ["skills_list", "skill_view"],
-        "includes": []
-    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
@@ -153,21 +141,12 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console",
+            "browser_vision", "browser_console", "browser_cdp",
             "browser_dialog", "web_search"
         ],
         "includes": []
     },
     
-    "browser-cdp": {
-        "description": (
-            "Restricted raw Chrome DevTools Protocol access. Opt-in only; "
-            "sensitive cookie and navigation methods are blocked."
-        ),
-        "tools": ["browser_cdp"],
-        "includes": []
-    },
-
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
         "tools": ["cronjob"],
@@ -349,7 +328,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_dialog",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
@@ -374,12 +353,11 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_dialog",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
             "todo", "memory",
-            # Cross-session history search is intentionally unavailable by
-            # default for API clients because it can expose other Hermes
-            # frontends' persisted conversations from the shared state DB.
+            # Session history search
+            "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management

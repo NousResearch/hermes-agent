@@ -2500,65 +2500,15 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str, *, chat_id: str = "") -> bool:
+    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
         """Return whether this card-action operator may answer gated prompts."""
         normalized = str(open_id or "").strip()
         if not normalized:
             return False
-
-        runner = getattr(self, "gateway_runner", None)
-        if (runner is not None or chat_id in self._group_rules) and chat_id and not self._allow_group_message(
-            SimpleNamespace(open_id=normalized, user_id=None),
-            chat_id,
-        ):
-            return False
-
-        auth_fn = getattr(runner, "_is_user_authorized", None) if runner is not None else None
-        if callable(auth_fn):
-            try:
-                source = self.build_source(
-                    chat_id=chat_id or normalized,
-                    chat_type="group" if chat_id else "dm",
-                    user_id=normalized,
-                    user_name=self._get_cached_sender_name(normalized) or normalized,
-                )
-                return bool(auth_fn(source))
-            except Exception:
-                logger.warning("[Feishu] Failed to authorize interactive card operator", exc_info=True)
-                return False
-
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
             return True
         return "*" in allowed_ids or normalized in allowed_ids
-
-    @staticmethod
-    def _event_open_chat_id(event: Any) -> str:
-        """Extract the Feishu chat id from a callback event."""
-        context = getattr(event, "context", None)
-        return str(getattr(context, "open_chat_id", "") or "").strip()
-
-    def _approval_card_action_allowed(self, approval_id: Any, event: Any, open_id: str) -> bool:
-        """Return whether a card callback may resolve a pending exec approval."""
-        state = self._approval_state.get(approval_id)
-        if not state:
-            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return False
-
-        event_chat_id = self._event_open_chat_id(event)
-        expected_chat_id = str(state.get("chat_id") or "").strip()
-        if expected_chat_id and event_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Approval %s clicked from unexpected chat %s (expected %s)",
-                approval_id, event_chat_id or "<unknown>", expected_chat_id,
-            )
-            return False
-
-        if not self._is_interactive_operator_authorized(open_id, chat_id=expected_chat_id):
-            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
-            return False
-
-        return True
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2570,15 +2520,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._approval_card_action_allowed(approval_id, event, open_id):
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
         user_name = self._get_cached_sender_name(open_id) or open_id
-        chat_id = self._event_open_chat_id(event)
-        if not self._submit_on_loop(
-            loop,
-            self._resolve_approval(approval_id, choice, user_name, chat_id=chat_id, open_id=open_id),
-        ):
+
+        if not self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name)):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         if P2CardActionTriggerResponse is None:
@@ -2597,8 +2541,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if prompt_id is None:
             logger.debug("[Feishu] Card action missing update_prompt_id, ignoring")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-        state = self._update_prompt_state.get(prompt_id)
-        if not state:
+        if prompt_id not in self._update_prompt_state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2607,18 +2550,9 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Card action has invalid update prompt answer=%r", answer)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        expected_chat_id = str(state.get("chat_id") or "").strip()
-        event_chat_id = self._event_open_chat_id(event)
-        if expected_chat_id and event_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Update prompt %s clicked from unexpected chat %s (expected %s)",
-                prompt_id, event_chat_id or "<unknown>", expected_chat_id,
-            )
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._is_interactive_operator_authorized(open_id, chat_id=expected_chat_id):
+        if not self._is_interactive_operator_authorized(open_id):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2636,32 +2570,8 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
-    async def _resolve_approval(
-        self,
-        approval_id: Any,
-        choice: str,
-        user_name: str,
-        *,
-        chat_id: Optional[str] = None,
-        open_id: Optional[str] = None,
-    ) -> None:
+    async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
         """Pop approval state and unblock the waiting agent thread."""
-        state = self._approval_state.get(approval_id)
-        if not state:
-            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return
-        if open_id is not None and not self._is_interactive_operator_authorized(open_id):
-            logger.warning("[Feishu] Unauthorized approval resolution by %s", open_id or "<unknown>")
-            return
-        expected_chat_id = str(state.get("chat_id") or "").strip()
-        actual_chat_id = str(chat_id or "").strip()
-        if chat_id is not None and expected_chat_id and actual_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Ignoring approval %s from unexpected chat %s (expected %s)",
-                approval_id, actual_chat_id or "<unknown>", expected_chat_id,
-            )
-            return
-
         state = self._approval_state.pop(approval_id, None)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
@@ -3024,6 +2934,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None)
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
@@ -3275,14 +3186,6 @@ class FeishuAdapter(BasePlatformAdapter):
         # subscription setup works even before encrypt_key is wired.
         if payload.get("type") == "url_verification":
             return web.json_response({"challenge": payload.get("challenge", "")})
-
-        if not self._verification_token and not self._encrypt_key:
-            logger.warning(
-                "[Feishu] Webhook rejected: FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY is required from %s",
-                remote_ip,
-            )
-            self._record_webhook_anomaly(remote_ip, "401-auth-required")
-            return web.Response(status=401, text="Webhook authentication is not configured")
 
         # Verification token check — second layer of defence beyond signature (matches openclaw).
         if self._verification_token:
@@ -3802,8 +3705,8 @@ class FeishuAdapter(BasePlatformAdapter):
         """Map Feishu's three-tier user IDs onto Hermes' SessionSource fields.
 
         Preference order for the primary ``user_id`` field:
-          1. open_id  (app-scoped, always available — different per bot app)
-          2. user_id  (tenant-scoped fallback — requires permission scope)
+          1. user_id  (tenant-scoped, most stable — requires permission scope)
+          2. open_id  (app-scoped, always available — different per bot app)
 
         ``user_id_alt`` carries the union_id (developer-scoped, stable across
         all apps by the same developer).  Session-key generation prefers
@@ -3813,9 +3716,8 @@ class FeishuAdapter(BasePlatformAdapter):
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
-        # Use the app-scoped open_id as the gateway authorization principal.
-        # Tenant-scoped user_id can collide across tenants in multi-tenant bot deployments.
-        primary_id = open_id or user_id
+        # Prefer tenant-scoped user_id; fall back to app-scoped open_id.
+        primary_id = user_id or open_id
         # bot/v3/bots/basic_batch only accepts open_id.
         name_lookup_id = open_id if is_bot else (primary_id or union_id)
         display_name = await self._resolve_sender_name_from_api(
@@ -4059,21 +3961,21 @@ class FeishuAdapter(BasePlatformAdapter):
             allowlist = self._allowed_group_users
             blacklist = set()
 
-        # Channel locks and explicit deny-lists apply to everyone; admitted
-        # bots only bypass human allowlists after deny checks have run.
+        # Channel locks apply to everyone; allowlist/blacklist only gate humans
+        # (bots were already cleared upstream by FEISHU_ALLOW_BOTS).
         if policy == "disabled":
             return False
         if policy == "open":
             return True
         if policy == "admin_only":
             return False
-        if policy == "blacklist":
-            return bool(sender_ids and not (sender_ids & blacklist))
         if is_bot:
             return True
 
         if policy == "allowlist":
             return bool(sender_ids and (sender_ids & allowlist))
+        if policy == "blacklist":
+            return bool(sender_ids and not (sender_ids & blacklist))
 
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
@@ -4146,13 +4048,19 @@ class FeishuAdapter(BasePlatformAdapter):
         # extra scopes required. This is the same endpoint the onboarding wizard
         # uses via probe_bot().
         try:
-            req = (
-                BaseRequest.builder()
-                .http_method(HttpMethod.GET)
-                .uri("/open-apis/bot/v3/info")
-                .token_types({AccessTokenType.TENANT})
-                .build()
-            )
+            if FEISHU_AVAILABLE:
+                req = (
+                    BaseRequest.builder()
+                    .http_method(HttpMethod.GET)
+                    .uri("/open-apis/bot/v3/info")
+                    .token_types({AccessTokenType.TENANT})
+                    .build()
+                )
+            else:
+                req = SimpleNamespace(
+                    uri="/open-apis/bot/v3/info",
+                    http_method="GET",
+                )
             resp = await asyncio.to_thread(self._client.request, req)
             content = getattr(getattr(resp, "raw", None), "content", None)
             if content:

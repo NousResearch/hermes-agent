@@ -27,20 +27,11 @@ def _make_event(
     platform: Platform,
     chat_id: str = "12345",
     msg_type: MessageType = MessageType.TEXT,
-    chat_type: str = "dm",
-    user_id: str | None = None,
-    thread_id: str | None = None,
 ) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=msg_type,
-        source=SessionSource(
-            platform=platform,
-            chat_id=chat_id,
-            chat_type=chat_type,
-            user_id=user_id,
-            thread_id=thread_id,
-        ),
+        source=SessionSource(platform=platform, chat_id=chat_id, chat_type="dm"),
     )
 
 
@@ -131,36 +122,6 @@ class TestDiscordTextBatching:
         await asyncio.sleep(0.2)
 
         assert adapter.handle_message.call_count == 2
-
-
-    @pytest.mark.asyncio
-    async def test_threaded_messages_from_different_users_not_merged(self):
-        """Shared Discord thread sessions still batch by sender before auth."""
-        adapter = _make_discord_adapter()
-
-        adapter._enqueue_text_event(_make_event(
-            "authorized text",
-            Platform.DISCORD,
-            chat_id="channel-1",
-            chat_type="thread",
-            thread_id="thread-1",
-            user_id="alice",
-        ))
-        adapter._enqueue_text_event(_make_event(
-            "unauthorized injection",
-            Platform.DISCORD,
-            chat_id="channel-1",
-            chat_type="thread",
-            thread_id="thread-1",
-            user_id="bob",
-        ))
-
-        await asyncio.sleep(0.2)
-
-        assert adapter.handle_message.call_count == 2
-        dispatched = [call.args[0] for call in adapter.handle_message.call_args_list]
-        assert {event.source.user_id for event in dispatched} == {"alice", "bob"}
-        assert all("\n" not in (event.text or "") for event in dispatched)
 
     @pytest.mark.asyncio
     async def test_batch_cleans_up_after_flush(self):

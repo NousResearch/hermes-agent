@@ -463,7 +463,7 @@ platforms:
 |--------|-------------|
 | `open` | Anyone in the group can use the bot |
 | `allowlist` | Only users in the group's `allowlist` can use the bot |
-| `blacklist` | Everyone except senders in the group's `blacklist` can use the bot; entries can include human or peer-bot open IDs/user IDs |
+| `blacklist` | Everyone except users in the group's `blacklist` can use the bot |
 | `admin_only` | Only users in the global `admins` list can use the bot in this group |
 | `disabled` | Bot ignores all messages in this group |
 

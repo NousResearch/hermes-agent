@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import sys
-import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -292,77 +290,6 @@ def test_bundled_skill_not_touched_by_transitions(curator_env):
 # run_curator_review orchestration
 # ---------------------------------------------------------------------------
 
-
-def test_llm_review_dry_run_uses_readonly_curator_toolset(curator_env, monkeypatch):
-    c = curator_env["curator"]
-    captured = {}
-
-    class FakeAgent:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self._session_messages = []
-
-        def run_conversation(self, user_message):
-            return {"final_response": "dry report"}
-
-        def close(self):
-            pass
-
-    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAgent))
-    importlib.reload(c)
-
-    result = c._run_llm_review(f"{c.CURATOR_DRY_RUN_BANNER}\n\npreview")
-
-    assert result["summary"] == "dry report"
-    assert captured["enabled_toolsets"] == ["curator_readonly"]
-    assert captured["platform"] == "curator"
-    assert captured["max_iterations"] == c.CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT
-
-
-def test_curator_review_iteration_budget_is_bounded(curator_env):
-    c = curator_env["curator"]
-
-    assert c._curator_review_max_iterations({}) == 100
-    assert c._curator_review_max_iterations(
-        {"curator": {"review_max_iterations": 25}}
-    ) == 25
-    assert c._curator_review_max_iterations(
-        {"curator": {"review_max_iterations": 0}}
-    ) == 1
-    assert c._curator_review_max_iterations(
-        {"curator": {"review_max_iterations": 9999}}
-    ) == 100
-    assert c._curator_review_max_iterations(
-        {"curator": {"review_max_iterations": "bad"}}
-    ) == 100
-
-
-def test_llm_review_live_uses_curator_only_toolset(curator_env, monkeypatch):
-    c = curator_env["curator"]
-    captured = {}
-
-    class FakeAgent:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self._session_messages = []
-
-        def run_conversation(self, user_message):
-            return {"final_response": "live report"}
-
-        def close(self):
-            pass
-
-    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAgent))
-    importlib.reload(c)
-
-    result = c._run_llm_review("live")
-
-    assert result["summary"] == "live report"
-    assert captured["enabled_toolsets"] == ["curator"]
-    assert captured["platform"] == "curator"
-    assert captured["max_iterations"] == c.CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT
-
-
 def test_run_review_records_state(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]
@@ -609,15 +536,16 @@ def test_curator_review_prompt_has_invariants():
 
 
 def test_curator_review_prompt_points_at_existing_tools_only():
-    """The review prompt must rely only on the restricted skills toolset
+    """The review prompt must rely on existing tools (skill_manage + terminal)
     and must NOT reference bespoke curator tools that are not registered
     model tools."""
     from agent.curator import CURATOR_REVIEW_PROMPT
     assert "skill_manage" in CURATOR_REVIEW_PROMPT
     assert "skills_list" in CURATOR_REVIEW_PROMPT
     assert "skill_view" in CURATOR_REVIEW_PROMPT
-    assert "restricted to the skills toolset" in CURATOR_REVIEW_PROMPT.lower()
-    # These would be nice but aren't actually registered as tools.
+    assert "terminal" in CURATOR_REVIEW_PROMPT.lower()
+    # These would be nice but aren't actually registered as tools — the
+    # curator uses skill_manage + terminal mv instead.
     assert "archive_skill" not in CURATOR_REVIEW_PROMPT
     assert "pin_skill" not in CURATOR_REVIEW_PROMPT
 
@@ -662,9 +590,6 @@ def test_curator_review_prompt_is_umbrella_first():
     assert "use_count" in CURATOR_REVIEW_PROMPT or "counter" in lower, (
         "must pre-empt the 'usage counters are zero, I can't judge' bailout"
     )
-    assert "fewer than 10 archives" not in lower
-    assert "stopped too early" not in lower
-    assert "bounded curator" in lower or "review budget" in lower
 
 
 def test_curator_review_prompt_offers_support_file_actions():

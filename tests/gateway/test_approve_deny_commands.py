@@ -156,43 +156,6 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
-    def test_resolve_single_by_approval_id_pops_matching_entry(self):
-        """Button approvals resolve their displayed prompt, not FIFO."""
-        from tools.approval import (
-            resolve_gateway_approval,
-            _ApprovalEntry, _gateway_queues,
-        )
-        session_key = "test-approval-id"
-        e1 = _ApprovalEntry({"command": "first", "approval_id": "older"})
-        e2 = _ApprovalEntry({"command": "second", "approval_id": "newer"})
-        _gateway_queues[session_key] = [e1, e2]
-
-        count = resolve_gateway_approval(session_key, "once", approval_id="newer")
-
-        assert count == 1
-        assert not e1.event.is_set()
-        assert e1.result is None
-        assert e2.event.is_set()
-        assert e2.result == "once"
-        assert _gateway_queues[session_key] == [e1]
-
-    def test_resolve_by_unknown_approval_id_leaves_queue_unchanged(self):
-        """Stale or mismatched button IDs must not approve another prompt."""
-        from tools.approval import (
-            resolve_gateway_approval,
-            _ApprovalEntry, _gateway_queues,
-        )
-        session_key = "test-missing-approval-id"
-        entry = _ApprovalEntry({"command": "cmd", "approval_id": "expected"})
-        _gateway_queues[session_key] = [entry]
-
-        count = resolve_gateway_approval(session_key, "once", approval_id="missing")
-
-        assert count == 0
-        assert not entry.event.is_set()
-        assert entry.result is None
-        assert _gateway_queues[session_key] == [entry]
-
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

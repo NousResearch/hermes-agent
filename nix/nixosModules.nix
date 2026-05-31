@@ -11,10 +11,10 @@
 # and read by hermes at startup — no container recreation needed for env changes.
 #
 # Tool resolution: the hermes wrapper uses --suffix PATH for nix store tools,
-# so apt/uv-installed versions take priority. The container entrypoint provisions
-# extensible tools on first boot: nodejs/npm via apt, uv via curl, and a Python
-# 3.11 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
-# writable tool prefixes for npm i -g, pip install, uv tool install, etc.
+# so apt-installed versions take priority. The container entrypoint provisions
+# extensible tools on first boot: nodejs/npm via apt and a Python 3.12 venv at
+# ~/.venv with pip seeded by the Nix-built uv. Agents get writable tool prefixes
+# for npm i -g, pip install, uv tool install, etc.
 #
 # Usage:
 #   services.hermes-agent = {
@@ -48,48 +48,6 @@
     configFile = if cfg.configFile != null then cfg.configFile else generatedConfigFile;
 
     configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
-
-    safeStateSetup = pkgs.writeScript "hermes-safe-state-setup" ''
-      #!${pkgs.python3}/bin/python3
-      import os
-      import pwd
-      import grp
-      import stat
-      import sys
-      from pathlib import Path
-
-      user, group, state_dir, working_dir = sys.argv[1:5]
-      uid = pwd.getpwnam(user).pw_uid
-      gid = grp.getgrnam(group).gr_gid
-
-      def reject_symlink(path: Path) -> None:
-          if path.exists() or path.is_symlink():
-              mode = os.lstat(path).st_mode
-              if stat.S_ISLNK(mode):
-                  raise SystemExit(f"refusing to manage symlinked Hermes state path: {path}")
-              if not stat.S_ISDIR(mode):
-                  raise SystemExit(f"refusing to manage non-directory Hermes state path: {path}")
-
-      def ensure_dir(path: Path, mode: int) -> None:
-          reject_symlink(path)
-          path.mkdir(parents=True, exist_ok=True)
-          reject_symlink(path)
-          fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-          try:
-              os.fchown(fd, uid, gid)
-              os.fchmod(fd, mode)
-          finally:
-              os.close(fd)
-
-      state = Path(state_dir)
-      hermes_home = state / ".hermes"
-      ensure_dir(state, 0o2770)
-      ensure_dir(hermes_home, 0o2770)
-      ensure_dir(state / "home", 0o750)
-      ensure_dir(Path(working_dir), 0o2770)
-      for name in ("cron", "sessions", "logs", "memories", "plugins"):
-          ensure_dir(hermes_home / name, 0o2770)
-    '';
 
     # Generate .env from non-secret environment attrset
     envFileContent = lib.concatStringsSep "\n" (
@@ -165,7 +123,7 @@
       # script sets for group access by hostUsers.  Only touch files with
       # wrong ownership so correctly-owned dirs keep their permission bits.
       if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
-        find "$HERMES_HOME" \! -user "$HERMES_UID" -exec chown "$HERMES_UID:$HERMES_GID" {} +
+        find "$HERMES_HOME" \( \! -user "$HERMES_UID" -o \! -group "$HERMES_GID" \) -exec chown -h "$HERMES_UID:$HERMES_GID" -- {} +
       fi
 
       # ── Provision apt packages (first boot only, cached in writable layer) ──
@@ -193,20 +151,13 @@
         chmod 0440 /etc/sudoers.d/hermes
       fi
 
-      # uv (Python manager) — not in Ubuntu repos, retry-safe outside the sentinel
-      if ! command -v uv >/dev/null 2>&1 && [ ! -x "$TARGET_HOME/.local/bin/uv" ] && command -v curl >/dev/null 2>&1; then
-        su -s /bin/sh "$TARGET_USER" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
-      fi
-
       # Python 3.12 venv — gives the agent a writable Python with pip.
-      # --seed includes pip/setuptools so bare `pip install` works.
-      _UV_BIN="$TARGET_HOME/.local/bin/uv"
-      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
-        su -s /bin/sh "$TARGET_USER" -c "
-          export PATH=\"\$HOME/.local/bin:\$PATH\"
-          uv python install 3.12
-          uv venv --python 3.12 --seed \"\$HOME/.venv\"
-        " || true
+      # Use the Nix-built uv and Python store paths instead of fetching a runtime
+      # installer script in the privileged container entrypoint.
+      _UV_BIN="${pkgs.uv}/bin/uv"
+      _PYTHON_BIN="${pkgs.python312}/bin/python3"
+      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ] && [ -x "$_PYTHON_BIN" ]; then
+        su -s /bin/sh "$TARGET_USER" -c "$_UV_BIN venv --python $_PYTHON_BIN --seed $TARGET_HOME/.venv" || true
       fi
 
       # Put the agent venv first on PATH so python/pip resolve to writable copies
@@ -235,7 +186,6 @@
     });
 
     identityFile = "${cfg.stateDir}/.container-identity";
-    containerModeFile = "/etc/hermes-agent/container-mode";
 
     # Default: /var/lib/hermes/workspace → /data/workspace.
     # Custom paths outside stateDir pass through unchanged (user must add extraVolumes).
@@ -762,28 +712,24 @@
       # ── Activation: link config + auth + documents ────────────────────
       {
         system.activationScripts."hermes-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
-          # Ensure activation-managed paths are real directories before root
-          # writes to them. The service user owns cfg.stateDir, so activation
-          # must fail closed instead of following attacker-controlled symlinks.
-          ${safeStateSetup} ${cfg.user} ${cfg.group} ${cfg.stateDir} ${cfg.workingDirectory}
-
-          hermes_install_file() {
-            local src="$1"
-            local dst="$2"
-            local mode="$3"
-            local tmp
-            tmp="$(mktemp "$(dirname "$dst")/.tmp.$(basename "$dst").XXXXXX")"
-            install -o ${cfg.user} -g ${cfg.group} -m "$mode" -T "$src" "$tmp"
-            mv -Tf "$tmp" "$dst"
-          }
+          # Ensure directories exist (activation runs before tmpfiles)
+          mkdir -p ${cfg.stateDir}/.hermes
+          mkdir -p ${cfg.stateDir}/home
+          mkdir -p ${cfg.workingDirectory}
+          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
+          chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
+          chmod 0750 ${cfg.stateDir}/home
 
           # Create subdirs, set setgid + group-writable, migrate existing files.
           # Nix-managed files (config.yaml, .env, .managed) stay 0640/0644.
-          find -P ${cfg.stateDir}/.hermes -maxdepth 1 -type f \
+          find ${cfg.stateDir}/.hermes -maxdepth 1 \
             \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
             -exec chmod g+rw {} + 2>/dev/null || true
           for _subdir in cron sessions logs memories plugins; do
-            find -P "${cfg.stateDir}/.hermes/$_subdir" -type f \
+            mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
+            chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
+            chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
+            find "${cfg.stateDir}/.hermes/$_subdir" -type f \
               -exec chmod g+rw {} + 2>/dev/null || true
           done
 
@@ -791,33 +737,32 @@
           # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
           # If configFile is user-provided (not generated), overwrite instead of merge.
           ${if cfg.configFile != null then ''
-            hermes_install_file ${configFile} ${cfg.stateDir}/.hermes/config.yaml 0640
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
           '' else ''
-            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml ${cfg.user} ${cfg.group} 0640
+            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
+            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
+            chmod 0640 ${cfg.stateDir}/.hermes/config.yaml
           ''}
 
           # Managed mode marker (so interactive shells also detect NixOS management)
-          hermes_install_file /dev/null ${cfg.stateDir}/.hermes/.managed 0644
+          touch ${cfg.stateDir}/.hermes/.managed
+          chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
+          chmod 0644 ${cfg.stateDir}/.hermes/.managed
 
           # Container mode metadata — tells the host CLI to exec into the
-          # container instead of running locally. Keep it root-owned outside
-          # HERMES_HOME so the containerized agent cannot alter host routing.
+          # container instead of running locally. Removed when container mode
+          # is disabled so the host CLI falls back to native execution.
           ${if cfg.container.enable then ''
-            _container_mode_tmp="$(mktemp ${cfg.stateDir}/.hermes/.container-mode.XXXXXX)"
-            cat > "$_container_mode_tmp" <<'HERMES_CONTAINER_MODE_EOF'
+            cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
     # Written by NixOS activation script. Do not edit manually.
     backend=${cfg.container.backend}
-    runtime_path=${containerBin}
     container_name=${containerName}
     exec_user=${cfg.user}
     hermes_bin=${containerDataDir}/current-package/bin/hermes
     HERMES_CONTAINER_MODE_EOF
-            install -o ${cfg.user} -g ${cfg.group} -m 0644 -T "$_container_mode_tmp" "$_container_mode_tmp.installed"
-            mv -Tf "$_container_mode_tmp.installed" ${cfg.stateDir}/.hermes/.container-mode
-            rm -f "$_container_mode_tmp"
+            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
+            chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
           '' else ''
-            rm -f ${containerModeFile}
-            rmdir /etc/hermes-agent 2>/dev/null || true
             rm -f ${cfg.stateDir}/.hermes/.container-mode
 
             # Remove symlink bridge for hostUsers
@@ -860,10 +805,10 @@
           # Seed auth file if provided
           ${lib.optionalString (cfg.authFile != null) ''
             ${if cfg.authFileForceOverwrite then ''
-              hermes_install_file ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json 0600
+              install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
             '' else ''
               if [ ! -f ${cfg.stateDir}/.hermes/auth.json ]; then
-                hermes_install_file ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json 0600
+                install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
               fi
             ''}
           ''}
@@ -873,24 +818,21 @@
           # so this is the single source of truth for both native and container mode.
           ${lib.optionalString (cfg.environment != {} || cfg.environmentFiles != []) ''
             ENV_FILE="${cfg.stateDir}/.hermes/.env"
-            ENV_TMP="$(mktemp ${cfg.stateDir}/.hermes/.env.XXXXXX)"
-            cat > "$ENV_TMP" <<'HERMES_NIX_ENV_EOF'
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 /dev/null "$ENV_FILE"
+            cat > "$ENV_FILE" <<'HERMES_NIX_ENV_EOF'
     ${envFileContent}
     HERMES_NIX_ENV_EOF
             ${lib.concatStringsSep "\n" (map (f: ''
               if [ -f "${f}" ]; then
-                echo "" >> "$ENV_TMP"
-                cat "${f}" >> "$ENV_TMP"
+                echo "" >> "$ENV_FILE"
+                cat "${f}" >> "$ENV_FILE"
               fi
             '') cfg.environmentFiles)}
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 -T "$ENV_TMP" "$ENV_TMP.installed"
-            mv -Tf "$ENV_TMP.installed" "$ENV_FILE"
-            rm -f "$ENV_TMP"
           ''}
 
           # Link documents into workspace
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
-            hermes_install_file ${documentDerivation}/${name} ${cfg.workingDirectory}/${name} 0640
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
           '') cfg.documents)}
 
         # ── Declarative plugins ─────────────────────────────────────────

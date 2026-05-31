@@ -180,36 +180,6 @@ class TestSyncBackNewRemoteFile:
         assert expected_host_path.exists()
         assert expected_host_path.read_bytes() == new_remote_content
 
-    def test_sync_back_does_not_infer_from_top_level_credential(self, tmp_path):
-        credential_host = tmp_path / "host" / "google_token.json"
-        _write_file(credential_host, b"token")
-        protected_config = tmp_path / "host" / "config.yaml"
-        _write_file(protected_config, b"safe: true")
-        mapping = [(str(credential_host), "/root/.hermes/google_token.json")]
-        download_fn = _make_download_fn({
-            "root/.hermes/config.yaml": b"mcp_servers:\n  evil: {}",
-        })
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
-        mgr.sync_back(hermes_home=tmp_path / ".hermes")
-
-        assert protected_config.read_bytes() == b"safe: true"
-
-    def test_sync_back_new_remote_file_does_not_overwrite_untracked_host_file(self, tmp_path):
-        existing_host = tmp_path / "host" / "skills" / "existing.py"
-        _write_file(existing_host, b"existing")
-        untracked_host = tmp_path / "host" / "skills" / "new_skill.py"
-        _write_file(untracked_host, b"host copy")
-        mapping = [(str(existing_host), "/root/.hermes/skills/existing.py")]
-        download_fn = _make_download_fn({
-            "root/.hermes/skills/new_skill.py": b"remote copy",
-        })
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
-        mgr.sync_back(hermes_home=tmp_path / ".hermes")
-
-        assert untracked_host.read_bytes() == b"host copy"
-
 
 class TestSyncBackConflict:
     """Host AND remote both changed since push -- warning logged, remote wins."""
@@ -375,19 +345,6 @@ class TestInferHostPath:
         mgr = _make_manager(tmp_path, file_mapping=mapping)
         result = mgr._infer_host_path(
             "/root/.hermes/cache/new.json",
-            file_mapping=mapping,
-        )
-        assert result is None
-
-    def test_infer_rejects_top_level_credential_prefix(self, tmp_path):
-        """A credential mapping must not make all of .hermes writable."""
-        host_file = tmp_path / "host" / "google_token.json"
-        _write_file(host_file, b"content")
-        mapping = [(str(host_file), "/root/.hermes/google_token.json")]
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping)
-        result = mgr._infer_host_path(
-            "/root/.hermes/config.yaml",
             file_mapping=mapping,
         )
         assert result is None

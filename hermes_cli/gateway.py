@@ -39,7 +39,9 @@ from hermes_cli.setup import (
 from hermes_cli.colors import Colors, color
 
 
+# =============================================================================
 # Process Management (for manual gateway runs)
+# =============================================================================
 
 
 @dataclass(frozen=True)
@@ -559,40 +561,10 @@ def find_profile_gateway_processes(
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
     args = [get_python_path(), "-m", "hermes_cli.main"]
-    args.extend(["--profile", profile])
+    if profile != "default":
+        args.extend(["--profile", profile])
     args.extend(["gateway", "run", "--replace"])
     return args
-
-
-def _profile_gateway_restart_env(profile: str) -> dict[str, str]:
-    """Build a clean environment for a detached profile gateway restart."""
-    from hermes_cli.profiles import get_profile_dir
-
-    allowed_keys = {
-        "CONDA_PREFIX",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "PATH",
-        "PATHEXT",
-        "PYTHONIOENCODING",
-        "PYTHONPATH",
-        "SSL_CERT_DIR",
-        "SSL_CERT_FILE",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "VIRTUAL_ENV",
-        "WINDIR",
-    }
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key.upper() in allowed_keys
-    }
-    env["HERMES_HOME"] = str(get_profile_dir(profile))
-    return env
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -661,16 +633,9 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         # Same platform-aware detach for the watcher process itself — so
         # closing the user's terminal doesn't kill the watcher.
         subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                watcher,
-                str(old_pid),
-                *_gateway_run_args_for_profile(profile),
-            ],
+            [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env=_profile_gateway_restart_env(profile),
             **windows_detach_popen_kwargs(),
         )
     except OSError:
@@ -1283,7 +1248,9 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
         return True
 
 
+# =============================================================================
 # Service Configuration
+# =============================================================================
 
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
@@ -2029,7 +1996,9 @@ def get_python_path() -> str:
     return sys.executable
 
 
+# =============================================================================
 # Systemd (Linux)
+# =============================================================================
 
 def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     """Return user-local bin dirs that exist and aren't already in *path_entries*."""
@@ -2757,7 +2726,9 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         subprocess.run(log_cmd, timeout=10)
 
 
+# =============================================================================
 # Launchd (macOS)
+# =============================================================================
 
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
@@ -3088,7 +3059,9 @@ def launchd_status(deep: bool = False):
             subprocess.run(["tail", "-20", str(log_file)], timeout=10)
 
 
+# =============================================================================
 # Gateway Runner
+# =============================================================================
 
 def _truthy_env(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -3288,7 +3261,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _exit_diag("gateway.exit_clean")
 
 
+# =============================================================================
 # Gateway Setup (Interactive Messaging Platform Configuration)
+# =============================================================================
 
 # Per-platform config: each entry defines the env vars, setup instructions,
 # and prompts needed to configure a messaging platform.
@@ -3991,11 +3966,15 @@ def _setup_dingtalk():
         client_id, client_secret = result
         save_env_value("DINGTALK_CLIENT_ID", client_id)
         save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
+        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
         print()
         print_success(f"{emoji} {label} configured via QR scan!")
     else:
         # ── Manual entry ──
         _setup_standard_platform(dingtalk_platform)
+        # Also enable allow-all by default for convenience
+        if get_env_value("DINGTALK_CLIENT_ID"):
+            save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
 
 
 def _setup_wecom():
@@ -4983,7 +4962,9 @@ def gateway_setup():
     print()
 
 
+# =============================================================================
 # Main Command Handler
+# =============================================================================
 
 def gateway_command(args):
     """Handle gateway subcommands."""

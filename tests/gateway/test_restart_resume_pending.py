@@ -32,13 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import (
-    GatewayConfig,
-    HomeChannel,
-    Platform,
-    PlatformConfig,
-    SessionResetPolicy,
-)
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _auto_continue_freshness_window,
@@ -82,33 +76,6 @@ def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
 
 def _make_store(tmp_path):
     return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
-
-
-def test_resume_pending_does_not_bypass_idle_reset_policy(tmp_path, monkeypatch):
-    """Crash-recovery resume markers must not outlive reset policy windows."""
-    start = datetime(2026, 1, 1, 12, 0, 0)
-    monkeypatch.setattr("gateway.session._now", lambda: start)
-
-    config = GatewayConfig(
-        default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1)
-    )
-    store = SessionStore(sessions_dir=tmp_path, config=config)
-    source = _make_source()
-    entry = store.get_or_create_session(source)
-
-    marked = store.suspend_recently_active(max_age_seconds=120)
-    assert marked == 1
-    assert store._entries[entry.session_key].resume_pending is True
-
-    monkeypatch.setattr(
-        "gateway.session._now", lambda: start + timedelta(minutes=2)
-    )
-    resumed = store.get_or_create_session(source)
-
-    assert resumed.session_id != entry.session_id
-    assert resumed.was_auto_reset is True
-    assert resumed.auto_reset_reason == "idle"
-    assert resumed.resume_pending is False
 
 
 def _build_agent_history(history: list) -> list:
@@ -372,29 +339,6 @@ class TestGetOrCreateResumePending:
         assert second.auto_reset_reason is None
         # Flag is NOT cleared on read — only on successful turn completion.
         assert second.resume_pending is True
-
-    def test_resume_pending_does_not_bypass_idle_reset_policy(self, tmp_path):
-        """Expired resume_pending sessions must not resurrect stale transcripts."""
-        config = GatewayConfig(
-            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1)
-        )
-        store = SessionStore(sessions_dir=tmp_path, config=config)
-        source = _make_source()
-        first = store.get_or_create_session(source)
-        original_sid = first.session_id
-        store.mark_resume_pending(first.session_key)
-
-        with store._lock:
-            entry = store._entries[first.session_key]
-            entry.updated_at = datetime.now() - timedelta(minutes=5)
-            store._save()
-
-        second = store.get_or_create_session(source)
-
-        assert second.session_id != original_sid
-        assert second.was_auto_reset is True
-        assert second.auto_reset_reason == "idle"
-        assert second.resume_pending is False
 
     def test_suspended_still_creates_new_session(self, tmp_path):
         """Regression guard — suspended must still force a clean slate."""
@@ -1027,6 +971,67 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     # _handle_message_with_agent owns the system-note injection so we don't
     # double it up.
     assert event.text == ""
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_skips_unauthorized_origin():
+    """Startup auto-resume must re-check current authorization before dispatch."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="revoked-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:revoked-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner._is_user_authorized = MagicMock(return_value=False)
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    runner._is_user_authorized.assert_called_once_with(source)
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_honors_pre_gateway_dispatch_skip():
+    """Startup auto-resume must honor plugin access-control hooks."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="plugin-denied-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:plugin-denied-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner._is_user_authorized = MagicMock(return_value=True)
+    adapter.handle_message = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"action": "skip", "reason": "revoked"}],
+    ) as invoke_hook:
+        scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    invoke_hook.assert_called_once()
+    runner._is_user_authorized.assert_not_called()
+    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio

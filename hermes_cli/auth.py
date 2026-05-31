@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import shlex
 import ssl
@@ -36,7 +37,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 import yaml
@@ -80,13 +81,6 @@ MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
-MINIMAX_OAUTH_REDIRECT_HOSTS = frozenset({
-    "api.minimax.io",
-    "account.minimax.io",
-    "api.minimaxi.com",
-    "account.minimaxi.com",
-})
-MINIMAX_OAUTH_MAX_REDIRECTS = 3
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -538,6 +532,11 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
         return False
     if cleaned.lower() in _PLACEHOLDER_SECRET_VALUES:
         return False
+    # Unresolved config placeholders such as ${API_SERVER_KEY} must never
+    # become bearer/HMAC secrets. They are predictable and indicate a missing
+    # environment variable rather than real authentication material.
+    if re.search(r"\$\{[^}]+\}", cleaned):
+        return False
     return True
 
 
@@ -787,73 +786,6 @@ def _auth_file_path() -> Path:
     return path
 
 
-def _global_auth_file_path() -> Optional[Path]:
-    """Return the global-root auth.json when the process is in profile mode.
-
-    Returns ``None`` when the profile and global root resolve to the same
-    directory (classic mode, or custom HERMES_HOME that is not a profile).
-    Used by read-only fallback paths so providers authed at the root are
-    visible to profile processes that haven't configured them locally.
-
-    See issue #18594 follow-up (credential_pool shadowing).
-    """
-    try:
-        from hermes_constants import get_default_hermes_root
-        global_root = get_default_hermes_root()
-    except Exception:
-        return None
-    profile_home = get_hermes_home()
-    try:
-        if profile_home.resolve(strict=False) == global_root.resolve(strict=False):
-            return None
-    except Exception:
-        if profile_home == global_root:
-            return None
-    # No pytest seat belt here: this is a pure read-only path, and
-    # ``_load_global_auth_store()`` wraps the read in a try/except so an
-    # unreadable global file can never break the profile process.  The
-    # write-side seat belt still lives on ``_auth_file_path()`` where it
-    # belongs (that's what protects the real user's auth store from being
-    # corrupted by a mis-configured test).
-    return global_root / "auth.json"
-
-
-def _load_global_auth_store() -> Dict[str, Any]:
-    """Load the global-root auth store (read-only fallback).
-
-    Returns an empty dict when no global fallback exists (classic mode,
-    or the global auth.json is absent). Never raises on missing file.
-
-    Seat belt: under pytest, refuses to read the real user's
-    ``~/.hermes/auth.json`` even when HERMES_HOME is set to a profile
-    path. The hermetic conftest does not redirect ``HOME``, so
-    ``get_default_hermes_root()`` for a profile-shaped HERMES_HOME can
-    still resolve to the real user's home on a dev machine. That would
-    leak real credentials into tests. This guard uses the unmodified
-    ``HOME`` env var (what ``os.path.expanduser('~')`` would resolve to),
-    not ``Path.home()``, because ``Path.home`` is sometimes monkeypatched
-    by fixtures that want to relocate the global root to a tmp path.
-    """
-    global_path = _global_auth_file_path()
-    if global_path is None or not global_path.exists():
-        return {}
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_env = os.environ.get("HOME", "")
-        if real_home_env:
-            real_root = Path(real_home_env) / ".hermes" / "auth.json"
-            try:
-                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
-                    return {}
-            except Exception:
-                pass
-    try:
-        return _load_auth_store(global_path)
-    except Exception:
-        # A malformed global store must not break profile reads. The
-        # profile's own auth store is still authoritative.
-        return {}
-
-
 def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
@@ -1086,50 +1018,22 @@ def get_auth_provider_display_name(provider_id: str) -> str:
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """Return the persisted credential pool, or one provider slice.
+    """Return the active profile's persisted credential pool.
 
-    In profile mode, the profile's credential pool is authoritative. If a
-    provider has no entries in the profile, entries from the global-root
-    ``auth.json`` are used as a read-only fallback — so workers spawned in a
-    profile can see providers that were only authenticated at global scope.
-
-    Profile entries always win: the global fallback only applies per-provider
-    when the profile has zero entries for that provider. Once the user runs
-    ``hermes auth add <provider>`` inside the profile, profile entries
-    fully shadow global for that provider on the next read.
-
-    Writes always go to the profile (``write_credential_pool`` is unchanged).
-    See issue #18594 follow-up.
+    Credential pools are scoped to the current ``HERMES_HOME``. Named profiles
+    are independent auth boundaries, so missing or empty profile entries do not
+    fall back to the default/global auth store.
     """
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
         pool = {}
 
-    global_pool: Dict[str, Any] = {}
-    global_store = _load_global_auth_store()
-    maybe_global_pool = global_store.get("credential_pool") if global_store else None
-    if isinstance(maybe_global_pool, dict):
-        global_pool = maybe_global_pool
-
     if provider_id is None:
-        merged = dict(pool)
-        for gp_key, gp_entries in global_pool.items():
-            if not isinstance(gp_entries, list) or not gp_entries:
-                continue
-            # Per-provider shadowing: profile wins whenever it has ANY entries.
-            existing = merged.get(gp_key)
-            if isinstance(existing, list) and existing:
-                continue
-            merged[gp_key] = list(gp_entries)
-        return merged
+        return dict(pool)
 
     provider_entries = pool.get(provider_id)
-    if isinstance(provider_entries, list) and provider_entries:
-        return list(provider_entries)
-    # Profile has no entries for this provider — fall back to global.
-    global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    return list(provider_entries) if isinstance(provider_entries, list) else []
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
@@ -1188,25 +1092,9 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
 
 
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
-    """Return persisted auth state for a provider, or None.
-
-    In profile mode, falls back to the global-root ``auth.json`` when the
-    profile has no state for this provider. Profile state always wins when
-    present. Writes (``_save_auth_store`` / ``persist_*_credentials``) are
-    unchanged — they still target the profile only. This mirrors
-    ``read_credential_pool``'s per-provider shadowing semantics so that
-    ``_seed_from_singletons`` can reseed a profile's credential pool from
-    global-scope provider state (e.g. a globally-authenticated Anthropic
-    OAuth or Nous device-code session). See issue #18594 follow-up.
-    """
+    """Return the active profile's persisted auth state for a provider."""
     auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, provider_id)
-    if state is not None:
-        return state
-    global_store = _load_global_auth_store()
-    if not global_store:
-        return None
-    return _load_provider_state(global_store, provider_id)
+    return _load_provider_state(auth_store, provider_id)
 
 
 def get_active_provider() -> Optional[str]:
@@ -4728,8 +4616,7 @@ def _minimax_request_user_code(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     code_challenge: str, state: str,
 ) -> Dict[str, Any]:
-    response = _minimax_post_oauth_form(
-        client,
+    response = client.post(
         f"{portal_base_url}/oauth/code",
         data={
             "response_type": "code",
@@ -4765,49 +4652,6 @@ def _minimax_request_user_code(
     return payload
 
 
-def _minimax_redirect_target(url: str, location: str) -> Optional[str]:
-    """Return an allowed MiniMax OAuth redirect URL, or None if unsafe."""
-    target = urljoin(url, location)
-    parsed = urlparse(target)
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or host not in MINIMAX_OAUTH_REDIRECT_HOSTS:
-        return None
-    if not parsed.path.startswith("/oauth/"):
-        return None
-    return target
-
-
-def _minimax_post_oauth_form(
-    client: httpx.Client,
-    url: str,
-    *,
-    data: Dict[str, Any],
-    headers: Dict[str, str],
-) -> httpx.Response:
-    """POST MiniMax OAuth form data, following only allowlisted HTTPS redirects."""
-    current_url = url
-    for _ in range(MINIMAX_OAUTH_MAX_REDIRECTS + 1):
-        response = client.post(current_url, data=data, headers=headers)
-        if response.status_code not in (307, 308):
-            return response
-
-        location = response.headers.get("Location") if response.headers else None
-        if not location:
-            return response
-        redirect_url = _minimax_redirect_target(current_url, location)
-        if not redirect_url:
-            raise AuthError(
-                "MiniMax OAuth redirected to an untrusted endpoint.",
-                provider="minimax-oauth", code="unsafe_redirect",
-            )
-        current_url = redirect_url
-
-    raise AuthError(
-        "MiniMax OAuth exceeded the redirect limit.",
-        provider="minimax-oauth", code="too_many_redirects",
-    )
-
-
 def _minimax_poll_token(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
@@ -4825,8 +4669,7 @@ def _minimax_poll_token(
     interval = max(2.0, (interval_ms or 2000) / 1000.0)
 
     while _time.time() < deadline:
-        response = _minimax_post_oauth_form(
-            client,
+        response = client.post(
             f"{portal_base_url}/oauth/token",
             data={
                 "grant_type": MINIMAX_OAUTH_GRANT_TYPE,
@@ -4903,7 +4746,8 @@ def _minimax_oauth_login(
     print(f"Portal: {portal_base_url}")
 
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
-                      headers={"Accept": "application/json"}) as client:
+                      headers={"Accept": "application/json"},
+                      follow_redirects=True) as client:
         code_data = _minimax_request_user_code(
             client, portal_base_url=portal_base_url,
             client_id=pconfig.client_id,
@@ -4980,9 +4824,9 @@ def _refresh_minimax_oauth_state(
         return state
 
     portal_base_url = state["portal_base_url"]
-    with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
-        response = _minimax_post_oauth_form(
-            client,
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+                      follow_redirects=True) as client:
+        response = client.post(
             f"{portal_base_url}/oauth/token",
             data={
                 "grant_type": "refresh_token",

@@ -33,6 +33,8 @@ from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_bu
 _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=128)
 
 
+logger = logging.getLogger(__name__)
+
 def resize_tool_pool(max_workers: int):
     """
     Replace the global tool executor with a new one of the given size.
@@ -45,8 +47,6 @@ def resize_tool_pool(max_workers: int):
     _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
     old_executor.shutdown(wait=False)
     logger.info("Tool thread pool resized to %d workers", max_workers)
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass

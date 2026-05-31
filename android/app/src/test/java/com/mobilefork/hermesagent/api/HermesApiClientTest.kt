@@ -4,6 +4,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -174,5 +175,33 @@ class HermesApiClientTest {
         assertEquals("input_text", content.getJSONObject(0).getString("type"))
         assertEquals("input_image", content.getJSONObject(1).getString("type"))
         assertEquals("data:image/png;base64,AA==", content.getJSONObject(1).getString("image_url"))
+    }
+
+    @Test
+    fun chatCompletionPayloadIncludesOptionalGenerationKnobs() {
+        val payload = ChatCompletionRequest(
+            model = "model",
+            messages = listOf(ChatMessage("user", "hello")),
+            stream = true,
+            maxTokens = 4096,
+            topP = 0.9f,
+            temperature = 0.7f,
+        ).toChatCompletionPayload()
+
+        assertEquals(4096, payload.getInt("max_tokens"))
+        assertEquals(0.9, payload.getDouble("top_p"), 0.0001)
+        assertEquals(0.7, payload.getDouble("temperature"), 0.0001)
+    }
+
+    @Test
+    fun responsesPayloadMapsMaxTokensToMaxOutputTokens() {
+        val payload = ChatCompletionRequest(
+            model = "model",
+            messages = listOf(ChatMessage("user", "hello")),
+            maxTokens = 2048,
+        ).toResponsesPayload()
+
+        assertEquals(2048, payload.getInt("max_output_tokens"))
+        assertFalse(payload.has("max_tokens"))
     }
 }

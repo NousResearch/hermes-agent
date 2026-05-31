@@ -70,6 +70,11 @@ fun DeviceScreen(
         }
         pendingExportFile = null
     }
+    val diagnosticsLogExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) {
+            viewModel.exportDiagnosticsLogs(uri)
+        }
+    }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         viewModel.refresh(strings.deviceNotificationPermissionStatus(granted))
     }
@@ -164,6 +169,11 @@ fun DeviceScreen(
                     onToggleRuntime = { enabled -> viewModel.setBackgroundPersistence(enabled) },
                     onToggleFloatingButton = { enabled -> viewModel.setFloatingButtonEnabled(enabled) },
                 )
+                DiagnosticsLogCard(
+                    uiState = uiState,
+                    onExport = { diagnosticsLogExportLauncher.launch(uiState.diagnosticsLogExportFileName) },
+                    onClearLastCrash = viewModel::clearLastCrashDiagnostics,
+                )
                 WorkspaceAccessCard(
                     uiState = uiState,
                     onImportFile = { importLauncher.launch(arrayOf("*/*")) },
@@ -186,6 +196,48 @@ fun DeviceScreen(
             }
         }
     }
+    }
+}
+
+@Composable
+private fun DiagnosticsLogCard(
+    uiState: DeviceUiState,
+    onExport: () -> Unit,
+    onClearLastCrash: () -> Unit,
+) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Diagnostics logs", style = MaterialTheme.typography.titleMedium)
+            Text(uiState.diagnosticsLogStatusLabel, style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Crash previews and exports redact keys, tokens, emails, phone numbers, and user paths.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (uiState.diagnosticsLogCapturedAtLabel.isNotBlank()) {
+                Text(uiState.diagnosticsLogCapturedAtLabel, style = MaterialTheme.typography.bodySmall)
+            }
+            uiState.diagnosticsLogPreviewLines.forEach { line ->
+                Text(line, style = MaterialTheme.typography.bodySmall)
+            }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onExport, enabled = uiState.diagnosticsLogExportReady) {
+                    Text("Export logs")
+                }
+                Button(onClick = onClearLastCrash, enabled = uiState.lastCrashPresent) {
+                    Text("Clear last crash")
+                }
+            }
+        }
     }
 }
 

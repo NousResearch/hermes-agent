@@ -27,6 +27,9 @@ data class ChatCompletionRequest(
     val messages: List<ChatMessage>,
     val stream: Boolean = false,
     val sessionId: String? = null,
+    val maxTokens: Int? = null,
+    val topP: Float? = null,
+    val temperature: Float? = null,
 )
 
 data class ChatCompletionResult(
@@ -51,6 +54,9 @@ fun ChatCompletionRequest.toChatCompletionPayload(): JSONObject {
     return JSONObject().apply {
         put("model", model)
         put("stream", stream)
+        maxTokens?.takeIf { it > 0 }?.let { put("max_tokens", it) }
+        topP?.let { put("top_p", it.toDouble()) }
+        temperature?.let { put("temperature", it.toDouble()) }
         put(
             "messages",
             JSONArray().apply {
@@ -67,6 +73,9 @@ fun ChatCompletionRequest.toResponsesPayload(): JSONObject {
         put("model", model)
         put("stream", stream)
         put("store", false)
+        maxTokens?.takeIf { it > 0 }?.let { put("max_output_tokens", it) }
+        topP?.let { put("top_p", it.toDouble()) }
+        temperature?.let { put("temperature", it.toDouble()) }
         put(
             "input",
             JSONArray().apply {

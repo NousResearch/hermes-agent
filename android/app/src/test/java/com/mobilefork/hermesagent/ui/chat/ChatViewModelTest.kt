@@ -1,6 +1,7 @@
 package com.mobilefork.hermesagent.ui.chat
 
 import com.mobilefork.hermesagent.api.ChatContentPart
+import com.mobilefork.hermesagent.api.ChatMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -137,8 +138,8 @@ class ChatViewModelTest {
         val messages = buildChatRequestMessages(
             userText = "What did I just send?",
             priorMessages = listOf(
-                com.mobilefork.hermesagent.api.ChatMessage(role = "user", content = "hello"),
-                com.mobilefork.hermesagent.api.ChatMessage(role = "assistant", content = "You sent hello."),
+                ChatMessage(role = "user", content = "hello"),
+                ChatMessage(role = "assistant", content = "You sent hello."),
             ),
         )
 
@@ -148,6 +149,31 @@ class ChatViewModelTest {
         assertEquals("assistant", messages[1].role)
         assertEquals("You sent hello.", messages[1].content)
         assertEquals("What did I just send?", messages[2].content)
+    }
+
+    @Test
+    fun buildChatRequestMessagesUsesLargerPriorContextWhenCacheResendIsEnabled() {
+        val priorMessages = (1..20).map { index ->
+            ChatMessage(
+                role = if (index % 2 == 0) "assistant" else "user",
+                content = "turn-$index " + "x".repeat(2_400),
+            )
+        }
+
+        val compact = buildChatRequestMessages(
+            userText = "continue",
+            priorMessages = priorMessages,
+        )
+        val cacheFriendly = buildChatRequestMessages(
+            userText = "continue",
+            priorMessages = priorMessages,
+            cacheResendEnabled = true,
+        )
+
+        assertEquals(13, compact.size)
+        assertEquals(21, cacheFriendly.size)
+        assertTrue(compact.first().content.length < 1_400)
+        assertTrue(cacheFriendly.first().content.length > 2_000)
     }
 
     @Test

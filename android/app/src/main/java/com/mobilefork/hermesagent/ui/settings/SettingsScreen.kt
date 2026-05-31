@@ -6,27 +6,35 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
@@ -40,6 +48,7 @@ import com.mobilefork.hermesagent.data.ProviderPresets
 import com.mobilefork.hermesagent.ui.i18n.AppLanguage
 import com.mobilefork.hermesagent.ui.i18n.LocalHermesStrings
 import com.mobilefork.hermesagent.ui.shell.ShellActionItem
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(
@@ -50,7 +59,6 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
-    val scrollState = rememberScrollState()
     val selectedPreset = ProviderPresets.find(uiState.provider)
     val selectedProviderLabel = strings.providerDisplayLabel(
         uiState.provider,
@@ -64,104 +72,434 @@ fun SettingsScreen(
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Column(
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
                         .widthIn(max = 920.dp)
-                        .verticalScroll(scrollState)
                         .imePadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                        .padding(bottom = extraBottomSpacing),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    contentPadding = PaddingValues(bottom = extraBottomSpacing),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    SettingsHelpCard(
-                        providerLabel = selectedProviderLabel,
-                        strings = strings,
-                    )
-                    LanguagePickerCard(
-                        currentLanguageTag = uiState.languageTag,
-                        onSelectLanguage = viewModel::selectLanguage,
-                        strings = strings,
-                    )
-                    AgentPersonaCard(
-                        customSystemPrompt = uiState.customSystemPrompt,
-                        onPromptChange = viewModel::updateCustomSystemPrompt,
-                        onSave = viewModel::saveAgentPersona,
-                        onClear = viewModel::clearAgentPersona,
-                        strings = strings,
-                    )
-                    AppearanceCard(
-                        chatDisplayMode = uiState.chatDisplayMode,
-                        keywordHighlightingEnabled = uiState.keywordHighlightingEnabled,
-                        themePrimaryHex = uiState.themePrimaryHex,
-                        themeSecondaryHex = uiState.themeSecondaryHex,
-                        themeBackgroundHex = uiState.themeBackgroundHex,
-                        themeSurfaceHex = uiState.themeSurfaceHex,
-                        themeSurfaceVariantHex = uiState.themeSurfaceVariantHex,
-                        themeCardShape = uiState.themeCardShape,
-                        onChatDisplayModeChange = viewModel::updateChatDisplayMode,
-                        onKeywordHighlightingChange = viewModel::updateKeywordHighlighting,
-                        onPrimaryHexChange = viewModel::updateThemePrimaryHex,
-                        onSecondaryHexChange = viewModel::updateThemeSecondaryHex,
-                        onBackgroundHexChange = viewModel::updateThemeBackgroundHex,
-                        onSurfaceHexChange = viewModel::updateThemeSurfaceHex,
-                        onSurfaceVariantHexChange = viewModel::updateThemeSurfaceVariantHex,
-                        onCardShapeChange = viewModel::updateThemeCardShape,
-                        onApplyPreset = viewModel::applyThemePreset,
-                        onSaveAppearance = viewModel::saveAppearance,
-                        strings = strings,
-                    )
-                    OnDeviceInferenceCard(
-                        onDeviceBackend = uiState.onDeviceBackend,
-                        speculativeDecodingMode = uiState.liteRtLmSpeculativeDecodingMode,
-                        onSelectBackend = viewModel::updateOnDeviceBackend,
-                        onSelectSpeculativeDecodingMode = viewModel::updateLiteRtLmSpeculativeDecodingMode,
-                        onStartRuntime = viewModel::startLocalRuntimeForFlavor,
-                        summary = uiState.onDeviceSummary,
-                        strings = strings,
-                    )
-                    OfflineAirplaneCard(
-                        enabled = uiState.offlineAirplaneMode,
-                        onChange = viewModel::updateOfflineAirplaneMode,
-                        strings = strings,
-                    )
-                    LocalModelDownloadsSection(
-                        dataSaverMode = uiState.dataSaverMode,
-                        offlineAirplaneMode = uiState.offlineAirplaneMode,
-                        onDataSaverModeChange = viewModel::updateDataSaverMode,
-                        selectedBackend = uiState.onDeviceBackend,
-                        onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor,
-                        onCompletedDownloadReady = viewModel::startLocalRuntimeForFlavor,
-                    )
-
-                    RemoteFallbackCard(
-                        providerId = uiState.provider,
-                        providerLabel = selectedProviderLabel,
-                        baseUrl = uiState.baseUrl,
-                        model = uiState.model,
-                        apiKey = uiState.apiKey,
-                        status = uiState.status,
-                        onSelectProvider = viewModel::updateProvider,
-                        onBaseUrlChange = viewModel::updateBaseUrl,
-                        onModelChange = viewModel::updateModel,
-                        onApiKeyChange = viewModel::updateApiKey,
-                        onOpenProviderKeyPage = viewModel::openProviderKeyPage,
-                        onCopyProviderKeyPage = viewModel::copyProviderKeyPage,
-                        onCheckProviderKeyPage = viewModel::checkProviderKeyPage,
-                        onImportProviderCredential = viewModel::importSavedProviderCredential,
-                        onSave = viewModel::save,
-                        strings = strings,
-                    )
-
-                    ToolProfileCard()
-
+                    item {
+                        SettingsHelpCard(
+                            providerLabel = selectedProviderLabel,
+                            strings = strings,
+                        )
+                    }
+                    item {
+                        LanguagePickerCard(
+                            currentLanguageTag = uiState.languageTag,
+                            onSelectLanguage = viewModel::selectLanguage,
+                            strings = strings,
+                        )
+                    }
+                    item {
+                        AgentPersonaCard(
+                            customSystemPrompt = uiState.customSystemPrompt,
+                            onPromptChange = viewModel::updateCustomSystemPrompt,
+                            onSave = viewModel::saveAgentPersona,
+                            onClear = viewModel::clearAgentPersona,
+                            strings = strings,
+                        )
+                    }
+                    item {
+                        AppearanceCard(
+                            chatDisplayMode = uiState.chatDisplayMode,
+                            keywordHighlightingEnabled = uiState.keywordHighlightingEnabled,
+                            themePrimaryHex = uiState.themePrimaryHex,
+                            themeSecondaryHex = uiState.themeSecondaryHex,
+                            themeBackgroundHex = uiState.themeBackgroundHex,
+                            themeSurfaceHex = uiState.themeSurfaceHex,
+                            themeSurfaceVariantHex = uiState.themeSurfaceVariantHex,
+                            themeCardShape = uiState.themeCardShape,
+                            onChatDisplayModeChange = viewModel::updateChatDisplayMode,
+                            onKeywordHighlightingChange = viewModel::updateKeywordHighlighting,
+                            onPrimaryHexChange = viewModel::updateThemePrimaryHex,
+                            onSecondaryHexChange = viewModel::updateThemeSecondaryHex,
+                            onBackgroundHexChange = viewModel::updateThemeBackgroundHex,
+                            onSurfaceHexChange = viewModel::updateThemeSurfaceHex,
+                            onSurfaceVariantHexChange = viewModel::updateThemeSurfaceVariantHex,
+                            onCardShapeChange = viewModel::updateThemeCardShape,
+                            onApplyPreset = viewModel::applyThemePreset,
+                            onSaveAppearance = viewModel::saveAppearance,
+                            strings = strings,
+                        )
+                    }
+                    item {
+                        OnDeviceInferenceCard(
+                            onDeviceBackend = uiState.onDeviceBackend,
+                            speculativeDecodingMode = uiState.liteRtLmSpeculativeDecodingMode,
+                            onSelectBackend = viewModel::updateOnDeviceBackend,
+                            onSelectSpeculativeDecodingMode = viewModel::updateLiteRtLmSpeculativeDecodingMode,
+                            onStartRuntime = viewModel::startLocalRuntimeForFlavor,
+                            summary = uiState.onDeviceSummary,
+                            strings = strings,
+                        )
+                    }
+                    item {
+                        ModelGenerationConfigCard(
+                            maxTokens = uiState.localModelMaxTokens,
+                            topK = uiState.localModelTopK,
+                            topP = uiState.localModelTopP,
+                            temperature = uiState.localModelTemperature,
+                            accelerator = uiState.localModelAccelerator,
+                            apiGenerationKnobsEnabled = uiState.apiGenerationKnobsEnabled,
+                            customSystemPrompt = uiState.customSystemPrompt,
+                            onMaxTokensChange = viewModel::updateLocalModelMaxTokens,
+                            onTopKChange = viewModel::updateLocalModelTopK,
+                            onTopPChange = viewModel::updateLocalModelTopP,
+                            onTemperatureChange = viewModel::updateLocalModelTemperature,
+                            onAcceleratorChange = viewModel::updateLocalModelAccelerator,
+                            onApiGenerationKnobsEnabledChange = viewModel::updateApiGenerationKnobsEnabled,
+                            onPromptChange = viewModel::updateCustomSystemPrompt,
+                            onSave = viewModel::saveModelGenerationConfig,
+                            onClearPrompt = viewModel::clearAgentPersona,
+                        )
+                    }
+                    item {
+                        OfflineAirplaneCard(
+                            enabled = uiState.offlineAirplaneMode,
+                            onChange = viewModel::updateOfflineAirplaneMode,
+                            strings = strings,
+                        )
+                    }
+                    item {
+                        LocalModelDownloadsSection(
+                            dataSaverMode = uiState.dataSaverMode,
+                            offlineAirplaneMode = uiState.offlineAirplaneMode,
+                            onDataSaverModeChange = viewModel::updateDataSaverMode,
+                            selectedBackend = uiState.onDeviceBackend,
+                            onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor,
+                            onCompletedDownloadReady = viewModel::startLocalRuntimeForFlavor,
+                        )
+                    }
+                    item {
+                        RemoteFallbackCard(
+                            providerId = uiState.provider,
+                            providerLabel = selectedProviderLabel,
+                            baseUrl = uiState.baseUrl,
+                            model = uiState.model,
+                            apiKey = uiState.apiKey,
+                            status = uiState.status,
+                            onSelectProvider = viewModel::updateProvider,
+                            onBaseUrlChange = viewModel::updateBaseUrl,
+                            onModelChange = viewModel::updateModel,
+                            onApiKeyChange = viewModel::updateApiKey,
+                            onOpenProviderKeyPage = viewModel::openProviderKeyPage,
+                            onCopyProviderKeyPage = viewModel::copyProviderKeyPage,
+                            onCheckProviderKeyPage = viewModel::checkProviderKeyPage,
+                            onImportProviderCredential = viewModel::importSavedProviderCredential,
+                            onSave = viewModel::save,
+                            strings = strings,
+                        )
+                    }
+                    item {
+                        McpSettingsSection(selectedProviderId = uiState.provider)
+                    }
+                    item {
+                        ToolProfileCard()
+                    }
                     if (uiState.status.isNotBlank()) {
-                        Text(uiState.status)
+                        item {
+                            Text(uiState.status)
+                        }
                     }
                 }
             }
         }
     }
+}
+
+private enum class ModelConfigTab(val label: String) {
+    ModelConfigs("Model configs"),
+    SystemPrompt("System prompt"),
+}
+
+@Composable
+private fun ModelGenerationConfigCard(
+    maxTokens: Int,
+    topK: Int,
+    topP: Float,
+    temperature: Float,
+    accelerator: String,
+    apiGenerationKnobsEnabled: Boolean,
+    customSystemPrompt: String,
+    onMaxTokensChange: (Int) -> Unit,
+    onTopKChange: (Int) -> Unit,
+    onTopPChange: (Float) -> Unit,
+    onTemperatureChange: (Float) -> Unit,
+    onAcceleratorChange: (String) -> Unit,
+    onApiGenerationKnobsEnabledChange: (Boolean) -> Unit,
+    onPromptChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onClearPrompt: () -> Unit,
+) {
+    var selectedTab by remember { mutableStateOf(ModelConfigTab.ModelConfigs) }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Configurations", style = MaterialTheme.typography.titleMedium)
+            TabRow(selectedTabIndex = selectedTab.ordinal) {
+                ModelConfigTab.entries.forEach { tab ->
+                    Tab(
+                        selected = selectedTab == tab,
+                        onClick = { selectedTab = tab },
+                        text = { Text(tab.label) },
+                    )
+                }
+            }
+            when (selectedTab) {
+                ModelConfigTab.ModelConfigs -> {
+                    GenerationSwitchRow(
+                        title = "Use generation knobs for API models",
+                        description = "Off keeps provider models on their existing defaults.",
+                        checked = apiGenerationKnobsEnabled,
+                        onCheckedChange = onApiGenerationKnobsEnabledChange,
+                    )
+                    GenerationIntegerRow(
+                        title = "Max tokens",
+                        valueLabel = maxTokensLabel(maxTokens),
+                        value = maxTokens,
+                        defaultValue = AppSettings.DEFAULT_LOCAL_MODEL_MAX_TOKENS,
+                        minValue = AppSettings.DEFAULT_LOCAL_MODEL_MAX_TOKENS,
+                        maxValue = AppSettings.MAX_LOCAL_MODEL_MAX_TOKENS,
+                        step = 256,
+                        onValueChange = onMaxTokensChange,
+                        testTagPrefix = "LocalModelMaxTokens",
+                    )
+                    GenerationIntegerRow(
+                        title = "Top K",
+                        valueLabel = topK.toString(),
+                        value = topK,
+                        defaultValue = AppSettings.DEFAULT_LOCAL_MODEL_TOP_K,
+                        minValue = AppSettings.MIN_LOCAL_MODEL_TOP_K,
+                        maxValue = AppSettings.MAX_LOCAL_MODEL_TOP_K,
+                        step = 1,
+                        onValueChange = onTopKChange,
+                        testTagPrefix = "LocalModelTopK",
+                    )
+                    GenerationSliderRow(
+                        title = "Top P",
+                        valueLabel = formatGenerationDecimal(topP),
+                        value = topP,
+                        valueRange = AppSettings.MIN_LOCAL_MODEL_TOP_P..AppSettings.MAX_LOCAL_MODEL_TOP_P,
+                        onValueChange = onTopPChange,
+                        testTag = "LocalModelTopP",
+                    )
+                    GenerationSliderRow(
+                        title = "Temperature",
+                        valueLabel = formatGenerationDecimal(temperature),
+                        value = temperature,
+                        valueRange = AppSettings.MIN_LOCAL_MODEL_TEMPERATURE..AppSettings.MAX_LOCAL_MODEL_TEMPERATURE,
+                        onValueChange = onTemperatureChange,
+                        testTag = "LocalModelTemperature",
+                    )
+                    Text("Accelerator", style = MaterialTheme.typography.titleSmall)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        acceleratorChoices().forEach { choice ->
+                            Button(
+                                modifier = Modifier.testTag("LocalModelAccelerator-${choice.value}"),
+                                onClick = { onAcceleratorChange(choice.value) },
+                                enabled = accelerator != choice.value,
+                            ) {
+                                Text(choice.label)
+                            }
+                        }
+                    }
+                    Text(
+                        "Auto keeps Hermes on the runtime default. CPU, GPU, and NPU are saved as preferences for compatible local backends.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                ModelConfigTab.SystemPrompt -> {
+                    OutlinedTextField(
+                        value = customSystemPrompt,
+                        onValueChange = onPromptChange,
+                        label = { Text("System prompt") },
+                        placeholder = { Text("Optional instructions for Hermes replies.") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("LocalModelSystemPrompt"),
+                        minLines = 3,
+                        maxLines = 8,
+                    )
+                    Text(
+                        "${customSystemPrompt.length} / ${AppSettings.MAX_CUSTOM_SYSTEM_PROMPT_CHARS}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        modifier = Modifier.testTag("ClearLocalModelSystemPromptButton"),
+                        onClick = onClearPrompt,
+                        enabled = customSystemPrompt.isNotBlank(),
+                    ) {
+                        Text("Clear prompt")
+                    }
+                }
+            }
+            Button(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("SaveLocalModelGenerationConfigButton"),
+                onClick = onSave,
+            ) {
+                Text("Save model configuration")
+            }
+        }
+    }
+}
+
+@Composable
+private fun GenerationSwitchRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(description, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun GenerationIntegerRow(
+    title: String,
+    valueLabel: String,
+    value: Int,
+    defaultValue: Int,
+    minValue: Int,
+    maxValue: Int,
+    step: Int,
+    onValueChange: (Int) -> Unit,
+    testTagPrefix: String,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = "$title $valueLabel" },
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(valueLabel, style = MaterialTheme.typography.titleSmall)
+        }
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                modifier = Modifier.testTag("${testTagPrefix}Decrease"),
+                onClick = { onValueChange(decrementGenerationValue(value, defaultValue, minValue, step)) },
+                enabled = value != defaultValue && value > minValue,
+            ) {
+                Text("-")
+            }
+            Button(
+                modifier = Modifier.testTag("${testTagPrefix}Default"),
+                onClick = { onValueChange(defaultValue) },
+                enabled = value != defaultValue,
+            ) {
+                Text("Default")
+            }
+            Button(
+                modifier = Modifier.testTag("${testTagPrefix}Increase"),
+                onClick = { onValueChange(incrementGenerationValue(value, defaultValue, maxValue, step)) },
+                enabled = value < maxValue,
+            ) {
+                Text("+")
+            }
+        }
+    }
+}
+
+@Composable
+private fun GenerationSliderRow(
+    title: String,
+    valueLabel: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit,
+    testTag: String,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = "$title $valueLabel" },
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(valueLabel, style = MaterialTheme.typography.titleSmall)
+        }
+        Slider(
+            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(testTag),
+        )
+    }
+}
+
+private data class AcceleratorChoice(
+    val value: String,
+    val label: String,
+)
+
+private fun acceleratorChoices(): List<AcceleratorChoice> = listOf(
+    AcceleratorChoice("auto", "Auto"),
+    AcceleratorChoice("cpu", "CPU"),
+    AcceleratorChoice("gpu", "GPU"),
+    AcceleratorChoice("npu", "NPU"),
+)
+
+private fun maxTokensLabel(value: Int): String {
+    return if (value <= 0) "Default" else value.toString()
+}
+
+private fun incrementGenerationValue(value: Int, defaultValue: Int, maxValue: Int, step: Int): Int {
+    val base = if (value == defaultValue) 0 else value
+    return (base + step).coerceAtMost(maxValue)
+}
+
+private fun decrementGenerationValue(value: Int, defaultValue: Int, minValue: Int, step: Int): Int {
+    val next = (value - step).coerceAtLeast(minValue)
+    return if (next <= 0) defaultValue else next
+}
+
+private fun formatGenerationDecimal(value: Float): String {
+    return String.format(Locale.US, "%.2f", value)
 }
 
 @Composable

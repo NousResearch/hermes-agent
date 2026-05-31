@@ -29,14 +29,12 @@ object HermesAccessibilityController {
 
     fun bind(service: HermesAccessibilityService) {
         this.service = service
-        DeviceStateWriter.write(service.applicationContext)
     }
 
     fun unbind(service: HermesAccessibilityService) {
         if (this.service === service) {
             this.service = null
         }
-        DeviceStateWriter.write(service.applicationContext)
     }
 
     fun isServiceConnected(): Boolean = service != null

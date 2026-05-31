@@ -79,7 +79,6 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
 
     init {
         refreshDownloads()
-        refreshDetectedModels()
         viewModelScope.launch {
             while (true) {
                 delay(1800)
@@ -99,6 +98,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         return LocalModelDownloadsUiState(
             huggingFaceToken = secretsStore.loadApiKey("huggingface"),
             runtimeFlavor = initialRuntimeFlavor,
+            workerCatalogStatus = "Tap Refresh catalog to load signed model choices when needed.",
         )
     }
 

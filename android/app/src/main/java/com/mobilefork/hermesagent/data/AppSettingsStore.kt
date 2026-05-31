@@ -14,6 +14,12 @@ data class AppSettings(
     val portalEnabled: Boolean = true,
     val onDeviceBackend: String = "none",
     val liteRtLmSpeculativeDecodingMode: String = "auto",
+    val localModelMaxTokens: Int = DEFAULT_LOCAL_MODEL_MAX_TOKENS,
+    val localModelTopK: Int = DEFAULT_LOCAL_MODEL_TOP_K,
+    val localModelTopP: Float = DEFAULT_LOCAL_MODEL_TOP_P,
+    val localModelTemperature: Float = DEFAULT_LOCAL_MODEL_TEMPERATURE,
+    val localModelAccelerator: String = DEFAULT_LOCAL_MODEL_ACCELERATOR,
+    val apiGenerationKnobsEnabled: Boolean = false,
     val languageTag: String = "en",
     val customSystemPrompt: String = "",
     val chatDisplayMode: String = "compact",
@@ -36,6 +42,12 @@ data class AppSettings(
             .put("portal_enabled", portalEnabled)
             .put("on_device_backend", onDeviceBackend)
             .put("litert_lm_speculative_decoding_mode", liteRtLmSpeculativeDecodingMode)
+            .put("local_model_max_tokens", normalizeLocalModelMaxTokens(localModelMaxTokens))
+            .put("local_model_top_k", normalizeLocalModelTopK(localModelTopK))
+            .put("local_model_top_p", normalizeLocalModelTopP(localModelTopP).toDouble())
+            .put("local_model_temperature", normalizeLocalModelTemperature(localModelTemperature).toDouble())
+            .put("local_model_accelerator", normalizeLocalModelAccelerator(localModelAccelerator))
+            .put("api_generation_knobs_enabled", apiGenerationKnobsEnabled)
             .put("language_tag", languageTag)
             .put("custom_system_prompt", normalizeCustomSystemPrompt(customSystemPrompt))
             .put("chat_display_mode", chatDisplayMode)
@@ -52,6 +64,18 @@ data class AppSettings(
         const val EXPORT_KIND = "hermes_android_app_settings_bundle"
         const val EXPORT_SCHEMA_VERSION = 1
         const val MAX_CUSTOM_SYSTEM_PROMPT_CHARS = 2_000
+        const val DEFAULT_LOCAL_MODEL_MAX_TOKENS = -1
+        const val MAX_LOCAL_MODEL_MAX_TOKENS = 32_768
+        const val DEFAULT_LOCAL_MODEL_TOP_K = 40
+        const val MIN_LOCAL_MODEL_TOP_K = 1
+        const val MAX_LOCAL_MODEL_TOP_K = 200
+        const val DEFAULT_LOCAL_MODEL_TOP_P = 0.95f
+        const val MIN_LOCAL_MODEL_TOP_P = 0.05f
+        const val MAX_LOCAL_MODEL_TOP_P = 1.0f
+        const val DEFAULT_LOCAL_MODEL_TEMPERATURE = 1.0f
+        const val MIN_LOCAL_MODEL_TEMPERATURE = 0.0f
+        const val MAX_LOCAL_MODEL_TEMPERATURE = 2.0f
+        const val DEFAULT_LOCAL_MODEL_ACCELERATOR = "auto"
 
         val REDACTED_SECRET_FIELDS: JSONArray
             get() = JSONArray()
@@ -76,6 +100,26 @@ data class AppSettings(
                     "litert_lm_speculative_decoding_mode",
                     fallback.liteRtLmSpeculativeDecodingMode,
                 ).ifBlank { fallback.liteRtLmSpeculativeDecodingMode },
+                localModelMaxTokens = normalizeLocalModelMaxTokens(
+                    json.optInt("local_model_max_tokens", fallback.localModelMaxTokens),
+                ),
+                localModelTopK = normalizeLocalModelTopK(
+                    json.optInt("local_model_top_k", fallback.localModelTopK),
+                ),
+                localModelTopP = normalizeLocalModelTopP(
+                    json.optDouble("local_model_top_p", fallback.localModelTopP.toDouble()).toFloat(),
+                ),
+                localModelTemperature = normalizeLocalModelTemperature(
+                    json.optDouble("local_model_temperature", fallback.localModelTemperature.toDouble()).toFloat(),
+                ),
+                localModelAccelerator = normalizeLocalModelAccelerator(
+                    json.optString("local_model_accelerator", fallback.localModelAccelerator),
+                ),
+                apiGenerationKnobsEnabled = optBoolean(
+                    json,
+                    "api_generation_knobs_enabled",
+                    fallback.apiGenerationKnobsEnabled,
+                ),
                 languageTag = json.optString("language_tag", fallback.languageTag).ifBlank { fallback.languageTag },
                 customSystemPrompt = normalizeCustomSystemPrompt(
                     json.optString("custom_system_prompt", fallback.customSystemPrompt),
@@ -122,6 +166,41 @@ data class AppSettings(
                 .trim()
                 .take(MAX_CUSTOM_SYSTEM_PROMPT_CHARS)
         }
+
+        fun normalizeLocalModelMaxTokens(value: Int): Int {
+            return when {
+                value <= 0 -> DEFAULT_LOCAL_MODEL_MAX_TOKENS
+                else -> value.coerceIn(1, MAX_LOCAL_MODEL_MAX_TOKENS)
+            }
+        }
+
+        fun normalizeLocalModelTopK(value: Int): Int {
+            return value.coerceIn(MIN_LOCAL_MODEL_TOP_K, MAX_LOCAL_MODEL_TOP_K)
+        }
+
+        fun normalizeLocalModelTopP(value: Float): Float {
+            return if (value.isNaN() || value.isInfinite()) {
+                DEFAULT_LOCAL_MODEL_TOP_P
+            } else {
+                value.coerceIn(MIN_LOCAL_MODEL_TOP_P, MAX_LOCAL_MODEL_TOP_P)
+            }
+        }
+
+        fun normalizeLocalModelTemperature(value: Float): Float {
+            return if (value.isNaN() || value.isInfinite()) {
+                DEFAULT_LOCAL_MODEL_TEMPERATURE
+            } else {
+                value.coerceIn(MIN_LOCAL_MODEL_TEMPERATURE, MAX_LOCAL_MODEL_TEMPERATURE)
+            }
+        }
+
+        fun normalizeLocalModelAccelerator(value: String): String {
+            val normalized = value.trim().lowercase()
+            return when (normalized) {
+                "auto", "cpu", "gpu", "npu" -> normalized
+                else -> DEFAULT_LOCAL_MODEL_ACCELERATOR
+            }
+        }
     }
 }
 
@@ -142,6 +221,22 @@ class AppSettingsStore(context: Context) {
                 KEY_LITERT_LM_SPECULATIVE_DECODING_MODE,
                 "auto",
             ).orEmpty(),
+            localModelMaxTokens = AppSettings.normalizeLocalModelMaxTokens(
+                preferences.getInt(KEY_LOCAL_MODEL_MAX_TOKENS, AppSettings.DEFAULT_LOCAL_MODEL_MAX_TOKENS),
+            ),
+            localModelTopK = AppSettings.normalizeLocalModelTopK(
+                preferences.getInt(KEY_LOCAL_MODEL_TOP_K, AppSettings.DEFAULT_LOCAL_MODEL_TOP_K),
+            ),
+            localModelTopP = AppSettings.normalizeLocalModelTopP(
+                preferences.getFloat(KEY_LOCAL_MODEL_TOP_P, AppSettings.DEFAULT_LOCAL_MODEL_TOP_P),
+            ),
+            localModelTemperature = AppSettings.normalizeLocalModelTemperature(
+                preferences.getFloat(KEY_LOCAL_MODEL_TEMPERATURE, AppSettings.DEFAULT_LOCAL_MODEL_TEMPERATURE),
+            ),
+            localModelAccelerator = AppSettings.normalizeLocalModelAccelerator(
+                preferences.getString(KEY_LOCAL_MODEL_ACCELERATOR, AppSettings.DEFAULT_LOCAL_MODEL_ACCELERATOR).orEmpty(),
+            ),
+            apiGenerationKnobsEnabled = preferences.getBoolean(KEY_API_GENERATION_KNOBS_ENABLED, false),
             languageTag = preferences.getString(KEY_LANGUAGE_TAG, "en").orEmpty(),
             customSystemPrompt = AppSettings.normalizeCustomSystemPrompt(
                 preferences.getString(KEY_CUSTOM_SYSTEM_PROMPT, "").orEmpty(),
@@ -168,6 +263,15 @@ class AppSettingsStore(context: Context) {
             .putBoolean(KEY_PORTAL_ENABLED, settings.portalEnabled)
             .putString(KEY_ON_DEVICE_BACKEND, settings.onDeviceBackend)
             .putString(KEY_LITERT_LM_SPECULATIVE_DECODING_MODE, settings.liteRtLmSpeculativeDecodingMode)
+            .putInt(KEY_LOCAL_MODEL_MAX_TOKENS, AppSettings.normalizeLocalModelMaxTokens(settings.localModelMaxTokens))
+            .putInt(KEY_LOCAL_MODEL_TOP_K, AppSettings.normalizeLocalModelTopK(settings.localModelTopK))
+            .putFloat(KEY_LOCAL_MODEL_TOP_P, AppSettings.normalizeLocalModelTopP(settings.localModelTopP))
+            .putFloat(
+                KEY_LOCAL_MODEL_TEMPERATURE,
+                AppSettings.normalizeLocalModelTemperature(settings.localModelTemperature),
+            )
+            .putString(KEY_LOCAL_MODEL_ACCELERATOR, AppSettings.normalizeLocalModelAccelerator(settings.localModelAccelerator))
+            .putBoolean(KEY_API_GENERATION_KNOBS_ENABLED, settings.apiGenerationKnobsEnabled)
             .putString(KEY_LANGUAGE_TAG, settings.languageTag)
             .putString(KEY_CUSTOM_SYSTEM_PROMPT, AppSettings.normalizeCustomSystemPrompt(settings.customSystemPrompt))
             .putString(KEY_CHAT_DISPLAY_MODE, settings.chatDisplayMode)
@@ -201,6 +305,12 @@ class AppSettingsStore(context: Context) {
         private const val KEY_PORTAL_ENABLED = "portal_enabled"
         private const val KEY_ON_DEVICE_BACKEND = "on_device_backend"
         private const val KEY_LITERT_LM_SPECULATIVE_DECODING_MODE = "litert_lm_speculative_decoding_mode"
+        private const val KEY_LOCAL_MODEL_MAX_TOKENS = "local_model_max_tokens"
+        private const val KEY_LOCAL_MODEL_TOP_K = "local_model_top_k"
+        private const val KEY_LOCAL_MODEL_TOP_P = "local_model_top_p"
+        private const val KEY_LOCAL_MODEL_TEMPERATURE = "local_model_temperature"
+        private const val KEY_LOCAL_MODEL_ACCELERATOR = "local_model_accelerator"
+        private const val KEY_API_GENERATION_KNOBS_ENABLED = "api_generation_knobs_enabled"
         private const val KEY_LANGUAGE_TAG = "language_tag"
         private const val KEY_CUSTOM_SYSTEM_PROMPT = "custom_system_prompt"
         private const val KEY_CHAT_DISPLAY_MODE = "chat_display_mode"

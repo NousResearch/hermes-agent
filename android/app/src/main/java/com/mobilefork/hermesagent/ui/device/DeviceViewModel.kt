@@ -12,6 +12,7 @@ import com.mobilefork.hermesagent.data.DeviceCapabilityStore
 import com.mobilefork.hermesagent.device.DeviceStateWriter
 import com.mobilefork.hermesagent.device.HermesAccessibilityController
 import com.mobilefork.hermesagent.device.HermesAutomationBridge
+import com.mobilefork.hermesagent.device.HermesCrashLogStore
 import com.mobilefork.hermesagent.device.HermesGlobalAction
 import com.mobilefork.hermesagent.device.HermesLinuxSubsystemBridge
 import com.mobilefork.hermesagent.device.HermesSystemControlBridge
@@ -79,6 +80,13 @@ data class DeviceUiState(
     val operatorModelProvider: String = "",
     val operatorModelName: String = "",
     val operatorVisionCapable: Boolean = false,
+    val diagnosticsLogStatusLabel: String = "No crash captured",
+    val diagnosticsLogCapturedAtLabel: String = "",
+    val diagnosticsLogExceptionType: String = "",
+    val diagnosticsLogPreviewLines: List<String> = emptyList(),
+    val diagnosticsLogExportFileName: String = "hermes-diagnostics-logs.txt",
+    val diagnosticsLogExportReady: Boolean = true,
+    val lastCrashPresent: Boolean = false,
     val resizableWindowSupport: Boolean = true,
     val freeformWindowSupported: Boolean = false,
     val status: String = "",
@@ -171,6 +179,27 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun exportDiagnosticsLogs(destinationUri: Uri) {
+        viewModelScope.launch {
+            runCatching {
+                val context = getApplication<Application>()
+                val exportText = HermesCrashLogStore.exportLogsText(context)
+                context.contentResolver.openOutputStream(destinationUri)?.use { output ->
+                    output.write(exportText.toByteArray(Charsets.UTF_8))
+                } ?: throw IOException("Unable to open diagnostics log export destination")
+                refresh("Exported diagnostics logs")
+            }.getOrElse { error ->
+                refresh("Diagnostics log export failed: ${error.message ?: error.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun clearLastCrashDiagnostics() {
+        val context = getApplication<Application>()
+        HermesCrashLogStore.clearLastCrash(context)
+        refresh("Cleared last crash diagnostics")
+    }
+
     fun performGlobalAction(action: HermesGlobalAction) {
         val context = getApplication<Application>()
         val succeeded = HermesAccessibilityController.performAction(action)
@@ -206,6 +235,7 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         val systemStatus = HermesSystemControlBridge.readStatus(context)
         val standbyStatus = automationStandbyStatus(context)
         val modelRoutingStatus = automationModelRoutingStatus(context)
+        val crashLogStatus = HermesCrashLogStore.statusSnapshot(context)
         val workspace = DeviceStateWriter.workspaceDir(context)
         val workspaceFiles = workspace
             .listFiles()
@@ -275,6 +305,13 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
                 .ifBlank { modelRoutingStatus.optString("active_provider") },
             operatorModelName = modelRoutingStatus.optString("active_model"),
             operatorVisionCapable = modelRoutingStatus.optBoolean("vision_capable", false),
+            diagnosticsLogStatusLabel = crashLogStatus.statusLabel,
+            diagnosticsLogCapturedAtLabel = crashLogStatus.capturedAtLabel,
+            diagnosticsLogExceptionType = crashLogStatus.exceptionType,
+            diagnosticsLogPreviewLines = crashLogStatus.previewLines,
+            diagnosticsLogExportFileName = crashLogStatus.exportFileName,
+            diagnosticsLogExportReady = crashLogStatus.hasLastCrash || crashLogStatus.logBytes > 0,
+            lastCrashPresent = crashLogStatus.hasLastCrash,
             resizableWindowSupport = systemStatus.resizableWindowSupport,
             freeformWindowSupported = systemStatus.freeformWindowSupported,
             status = status,

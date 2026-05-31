@@ -76,6 +76,12 @@ class AppSettingsStorePersistenceTest {
                 portalEnabled = false,
                 onDeviceBackend = "litert_lm",
                 liteRtLmSpeculativeDecodingMode = "disabled",
+                localModelMaxTokens = 2048,
+                localModelTopK = 64,
+                localModelTopP = 0.9f,
+                localModelTemperature = 0.7f,
+                localModelAccelerator = "gpu",
+                apiGenerationKnobsEnabled = true,
                 languageTag = "es",
                 customSystemPrompt = "Stay concise and ask before external sends.",
                 chatDisplayMode = "expanded",
@@ -111,6 +117,12 @@ class AppSettingsStorePersistenceTest {
         assertFalse(imported.portalEnabled)
         assertEquals("litert_lm", imported.onDeviceBackend)
         assertEquals("disabled", imported.liteRtLmSpeculativeDecodingMode)
+        assertEquals(2048, imported.localModelMaxTokens)
+        assertEquals(64, imported.localModelTopK)
+        assertEquals(0.9f, imported.localModelTopP, 0.0001f)
+        assertEquals(0.7f, imported.localModelTemperature, 0.0001f)
+        assertEquals("gpu", imported.localModelAccelerator)
+        assertTrue(imported.apiGenerationKnobsEnabled)
         assertEquals("es", imported.languageTag)
         assertEquals("Stay concise and ask before external sends.", imported.customSystemPrompt)
         assertEquals("expanded", imported.chatDisplayMode)
@@ -126,5 +138,28 @@ class AppSettingsStorePersistenceTest {
 
         assertEquals(AppSettings.MAX_CUSTOM_SYSTEM_PROMPT_CHARS, normalized.length)
         assertFalse(normalized.contains("\u0000"))
+    }
+
+    @Test
+    fun modelGenerationSettingsPersistWithBoundedDefaults() {
+        val store = AppSettingsStore(RuntimeEnvironment.getApplication())
+        store.save(
+            AppSettings(
+                localModelMaxTokens = 99_999,
+                localModelTopK = 999,
+                localModelTopP = 9.5f,
+                localModelTemperature = -1.0f,
+                localModelAccelerator = "tpu",
+                apiGenerationKnobsEnabled = true,
+            )
+        )
+
+        val reloaded = store.load()
+        assertEquals(AppSettings.MAX_LOCAL_MODEL_MAX_TOKENS, reloaded.localModelMaxTokens)
+        assertEquals(AppSettings.MAX_LOCAL_MODEL_TOP_K, reloaded.localModelTopK)
+        assertEquals(AppSettings.MAX_LOCAL_MODEL_TOP_P, reloaded.localModelTopP, 0.0001f)
+        assertEquals(AppSettings.MIN_LOCAL_MODEL_TEMPERATURE, reloaded.localModelTemperature, 0.0001f)
+        assertEquals(AppSettings.DEFAULT_LOCAL_MODEL_ACCELERATOR, reloaded.localModelAccelerator)
+        assertTrue(reloaded.apiGenerationKnobsEnabled)
     }
 }

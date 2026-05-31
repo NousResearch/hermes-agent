@@ -14,19 +14,27 @@ class HermesAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         HermesAccessibilityController.bind(this)
+        automationScope.launch {
+            DeviceStateWriter.write(applicationContext)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        DeviceStateWriter.write(applicationContext)
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             return
         }
         val packageName = event.packageName?.toString()?.trim().orEmpty()
+        if (packageName.isBlank()) {
+            return
+        }
         if (!HermesAccessibilityController.rememberForegroundPackage(packageName)) {
             return
         }
         automationScope.launch {
-            HermesAutomationBridge.runAppForegroundTriggerJson(applicationContext, packageName)
+            DeviceStateWriter.write(applicationContext)
+            if (packageName != applicationContext.packageName) {
+                HermesAutomationBridge.runAppForegroundTriggerJson(applicationContext, packageName)
+            }
         }
     }
 

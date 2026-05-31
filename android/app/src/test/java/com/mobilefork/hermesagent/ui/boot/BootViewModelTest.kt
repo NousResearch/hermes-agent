@@ -1,22 +1,30 @@
 package com.mobilefork.hermesagent.ui.boot
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BootViewModelTest {
     @Test
-    fun hermesHealthUrl_handlesOpenAiBaseUrl() {
-        assertEquals(
-            "http://127.0.0.1:15436/health",
-            hermesHealthUrl("http://127.0.0.1:15436/v1"),
-        )
+    fun bootUiState_defaultsToOpeningShellWithoutProbeState() {
+        val state = BootUiState()
+
+        assertEquals("Opening Hermes…", state.status)
+        assertFalse(state.ready)
+        assertEquals("", state.probeResult)
+        assertEquals("", state.baseUrl)
+        assertEquals("", state.error)
     }
 
     @Test
-    fun hermesHealthUrl_keepsRootBaseUrl() {
-        assertEquals(
-            "http://127.0.0.1:15436/health",
-            hermesHealthUrl("http://127.0.0.1:15436/"),
-        )
+    fun bootUiState_readyStateDoesNotRequireHealthProbe() {
+        val state = BootUiState(status = "Hermes shell ready", ready = true)
+
+        assertEquals("Hermes shell ready", state.status)
+        assertTrue(state.ready)
+        assertEquals("", state.probeResult)
+        assertEquals("", state.baseUrl)
+        assertEquals("", state.error)
     }
 }

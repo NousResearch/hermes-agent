@@ -1,22 +1,15 @@
 package com.mobilefork.hermesagent.backend
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.mobilefork.hermesagent.data.AppSettingsStore
 import com.mobilefork.hermesagent.data.ProviderPresets
-import com.mobilefork.hermesagent.device.DeviceStateWriter
 import com.mobilefork.hermesagent.device.HermesLinuxSubsystemBridge
 import java.io.File
 import org.json.JSONObject
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 
 object HermesRuntimeManager {
-    private const val PYTHON_START_TIMEOUT_SECONDS = 120L
     private val pythonStartLock = Any()
 
     data class RuntimeState(
@@ -38,38 +31,11 @@ object HermesRuntimeManager {
         }
 
         val appContext = context.applicationContext
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            synchronized(pythonStartLock) {
-                if (!Python.isStarted()) {
-                    Python.start(AndroidPlatform(appContext))
-                }
-            }
-            return
-        }
-
-        val errorRef = AtomicReference<Throwable?>()
-        val startedLatch = CountDownLatch(1)
-        Handler(Looper.getMainLooper()).post {
-            try {
-                synchronized(pythonStartLock) {
-                    if (!Python.isStarted()) {
-                        Python.start(AndroidPlatform(appContext))
-                    }
-                }
-            } catch (error: Throwable) {
-                errorRef.set(error)
-            } finally {
-                startedLatch.countDown()
+        synchronized(pythonStartLock) {
+            if (!Python.isStarted()) {
+                Python.start(AndroidPlatform(appContext))
             }
         }
-
-        if (!startedLatch.await(PYTHON_START_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            throw IllegalStateException(
-                "Timed out starting embedded Python on the Android main thread after " +
-                    "$PYTHON_START_TIMEOUT_SECONDS seconds"
-            )
-        }
-        errorRef.get()?.let { throw it }
     }
 
     @Synchronized
@@ -102,7 +68,6 @@ object HermesRuntimeManager {
                     modelName = localBackendStatus.modelName,
                     probeResult = "native-android-litert-lm",
                 )
-                DeviceStateWriter.write(appContext)
                 return currentState
             }
             if (settings.offlineAirplaneMode) {
@@ -113,7 +78,6 @@ object HermesRuntimeManager {
                         "Offline airplane mode is on and no on-device backend is ready."
                     },
                 )
-                DeviceStateWriter.write(appContext)
                 return currentState
             }
             val localBackendFallbackWarning =
@@ -144,14 +108,12 @@ object HermesRuntimeManager {
                 modelName = status.optString("api_server_model_name").ifBlank { null },
                 probeResult = probeResult.withLocalBackendWarning(localBackendFallbackWarning),
             )
-            DeviceStateWriter.write(appContext)
             currentState
         } catch (exc: Throwable) {
             currentState = RuntimeState(
                 started = false,
                 error = exc.message ?: exc.toString(),
             )
-            DeviceStateWriter.write(appContext)
             currentState
         }
     }
@@ -176,11 +138,9 @@ object HermesRuntimeManager {
                     .callAttr("stop_server")
             }
             currentState = RuntimeState(started = false)
-            DeviceStateWriter.write(com.mobilefork.hermesagent.HermesApplication.instance.applicationContext)
             currentState
         } catch (exc: Throwable) {
             currentState = RuntimeState(started = false, error = exc.message ?: exc.toString())
-            DeviceStateWriter.write(com.mobilefork.hermesagent.HermesApplication.instance.applicationContext)
             currentState
         }
     }

@@ -71,6 +71,17 @@ object HermesDeviceDiagnosticsBridge {
         val appContext = context.applicationContext
         return when (action.lowercase(Locale.US).ifBlank { "status" }) {
             "status", "diagnostics_status", "device_diagnostics_status" -> statusJson(appContext).toString()
+            "crash_log_status", "last_crash", "last_crash_status", "diagnostics_log_status" ->
+                HermesCrashLogStore.statusJson(appContext).toString()
+            "diagnostics_log_export", "crash_log_export", "export_diagnostics_logs" ->
+                HermesCrashLogStore.exportJson(appContext).toString()
+            "clear_last_crash", "clear_crash_log", "clear_crash_diagnostics" -> {
+                HermesCrashLogStore.clearLastCrash(appContext)
+                HermesCrashLogStore.statusJson(appContext)
+                    .put("action", "clear_last_crash")
+                    .put("message", "Cleared last crash diagnostics")
+                    .toString()
+            }
             "top_apps", "top_resource_apps", "top_memory_apps", "top_storage_apps", "resource_apps" ->
                 topAppsJson(appContext, arguments).toString()
             "wifi_scan", "wifi_analyzer", "scan_wifi", "nearby_wifi", "wifi_signals",
@@ -291,6 +302,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("bluetooth_scan_permission_status", bluetoothPermissionStatusJson(appContext))
             .put("selected_on_device_backend", BackendKind.fromPersistedValue(AppSettingsStore(appContext).load().onDeviceBackend).persistedValue)
             .put("current_local_backend", localBackendStatusJson(OnDeviceBackendManager.currentStatus()))
+            .put("crash_capture", HermesCrashLogStore.statusJson(appContext))
             .put("litert_runtime_health", liteRtRuntimeHealthJson())
             .put("soc_profile", socProfileJson())
             .put("device_performance_profile", performanceProfile)
@@ -307,6 +319,7 @@ object HermesDeviceDiagnosticsBridge {
                 "cards",
                 JSONArray()
                     .put(card("Diagnostics", "Phone resource, Wi-Fi vendor/OUI/channel, Bluetooth service labels/manufacturer names/proximity, camera, sensor, SOC, and overlay diagnostics are available to the agent."))
+                    .put(card("Crash Logs", "Last-crash capture and redacted diagnostics log export are available from Device diagnostics."))
                     .put(card("Radio Signals", "AM/FM and broad RF scanning require vendor radio APIs or external SDR hardware; Android phones expose Wi-Fi, Bluetooth, audio, camera, and built-in sensors.")),
             )
     }
@@ -23114,7 +23127,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("list_tasks", "Kai-compatible alias for listing saved Hermes Android automation task records.", "limit"))
                     .put(toolJson("cancel_task", "Kai-compatible alias for deleting a saved Hermes Android automation by task_id.", "task_id"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, Tasker-style triggers, Kai-compatible scheduled task aliases, and secret-free app settings export/import.", "action, trigger, task_id, data_uri, bundle_json, settings_json"))
-                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel graph envelopes/channel ratings/AP detail and export rows/vendor OUI/filter facets plus active Wi-Fi band/security/signal/SSID/RSSI filters, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history/filter facets, camera, sensors, SOC compatibility, overlay, Gemma-visible signal evidence bundles and agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, scan_mode, refresh, filter_band, filter_security, filter_signal, filter_ssid, min_rssi_dbm, max_rssi_dbm, filter_device_name, filter_bluetooth_service, filter_bluetooth_manufacturer, filter_bluetooth_category, filter_bluetooth_proximity, sensor_types, timeout_ms"))
+                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, redacted last-crash logs, diagnostics log export, Wi-Fi signals/channel graph envelopes/channel ratings/AP detail and export rows/vendor OUI/filter facets plus active Wi-Fi band/security/signal/SSID/RSSI filters, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history/filter facets, camera, sensors, SOC compatibility, overlay, Gemma-visible signal evidence bundles and agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, scan_mode, refresh, filter_band, filter_security, filter_signal, filter_ssid, min_rssi_dbm, max_rssi_dbm, filter_device_name, filter_bluetooth_service, filter_bluetooth_manufacturer, filter_bluetooth_category, filter_bluetooth_proximity, sensor_types, timeout_ms"))
                     .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
@@ -28793,6 +28806,9 @@ object HermesDeviceDiagnosticsBridge {
 
     private val ACTIONS = listOf(
         "status",
+        "crash_log_status",
+        "diagnostics_log_export",
+        "clear_last_crash",
         "top_apps",
         "wifi_scan",
         "wifi_filtered_scan",

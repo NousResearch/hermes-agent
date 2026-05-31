@@ -41,6 +41,12 @@ data class SettingsUiState(
     val offlineAirplaneMode: Boolean = false,
     val onDeviceBackend: String = BackendKind.NONE.persistedValue,
     val liteRtLmSpeculativeDecodingMode: String = "auto",
+    val localModelMaxTokens: Int = AppSettings.DEFAULT_LOCAL_MODEL_MAX_TOKENS,
+    val localModelTopK: Int = AppSettings.DEFAULT_LOCAL_MODEL_TOP_K,
+    val localModelTopP: Float = AppSettings.DEFAULT_LOCAL_MODEL_TOP_P,
+    val localModelTemperature: Float = AppSettings.DEFAULT_LOCAL_MODEL_TEMPERATURE,
+    val localModelAccelerator: String = AppSettings.DEFAULT_LOCAL_MODEL_ACCELERATOR,
+    val apiGenerationKnobsEnabled: Boolean = false,
     val languageTag: String = AppLanguage.ENGLISH.tag,
     val customSystemPrompt: String = "",
     val chatDisplayMode: String = "compact",
@@ -72,10 +78,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _uiState = MutableStateFlow(loadInitialState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
-    init {
-        loadApiKeyForProvider(_uiState.value.provider)
-    }
-
     private fun loadInitialState(): SettingsUiState {
         val stored = settingsStore.load()
         return SettingsUiState(
@@ -89,6 +91,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             liteRtLmSpeculativeDecodingMode = normalizeSpeculativeDecodingMode(
                 stored.liteRtLmSpeculativeDecodingMode,
             ),
+            localModelMaxTokens = AppSettings.normalizeLocalModelMaxTokens(stored.localModelMaxTokens),
+            localModelTopK = AppSettings.normalizeLocalModelTopK(stored.localModelTopK),
+            localModelTopP = AppSettings.normalizeLocalModelTopP(stored.localModelTopP),
+            localModelTemperature = AppSettings.normalizeLocalModelTemperature(stored.localModelTemperature),
+            localModelAccelerator = AppSettings.normalizeLocalModelAccelerator(stored.localModelAccelerator),
+            apiGenerationKnobsEnabled = stored.apiGenerationKnobsEnabled,
             languageTag = AppLanguage.fromTag(stored.languageTag).tag,
             customSystemPrompt = stored.customSystemPrompt,
             chatDisplayMode = normalizeChatDisplayMode(stored.chatDisplayMode),
@@ -151,6 +159,24 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateLiteRtLmSpeculativeDecodingMode(value: String) = _uiState.update {
         it.copy(liteRtLmSpeculativeDecodingMode = normalizeSpeculativeDecodingMode(value))
     }
+    fun updateLocalModelMaxTokens(value: Int) = _uiState.update {
+        it.copy(localModelMaxTokens = AppSettings.normalizeLocalModelMaxTokens(value))
+    }
+    fun updateLocalModelTopK(value: Int) = _uiState.update {
+        it.copy(localModelTopK = AppSettings.normalizeLocalModelTopK(value))
+    }
+    fun updateLocalModelTopP(value: Float) = _uiState.update {
+        it.copy(localModelTopP = AppSettings.normalizeLocalModelTopP(value))
+    }
+    fun updateLocalModelTemperature(value: Float) = _uiState.update {
+        it.copy(localModelTemperature = AppSettings.normalizeLocalModelTemperature(value))
+    }
+    fun updateLocalModelAccelerator(value: String) = _uiState.update {
+        it.copy(localModelAccelerator = AppSettings.normalizeLocalModelAccelerator(value))
+    }
+    fun updateApiGenerationKnobsEnabled(enabled: Boolean) = _uiState.update {
+        it.copy(apiGenerationKnobsEnabled = enabled)
+    }
 
     fun updateCustomSystemPrompt(value: String) {
         val normalized = AppSettings.normalizeCustomSystemPrompt(value)
@@ -188,6 +214,33 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             it.copy(
                 customSystemPrompt = "",
                 status = currentStrings().agentPersonaCleared(),
+            )
+        }
+    }
+
+    fun saveModelGenerationConfig() {
+        val snapshot = _uiState.value
+        val normalizedPrompt = AppSettings.normalizeCustomSystemPrompt(snapshot.customSystemPrompt)
+        val updated = settingsStore.load().copy(
+            localModelMaxTokens = AppSettings.normalizeLocalModelMaxTokens(snapshot.localModelMaxTokens),
+            localModelTopK = AppSettings.normalizeLocalModelTopK(snapshot.localModelTopK),
+            localModelTopP = AppSettings.normalizeLocalModelTopP(snapshot.localModelTopP),
+            localModelTemperature = AppSettings.normalizeLocalModelTemperature(snapshot.localModelTemperature),
+            localModelAccelerator = AppSettings.normalizeLocalModelAccelerator(snapshot.localModelAccelerator),
+            apiGenerationKnobsEnabled = snapshot.apiGenerationKnobsEnabled,
+            customSystemPrompt = normalizedPrompt,
+        )
+        settingsStore.save(updated)
+        _uiState.update {
+            it.copy(
+                localModelMaxTokens = updated.localModelMaxTokens,
+                localModelTopK = updated.localModelTopK,
+                localModelTopP = updated.localModelTopP,
+                localModelTemperature = updated.localModelTemperature,
+                localModelAccelerator = updated.localModelAccelerator,
+                apiGenerationKnobsEnabled = updated.apiGenerationKnobsEnabled,
+                customSystemPrompt = updated.customSystemPrompt,
+                status = "Model configuration saved",
             )
         }
     }
@@ -626,6 +679,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         offlineAirplaneMode = snapshot.offlineAirplaneMode,
                         onDeviceBackend = snapshot.onDeviceBackend,
                         liteRtLmSpeculativeDecodingMode = snapshot.liteRtLmSpeculativeDecodingMode,
+                        localModelMaxTokens = snapshot.localModelMaxTokens,
+                        localModelTopK = snapshot.localModelTopK,
+                        localModelTopP = snapshot.localModelTopP,
+                        localModelTemperature = snapshot.localModelTemperature,
+                        localModelAccelerator = snapshot.localModelAccelerator,
+                        apiGenerationKnobsEnabled = snapshot.apiGenerationKnobsEnabled,
                         languageTag = snapshot.languageTag,
                         customSystemPrompt = AppSettings.normalizeCustomSystemPrompt(snapshot.customSystemPrompt),
                         chatDisplayMode = normalizeChatDisplayMode(snapshot.chatDisplayMode),

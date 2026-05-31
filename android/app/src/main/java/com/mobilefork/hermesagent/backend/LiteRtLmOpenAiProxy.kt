@@ -43,6 +43,7 @@ object LiteRtLmOpenAiProxy {
         val maxContextLength: Int = -1,  // -1 = backend default
         val supportImage: Boolean = false,
         val supportAudio: Boolean = false,
+        val preferredAccelerator: String = "auto",
         val speculativeDecodingMode: SpeculativeDecodingMode = SpeculativeDecodingMode.AUTO,
     )
 
@@ -174,6 +175,7 @@ object LiteRtLmOpenAiProxy {
             maxContextLength,
             supportImage,
             supportAudio,
+            preferredAccelerator,
             speculativeDecodingMode,
         ).joinToString("|")
     }
@@ -259,6 +261,7 @@ object LiteRtLmOpenAiProxy {
             modelPath = modelPath,
             supportImage = inferenceConfig.supportImage,
             supportAudio = inferenceConfig.supportAudio,
+            preferredAccelerator = inferenceConfig.preferredAccelerator,
             speculativeDecodingMode = inferenceConfig.speculativeDecodingMode,
             maxNumTokens = engineMaxNumTokens.value,
             contextWindowPolicy = engineMaxNumTokens.policy,
@@ -346,13 +349,14 @@ object LiteRtLmOpenAiProxy {
             modelPath: String,
             supportImage: Boolean,
             supportAudio: Boolean,
+            preferredAccelerator: String,
             speculativeDecodingMode: SpeculativeDecodingMode,
             maxNumTokens: Int?,
             contextWindowPolicy: String,
         ): EngineInitResult {
             var lastError: Throwable? = null
             val openClAvailable = hasLoadableOpenClLibrary()
-            val gpuPolicy = gpuBackendPolicy(context, openClAvailable)
+            val gpuPolicy = gpuBackendPolicy(context, openClAvailable, preferredAccelerator)
             val speculativeDecoding = speculativeDecodingDecision(context, modelPath, speculativeDecodingMode)
             val modalityDecision = memorySafeModalityDecision(
                 totalRamBytes = totalDeviceRamBytes(context),
@@ -492,12 +496,17 @@ object LiteRtLmOpenAiProxy {
             return memoryInfo.totalMem
         }
 
-        private fun gpuBackendPolicy(context: Context, openClAvailable: Boolean): GpuBackendPolicy {
+        private fun gpuBackendPolicy(
+            context: Context,
+            openClAvailable: Boolean,
+            preferredAccelerator: String,
+        ): GpuBackendPolicy {
             return decideGpuBackendPolicy(
                 isTranslatedArm64OnX86 = isTranslatedArm64OnX86(context),
                 supportedAbis = Build.SUPPORTED_ABIS.toList(),
                 openClAvailable = openClAvailable,
                 hardwareIdentity = androidHardwareIdentity(),
+                preferredAccelerator = preferredAccelerator,
             )
         }
 
@@ -1084,8 +1093,10 @@ object LiteRtLmOpenAiProxy {
         supportedAbis: List<String>,
         openClAvailable: Boolean,
         hardwareIdentity: String,
+        preferredAccelerator: String = "auto",
     ): GpuBackendPolicy {
         val normalizedIdentity = hardwareIdentity.lowercase(Locale.US)
+        val normalizedAccelerator = preferredAccelerator.trim().lowercase(Locale.US)
         val hardwareProfile = HermesAndroidHardwareProfile.classify(listOf(normalizedIdentity))
         val nativeAbiStrategy = HermesAndroidHardwareProfile.nativeAbiStrategy(supportedAbis)
         val armDeviceLabel = HermesAndroidHardwareProfile.accelerationLabel(hardwareProfile)
@@ -1108,6 +1119,14 @@ object LiteRtLmOpenAiProxy {
         }
 
         return when {
+            normalizedAccelerator == "cpu" -> policy(
+                enabled = false,
+                description = "disabled: user selected CPU accelerator in local model configuration",
+            )
+            normalizedAccelerator == "npu" -> policy(
+                enabled = true,
+                description = "npu requested: LiteRT-LM uses GPU/CPU delegates here; choose AICore mode for NPU when supported",
+            )
             isTranslatedArm64OnX86 -> policy(
                 enabled = false,
                 description = "disabled: translated arm64 package on x86 emulator/device",

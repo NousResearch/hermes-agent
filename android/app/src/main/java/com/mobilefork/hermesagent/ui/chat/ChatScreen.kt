@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.imeNestedScroll
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -42,6 +43,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -72,6 +75,8 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -82,28 +87,38 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mobilefork.hermesagent.R
-import com.mobilefork.hermesagent.data.ProviderPresets
 import com.mobilefork.hermesagent.ui.auth.AuthViewModel
 import com.mobilefork.hermesagent.ui.i18n.LocalHermesStrings
-import com.mobilefork.hermesagent.ui.settings.SettingsViewModel
 import com.mobilefork.hermesagent.ui.shell.AppSection
 import com.mobilefork.hermesagent.ui.shell.ShellActionItem
 import kotlinx.coroutines.launch
 import java.io.File
+
+internal fun chatDrawerNavigationSections(): List<AppSection> = listOf(
+    AppSection.Hermes,
+    AppSection.Accounts,
+    AppSection.NousPortal,
+    AppSection.Device,
+    AppSection.Settings,
+)
 
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     modifier: Modifier = Modifier,
     viewModel: ChatViewModel = viewModel(),
-    settingsViewModel: SettingsViewModel,
+    chatDisplayMode: String,
+    keywordHighlightingEnabled: Boolean,
     authViewModel: AuthViewModel,
     onNavigateToSection: (AppSection) -> Unit,
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
+    onOpenNavigationMenu: () -> Unit,
     onOpenContextActions: (() -> Unit)? = null,
+    onToggleChatDisplayMode: () -> Unit,
+    onApplyProvider: (String) -> Boolean,
+    onApplyModel: (String) -> Boolean,
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val settingsState by settingsViewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -204,19 +219,11 @@ fun ChatScreen(
     }
 
     fun applyProvider(providerId: String): Boolean {
-        val preset = ProviderPresets.find(providerId) ?: return false
-        settingsViewModel.updateProvider(preset.id)
-        settingsViewModel.updateBaseUrl(preset.baseUrl)
-        settingsViewModel.updateModel(preset.modelHint)
-        settingsViewModel.save()
-        return true
+        return onApplyProvider(providerId)
     }
 
     fun applyModel(modelName: String): Boolean {
-        if (modelName.isBlank()) return false
-        settingsViewModel.updateModel(modelName)
-        settingsViewModel.save()
-        return true
+        return onApplyModel(modelName)
     }
 
     fun startAuthMethod(methodId: String): Boolean {
@@ -275,9 +282,9 @@ fun ChatScreen(
         onContextActionsChanged(shellActions)
     }
 
-    LaunchedEffect(uiState.messages.size, uiState.isShowingHistory, settingsState.chatDisplayMode) {
+    LaunchedEffect(uiState.messages.size, uiState.isShowingHistory, chatDisplayMode) {
         if (!uiState.isShowingHistory && uiState.messages.isNotEmpty()) {
-            val targetIndex = if (settingsState.chatDisplayMode == "compact") {
+            val targetIndex = if (chatDisplayMode == "compact") {
                 buildChatTurns(uiState.messages).lastIndex
             } else {
                 uiState.messages.lastIndex
@@ -345,16 +352,16 @@ fun ChatScreen(
                         .padding(contentPadding),
                     verticalArrangement = Arrangement.spacedBy(contentSpacing),
                 ) {
-                if (!tinyVerticalViewport) {
                     ChatHeaderCard(
                         title = uiState.activeConversationTitle,
-                        chatDisplayMode = settingsState.chatDisplayMode,
+                        chatDisplayMode = chatDisplayMode,
+                        navigationSections = chatDrawerNavigationSections(),
+                        drawerActions = shellActions,
+                        denseHeader = tinyVerticalViewport,
+                        onNavigateToSection = onNavigateToSection,
+                        onOpenNavigationMenu = onOpenNavigationMenu,
                         onOpenHistory = viewModel::showHistory,
-                        onToggleDisplayMode = {
-                            settingsViewModel.updateChatDisplayMode(
-                                if (settingsState.chatDisplayMode == "compact") "expanded" else "compact",
-                            )
-                        },
+                        onToggleDisplayMode = onToggleChatDisplayMode,
                         onOpenActions = if (shellActions.isNotEmpty() && onOpenContextActions != null) {
                             {
                                 onContextActionsChanged(shellActions)
@@ -364,7 +371,6 @@ fun ChatScreen(
                             null
                         },
                     )
-                }
                 if (uiState.error.isNotBlank()) {
                     StatusBanner(text = uiState.error, isError = true)
                 }
@@ -404,14 +410,14 @@ fun ChatScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             contentPadding = PaddingValues(bottom = messageListBottomPadding),
                         ) {
-                            if (settingsState.chatDisplayMode == "expanded") {
+                            if (chatDisplayMode == "expanded") {
                                 itemsIndexed(uiState.messages, key = { _, message -> message.id }) { index, message ->
                                     val previous = uiState.messages.getOrNull(index - 1)
                                     ChatBubble(
                                         message = message,
                                         showTimestamp = previous == null ||
                                             minuteBucket(previous.createdAtEpochMs) != minuteBucket(message.createdAtEpochMs),
-                                        keywordHighlightingEnabled = settingsState.keywordHighlightingEnabled,
+                                        keywordHighlightingEnabled = keywordHighlightingEnabled,
                                         onSpeak = { speak(message.content) },
                                     )
                                 }
@@ -420,7 +426,7 @@ fun ChatScreen(
                                 items(turns, key = { it.id }) { turn ->
                                     CompactChatTurn(
                                         turn = turn,
-                                        keywordHighlightingEnabled = settingsState.keywordHighlightingEnabled,
+                                        keywordHighlightingEnabled = keywordHighlightingEnabled,
                                         onSpeak = { message -> speak(message.content) },
                                     )
                                 }
@@ -476,6 +482,11 @@ fun ChatScreen(
 private fun ChatHeaderCard(
     title: String,
     chatDisplayMode: String,
+    navigationSections: List<AppSection>,
+    drawerActions: List<ShellActionItem>,
+    denseHeader: Boolean,
+    onNavigateToSection: (AppSection) -> Unit,
+    onOpenNavigationMenu: () -> Unit,
     onOpenHistory: () -> Unit,
     onToggleDisplayMode: () -> Unit,
     onOpenActions: (() -> Unit)? = null,
@@ -490,7 +501,28 @@ private fun ChatHeaderCard(
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val narrowHeader = maxWidth < 360.dp
-            if (narrowHeader) {
+            if (denseHeader) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ChatHeaderDrawerButton(
+                        onOpenNavigationMenu = onOpenNavigationMenu,
+                    )
+                    Text(
+                        text = displayTitle,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    ChatHeaderHistoryButton(onOpenHistory = onOpenHistory)
+                }
+            } else if (narrowHeader) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -502,6 +534,9 @@ private fun ChatHeaderCard(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        ChatHeaderDrawerButton(
+                            onOpenNavigationMenu = onOpenNavigationMenu,
+                        )
                         Icon(
                             painter = painterResource(id = R.drawable.ic_nav_hermes),
                             contentDescription = strings.sectionHermes,
@@ -524,9 +559,6 @@ private fun ChatHeaderCard(
                             )
                         }
                         ChatHeaderHistoryButton(onOpenHistory = onOpenHistory)
-                        if (onOpenActions != null) {
-                            ChatHeaderPageActionsButton(onOpenActions = onOpenActions)
-                        }
                     }
                     ChatHeaderDisplayModeButton(
                         chatDisplayMode = chatDisplayMode,
@@ -542,6 +574,9 @@ private fun ChatHeaderCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    ChatHeaderDrawerButton(
+                        onOpenNavigationMenu = onOpenNavigationMenu,
+                    )
                     Icon(
                         painter = painterResource(id = R.drawable.ic_nav_hermes),
                         contentDescription = strings.sectionHermes,
@@ -578,6 +613,40 @@ private fun ChatHeaderCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ChatHeaderDrawerButton(
+    onOpenNavigationMenu: () -> Unit,
+) {
+    IconButton(
+        onClick = onOpenNavigationMenu,
+        modifier = Modifier
+            .size(40.dp)
+            .semantics { contentDescription = "Open navigation menu" }
+            .testTag("HermesChatDrawerButton"),
+    ) {
+        HamburgerMenuIcon()
+    }
+}
+
+@Composable
+private fun HamburgerMenuIcon() {
+    Column(
+        modifier = Modifier.width(18.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        repeat(3) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(MaterialTheme.colorScheme.primary),
+            )
         }
     }
 }
@@ -1933,7 +2002,12 @@ private fun SignalIntelligenceQuickActionGrid(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        SIGNAL_INTELLIGENCE_QUICK_ACTIONS.chunked(2).forEach { rowActions ->
+        val visibleActions = if (compact) {
+            SIGNAL_INTELLIGENCE_QUICK_ACTIONS
+        } else {
+            SIGNAL_INTELLIGENCE_QUICK_ACTIONS.take(4)
+        }
+        visibleActions.chunked(2).forEach { rowActions ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp),

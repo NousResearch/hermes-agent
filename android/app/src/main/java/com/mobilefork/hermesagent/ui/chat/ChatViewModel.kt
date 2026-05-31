@@ -20,12 +20,12 @@ import com.mobilefork.hermesagent.data.ConversationStore
 import com.mobilefork.hermesagent.data.AppSettings
 import com.mobilefork.hermesagent.data.AppSettingsStore
 import com.mobilefork.hermesagent.data.HermesNetworkPolicy
+import com.mobilefork.hermesagent.data.McpPromptCacheResendPolicy
+import com.mobilefork.hermesagent.data.McpSettingsStore
 import com.mobilefork.hermesagent.data.ProviderPresets
 import com.mobilefork.hermesagent.data.SecureSecretsStore
 import com.mobilefork.hermesagent.data.StoredConversationAttachment
 import com.mobilefork.hermesagent.data.StoredConversationMessage
-import com.mobilefork.hermesagent.device.HermesDeviceDiagnosticsBridge
-import com.mobilefork.hermesagent.device.HermesHindsightMemoryBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -246,7 +246,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val content = runCatching {
                     val action = directDiagnosticArguments.optString("action").ifBlank { "agent_native_tool_self_test_report" }
-                    HermesDeviceDiagnosticsBridge.performActionJson(
+                    NativeBridgeInvoker.performDiagnosticsAction(
                         context = getApplication<Application>(),
                         action = action,
                         arguments = directDiagnosticArguments,
@@ -337,7 +337,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             if (endpoint.nativeToolCalling) {
                 runCatching {
-                    val result = NativeToolCallingChatClient(getApplication<Application>()).send(
+                    val result = NativeToolChatSender.send(
+                        context = getApplication<Application>(),
                         baseUrl = endpoint.baseUrl,
                         modelName = endpoint.modelName,
                         sessionId = sessionId,
@@ -390,7 +391,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 },
             )
-            val customSystemPrompt = AppSettingsStore(getApplication<Application>()).load().customSystemPrompt
+            val appSettings = AppSettingsStore(getApplication<Application>()).load()
+            val customSystemPrompt = appSettings.customSystemPrompt
+            val cacheResendEnabled = McpPromptCacheResendPolicy.shouldResendCachedContext(
+                providerId = endpoint.providerId,
+                settings = McpSettingsStore(getApplication<Application>()).load(),
+            )
+            val apiMaxTokens = if (appSettings.apiGenerationKnobsEnabled) {
+                AppSettings.normalizeLocalModelMaxTokens(appSettings.localModelMaxTokens).takeIf { it > 0 }
+            } else {
+                null
+            }
+            val apiTopP = if (appSettings.apiGenerationKnobsEnabled) {
+                AppSettings.normalizeLocalModelTopP(appSettings.localModelTopP)
+            } else {
+                null
+            }
+            val apiTemperature = if (appSettings.apiGenerationKnobsEnabled) {
+                AppSettings.normalizeLocalModelTemperature(appSettings.localModelTemperature)
+            } else {
+                null
+            }
             val request = ChatCompletionRequest(
                 model = endpoint.modelName,
                 messages = buildChatRequestMessages(
@@ -399,9 +420,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     customSystemPrompt = customSystemPrompt,
                     priorMessages = priorConversationMessages,
                     memoryContext = memoryContext,
+                    cacheResendEnabled = cacheResendEnabled,
                 ),
                 stream = true,
                 sessionId = sessionId,
+                maxTokens = apiMaxTokens,
+                topP = apiTopP,
+                temperature = apiTemperature,
             )
             runCatching {
                 val onDelta: (String) -> Unit = { delta ->
@@ -574,6 +599,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val nativeToolCalling: Boolean = false,
         val apiMode: EndpointApiMode = EndpointApiMode.CHAT_COMPLETIONS,
         val directProvider: Boolean = false,
+        val providerId: String = "",
     )
 
     private enum class EndpointApiMode {
@@ -636,6 +662,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 apiKey = null,
                 modelName = localBackend.modelName,
                 nativeToolCalling = true,
+                providerId = localBackend.backendKind.persistedValue,
             )
         }
         val runtimeBaseUrl = runtime.baseUrl?.takeIf { it.isNotBlank() } ?: return null
@@ -646,6 +673,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             baseUrl = normalizedRuntimeBaseUrl,
             apiKey = runtime.apiKey,
             modelName = runtime.modelName ?: "hermes-agent-android",
+            providerId = AppSettingsStore(getApplication<Application>()).load().provider,
         )
     }
 
@@ -674,6 +702,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             modelName = modelName,
             apiMode = if (provider in RESPONSES_API_PROVIDERS) EndpointApiMode.RESPONSES else EndpointApiMode.CHAT_COMPLETIONS,
             directProvider = true,
+            providerId = provider,
         )
     }
 
@@ -691,9 +720,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         runCatching {
-            HermesHindsightMemoryBridge.performActionJson(
+            NativeBridgeInvoker.performMemoryAction(
                 context = getApplication<Application>(),
-                rawAction = "retain",
+                action = "retain",
                 arguments = JSONObject()
                     .put("content", fact)
                     .put("source", "chat")
@@ -706,9 +735,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun recallConversationMemoryContext(userText: String): String {
         return runCatching {
             JSONObject(
-                HermesHindsightMemoryBridge.performActionJson(
+                NativeBridgeInvoker.performMemoryAction(
                     context = getApplication<Application>(),
-                    rawAction = "relevant_context",
+                    action = "relevant_context",
                     arguments = JSONObject()
                         .put("query", userText)
                         .put("limit", 6)
@@ -919,6 +948,7 @@ internal fun buildChatRequestMessages(
     customSystemPrompt: String = "",
     priorMessages: List<ChatMessage> = emptyList(),
     memoryContext: String = "",
+    cacheResendEnabled: Boolean = false,
 ): List<ChatMessage> {
     val userMessage = ChatMessage(role = "user", content = userText, contentParts = userContentParts)
     val persona = NativeToolContextCompressor.compactCustomSystemPrompt(
@@ -926,8 +956,13 @@ internal fun buildChatRequestMessages(
     )
     val relevantMemory = NativeToolContextCompressor.compactPromotedMemoryContext(memoryContext)
     val requestMessages = mutableListOf<ChatMessage>()
+    val compactedPriorMessages = if (cacheResendEnabled) {
+        NativeToolContextCompressor.cacheFriendlyPriorChatRequestMessages(priorMessages)
+    } else {
+        NativeToolContextCompressor.compactPriorChatRequestMessages(priorMessages)
+    }
     if (persona.isBlank() && relevantMemory.isBlank()) {
-        requestMessages += NativeToolContextCompressor.compactPriorChatRequestMessages(priorMessages)
+        requestMessages += compactedPriorMessages
         requestMessages += userMessage
         return requestMessages
     }
@@ -946,7 +981,7 @@ internal fun buildChatRequestMessages(
             }
         },
     )
-    requestMessages += NativeToolContextCompressor.compactPriorChatRequestMessages(priorMessages)
+    requestMessages += compactedPriorMessages
     requestMessages += userMessage
     return requestMessages
 }
@@ -993,8 +1028,7 @@ internal fun directNativeDiagnosticArgumentsForPrompt(text: String): JSONObject?
     if (prompt.isBlank()) {
         return null
     }
-    return NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(prompt)
-        ?: NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments(prompt)
+    return NativeToolChatSender.extractDirectDiagnosticsArguments(prompt)
 }
 
 internal fun formatDirectNativeDiagnosticsReply(rawJson: String): String {

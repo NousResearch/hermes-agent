@@ -35,6 +35,33 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun saveModelGenerationConfigPersistsSamplingAndApiOptIn() {
+        val application = RuntimeEnvironment.getApplication()
+        val store = AppSettingsStore(application)
+        store.save(AppSettings())
+        val viewModel = SettingsViewModel(application)
+
+        viewModel.updateLocalModelMaxTokens(3072)
+        viewModel.updateLocalModelTopK(72)
+        viewModel.updateLocalModelTopP(0.85f)
+        viewModel.updateLocalModelTemperature(0.6f)
+        viewModel.updateLocalModelAccelerator("npu")
+        viewModel.updateApiGenerationKnobsEnabled(true)
+        viewModel.updateCustomSystemPrompt("Prefer concise local model replies.")
+        viewModel.saveModelGenerationConfig()
+
+        val reloaded = store.load()
+        assertEquals(3072, reloaded.localModelMaxTokens)
+        assertEquals(72, reloaded.localModelTopK)
+        assertEquals(0.85f, reloaded.localModelTopP, 0.0001f)
+        assertEquals(0.6f, reloaded.localModelTemperature, 0.0001f)
+        assertEquals("npu", reloaded.localModelAccelerator)
+        assertTrue(reloaded.apiGenerationKnobsEnabled)
+        assertEquals("Prefer concise local model replies.", reloaded.customSystemPrompt)
+        assertTrue(viewModel.uiState.value.status.contains("Model configuration saved"))
+    }
+
+    @Test
     @Suppress("DEPRECATION")
     fun openProviderKeyPageUsesExternalBrowserForProviderSetupUrls() {
         val application = RuntimeEnvironment.getApplication()

@@ -11,12 +11,10 @@ import androidx.lifecycle.lifecycleScope
 import com.mobilefork.hermesagent.auth.AuthRuntimeApplier
 import com.mobilefork.hermesagent.auth.OpenRouterOAuthClient
 import com.mobilefork.hermesagent.data.AuthSessionStore
-import com.mobilefork.hermesagent.device.DeviceStateWriter
-import com.mobilefork.hermesagent.device.HermesFloatingButtonService
+import com.mobilefork.hermesagent.device.HermesCrashLogStore
 import com.mobilefork.hermesagent.device.HermesLauncherShortcutBridge
 import com.mobilefork.hermesagent.ui.boot.BootScreen
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -26,9 +24,9 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
+        HermesCrashLogStore.install(applicationContext)
         handleAuthCallback(intent)
         handleShortcutIntent(intent)
-        writeDeviceStateAsync()
         setContent {
             BootScreen()
         }
@@ -39,7 +37,6 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleAuthCallback(intent)
         handleShortcutIntent(intent)
-        writeDeviceStateAsync()
     }
 
     private fun handleAuthCallback(intent: Intent?) {
@@ -54,14 +51,12 @@ class MainActivity : ComponentActivity() {
                 if (session.signedIn) {
                     AuthRuntimeApplier.apply(applicationContext, session)
                 }
-                DeviceStateWriter.write(applicationContext)
             }
             return
         }
         val session = store.consumeAuthCallback(callbackUri) ?: return
         lifecycleScope.launch(Dispatchers.IO) {
             AuthRuntimeApplier.apply(applicationContext, session)
-            DeviceStateWriter.write(applicationContext)
         }
     }
 
@@ -72,17 +67,5 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             HermesLauncherShortcutBridge.handleShortcutIntentJson(applicationContext, intent)
         }
-    }
-
-    private fun writeDeviceStateAsync() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            delay(STARTUP_DEVICE_STATE_DELAY_MS)
-            HermesFloatingButtonService.startIfDesired(applicationContext)
-            DeviceStateWriter.write(applicationContext)
-        }
-    }
-
-    companion object {
-        private const val STARTUP_DEVICE_STATE_DELAY_MS = 2500L
     }
 }

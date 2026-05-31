@@ -3,6 +3,7 @@ package com.mobilefork.hermesagent.backend
 import android.content.Context
 import android.os.Looper
 import android.os.Process
+import com.mobilefork.hermesagent.data.AppSettings
 import com.mobilefork.hermesagent.data.AppSettingsStore
 import com.mobilefork.hermesagent.data.LocalModelDownloadRecord
 import com.mobilefork.hermesagent.data.LocalModelDownloadStore
@@ -155,7 +156,7 @@ object OnDeviceBackendManager {
             modelPath = modelFile.absolutePath,
             requestedModelName = preferred.title,
             port = LITERT_LM_PORT,
-            inferenceConfig = inferenceConfigFor(preferred, speculativeDecodingModeFor(context)),
+            inferenceConfig = inferenceConfigFor(preferred, AppSettingsStore(context).load()),
         )
         currentStatus = status
         return status
@@ -251,8 +252,7 @@ object OnDeviceBackendManager {
 
     private fun inferenceConfigFor(
         preferred: LocalModelDownloadRecord,
-        speculativeDecodingMode: LiteRtLmOpenAiProxy.SpeculativeDecodingMode =
-            LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO,
+        settings: AppSettings,
     ): LiteRtLmOpenAiProxy.InferenceConfig {
         val lower = preferred.modelIdentityText()
         val modelDefaults = when {
@@ -278,19 +278,22 @@ object OnDeviceBackendManager {
             else -> LiteRtLmOpenAiProxy.InferenceConfig()
         }
         return LiteRtLmOpenAiProxy.InferenceConfig(
-            topK = modelDefaults.topK,
-            topP = modelDefaults.topP,
-            temperature = modelDefaults.temperature,
-            maxTokens = modelDefaults.maxTokens,
+            topK = AppSettings.normalizeLocalModelTopK(settings.localModelTopK),
+            topP = AppSettings.normalizeLocalModelTopP(settings.localModelTopP),
+            temperature = AppSettings.normalizeLocalModelTemperature(settings.localModelTemperature),
+            maxTokens = AppSettings.normalizeLocalModelMaxTokens(settings.localModelMaxTokens)
+                .takeIf { it > 0 }
+                ?: modelDefaults.maxTokens,
             maxContextLength = modelDefaults.maxContextLength,
             supportImage = preferred.supportsImageInput(),
             supportAudio = preferred.supportsAudioInput(),
-            speculativeDecodingMode = speculativeDecodingMode,
+            preferredAccelerator = AppSettings.normalizeLocalModelAccelerator(settings.localModelAccelerator),
+            speculativeDecodingMode = speculativeDecodingModeFor(settings),
         )
     }
 
-    private fun speculativeDecodingModeFor(context: Context): LiteRtLmOpenAiProxy.SpeculativeDecodingMode {
-        return when (AppSettingsStore(context).load().liteRtLmSpeculativeDecodingMode.lowercase(Locale.US)) {
+    private fun speculativeDecodingModeFor(settings: AppSettings): LiteRtLmOpenAiProxy.SpeculativeDecodingMode {
+        return when (settings.liteRtLmSpeculativeDecodingMode.lowercase(Locale.US)) {
             "enabled", "on", "force" -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.ENABLED
             "disabled", "off" -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.DISABLED
             else -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO

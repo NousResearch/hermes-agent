@@ -4658,6 +4658,36 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A PR URL is only respawn-guard evidence when the surrounding comment says
+# this task opened/created/submitted that PR. Worker handoffs often cite
+# upstream/reference PRs as investigation evidence; those links must not wedge
+# a ready task behind ``active_pr``.
+_RESPAWN_GUARD_TASK_PR_HINT_RE = re.compile(
+    r"""
+    (?:
+        \b(?:pr|pull\s+request)\s*(?:created|opened|submitted|filed)\b
+      | \b(?:created|opened|submitted|filed)\s+(?:a\s+)?(?:pr|pull\s+request)\b
+      | \b(?:created|opened|submitted|filed)\s+https?://github\.com/
+      | \b(?:created_pr|opened_pr|submitted_pr|task_pr)\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _comment_indicates_task_owned_pr(body: str) -> bool:
+    """Return True when ``body`` says this task opened/created a GitHub PR.
+
+    The respawn guard prevents duplicate PR spam after a worker opens a PR.
+    It should not trigger on upstream, related, or evidence links that merely
+    mention someone else's PR.
+    """
+    return bool(
+        body
+        and _RESPAWN_GUARD_PR_URL_RE.search(body)
+        and _RESPAWN_GUARD_TASK_PR_HINT_RE.search(body)
+    )
+
 
 @dataclass
 class DispatchResult:
@@ -5641,13 +5671,13 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ).fetchone():
         return "recent_success"
 
-    # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 3. GitHub PR URL in a recent task-owned PR comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        if _comment_indicates_task_owned_pr(c["body"] or ""):
             return "active_pr"
 
     return None

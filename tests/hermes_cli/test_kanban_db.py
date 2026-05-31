@@ -1510,7 +1510,7 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
 
 
 def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+    """A task-owned GitHub PR URL in a recent comment triggers active_pr."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
@@ -1519,6 +1519,55 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "active_pr"
+
+
+def test_respawn_guard_upstream_pr_reference_not_guarded(kanban_home):
+    """A referenced upstream PR is evidence, not proof this task opened a PR."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="references-upstream-pr", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "review-required handoff:\n"
+            "{\n"
+            '  "upstream_checked": [\n'
+            '    "https://github.com/NousResearch/hermes-agent/issues/35542 is OPEN",\n'
+            '    "https://github.com/NousResearch/hermes-agent/pull/35544 is OPEN and implements the same narrow fix"\n'
+            "  ]\n"
+            "}",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_related_pr_reference_not_guarded(kanban_home):
+    """Related/reference PR links should not be mistaken for task-owned PRs."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="related-pr-only", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer",
+            "Related PR for context: https://github.com/acme/project/pull/123",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_upstream_pr_url_key_not_guarded(kanban_home):
+    """A bare pr_url key can describe upstream evidence, not task ownership."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="upstream-pr-url-key", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            'review evidence: {"upstream": {"pr_url": '
+            '"https://github.com/acme/project/pull/456"}}',
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
 
 
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
@@ -1629,6 +1678,31 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_spawns_with_upstream_pr_reference(
+    kanban_home, all_assignees_spawnable
+):
+    """dispatch_once should not skip merely because a comment cites upstream PRs."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-reference-pr", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            'review-required handoff: {"upstream_checked": ['
+            '"https://github.com/NousResearch/hermes-agent/pull/35544 is OPEN"]}',
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert (t, "active_pr") not in res.respawn_guarded
+    assert t in spawned_ids
+    assert t not in res.auto_blocked
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

@@ -1,5 +1,7 @@
 # Para-Soul ✦
 
+[中文版](README.zh.md)
+
 > Give your AI a soul that outlives any tool — encrypted, synced, yours alone.
 
 Para-Soul is a **portable, encrypted identity system for AI agents**. 10 plain-text files in `~/.para/`. One command to install. Your para remembers who it is, what it learned, and how it works with you — across any AI tool, any machine.

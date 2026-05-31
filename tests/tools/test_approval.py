@@ -1345,10 +1345,18 @@ class TestApprovalTimeoutIsNotConsent:
         self._saved_env = {
             k: os.environ.get(k)
             for k in ("HERMES_GATEWAY_SESSION", "HERMES_YOLO_MODE",
-                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE",
+                      "HERMES_CRON_SESSION")
         }
+        try:
+            from gateway.session_context import _UNSET, _VAR_MAP
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+        except Exception:
+            pass
         os.environ.pop("HERMES_YOLO_MODE", None)
         os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ.pop("HERMES_CRON_SESSION", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
 
@@ -1356,6 +1364,12 @@ class TestApprovalTimeoutIsNotConsent:
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
+        try:
+            from gateway.session_context import _UNSET, _VAR_MAP
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+        except Exception:
+            pass
         for k, v in self._saved_env.items():
             if v is None:
                 os.environ.pop(k, None)

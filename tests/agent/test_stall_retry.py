@@ -11,6 +11,7 @@ from agent.stall_retry import (
     get_stall_retry_max_per_turn,
     get_stall_retry_model,
     get_stall_retry_nudge_enabled,
+    has_recent_tool_result,
     looks_like_incomplete_final_fragment,
     looks_like_stall,
     record_stall_retry_event,
@@ -122,6 +123,34 @@ def test_short_incomplete_connector_tail_is_a_stall() -> None:
 def test_empty_visible_response_uses_empty_response_recovery_not_stall_retry() -> None:
     assert not looks_like_stall("", "stop", False, 400)
     assert not looks_like_stall("<think>still reasoning</think>", "stop", False, 400)
+
+
+def test_recent_tool_result_detector_spans_status_scaffolding() -> None:
+    messages = [
+        {"role": "user", "content": "do the onboarding"},
+        {"role": "assistant", "tool_calls": [{"id": "call_1"}]},
+        {"role": "tool", "content": "Onboarding complete"},
+        {"role": "assistant", "content": ""},
+        {"role": "assistant", "content": ""},
+        {"role": "assistant", "content": ""},
+        {"role": "system", "content": "status update"},
+        {"role": "assistant", "content": ""},
+    ]
+
+    assert has_recent_tool_result(messages)
+
+
+def test_recent_tool_result_detector_stops_at_current_user() -> None:
+    messages = [
+        {"role": "user", "content": "old task"},
+        {"role": "assistant", "tool_calls": [{"id": "call_1"}]},
+        {"role": "tool", "content": "old result"},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "new task"},
+        {"role": "assistant", "content": ""},
+    ]
+
+    assert not has_recent_tool_result(messages)
 
 
 def test_short_status_answer_without_punctuation_is_not_a_stall() -> None:

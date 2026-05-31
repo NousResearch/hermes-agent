@@ -70,7 +70,8 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.yaml's denylist).
     """
-    disabled = ["cronjob", "messaging", "clarify"]
+    allow_messaging = os.getenv("HERMES_CRON_ALLOW_MESSAGING", "").strip().lower() in ("1", "true", "yes", "on")
+    disabled = ["cronjob", "clarify"] if allow_messaging else ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:
@@ -1091,17 +1092,41 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
+    # When HERMES_CRON_ALLOW_MESSAGING is set, the messaging toolset is
+    # available in the cron session — adjust the hint so the agent knows
+    # it *may* call send_message as part of the job (vs. the default
+    # behavior where delivery is handled entirely by the scheduler).
+    _cron_allow_messaging = os.getenv("HERMES_CRON_ALLOW_MESSAGING", "").strip().lower() in ("1", "true", "yes", "on")
+    if _cron_allow_messaging:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: If the job has a `deliver` target set, your final "
+            "response will be automatically delivered there — in that case "
+            "just produce your report/output as your final response and the "
+            "system handles delivery. "
+            "If the job's purpose is to send a message as a side-effect "
+            "(e.g. a check-in, a nudge, a notification to someone else), "
+            "call send_message normally inside the turn loop — messages "
+            "sent that way are mirrored into the recipient's session so "
+            "future replies retain context. Do not call send_message to "
+            "deliver your own final report; that's what `deliver` is for. "
+            "SILENT: If there is genuinely nothing to do or report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
+    else:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")

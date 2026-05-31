@@ -682,7 +682,22 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
 
-    # MCP Servers section (only if configured)
+    # MCP Servers section (only if configured). MCP discovery runs in a
+    # background thread so CLI startup doesn't freeze on a bad server. The
+    # banner is static, though; if we sample status immediately it can show
+    # healthy-but-still-connecting servers as stale "starting" forever. Give
+    # fast startup discovery a short bounded window to finish before rendering
+    # the one-shot banner state.
+    try:
+        from hermes_cli.mcp_startup import (
+            is_mcp_discovery_in_progress,
+            wait_for_mcp_discovery,
+        )
+
+        wait_for_mcp_discovery(timeout=2.0)
+        mcp_discovery_pending = is_mcp_discovery_in_progress()
+    except Exception:
+        mcp_discovery_pending = False
     try:
         from tools.mcp_tool import get_mcp_status
         mcp_status = get_mcp_status()
@@ -713,6 +728,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
                     f"[dim {dim}]— configured[/]"
+                )
+            elif mcp_discovery_pending:
+                right_lines.append(
+                    f"[yellow]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[yellow]— starting[/]"
                 )
             else:
                 right_lines.append(

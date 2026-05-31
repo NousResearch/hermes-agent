@@ -120,6 +120,20 @@ def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):
     assert mcp_startup._mcp_discovery_thread is None
 
 
+def test_is_mcp_discovery_in_progress_reflects_live_thread():
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait, daemon=True)
+    try:
+        thread.start()
+        mcp_startup._mcp_discovery_thread = thread
+        assert mcp_startup.is_mcp_discovery_in_progress() is True
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+    assert mcp_startup.is_mcp_discovery_in_progress() is False
+
+
 def test_cli_get_tool_definitions_briefly_waits_for_fast_mcp_thread(monkeypatch):
     thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
     thread.start()

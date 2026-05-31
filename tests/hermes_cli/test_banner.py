@@ -200,3 +200,78 @@ def test_build_welcome_banner_configured_mcp_is_not_failed():
     assert "docker-profile" in output
     assert "configured" in output
     assert "failed" not in output
+
+
+def test_build_welcome_banner_waits_for_background_mcp_before_status():
+    """Banner gives fast background MCP discovery a bounded chance to finish."""
+    from unittest.mock import patch as _patch
+    import hermes_cli.banner as _banner
+    import hermes_cli.mcp_startup as _mcp_startup
+    import model_tools as _mt
+    import tools.mcp_tool as _mcp
+
+    wait_calls = []
+    status = [{"name": "context7", "transport": "http", "tools": 0, "connected": False}]
+
+    def _finish_discovery(timeout=0.75):
+        wait_calls.append(timeout)
+        status[0] = {"name": "context7", "transport": "http", "tools": 2, "connected": True}
+
+    with (
+        _patch.object(_mt, "check_tool_availability", return_value=(["web"], [])),
+        _patch.object(_banner, "get_available_skills", return_value={}),
+        _patch.object(_banner, "get_update_result", return_value=None),
+        _patch.object(_mcp_startup, "wait_for_mcp_discovery", side_effect=_finish_discovery),
+        _patch.object(_mcp_startup, "is_mcp_discovery_in_progress", return_value=False),
+        _patch.object(_mcp, "get_mcp_status", side_effect=lambda: list(status)),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        _banner.build_welcome_banner(
+            console=console,
+            model="x",
+            cwd="/tmp",
+            tools=[{"function": {"name": "web_search"}}],
+            get_toolset_for_tool=lambda n: "web",
+        )
+
+    output = console.export_text()
+    assert wait_calls == [2.0]
+    assert "context7 (http) — 2 tool(s)" in output
+    assert "context7 (http) — starting" not in output
+    assert "context7 (http) — failed" not in output
+
+
+def test_build_welcome_banner_marks_mcp_as_starting_during_discovery():
+    """Banner must not call still-connecting MCP servers failed."""
+    from unittest.mock import patch as _patch
+    import hermes_cli.banner as _banner
+    import hermes_cli.mcp_startup as _mcp_startup
+    import model_tools as _mt
+    import tools.mcp_tool as _mcp
+
+    with (
+        _patch.object(_mt, "check_tool_availability", return_value=(["web"], [])),
+        _patch.object(_banner, "get_available_skills", return_value={}),
+        _patch.object(_banner, "get_update_result", return_value=None),
+        _patch.object(
+            _mcp,
+            "get_mcp_status",
+            return_value=[
+                {"name": "github", "transport": "stdio", "tools": 21, "connected": True},
+                {"name": "context7", "transport": "http", "tools": 0, "connected": False},
+            ],
+        ),
+        _patch.object(_mcp_startup, "is_mcp_discovery_in_progress", return_value=True),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        _banner.build_welcome_banner(
+            console=console,
+            model="x",
+            cwd="/tmp",
+            tools=[{"function": {"name": "web_search"}}],
+            get_toolset_for_tool=lambda n: "web",
+        )
+
+    output = console.export_text()
+    assert "context7 (http) — starting" in output
+    assert "context7 (http) — failed" not in output

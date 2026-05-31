@@ -276,17 +276,18 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         print(f"/swarm: failed to create swarm — {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    # 5. Report
+    # 5. Report — this is a handoff, not a plan to execute
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
     else:
-        print(f"🧠 Swarm plan: {plan.rationale}")
-        print(f"   Topology: {plan.topology}")
-        print(f"   Workers: {', '.join(created.worker_ids)}")
+        print(f"✅ Swarm launched. The goal has been delegated to specialist profiles.")
+        print(f"   {plan.rationale}")
         if verifier:
-            print(f"   Verifier: {created.verifier_id} ({verifier})")
+            suff = " (gate before synthesis)" if synthesizer else ""
+            print(f"   Verifier: {verifier} — will validate all outputs{suff}")
         if synthesizer:
-            print(f"   Synthesizer: {created.synthesizer_id} ({synthesizer})")
-        print(f"   Root: {created.root_id}")
+            print(f"   Synthesizer: {synthesizer} — will assemble final output")
+        print(f"   Workers ({len(created.worker_ids)}): {', '.join(created.worker_ids)}")
+        print(f"   Track progress: hermes kanban list")
 
     return 0

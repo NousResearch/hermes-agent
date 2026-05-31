@@ -168,8 +168,16 @@ export function isXtermJs(): boolean {
   return xtversionName?.startsWith('xterm.js') ?? false
 }
 
-export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = process.env): boolean {
+function isAppleTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'
+}
+
+export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isAppleTerminal(env)
+}
+
+export function needsAltScreenResizeReentry(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isAppleTerminal(env)
 }
 
 // Terminals known to correctly implement the Kitty keyboard protocol

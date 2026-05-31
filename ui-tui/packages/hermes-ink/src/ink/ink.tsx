@@ -76,6 +76,7 @@ import {
   updateSelection
 } from './selection.js'
 import {
+  needsAltScreenResizeReentry,
   needsAltScreenResizeScrollbackClear,
   supportsExtendedKeys,
   SYNC_OUTPUT_SUPPORTED,
@@ -488,6 +489,7 @@ export default class Ink {
   private handleResize = () => {
     const cols = this.options.stdout.columns || 80
     const rows = this.options.stdout.rows || 24
+    const rowsChanged = rows !== this.terminalRows
     const dimsChanged = cols !== this.terminalColumns || rows !== this.terminalRows
 
     // Terminals often emit 2+ resize events for one user action
@@ -530,6 +532,12 @@ export default class Ink {
     // doesn't exit alt-screen. Do NOT write ERASE_SCREEN: render() below
     // can take ~80ms; erasing first leaves the screen blank that whole time.
     if (this.altScreenActive && !this.isPaused && this.options.stdout.isTTY) {
+      if (rowsChanged && needsAltScreenResizeReentry()) {
+        this.reenterAltScreenForResize()
+
+        return
+      }
+
       this.prepareAltScreenResizeRepaint()
     }
 
@@ -1433,6 +1441,19 @@ export default class Ink {
     // explicit render schedule the alt screen sits blank until some
     // unrelated state change fires the next commit. queueing one
     // microtask matches scheduleRender's normal cadence.
+    this.scheduleRender()
+  }
+
+  private reenterAltScreenForResize(): void {
+    this.options.stdout.write(
+      EXIT_ALT_SCREEN +
+        ENTER_ALT_SCREEN +
+        ERASE_SCREEN +
+        CURSOR_HOME +
+        DISABLE_MOUSE_TRACKING +
+        enableMouseTrackingFor(this.altScreenMouseTracking)
+    )
+    this.resetFramesForAltScreen()
     this.scheduleRender()
   }
 

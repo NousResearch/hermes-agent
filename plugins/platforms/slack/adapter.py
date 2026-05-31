@@ -441,6 +441,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._user_is_bot_cache: Dict[str, bool] = {}  # user_id → Slack bot user?
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -2100,11 +2101,22 @@ class SlackAdapter(BasePlatformAdapter):
                 or user_id
             )
             self._user_name_cache[user_id] = name
+            self._user_is_bot_cache[user_id] = bool(user.get("is_bot"))
             return name
         except Exception as e:
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
             self._user_name_cache[user_id] = user_id
             return user_id
+
+    async def _is_known_bot_user(self, user_id: str, chat_id: str = "") -> bool:
+        if not user_id:
+            return False
+        if user_id == self._bot_user_id:
+            return True
+        if user_id in self._user_is_bot_cache:
+            return self._user_is_bot_cache[user_id]
+        await self._resolve_user_name(user_id, chat_id=chat_id)
+        return self._user_is_bot_cache.get(user_id, False)
 
     async def send_image_file(
         self,
@@ -2593,11 +2605,28 @@ class SlackAdapter(BasePlatformAdapter):
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
-        # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
-        #   "none"     — ignore all bot messages (default, backward-compatible)
-        #   "mentions" — accept bot messages only when they @mention us
-        #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        # Bot/app-authored message filtering (SLACK_ALLOW_BOTS / config
+        # allow_bots):
+        #   "none"     — ignore all bot/app-authored messages (default,
+        #                backward-compatible)
+        #   "mentions" — accept bot/app-authored messages only when they
+        #                @mention us
+        #   "all"      — accept all bot/app-authored messages (except our own)
+        #
+        # Some Slack app-originated events arrive without subtype=bot_message or
+        # bot_id, but they still carry app_id and no client_msg_id. Treat those
+        # as bot-authored too so sibling Hermes bots do not leak through to the
+        # generic unauthorized-user path.
+        client_msg_id = event.get("client_msg_id")
+        is_app_authored = bool(event.get("app_id")) and not bool(client_msg_id)
+        msg_user = event.get("user", "")
+        # Only probe users.info for suspicious unlabeled events. Real human-authored
+        # Slack messages normally carry client_msg_id; bot/app-originated events that
+        # slip past bot_id/subtype markers often do not.
+        is_known_bot_user = False
+        if msg_user and not client_msg_id:
+            is_known_bot_user = await self._is_known_bot_user(msg_user, chat_id=event.get("channel", ""))
+        if event.get("bot_id") or event.get("subtype") == "bot_message" or is_app_authored or is_known_bot_user:
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
@@ -2610,7 +2639,6 @@ class SlackAdapter(BasePlatformAdapter):
                     return
             # "all" falls through to process the message
             # Always ignore our own messages to prevent echo loops
-            msg_user = event.get("user", "")
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
                 return
 

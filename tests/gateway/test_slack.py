@@ -103,11 +103,20 @@ def _fake_create_task(coro):
 
 @pytest.fixture()
 def adapter():
-    config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+    config = PlatformConfig(enabled=True, token="***")
     a = SlackAdapter(config)
     # Mock the Slack app client
     a._app = MagicMock()
     a._app.client = AsyncMock()
+    a._app.client.users_info = AsyncMock(
+        return_value={
+            "user": {
+                "is_bot": False,
+                "profile": {"display_name": "Test User"},
+                "real_name": "Test User",
+            }
+        }
+    )
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them
@@ -2002,6 +2011,54 @@ class TestMessageRouting:
         adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_app_authored_messages_without_client_msg_id_are_ignored(self, adapter):
+        """Slack app-authored events can arrive without bot_id/subtype markers."""
+        adapter._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {
+                    "is_bot": False,
+                    "profile": {"display_name": "helper-app"},
+                    "real_name": "Helper App",
+                }
+            }
+        )
+        event = {
+            "text": "workflow reply",
+            "app_id": "A_HELPER",
+            "user": "U_APP_HELPER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000002",
+        }
+        await adapter._handle_slack_message(event)
+        adapter._app.client.users_info.assert_awaited_once_with(user="U_APP_HELPER")
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_known_bot_users_ignored_even_without_bot_markers(self, adapter):
+        """users.info bot identities should still route through bot filtering."""
+        adapter._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {
+                    "is_bot": True,
+                    "profile": {"display_name": "helper-bot"},
+                    "real_name": "Helper Bot",
+                }
+            }
+        )
+        event = {
+            "text": "helper response",
+            "user": "U_HELPER_BOT",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000003",
+        }
+        await adapter._handle_slack_message(event)
+        adapter._app.client.users_info.assert_awaited_once_with(user="U_HELPER_BOT")
+        assert adapter._user_is_bot_cache["U_HELPER_BOT"] is True
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_message_edits_ignored(self, adapter):
         """Message edits should be ignored."""
         event = {
@@ -2794,6 +2851,15 @@ class TestThreadReplyHandling:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {
+                    "is_bot": False,
+                    "profile": {"display_name": "Test User"},
+                    "real_name": "Test User",
+                }
+            }
+        )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
@@ -2932,6 +2998,15 @@ class TestAssistantThreadLifecycle:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {
+                    "is_bot": False,
+                    "profile": {"display_name": "Test User"},
+                    "real_name": "Test User",
+                }
+            }
+        )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True

@@ -53,6 +53,8 @@ _BREAKER_COOLDOWN_SECS = 120
 # network hop (Cloud Map within the VPC) adds latency. Match Plan 012 spec.
 _READ_TIMEOUT_SECS = 2.0
 _WRITE_TIMEOUT_SECS = 3.0
+# /v1/ask is the heavyweight retrieval+rerank+synth pipeline; allow longer.
+_ASK_TIMEOUT_SECS = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +97,45 @@ RECALL_SCHEMA = {
         "Use at conversation start or when you need durable context."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+ASK_SCHEMA = {
+    "name": "atlas_ask",
+    "description": (
+        "Ask Atlas a question about Blake's history, contacts, commitments, "
+        "past decisions, or anything from his ingested corpus (Gmail, Calendar, "
+        "Pipedrive, GitHub, Claude transcripts). Routes through Atlas's full "
+        "/v1/ask retrieval pipeline (BM25 + vector + rerank + synthesis) and "
+        "returns a cited answer. Use for recall questions like 'what's my last "
+        "Pipedrive activity for Apex Capital?' or 'what did I commit to Greg "
+        "about the 3pm?'. Do NOT use for arbitrary 'what is X' world-knowledge "
+        "questions. Preserve any [cite:<chunk_id>] markers verbatim in your "
+        "response to Blake so he can audit the answer's grounding."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The question to ask Atlas. Required, non-empty.",
+            },
+            "life_context": {
+                "type": "string",
+                "enum": ["work", "personal", "health", "education",
+                         "finance", "civic", "hobby", "brand", "spiritual"],
+                "description": "Optional atlas:lifeContext vocab tag to scope retrieval.",
+            },
+            "intent_hint": {
+                "type": "string",
+                "description": "Optional intent classifier shortcut (e.g. 'lookup', 'timeline', 'commitment').",
+            },
+            "max_chunks": {
+                "type": "integer",
+                "description": "Optional max chunks to retrieve (default 5).",
+            },
+        },
+        "required": ["question"],
+    },
 }
 
 REMEMBER_SCHEMA = {
@@ -295,7 +336,39 @@ class AtlasMemoryProvider(MemoryProvider):
         return
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [RECALL_SCHEMA, REMEMBER_SCHEMA]
+        return [RECALL_SCHEMA, REMEMBER_SCHEMA, ASK_SCHEMA]
+
+    def _ask(self, *, question: str, life_context: str | None = None,
+             intent_hint: str | None = None, max_chunks: int | None = None) -> dict:
+        """POST /v1/ask — full retrieval+rerank+synthesis pipeline. Raises on error.
+
+        Contract mirror of army-of-one atlas/api/ask_routes.py:AskRequest /
+        AskResponse. Returns the parsed JSON response verbatim so the caller
+        can pass citation markers ([cite:<chunk_id>]) through unmodified.
+
+        Atlas's current AskRequest accepts {question, intent_hint?} with
+        extra="forbid". life_context and max_chunks are accepted at the tool
+        boundary for forward-compatibility; we fold any provided hints into
+        intent_hint as a single composite signal so the strict server-side
+        Pydantic model accepts the payload.
+        """
+        import httpx
+        url = f"{self._base_url.rstrip('/')}/v1/ask"
+        body: dict[str, Any] = {"question": question}
+        hint_parts: list[str] = []
+        if intent_hint:
+            hint_parts.append(intent_hint)
+        if life_context:
+            hint_parts.append(f"life_context:{life_context}")
+        if max_chunks is not None:
+            hint_parts.append(f"max_chunks:{int(max_chunks)}")
+        if hint_parts:
+            body["intent_hint"] = ";".join(hint_parts)
+        resp = httpx.post(
+            url, json=body, headers=self._headers(), timeout=_ASK_TIMEOUT_SECS,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
@@ -313,6 +386,26 @@ class AtlasMemoryProvider(MemoryProvider):
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Atlas recall failed: {e}")
+
+        elif tool_name == "atlas_ask":
+            question = args.get("question", "")
+            if not question or not str(question).strip():
+                return tool_error("Missing required parameter: question")
+            try:
+                payload = self._ask(
+                    question=str(question).strip(),
+                    life_context=args.get("life_context"),
+                    intent_hint=args.get("intent_hint"),
+                    max_chunks=args.get("max_chunks"),
+                )
+                self._record_success()
+                # Return the Atlas response verbatim so [cite:<chunk_id>]
+                # markers in `answer` and the structured `citations` list
+                # are preserved for the model to surface to Blake.
+                return json.dumps(payload)
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Atlas ask failed: {e}")
 
         elif tool_name == "atlas_remember":
             content = args.get("content", "")

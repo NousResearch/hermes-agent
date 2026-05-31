@@ -11,8 +11,52 @@ knowledge substrate.
   drawn from Gmail, Calendar, Pipedrive, GitHub, and Claude Code transcripts.
 - **Remember** (`atlas_remember`): stores durable facts verbatim with
   provenance + confidence via `/v1/memory/hermes/write`.
+- **Ask** (`atlas_ask`): routes a recall question through Atlas's full
+  `/v1/ask` retrieval pipeline (BM25 + vector + Cohere rerank + Sonnet
+  synthesis) and returns a cited answer. Use for "what's my last activity for
+  Apex?", "what did I commit to Greg?", "when did I last email the Lambridge
+  team?". The Atlas response is returned **verbatim** so `[cite:<chunk_id>]`
+  markers survive intact for audit. Steered by tool description toward recall
+  questions — not arbitrary "what is X" world-knowledge questions (D4 §Risk 5).
 - **Mirror** (`on_memory_write` hook): echoes Hermes's built-in memory writes
   into Atlas so the RDF store stays in sync with the flat `memory.md`.
+
+### `atlas_ask` example
+
+```jsonc
+// tool call from the model
+{
+  "tool": "atlas_ask",
+  "args": {
+    "question": "what's my last Pipedrive activity for Apex Capital?",
+    "intent_hint": "lookup",
+    "life_context": "work",
+    "max_chunks": 5
+  }
+}
+
+// returned verbatim from Atlas /v1/ask
+{
+  "question": "what's my last Pipedrive activity for Apex Capital?",
+  "intent": "lookup",
+  "answer": "Last contact was a call with Greg on 2026-05-28 [cite:chunk-abc123].",
+  "citations": [
+    {"chunk_id": "chunk-abc123", "source_iri": "urn:pipedrive:activity:42",
+     "snippet": "Call with Greg re: pipeline review."}
+  ],
+  "anchors": ["urn:atlas:contact:greg"],
+  "temporal": null,
+  "confidence": 0.84,
+  "latency_ms": 412.0,
+  "usd": 0.0021
+}
+```
+
+Atlas's `/v1/ask` AskRequest accepts `{question, intent_hint?}` with
+`extra="forbid"` (see `army-of-one/backend/src/atlas/api/ask_routes.py`); the
+plugin folds optional `life_context` and `max_chunks` hints into the
+`intent_hint` string so the strict server-side Pydantic model still accepts
+the payload.
 
 ## Augments, does not replace
 

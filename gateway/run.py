@@ -3202,10 +3202,6 @@ class GatewayRunner:
                 def _collect():
                     conn = _kb.connect()
                     try:
-                        _kb.init_db()  # idempotent; handles first-run
-                    except Exception:
-                        pass
-                    try:
                         subs = _kb.list_notify_subs(conn)
                         deliveries: list[dict] = []
                         for sub in subs:
@@ -3463,10 +3459,6 @@ class GatewayRunner:
             conn = None
             try:
                 conn = _kb.connect()
-                try:
-                    _kb.init_db()  # idempotent, handles first-run
-                except Exception:
-                    pass
                 return _kb.dispatch_once(conn)
             except Exception:
                 logger.exception("kanban dispatcher: tick failed")

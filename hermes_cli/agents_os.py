@@ -784,18 +784,54 @@ def next_task(args: argparse.Namespace) -> int:
 def dashboard(args: argparse.Namespace) -> int:
     paths = resolve_paths(args)
     with connect(paths) as conn:
-        tasks = [row_to_dict(r) for r in conn.execute("SELECT * FROM tasks ORDER BY priority ASC, created_at ASC LIMIT 20").fetchall()]
+        tasks = [row_to_dict(r) for r in conn.execute("""
+            SELECT * FROM tasks
+            ORDER BY CASE status
+                WHEN 'blocked' THEN 0
+                WHEN 'needs_approval' THEN 1
+                WHEN 'review' THEN 2
+                WHEN 'in_progress' THEN 3
+                WHEN 'ready' THEN 4
+                WHEN 'pending' THEN 5
+                WHEN 'routed' THEN 6
+                WHEN 'new' THEN 7
+                WHEN 'completed' THEN 8
+                ELSE 9
+            END, priority ASC, created_at ASC
+            LIMIT 20
+        """).fetchall()]
         approvals = [row_to_dict(r) for r in conn.execute("SELECT * FROM approvals WHERE status='pending' ORDER BY created_at ASC LIMIT 20").fetchall()]
         runs = [row_to_dict(r) for r in conn.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT 10").fetchall()]
+        for run in runs:
+            run["kind"] = "execution" if run.get("completed_at") or run.get("status") in {"succeeded", "failed", "blocked", "needs_review"} else "draft"
+        queue_summary = {
+            "open_tasks": sum(1 for task in tasks if task["status"] in {"new", "pending", "routed", "ready", "in_progress", "needs_approval"}),
+            "blocked_tasks": sum(1 for task in tasks if task["status"] == "blocked"),
+            "review_tasks": sum(1 for task in tasks if task["status"] == "review"),
+            "completed_tasks": sum(1 for task in tasks if task["status"] == "completed"),
+            "pending_approvals": len(approvals),
+            "failed_executions": sum(1 for run in runs if run.get("kind") == "execution" and run.get("status") == "failed"),
+            "stale_drafts": sum(1 for run in runs if run.get("kind") == "draft"),
+        }
+        queue_summary["action_required"] = queue_summary["blocked_tasks"] + queue_summary["review_tasks"] + queue_summary["pending_approvals"] + queue_summary["failed_executions"]
         events = [row_to_dict(r) for r in conn.execute("SELECT * FROM events ORDER BY created_at DESC LIMIT 10").fetchall()]
+        agents = [row_to_dict(r) for r in conn.execute("SELECT * FROM agents ORDER BY status ASC, created_at ASC LIMIT 20").fetchall()]
+        reviews = [row_to_dict(r) for r in conn.execute("SELECT * FROM reviews ORDER BY created_at DESC LIMIT 20").fetchall()]
+        snapshots = [row_to_dict(r) for r in conn.execute("SELECT id,label,created_at FROM state_snapshots ORDER BY created_at DESC LIMIT 10").fetchall()]
     lines = [
         "# Agents OS Runtime Dashboard",
         "",
         f"Generated: {utc_now()}",
         f"State DB: `{paths.db}`",
         "",
-        "## Aktivni taskovi",
+        "## Queue summary",
     ]
+    for key in ["action_required", "open_tasks", "blocked_tasks", "review_tasks", "completed_tasks", "pending_approvals", "failed_executions", "stale_drafts"]:
+        lines.append(f"- {key}: {queue_summary[key]}")
+    lines.extend([
+        "",
+        "## Aktivni taskovi",
+    ])
     if not tasks:
         lines.append("- Nema taskova.")
     for task in tasks:
@@ -806,11 +842,27 @@ def dashboard(args: argparse.Namespace) -> int:
         lines.append("- Nema pending approvala.")
     for approval in approvals:
         lines.append(f"- `{approval['id']}` risk={approval['risk']} task={approval['task_id'] or '-'} {approval['title']}")
+    lines.extend(["", "## Agent registry"])
+    if not agents:
+        lines.append("- Nema registriranih agenata.")
+    for agent in agents:
+        caps = agent.get("capabilities") or "[]"
+        lines.append(f"- `{agent['id']}` [{agent['status']}] {agent['name']} kind={agent['kind']} capabilities={caps}")
+    lines.extend(["", "## Review gateovi"])
+    if not reviews:
+        lines.append("- Nema review gateova.")
+    for review in reviews:
+        lines.append(f"- `{review['id']}` [{review['status']}] kind={review['kind']} task={review['task_id'] or '-'} reviewer={review['reviewer'] or '-'}")
+    lines.extend(["", "## Snapshoti"])
+    if not snapshots:
+        lines.append("- Nema snapshotova.")
+    for snapshot in snapshots:
+        lines.append(f"- `{snapshot['id']}` {snapshot['label']} created={snapshot['created_at']}")
     lines.extend(["", "## Zadnji runovi"])
     if not runs:
         lines.append("- Nema runova.")
     for run in runs:
-        lines.append(f"- `{run['id']}` [{run['status']}] workflow={run['workflow']} task={run['task_id'] or '-'}")
+        lines.append(f"- `{run['id']}` [{run['status']}] kind={run.get('kind', '-')} workflow={run['workflow']} task={run['task_id'] or '-'}")
     lines.extend(["", "## Zadnji eventi"])
     if not events:
         lines.append("- Nema eventa.")
@@ -823,8 +875,12 @@ def dashboard(args: argparse.Namespace) -> int:
     payload = {
         "health": {"ok": True, "network_side_effects": False, "runtime_config_changed": False},
         "dashboard_path": str(target),
+        "queue_summary": queue_summary,
         "tasks": tasks,
         "approvals": approvals,
+        "agents": agents,
+        "reviews": reviews,
+        "snapshots": snapshots,
         "runs": runs,
         "events": events,
     }

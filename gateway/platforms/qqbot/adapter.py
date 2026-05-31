@@ -1807,25 +1807,17 @@ class QQAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _is_voice_content_type(content_type: str, filename: str) -> bool:
-        """Check if an attachment is a voice/audio message."""
+        """Check if an attachment is a voice/audio message.
+
+        Only trust ``content_type`` — the QQ Bot API explicitly distinguishes
+        voice messages (``content_type="voice"``) from file uploads
+        (``content_type="file"``).  Filename-extension sniffing is intentionally
+        omitted: files sent via QQ's file-transfer feature can have audio
+        extensions (e.g. ``.wav``, ``.mp3``) but must **not** be routed through
+        the STT pipeline.
+        """
         ct = content_type.strip().lower()
-        fn = filename.strip().lower()
-        if ct == "voice" or ct.startswith("audio/"):
-            return True
-        _VOICE_EXTENSIONS = (
-            ".silk",
-            ".amr",
-            ".mp3",
-            ".wav",
-            ".ogg",
-            ".m4a",
-            ".aac",
-            ".speex",
-            ".flac",
-        )
-        if any(fn.endswith(ext) for ext in _VOICE_EXTENSIONS):
-            return True
-        return False
+        return ct == "voice" or ct.startswith("audio/")
 
     def _qq_media_headers(self) -> Dict[str, str]:
         """Return Authorization headers for QQ multimedia CDN downloads.

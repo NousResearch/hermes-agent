@@ -50,6 +50,24 @@ _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
 
+class _MMApiError(Exception):
+    """Internal Mattermost API failure carrying transient/permanent class.
+
+    ``retryable`` is True for network failures, request timeouts, HTTP 429
+    rate-limits, and 5xx server errors — conditions that may succeed on a
+    retry.  It is False for genuine 4xx client errors (400/401/403/404),
+    which will not.  ``send()`` / ``edit_message()`` translate this into
+    ``SendResult.retryable`` so ``BasePlatformAdapter._send_with_retry``
+    (network retry with backoff) and the streaming progress-edit consumer
+    (which keeps ``can_edit`` alive across transient edit failures) make the
+    right call instead of treating every failure as permanent.
+    """
+
+    def __init__(self, message: str, *, retryable: bool):
+        super().__init__(message)
+        self.retryable = retryable
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter can be used."""
     token = os.getenv("MATTERMOST_TOKEN", "")
@@ -109,58 +127,74 @@ class MattermostAdapter(BasePlatformAdapter):
             "Content-Type": "application/json",
         }
 
-    async def _api_get(self, path: str) -> Dict[str, Any]:
-        """GET /api/v4/{path}."""
+    async def _request_json(
+        self, method: str, path: str, *, payload: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Issue an /api/v4 request, raising :class:`_MMApiError` on failure.
+
+        Distinguishes transient failures (network errors, timeouts, HTTP 429
+        and 5xx) from permanent 4xx client errors so callers that surface a
+        ``SendResult`` can set ``retryable`` correctly.  Callers that want the
+        legacy empty-dict sentinel use :meth:`_api_get` / :meth:`_api_post` /
+        :meth:`_api_put`, which wrap this.
+        """
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        kwargs: Dict[str, Any] = {
+            "headers": self._headers(),
+            "timeout": aiohttp.ClientTimeout(total=30),
+        }
+        if payload is not None:
+            kwargs["json"] = payload
+        verb = method.upper()
+        sender = {
+            "GET": self._session.get,
+            "POST": self._session.post,
+            "PUT": self._session.put,
+        }[verb]
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with sender(url, **kwargs) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
-                    return {}
+                    logger.error("MM API %s %s → %s: %s", verb, path, resp.status, body[:200])
+                    # 429 (rate-limit) and 5xx (server) are transient; retrying
+                    # may succeed.  4xx client errors are permanent.
+                    retryable = resp.status == 429 or resp.status >= 500
+                    raise _MMApiError(
+                        f"Mattermost API {verb} {path} returned HTTP {resp.status}",
+                        retryable=retryable,
+                    )
                 return await resp.json()
-        except aiohttp.ClientError as exc:
-            logger.error("MM API GET %s network error: %s", path, exc)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.error("MM API %s %s network error: %s", verb, path, exc)
+            raise _MMApiError(
+                f"Mattermost API {verb} {path} network error: {exc}",
+                retryable=True,
+            ) from exc
+
+    async def _api_get(self, path: str) -> Dict[str, Any]:
+        """GET /api/v4/{path}; returns {} on any failure (legacy sentinel)."""
+        try:
+            return await self._request_json("GET", path)
+        except _MMApiError:
             return {}
 
     async def _api_post(
         self, path: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """POST /api/v4/{path} with JSON body."""
-        import aiohttp
-        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        """POST /api/v4/{path}; returns {} on any failure (legacy sentinel)."""
         try:
-            async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
-        except aiohttp.ClientError as exc:
-            logger.error("MM API POST %s network error: %s", path, exc)
+            return await self._request_json("POST", path, payload=payload)
+        except _MMApiError:
             return {}
 
     async def _api_put(
         self, path: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """PUT /api/v4/{path} with JSON body."""
-        import aiohttp
-        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        """PUT /api/v4/{path}; returns {} on any failure (legacy sentinel)."""
         try:
-            async with self._session.put(
-                url, headers=self._headers(), json=payload
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
-        except aiohttp.ClientError as exc:
-            logger.error("MM API PUT %s network error: %s", path, exc)
+            return await self._request_json("PUT", path, payload=payload)
+        except _MMApiError:
             return {}
 
     async def _upload_file(
@@ -198,6 +232,29 @@ class MattermostAdapter(BasePlatformAdapter):
 
         if not self._base_url or not self._token:
             logger.error("Mattermost: URL or token not configured")
+            # Missing config never succeeds on retry — escalate as a
+            # non-retryable fatal error so the gateway drops the platform
+            # from its reconnect queue instead of looping forever.
+            self._set_fatal_error(
+                "config_missing",
+                "MATTERMOST_URL and MATTERMOST_TOKEN must be set",
+                retryable=False,
+            )
+            return False
+
+        # Single-instance guard: without a scoped lock, two gateway processes
+        # configured with the same token each open their own /api/v4/websocket
+        # listener and both receive the same 'posted' events.  The per-process
+        # MessageDeduplicator (self._dedup) is in-memory and cannot dedup
+        # across processes, so every inbound post would be handled twice
+        # (duplicate agent runs/replies).  Key the lock on URL+token like the
+        # Discord/Signal/Slack adapters; _acquire_platform_lock records a
+        # non-retryable fatal error on conflict.
+        if not self._acquire_platform_lock(
+            "mattermost-token",
+            f"{self._base_url}|{self._token}",
+            "Mattermost bot token",
+        ):
             return False
 
         self._session = aiohttp.ClientSession(
@@ -205,11 +262,38 @@ class MattermostAdapter(BasePlatformAdapter):
         )
         self._closing = False
 
-        # Verify credentials and fetch bot identity.
-        me = await self._api_get("users/me")
+        # Verify credentials and fetch bot identity.  Distinguish a permanent
+        # auth/permission failure (bad token, wrong URL) from a transient
+        # network blip reaching users/me so the gateway can stop retrying a
+        # revoked token but keep retrying a flaky connection.
+        try:
+            me = await self._request_json("GET", "users/me")
+        except _MMApiError as exc:
+            await self._session.close()
+            # Release the lock acquired above so a permanent auth failure
+            # (or a transient blip) does not leak it; mirrors Discord's
+            # _release_platform_lock() on its post-acquire failure exits.
+            self._release_platform_lock()
+            if exc.retryable:
+                logger.error("Mattermost: transient error reaching server — will retry: %s", exc)
+                self._set_fatal_error("connect_failed", str(exc), retryable=True)
+            else:
+                logger.error("Mattermost: authentication failed — check MATTERMOST_TOKEN and MATTERMOST_URL")
+                self._set_fatal_error(
+                    "auth_failed",
+                    "Mattermost authentication failed — check MATTERMOST_TOKEN/MATTERMOST_URL",
+                    retryable=False,
+                )
+            return False
         if not me or "id" not in me:
             logger.error("Mattermost: failed to authenticate — check MATTERMOST_TOKEN and MATTERMOST_URL")
             await self._session.close()
+            self._release_platform_lock()
+            self._set_fatal_error(
+                "auth_failed",
+                "Mattermost authentication failed — check MATTERMOST_TOKEN/MATTERMOST_URL",
+                retryable=False,
+            )
             return False
 
         self._bot_user_id = me["id"]
@@ -247,6 +331,14 @@ class MattermostAdapter(BasePlatformAdapter):
         if self._session and not self._session.closed:
             await self._session.close()
 
+        # Release the single-instance lock acquired in connect() so another
+        # gateway process can take over the token (no-op if never acquired).
+        self._release_platform_lock()
+
+        # Flip _running=False and write the 'disconnected' runtime status so
+        # is_connected and status tooling reflect the shutdown.  No-op-safe
+        # when a fatal error is already recorded (base guards on that).
+        self._mark_disconnected()
         logger.info("Mattermost: disconnected")
 
 
@@ -293,7 +385,13 @@ class MattermostAdapter(BasePlatformAdapter):
                 resolved_root = await self._resolve_root_id(reply_to)
                 payload["root_id"] = resolved_root
 
-            data = await self._api_post("posts", payload)
+            try:
+                data = await self._request_json("POST", "posts", payload=payload)
+            except _MMApiError as exc:
+                # Propagate transient/permanent class so _send_with_retry
+                # retries network/5xx/429 failures with backoff instead of
+                # silently dropping the response after one plain-text attempt.
+                return SendResult(success=False, error=str(exc), retryable=exc.retryable)
             if not data or "id" not in data:
                 return SendResult(success=False, error="Failed to create post")
             last_id = data["id"]
@@ -328,10 +426,17 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Edit an existing post."""
         formatted = self.format_message(content)
-        data = await self._api_put(
-            f"posts/{message_id}/patch",
-            {"message": formatted},
-        )
+        try:
+            data = await self._request_json(
+                "PUT",
+                f"posts/{message_id}/patch",
+                payload={"message": formatted},
+            )
+        except _MMApiError as exc:
+            # A transient edit failure must not permanently disable in-place
+            # progress editing for the rest of a streamed response: surface
+            # retryable so the consumer keeps can_edit=True.
+            return SendResult(success=False, error=str(exc), retryable=exc.retryable)
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to edit post")
         return SendResult(success=True, message_id=data["id"])
@@ -615,6 +720,19 @@ class MattermostAdapter(BasePlatformAdapter):
     # WebSocket
     # ------------------------------------------------------------------
 
+    async def _escalate_ws_fatal(self, message: str) -> None:
+        """Record a non-retryable fatal error and notify the gateway.
+
+        When the WebSocket listener gives up on a permanent auth/permission
+        failure it must bridge that state back to the gateway: otherwise
+        ``_ws_task`` ends while ``_running`` stays True, ``is_connected``
+        keeps returning True, and the bot is a zombie that the gateway never
+        reconnects.  Mirrors IRC's receive-loop ``finally`` which calls
+        ``_set_fatal_error`` + ``_notify_fatal_error``.
+        """
+        self._set_fatal_error("ws_auth_failed", message, retryable=False)
+        await self._notify_fatal_error()
+
     async def _ws_loop(self) -> None:
         """Connect to the WebSocket and listen for events, reconnecting on failure."""
         delay = _RECONNECT_BASE_DELAY
@@ -634,9 +752,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 err_str = str(exc).lower()
                 if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in {401, 403}:
                     logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
+                    await self._escalate_ws_fatal(f"Mattermost WebSocket auth failed (HTTP {exc.status})")
                     return
                 if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
                     logger.error("Mattermost WS permanent error: %s — stopping reconnect", exc)
+                    await self._escalate_ws_fatal(f"Mattermost WebSocket permanent error: {exc}")
                     return
                 logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay)
 
@@ -834,12 +954,23 @@ class MattermostAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
 
-        # Set message type based on downloaded media types.
-        if media_types and msg_type == MessageType.TEXT:
+        # Set message type based on downloaded media types.  An attachment
+        # whose caption happens to start with '/' was provisionally tagged
+        # COMMAND above; the media type wins so downstream document/image/
+        # audio surfacing (which keys on the message type) still fires.
+        if media_types and msg_type in {MessageType.TEXT, MessageType.COMMAND}:
             if any(m.startswith("image/") for m in media_types):
                 msg_type = MessageType.PHOTO
             elif any(m.startswith("audio/") for m in media_types):
-                msg_type = MessageType.VOICE
+                # Mattermost has no distinct 'voice note' concept — an uploaded
+                # audio file is just a file.  Classify it AUDIO, not VOICE, so
+                # run.py surfaces the cached path to the agent as a referenceable
+                # file (the audio_file_paths branch) instead of force-running STT
+                # on what may be music, a podcast, or a non-speech clip and never
+                # handing the agent the actual file.  Mirrors Discord, which only
+                # tags true voice-message attachments VOICE and ordinary audio
+                # files AUDIO.
+                msg_type = MessageType.AUDIO
             elif media_types:
                 msg_type = MessageType.DOCUMENT
 

@@ -750,3 +750,377 @@ class TestMattermostMediaTypes:
         assert msg.media_types == ["application/pdf"]
         assert not msg.media_types[0].startswith("image/")
         assert not msg.media_types[0].startswith("audio/")
+
+
+# ---------------------------------------------------------------------------
+# Inbound audio classification (AUDIO vs VOICE)
+# ---------------------------------------------------------------------------
+
+class TestMattermostAudioClassification:
+    """An uploaded audio file must be classified MessageType.AUDIO, not VOICE.
+
+    Mattermost has no distinct 'voice note' concept, so every audio attachment
+    is an ordinary file.  run.py only surfaces the cached file path to the
+    agent for MessageType.AUDIO (the audio_file_paths branch); MessageType.VOICE
+    is force-routed to STT.  Tagging audio as VOICE would transcribe music /
+    podcasts / non-speech clips and never hand the agent the actual file.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, file_ids):
+        post_data = {
+            "id": "post_audio",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id audio attached",
+            "file_ids": file_ids,
+        }
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_audio_attachment_classified_audio_not_voice(self):
+        from gateway.platforms.base import MessageType
+
+        file_info = {"name": "podcast.mp3", "mime_type": "audio/mpeg"}
+        self.adapter._api_get = AsyncMock(return_value=file_info)
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=b"MP3 fake")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        self.adapter._session = MagicMock()
+        self.adapter._session.get = MagicMock(return_value=mock_resp)
+
+        with patch("gateway.platforms.base.cache_audio_from_bytes", return_value="/tmp/podcast.mp3"), \
+             patch("gateway.platforms.base.cache_image_from_bytes"), \
+             patch("gateway.platforms.base.cache_document_from_bytes"):
+            await self.adapter._handle_ws_event(self._make_event(["file_audio"]))
+
+        msg = self.adapter.handle_message.call_args[0][0]
+        # The fix: audio surfaces as a referenceable file (AUDIO), not force-STT (VOICE).
+        assert msg.message_type == MessageType.AUDIO
+        assert msg.message_type != MessageType.VOICE
+
+
+# ---------------------------------------------------------------------------
+# Single-instance platform lock
+# ---------------------------------------------------------------------------
+
+class TestMattermostPlatformLock:
+    """connect() must acquire a scoped lock so two gateway processes sharing
+    the same token don't both open a WebSocket and double-process every post
+    (the in-memory MessageDeduplicator cannot dedup across processes)."""
+
+    def _auth_ok(self, adapter):
+        """Stub REST auth (GET users/me) so connect() reaches the lock/WS path."""
+        async def fake_request_json(method, path, *, payload=None):
+            if path == "users/me":
+                return {"id": "bot_id", "username": "bot"}
+            return {}
+        adapter._request_json = fake_request_json
+
+    @pytest.mark.asyncio
+    async def test_connect_acquires_scoped_lock(self, monkeypatch):
+        adapter = _make_adapter()
+        self._auth_ok(adapter)
+        # Don't open a real websocket.
+        monkeypatch.setattr(adapter, "_ws_loop", AsyncMock())
+
+        calls = {}
+
+        def fake_acquire(scope, identity, metadata=None):
+            calls["scope"] = scope
+            calls["identity"] = identity
+            return (True, None)
+
+        monkeypatch.setattr("gateway.status.acquire_scoped_lock", fake_acquire)
+        monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+        ok = await adapter.connect()
+        try:
+            assert ok is True
+            # The lock must actually have been taken on connect.
+            assert calls.get("scope") == "mattermost-token"
+            assert adapter.has_fatal_error is False
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_refuses_on_lock_conflict(self, monkeypatch):
+        adapter = _make_adapter()
+        self._auth_ok(adapter)
+
+        # Another process already owns the token.
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 4242}),
+        )
+        monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+        ws_started = {"flag": False}
+
+        async def fake_ws():
+            ws_started["flag"] = True
+
+        monkeypatch.setattr(adapter, "_ws_loop", fake_ws)
+
+        ok = await adapter.connect()
+
+        assert ok is False
+        # Conflict is permanent — must escalate non-retryable so the gateway
+        # drops the platform instead of retrying forever.
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        # No WebSocket listener should have been started on the loser.
+        assert ws_started["flag"] is False
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for independently-verified bug fixes
+# ---------------------------------------------------------------------------
+
+def _mock_response(status, *, json_value=None, text_value=""):
+    """Build an async-context-manager mock aiohttp response."""
+    resp = AsyncMock()
+    resp.status = status
+    resp.json = AsyncMock(return_value=json_value if json_value is not None else {})
+    resp.text = AsyncMock(return_value=text_value)
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
+    return resp
+
+
+class TestMattermostSlashCaptionedAttachment:
+    """Fix: an attachment whose caption starts with '/' is mis-typed COMMAND,
+    which suppressed the media-type override (guarded on TEXT only), so the
+    file was never surfaced as a DOCUMENT to the agent (run.py keys document
+    surfacing off message_type == DOCUMENT)."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_slash_caption_document_is_typed_document(self):
+        from plugins.platforms.mattermost.adapter import MessageType
+        # DM (channel_type=D) so the '/notes' caption survives unmodified.
+        post_data = {
+            "id": "post_slashdoc",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": "/notes for review",
+            "file_ids": ["file_doc"],
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@alice",
+            },
+        }
+
+        self.adapter._api_get = AsyncMock(
+            return_value={"name": "report.pdf", "mime_type": "application/pdf"}
+        )
+        self.adapter._session = MagicMock()
+        self.adapter._session.get = MagicMock(
+            return_value=_mock_response(200)
+        )
+        # _mock_response's .read isn't set by default; add it.
+        dl = self.adapter._session.get.return_value
+        dl.read = AsyncMock(return_value=b"PDF fake")
+
+        with patch("gateway.platforms.base.cache_document_from_bytes", return_value="/tmp/report.pdf"), \
+             patch("gateway.platforms.base.cache_image_from_bytes"):
+            await self.adapter._handle_ws_event(event)
+
+        msg = self.adapter.handle_message.call_args[0][0]
+        # The attachment must win over the slash-caption COMMAND tag so the
+        # cached document is described to the agent downstream.
+        assert msg.message_type == MessageType.DOCUMENT
+        assert msg.media_urls == ["/tmp/report.pdf"]
+
+
+class TestMattermostSendRetryable:
+    """Fix: send() collapsed all failures into a static, non-retryable error,
+    so _send_with_retry never retried transient 5xx/429/network failures."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._session = MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_send_5xx_is_retryable(self):
+        self.adapter._session.post = MagicMock(
+            return_value=_mock_response(503, text_value="Service Unavailable")
+        )
+        result = await self.adapter.send("chan_1", "hello")
+        assert result.success is False
+        assert result.retryable is True
+
+    @pytest.mark.asyncio
+    async def test_send_429_is_retryable(self):
+        self.adapter._session.post = MagicMock(
+            return_value=_mock_response(429, text_value="Too Many Requests")
+        )
+        result = await self.adapter.send("chan_1", "hello")
+        assert result.success is False
+        assert result.retryable is True
+
+    @pytest.mark.asyncio
+    async def test_send_network_error_is_retryable(self):
+        import aiohttp
+
+        def _raise(*_a, **_k):
+            raise aiohttp.ClientConnectionError("connection reset")
+
+        self.adapter._session.post = MagicMock(side_effect=_raise)
+        result = await self.adapter.send("chan_1", "hello")
+        assert result.success is False
+        assert result.retryable is True
+
+    @pytest.mark.asyncio
+    async def test_send_4xx_is_not_retryable(self):
+        self.adapter._session.post = MagicMock(
+            return_value=_mock_response(403, text_value="Forbidden")
+        )
+        result = await self.adapter.send("chan_1", "hello")
+        assert result.success is False
+        assert result.retryable is False
+
+
+class TestMattermostEditRetryable:
+    """Fix: edit_message() never set retryable, so a single transient blip
+    permanently disabled progress-message editing for a streamed response."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._session = MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_edit_5xx_is_retryable(self):
+        self.adapter._session.put = MagicMock(
+            return_value=_mock_response(502, text_value="Bad Gateway")
+        )
+        result = await self.adapter.edit_message("chan_1", "post_1", "edited")
+        assert result.success is False
+        assert result.retryable is True
+
+    @pytest.mark.asyncio
+    async def test_edit_4xx_is_not_retryable(self):
+        self.adapter._session.put = MagicMock(
+            return_value=_mock_response(404, text_value="Not Found")
+        )
+        result = await self.adapter.edit_message("chan_1", "post_1", "edited")
+        assert result.success is False
+        assert result.retryable is False
+
+
+class TestMattermostConnectFatalEscalation:
+    """Fix: connect() returned False on missing config / auth failure without
+    recording a fatal error, so the gateway retried the platform forever."""
+
+    @pytest.mark.asyncio
+    async def test_missing_config_sets_nonretryable_fatal(self):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        cfg = PlatformConfig(enabled=True, token="", extra={"url": ""})
+        adapter = MattermostAdapter(cfg)
+        ok = await adapter.connect()
+        assert ok is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_sets_nonretryable_fatal(self):
+        adapter = _make_adapter()
+        # users/me returns a 401 → permanent auth failure.
+        with patch("aiohttp.ClientSession") as mock_session_cls:
+            session = MagicMock()
+            session.get = MagicMock(
+                return_value=_mock_response(401, text_value="Unauthorized")
+            )
+            session.close = AsyncMock()
+            session.closed = False
+            mock_session_cls.return_value = session
+            ok = await adapter.connect()
+        assert ok is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert session.close.called
+
+    @pytest.mark.asyncio
+    async def test_transient_connect_failure_is_retryable_fatal(self):
+        import aiohttp
+        adapter = _make_adapter()
+        with patch("aiohttp.ClientSession") as mock_session_cls:
+            session = MagicMock()
+
+            def _raise(*_a, **_k):
+                raise aiohttp.ClientConnectionError("network unreachable")
+
+            session.get = MagicMock(side_effect=_raise)
+            session.close = AsyncMock()
+            session.closed = False
+            mock_session_cls.return_value = session
+            ok = await adapter.connect()
+        assert ok is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is True
+
+
+class TestMattermostDisconnectMarks:
+    """Fix: disconnect() never called _mark_disconnected(), so is_connected
+    stayed True and runtime status reported 'connected' after shutdown."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_marks_disconnected(self):
+        adapter = _make_adapter()
+        adapter._mark_connected()
+        assert adapter.is_connected is True
+        adapter._session = MagicMock()
+        adapter._session.closed = False
+        adapter._session.close = AsyncMock()
+        await adapter.disconnect()
+        assert adapter.is_connected is False
+
+
+class TestMattermostWsAuthEscalation:
+    """Fix: on a permanent WS auth failure the listener returned silently
+    without escalating, leaving a zombie adapter the gateway never reconnects."""
+
+    @pytest.mark.asyncio
+    async def test_ws_permanent_auth_failure_escalates(self):
+        adapter = _make_adapter()
+        adapter._mark_connected()
+        notified = {"count": 0}
+
+        async def _handler(_a):
+            notified["count"] += 1
+
+        adapter.set_fatal_error_handler(_handler)
+
+        async def _raise_auth(*_a, **_k):
+            raise RuntimeError("server rejected: 401 unauthorized")
+
+        adapter._ws_connect_and_listen = _raise_auth
+        await adapter._ws_loop()
+
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert notified["count"] == 1
+        assert adapter.is_connected is False

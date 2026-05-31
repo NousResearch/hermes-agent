@@ -82,6 +82,23 @@ class TestPreflightDeferral:
 
         assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
+    def test_defers_near_threshold_without_rough_baseline_after_real_fit(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 70_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 0
+        compressor.last_compression_rough_tokens = 0
+
+        assert compressor.should_defer_preflight_to_real_usage(92_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 92_000
+
+    def test_does_not_defer_far_above_threshold_without_rough_baseline(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 70_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 0
+        compressor.last_compression_rough_tokens = 0
+
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
 
 
 class TestCompress:

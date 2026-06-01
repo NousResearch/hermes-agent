@@ -8,6 +8,7 @@ pause/resume/run/remove, status, and tick.
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -155,6 +156,7 @@ def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
     from hermes_cli.gateway import find_gateway_pids
+    from hermes_constants import get_hermes_home
 
     print()
 
@@ -162,6 +164,51 @@ def cron_status():
     if pids:
         print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
         print(f"  PID: {', '.join(map(str, pids))}")
+
+        # Check ticker liveness via heartbeat file.
+        # The ticker writes a timestamp after every successful tick.
+        # If the file is missing or stale (> 2x interval + 60s grace),
+        # the ticker thread may have died silently.  (#32612)
+        heartbeat_file = get_hermes_home() / "cron" / ".ticker-heartbeat"
+        try:
+            if heartbeat_file.exists():
+                heartbeat_age = time.time() - float(
+                    heartbeat_file.read_text(encoding="utf-8").strip()
+                )
+                heartbeat_mins = int(heartbeat_age / 60)
+                heartbeat_secs = int(heartbeat_age % 60)
+                if heartbeat_age > 180:  # 2x 60s interval + 60s grace
+                    print(
+                        color(
+                            f"  ! Ticker heartbeat is stale ({heartbeat_mins}m {heartbeat_secs}s ago) "
+                            f"— cron jobs may NOT be firing!",
+                            Colors.YELLOW,
+                        )
+                    )
+                    print(
+                        color(
+                            "     The cron ticker thread may have died. "
+                            "Restart the gateway: hermes gateway restart",
+                            Colors.DIM,
+                        )
+                    )
+                else:
+                    print(
+                        color(
+                            f"  Ticker heartbeat: {heartbeat_secs}s ago",
+                            Colors.DIM,
+                        )
+                    )
+            else:
+                print(
+                    color(
+                        "  ! No ticker heartbeat yet — "
+                        "wait for the first tick or restart the gateway",
+                        Colors.YELLOW,
+                    )
+                )
+        except Exception:
+            pass  # best-effort; never fail cron status on a heartbeat I/O error
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()

@@ -19056,21 +19056,36 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
     from hermes_cli.debug import _sweep_expired_pastes
+    from hermes_constants import get_hermes_home
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
 
+    _heartbeat_file = get_hermes_home() / "cron" / ".ticker-heartbeat"
+
+    def _write_heartbeat():
+        try:
+            _heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+            _heartbeat_file.write_text(str(time.time()), encoding="utf-8")
+        except Exception:
+            pass
+
     logger.info("Cron ticker started (interval=%ds)", interval)
+    _write_heartbeat()
     tick_count = 0
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        except BaseException as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                logger.info("Cron ticker stopping due to %s", type(e).__name__)
+                raise
+            logger.error("Cron tick error (tick %d): %s: %s", tick_count, type(e).__name__, e, exc_info=True)
 
         tick_count += 1
+        _write_heartbeat()
 
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:

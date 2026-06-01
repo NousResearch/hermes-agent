@@ -23,11 +23,16 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The full suite (~23.8k tests, -n auto) runs ~12.5m on fast 2-worker
-    # hardware; on GitHub's slower 2-vCPU runners it lands just over the old
-    # 20m cap and was being killed mid-run (tests still passing, not failing).
-    # Raise the cap so the job completes and reports a real result.
-    timeout-minutes: 35
+    # The full suite (~23.8k tests) takes >35m on a single 2-vCPU runner even
+    # with -n auto, so it was being killed by the job timeout mid-run (tests
+    # still passing, not failing). Shard it with pytest-split across parallel
+    # runners; each shard runs ~1/4 of the suite (-n auto within the shard) and
+    # finishes comfortably under the cap.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -50,7 +55,8 @@ jobs:
       - name: Run tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto \
+            --splits 4 --group ${{ matrix.group }}
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""

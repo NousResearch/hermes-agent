@@ -4599,6 +4599,8 @@ class GatewayRunner:
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
+        self._schedule_awf_card_request_watcher()
+
         # Start background session expiry watcher to finalize expired sessions
         asyncio.create_task(self._session_expiry_watcher())
 
@@ -4631,6 +4633,111 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    def _schedule_awf_card_request_watcher(self) -> None:
+        """Start the optional AWF Telegram card outbox watcher."""
+
+        try:
+            from gateway.awf import load_awf_config
+
+            awf_cfg = load_awf_config(self.config)
+        except Exception:
+            logger.debug("AWF card watcher config load failed", exc_info=True)
+            return
+        if not awf_cfg.auto_send_cards:
+            return
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        if adapter is None or not hasattr(adapter, "send_awf_approval_card"):
+            logger.warning(
+                "AWF auto_send_cards is enabled, but no connected Telegram adapter can send cards"
+            )
+            return
+        task = asyncio.create_task(self._awf_card_request_watcher())
+        tasks = getattr(self, "_background_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        logger.info(
+            "AWF Telegram card watcher started: requests=%s results=%s",
+            awf_cfg.card_requests_path,
+            awf_cfg.card_results_path,
+        )
+
+    async def _awf_card_request_watcher(self) -> None:
+        """Poll AWF's local send-intent outbox and send Telegram cards."""
+
+        while not self._shutdown_event.is_set():
+            interval = 2.0
+            try:
+                from gateway.awf import load_awf_config
+
+                awf_cfg = load_awf_config(self.config)
+                if not awf_cfg.auto_send_cards:
+                    return
+                interval = awf_cfg.card_poll_interval_seconds
+                await self._send_pending_awf_cards_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("AWF Telegram card watcher tick failed", exc_info=True)
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _send_pending_awf_cards_once(self) -> int:
+        """Send currently pending AWF Telegram card requests once.
+
+        Returns the number of newly recorded successful sends.  The actual
+        approval authority remains AWF's approval-events ledger; this only
+        turns a local send-intent into a Telegram card.
+        """
+
+        from gateway.awf import (
+            append_card_send_result_once,
+            card_request_chat_id,
+            card_request_metadata,
+            gate_for_card_request,
+            load_awf_config,
+            pending_card_requests,
+        )
+
+        awf_cfg = load_awf_config(self.config)
+        if not awf_cfg.auto_send_cards:
+            return 0
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        if adapter is None or not hasattr(adapter, "send_awf_approval_card"):
+            return 0
+
+        sent_count = 0
+        for request in pending_card_requests(awf_cfg):
+            request_id = str(request.get("request_id") or "")
+            chat_id = card_request_chat_id(awf_cfg, request)
+            if not chat_id:
+                logger.warning("AWF card request %s has no Telegram chat_id", request_id or "<unknown>")
+                continue
+            gate = gate_for_card_request(awf_cfg, request)
+            result = await adapter.send_awf_approval_card(
+                chat_id,
+                gate,
+                metadata=card_request_metadata(awf_cfg, request),
+            )
+            if getattr(result, "success", False):
+                appended, _ = append_card_send_result_once(
+                    awf_cfg,
+                    request=request,
+                    chat_id=chat_id,
+                    message_id=str(getattr(result, "message_id", "") or ""),
+                )
+                if appended:
+                    sent_count += 1
+                continue
+            logger.warning(
+                "AWF card request %s failed to send: %s",
+                request_id or "<unknown>",
+                getattr(result, "error", "") or "unknown error",
+            )
+        return sent_count
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
@@ -7934,6 +8041,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "awf":
+            return await self._handle_awf_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -9996,6 +10106,13 @@ class GatewayRunner:
             f"Tier: user\n"
             f"Slash commands you can run: {runnable_str}"
         )
+
+
+    async def _handle_awf_command(self, event: MessageEvent) -> str:
+        """Handle /awf local-file status/details/approval commands."""
+        from gateway.awf import handle_awf_command
+
+        return await handle_awf_command(event, self.config)
 
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:

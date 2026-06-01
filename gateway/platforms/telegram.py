@@ -2622,6 +2622,75 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_awf_approval_card(
+        self,
+        chat_id: str,
+        gate: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an AWF local-file approval card with inline buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            from gateway.awf import format_gate_card
+
+            gate_id = str(
+                gate.get("gate_id")
+                or gate.get("id")
+                or gate.get("key")
+                or gate.get("approval_id")
+                or ""
+            ).strip()
+            if not gate_id:
+                return SendResult(success=False, error="AWF gate missing gate_id")
+            text = _html.escape(format_gate_card(gate))
+            linear_url = str(
+                gate.get("linear_url")
+                or gate.get("linear")
+                or gate.get("issue_url")
+                or gate.get("url")
+                or ""
+            ).strip()
+            open_linear_button = (
+                InlineKeyboardButton("Open Linear", url=linear_url)
+                if linear_url
+                else InlineKeyboardButton("Open Linear", callback_data=f"awf:o:{gate_id}")
+            )
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f"awf:a:{gate_id}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"awf:r:{gate_id}"),
+                ],
+                [
+                    InlineKeyboardButton("Details", callback_data=f"awf:d:{gate_id}"),
+                    open_linear_button,
+                ],
+            ])
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                "reply_to_message_id": reply_to_id,
+                **self._link_preview_kwargs(),
+            }
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_awf_approval_card failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -3237,6 +3306,37 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- AWF local-file approval callbacks (awf:action:gate_id) ---
+        if data.startswith("awf:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized for this AWF gate.")
+                return
+            try:
+                from gateway.awf import handle_awf_callback
+
+                answer_text, edit_text, remove_buttons = await handle_awf_callback(query, data)
+            except Exception as exc:
+                logger.warning("[%s] AWF callback failed: %s", self.name, exc)
+                await query.answer(text="AWF callback failed.")
+                return
+            await query.answer(text=answer_text)
+            try:
+                await query.edit_message_text(
+                    text=_html.escape(edit_text),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None if remove_buttons else getattr(query.message, "reply_markup", None),
+                )
+            except Exception:
+                pass
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

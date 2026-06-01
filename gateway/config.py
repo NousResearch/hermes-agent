@@ -468,6 +468,9 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # Agent Workflow Synthesis local-file approval/status integration.
+    awf: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -587,6 +590,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "awf": self.awf,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
@@ -632,6 +636,10 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        awf = data.get("awf", {})
+        if not isinstance(awf, dict):
+            awf = {}
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -656,6 +664,7 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            awf=awf,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
@@ -742,6 +751,17 @@ def load_gateway_config() -> GatewayConfig:
                         "Ignoring invalid quick_commands in config.yaml "
                         "(expected mapping, got %s)",
                         type(qc).__name__,
+                    )
+
+            awf_cfg = yaml_cfg.get("awf")
+            if awf_cfg is not None:
+                if isinstance(awf_cfg, dict):
+                    gw_data["awf"] = awf_cfg
+                else:
+                    logger.warning(
+                        "Ignoring invalid awf config in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(awf_cfg).__name__,
                     )
 
             stt_cfg = yaml_cfg.get("stt")

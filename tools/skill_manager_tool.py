@@ -161,6 +161,60 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _bundled_hub_guard(name: str) -> Optional[str]:
+    """Refuse to mutate bundled or hub-installed skills (issue #20273).
+
+    Bundled skills ship with Hermes (``hermes-agent/skills/`` and synced to
+    ``~/.hermes/skills/`` by ``tools/skills_sync.py``); hub-installed skills
+    arrive via ``hermes skills install`` and are tracked in
+    ``~/.hermes/skills/.hub/lock.json``. Both are owned by their upstream
+    source — overwriting them is overwritten again on the next
+    ``hermes update`` and, worse, can be triggered autonomously by the
+    background review fork or the curator without a conscious user decision.
+
+    The background review prompt already instructs the agent to leave them
+    alone, but a code-level guard is needed as defense-in-depth so a
+    poisoned community skill (prompt-injection) or a confused background
+    review can still be stopped. This guard is **enforced**, not a flag:
+    no opt-out.
+
+    Best-effort: if the provenance lookup fails (missing manifest, broken
+    lock file) we let the write through rather than block on a metadata
+    read — the same posture as ``_pinned_guard``. The protected *bundled*
+    list is the one shipped with the running Hermes install, so a
+    missing-manifest case should be rare.
+    """
+    try:
+        from tools import skill_usage
+        # ``is_agent_created`` returns False for bundled + hub skills.
+        # We only want to *block* on bundled/hub, not silently pass on
+        # genuine agent-created skills.
+        if not skill_usage.is_agent_created(name):
+            # Distinguish bundled vs hub for a clearer error message.
+            bundled = skill_usage._read_bundled_manifest_names()  # noqa: SLF001
+            hub = skill_usage._read_hub_installed_names()  # noqa: SLF001
+            if name in bundled:
+                source = "bundled (shipped with Hermes)"
+            elif name in hub:
+                source = "hub-installed (via 'hermes skills install')"
+            else:
+                source = "not agent-created (bundled or hub-installed)"
+            return (
+                f"Skill '{name}' is {source} and cannot be edited, patched, "
+                f"deleted, or have files written/removed via skill_manage. "
+                f"Upstream owns this skill and any local change will be "
+                f"overwritten on `hermes update` or `hermes skills sync`. "
+                f"To capture a personal variant, create a new skill with a "
+                f"different name instead."
+            )
+    except Exception:
+        # Best-effort: never block legitimate writes on a metadata-read
+        # failure. The background review prompt is the second line of
+        # defense; this is the first.
+        logger.debug("bundled-hub-guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -544,6 +598,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -583,6 +641,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
 
     skill_dir = existing["path"]
 
@@ -673,6 +735,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -742,6 +808,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
 
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -775,6 +845,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    bundled_err = _bundled_hub_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
 
     skill_dir = existing["path"]
 

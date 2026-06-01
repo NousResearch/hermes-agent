@@ -19,6 +19,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    _bundled_hub_guard,
     MAX_NAME_LENGTH,
 )
 
@@ -939,3 +940,174 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Bundled/hub-installed guard — issue #20273.
+# skill_manage refuses to mutate bundled (shipped with Hermes) or
+# hub-installed (via 'hermes skills install') skills. Unlike the pin guard,
+# this is **enforced** with no opt-out — it is defense-in-depth against a
+# confused background review or a poisoned community skill that injects
+# instructions to overwrite upstream-owned content.
+# ---------------------------------------------------------------------------
+
+
+class TestBundledHubGuard:
+    """All write paths (edit, patch, delete, write_file, remove_file) refuse
+    bundled and hub-installed skills. Create is intentionally unguarded —
+    you can't "create" a name that already exists upstream, and the
+    existing duplicate-name check catches the real risk there.
+    """
+
+    @staticmethod
+    def _make_bundled(name: str):
+        """Patch skill_usage.is_agent_created to mark *name* as bundled."""
+        def _fake(name_, bundled_name=name):
+            return name_ != bundled_name
+        return patch("tools.skill_usage.is_agent_created", side_effect=_fake)
+
+    @staticmethod
+    def _make_hub(name: str):
+        """Mark *name* as hub-installed via _read_hub_installed_names
+        (the public is_agent_created path uses both bundled AND hub sets)."""
+        hub_set = {name}
+        bundled_set: set = set()
+        return (
+            patch("tools.skill_usage.is_agent_created",
+                  side_effect=lambda n: n not in hub_set),
+            patch("tools.skill_usage._read_bundled_manifest_names",
+                  return_value=bundled_set),
+            patch("tools.skill_usage._read_hub_installed_names",
+                  return_value=hub_set),
+        )
+
+    # ---- guard function direct tests ---------------------------------
+
+    def test_bundled_guard_returns_error_for_bundled(self):
+        name = "hermes-agent"
+        with self._make_bundled(name):
+            err = _bundled_hub_guard(name)
+        assert err is not None
+        assert "bundled" in err.lower()
+        assert name in err
+
+    def test_bundled_guard_returns_error_for_hub_installed(self):
+        name = "community-skill"
+        patches = self._make_hub(name)
+        with patches[0], patches[1], patches[2]:
+            err = _bundled_hub_guard(name)
+        assert err is not None
+        assert "hub-installed" in err.lower()
+        assert name in err
+
+    def test_bundled_guard_returns_none_for_agent_created(self):
+        with patch("tools.skill_usage.is_agent_created", return_value=True):
+            err = _bundled_hub_guard("my-personal-skill")
+        assert err is None
+
+    def test_bundled_guard_fails_open_on_lookup_error(self):
+        """If provenance lookup raises, allow the write (best-effort)."""
+        with patch("tools.skill_usage.is_agent_created",
+                   side_effect=RuntimeError("manifest broken")):
+            err = _bundled_hub_guard("some-skill")
+        assert err is None
+
+    # ---- write-path integration tests --------------------------------
+
+    def test_edit_refuses_bundled(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT)
+            with self._make_bundled("hermes-agent"):
+                result = _edit_skill("hermes-agent", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        # File untouched
+        content = (tmp_path / "hermes-agent" / "SKILL.md").read_text()
+        assert "A test skill" in content
+        assert "Updated description" not in content
+
+    def test_patch_refuses_bundled(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT)
+            with self._make_bundled("hermes-agent"):
+                result = _patch_skill("hermes-agent", "Do the thing.", "Hijacked.")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        content = (tmp_path / "hermes-agent" / "SKILL.md").read_text()
+        assert "Do the thing." in content
+        assert "Hijacked." not in content
+
+    def test_delete_refuses_bundled(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT)
+            with self._make_bundled("hermes-agent"):
+                result = _delete_skill("hermes-agent")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        # Skill still exists
+        assert (tmp_path / "hermes-agent" / "SKILL.md").exists()
+
+    def test_delete_refuses_hub_installed(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("community-skill", VALID_SKILL_CONTENT)
+            patches = self._make_hub("community-skill")
+            with patches[0], patches[1], patches[2]:
+                result = _delete_skill("community-skill")
+        assert result["success"] is False
+        assert "hub-installed" in result["error"].lower()
+        assert (tmp_path / "community-skill" / "SKILL.md").exists()
+
+    def test_write_file_refuses_bundled(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT)
+            with self._make_bundled("hermes-agent"):
+                result = _write_file("hermes-agent", "references/api.md", "x")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        assert not (tmp_path / "hermes-agent" / "references" / "api.md").exists()
+
+    def test_remove_file_refuses_bundled(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT)
+            _write_file("hermes-agent", "references/api.md", "x")
+            with self._make_bundled("hermes-agent"):
+                result = _remove_file("hermes-agent", "references/api.md")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        # File still there
+        assert (tmp_path / "hermes-agent" / "references" / "api.md").exists()
+
+    def test_agent_created_skill_still_editable(self, tmp_path):
+        """Sanity check: the guard doesn't fire for normal agent skills."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-personal-skill", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.is_agent_created", return_value=True):
+                result = _edit_skill("my-personal-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result
+        content = (tmp_path / "my-personal-skill" / "SKILL.md").read_text()
+        assert "Updated description" in content
+
+    def test_bundled_guard_fails_open_during_write(self, tmp_path):
+        """If provenance lookup raises, write goes through (best-effort)."""
+        with _skill_dir(tmp_path):
+            _create_skill("some-skill", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.is_agent_created",
+                       side_effect=RuntimeError("manifest broken")):
+                result = _edit_skill("some-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True
+        content = (tmp_path / "some-skill" / "SKILL.md").read_text()
+        assert "Updated description" in content
+
+    def test_via_dispatcher_delete_refuses_bundled(self, tmp_path):
+        """The skill_manage dispatcher route also honors the guard."""
+        with _skill_dir(tmp_path):
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT)
+            with self._make_bundled("hermes-agent"):
+                raw = skill_manage(
+                    action="delete",
+                    name="hermes-agent",
+                )
+        result = json.loads(raw) if isinstance(raw, str) else raw
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        assert (tmp_path / "hermes-agent" / "SKILL.md").exists()

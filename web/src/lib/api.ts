@@ -526,7 +526,10 @@ export interface AuthMeResponse {
 export interface ActionResponse {
   name: string;
   ok: boolean;
-  pid: number;
+  pid: number | null;
+  error?: string;
+  message?: string;
+  update_command?: string;
 }
 
 /** Per-call overrides for {@link fetchJSON}. */

@@ -126,16 +126,19 @@ def _resolve_codex_usage_url(base_url: str) -> str:
 
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
     headers = {
         "Authorization": f"Bearer {creds['api_key']}",
         "Accept": "application/json",
         "User-Agent": "codex-cli",
     }
-    if account_id:
-        headers["ChatGPT-Account-Id"] = account_id
+    try:
+        token_data = _read_codex_tokens()
+        tokens = token_data.get("tokens") or {}
+        account_id = str(tokens.get("account_id", "") or "").strip() or None
+        if account_id:
+            headers["ChatGPT-Account-Id"] = account_id
+    except Exception:
+        pass
     with httpx.Client(timeout=15.0) as client:
         response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
         response.raise_for_status()

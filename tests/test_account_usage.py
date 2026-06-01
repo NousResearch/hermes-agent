@@ -72,11 +72,13 @@ def test_fetch_account_usage_codex(monkeypatch):
                         "used_percent": 15,
                         "reset_at": 1_900_000_000,
                         "limit_window_seconds": 18000,
+                        "reset_after_seconds": 1_000_000,
                     },
                     "secondary_window": {
                         "used_percent": 40,
                         "reset_at": 1_900_500_000,
                         "limit_window_seconds": 604800,
+                        "reset_after_seconds": 500_000,
                     },
                 },
                 "credits": {"has_credits": True, "balance": 12.5},
@@ -89,6 +91,53 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot is not None
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
+    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].used_percent == 15.0
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    assert snapshot.windows[1].label == "Weekly"
+    assert snapshot.windows[1].used_percent == 40.0
+    assert snapshot.windows[1].reset_at == datetime.fromtimestamp(1_900_500_000, tz=timezone.utc)
+    assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_ignores_optional_account_id_lookup_failure(monkeypatch):
+    def raise_legacy_auth_error():
+        raise RuntimeError("legacy auth store unavailable")
+
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        raise_legacy_auth_error,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 15,
+                        "reset_at": 1_900_000_000,
+                        "limit_window_seconds": 18000,
+                    },
+                },
+                "credits": {"has_credits": True, "balance": 12.5},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.plan == "Pro"
+    assert len(snapshot.windows) == 1
     assert snapshot.windows[0].label == "Session"
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
@@ -107,6 +156,11 @@ def test_render_account_usage_lines_includes_reset_and_provider():
                 used_percent=25,
                 reset_at=datetime.now(timezone.utc),
             ),
+            AccountUsageWindow(
+                label="Weekly",
+                used_percent=40,
+                reset_at=datetime.now(timezone.utc),
+            ),
         ),
         details=("Credits balance: $9.99",),
     )
@@ -115,8 +169,8 @@ def test_render_account_usage_lines_includes_reset_and_provider():
     assert lines[0] == "📈 Account limits"
     assert "openai-codex (Pro)" in lines[1]
     assert "Session: 75% remaining (25% used)" in lines[2]
-    assert "Credits balance: $9.99" in lines[3]
-
+    assert "Weekly: 60% remaining (40% used)" in lines[3]
+    assert "Credits balance: $9.99" in lines[4]
 
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(

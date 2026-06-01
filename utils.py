@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_ATOMIC_REPLACE_MAX_ATTEMPTS = 8
+_ATOMIC_REPLACE_RETRY_DELAY = 0.01
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -78,7 +81,14 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    for attempt in range(_ATOMIC_REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(str(tmp_path), real_path)
+            break
+        except PermissionError:
+            if attempt == _ATOMIC_REPLACE_MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_ATOMIC_REPLACE_RETRY_DELAY * (attempt + 1))
     return real_path
 
 

@@ -3,6 +3,13 @@
 Provides NodeType/EdgeType enums, alias maps for normalizing external input,
 and validation functions that return structured issue/warning lists.
 
+Warning severity taxonomy (UA-002):
+- INFO: orphan documentation files (docs/, README, CHANGELOG, .md, .txt, .rst)
+- MINOR: orphan asset or fixture files (tests/fixtures, assets/, data/, .json, .yaml)
+- MODERATE: orphan source files not matched by INFO/MINOR heuristics
+- MAJOR: only when deterministic heuristics support suspicious isolated source
+  (not assigned by LLM intuition)
+
 Python stdlib only — no external dependencies.
 """
 from enum import Enum
@@ -47,6 +54,18 @@ EDGE_TYPE_ALIASES: Dict[str, EdgeType] = {
     "configures": EdgeType.CONFIGURES, "configured_by": EdgeType.CONFIGURES,
     "documents": EdgeType.DOCUMENTS, "doc": EdgeType.DOCUMENTS,
 }
+
+
+class WarningSeverity(str, Enum):
+    """Deterministic severity levels for validation warnings.
+
+    Values: INFO, MINOR, MODERATE, MAJOR.
+    Severity comes from deterministic script output — never LLM intuition.
+    """
+    INFO = "info"
+    MINOR = "minor"
+    MODERATE = "moderate"
+    MAJOR = "major"
 
 
 def _resolve_node_type(raw: str):
@@ -146,13 +165,99 @@ def validate_edge(edge: dict, known_node_ids: Set[str]) -> List[str]:
     return issues
 
 
-def validate_graph(graph: dict) -> Dict[str, List[str]]:
-    """Validate an entire graph dict. Returns {"issues": [...], "warnings": [...]}.
+def _classify_orphan_severity(node_id: str, node_data: dict) -> WarningSeverity:
+    """Classify the severity of an orphan node warning using deterministic heuristics.
+
+    Heuristics (in priority order):
+    1. INFO — documentation paths: docs/, README, CHANGELOG, .md, .txt, .rst files
+    2. MINOR — fixture/asset paths: tests/fixtures, assets/, data/, .json, .yaml files
+    3. MODERATE — isolated source files not matched above
+    4. MAJOR — only when specific suspicious patterns detected (none enabled yet)
+    5. Default for unmatched paths here: MODERATE; warnings without file paths
+       fall back to INFO in classify_warning_severity().
+    """
+    file_path = node_data.get("filePath", node_id)
+
+    # INFO: documentation files
+    info_patterns = [
+        "/docs/", "docs/",  # in docs/ directory
+        "readme", "license", "contributing",  # root docs (not CHANGELOG)
+        ".md", ".txt", ".rst",  # doc extensions
+    ]
+    file_lower = file_path.lower()
+    for pattern in info_patterns:
+        if pattern in file_lower:
+            return WarningSeverity.INFO
+
+    # MINOR: fixture/asset/test-data files
+    minor_patterns = [
+        "/fixtures/", "/tests/fixtures",  # test fixtures
+        "/assets/", "assets/",  # asset directories
+        "/data/", "data/",  # data directories
+        ".json", ".yaml", ".yml", ".xml", ".csv", ".toml",  # data extensions
+        ".png", ".jpg", ".svg", ".gif",  # image assets
+        "changelog",  # orphan changelog files (without .md extension)
+    ]
+    for pattern in minor_patterns:
+        if pattern in file_lower:
+            return WarningSeverity.MINOR
+
+    return WarningSeverity.MODERATE
+
+
+def classify_warning_severity(warning_message: str, node_data: dict) -> WarningSeverity:
+    """Classify the severity of a warning message deterministically.
+
+    This is the public classification function. It never uses LLM intuition —
+    severity comes entirely from deterministic heuristics applied to node metadata.
+    """
+    # Only handle orphan node warnings via node data heuristics
+    if node_data.get("filePath"):
+        return _classify_orphan_severity(
+            node_data.get("node_id", ""), node_data
+        )
+    # Default for unmatched warnings
+    return WarningSeverity.INFO
+
+
+def build_warning_summary(classified_warnings: List[dict]) -> Dict[str, int]:
+    """Build a severity summary from classified warning entries.
+
+    Args:
+        classified_warnings: List of dicts with 'severity' key containing
+            a WarningSeverity value.
+
+    Returns:
+        Dict mapping severity string to count, e.g.
+        {"INFO": 3, "MINOR": 1, "MODERATE": 0, "MAJOR": 0}
+    """
+    summary = {s.value: 0 for s in WarningSeverity}
+    for entry in classified_warnings:
+        sev = entry.get("severity", WarningSeverity.INFO.value)
+        if sev in summary:
+            summary[sev] += 1
+    return summary
+
+
+def validate_graph(graph: dict) -> dict:
+    """Validate an entire graph dict. Returns {
+        "issues": [...], "warnings": [...],
+        "severity_summary": {"info": N, "minor": N, "moderate": N, "major": N},
+        "severity_classified_warnings": [{"severity": ..., "message": ...}, ...]
+    }.
 
     Validates all nodes and edges, then reports orphan nodes (not referenced
-    by any edge) as warnings.
+    by any edge) as warnings with deterministic severity classification.
+
+    Backward compatibility: 'issues' and 'warnings' are always present as
+    lists of strings, matching the pre-UA-002 contract.
     """
-    result: Dict[str, List[str]] = {"issues": [], "warnings": []}
+    result = {
+        "issues": [],
+        "warnings": [],
+        "severity_summary": {s.value: 0 for s in WarningSeverity},
+        "severity_classified_warnings": [],
+    }
 
     # Require nodes and edges keys
     if "nodes" not in graph:
@@ -167,10 +272,12 @@ def validate_graph(graph: dict) -> Dict[str, List[str]]:
 
     # Validate each node
     node_ids: Set[str] = set()
+    _node_id_to_data: Dict[str, dict] = {}
     for node in nodes:
         node_id = node.get("node_id")
         if node_id is not None:
             node_ids.add(node_id)
+            _node_id_to_data[node_id] = node
         node_issues = validate_node(node)
         result["issues"].extend(node_issues)
 
@@ -186,9 +293,19 @@ def validate_graph(graph: dict) -> Dict[str, List[str]]:
         edge_issues = validate_edge(edge, node_ids)
         result["issues"].extend(edge_issues)
 
-    # Report orphan nodes (not referenced by any edge) as warnings
+    # Report orphan nodes (not referenced by any edge) as warnings with severity
     orphan_ids = node_ids - referenced_nodes
     for oid in sorted(orphan_ids):
-        result["warnings"].append(f"Orphan node: '{oid}' is not referenced by any edge")
+        warning_msg = f"Orphan node: '{oid}' is not referenced by any edge"
+        result["warnings"].append(warning_msg)
+
+        # Classify severity deterministically using node data
+        node_data = _node_id_to_data.get(oid, {})
+        severity = classify_warning_severity(warning_msg, node_data)
+        result["severity_classified_warnings"].append({
+            "severity": severity.value,
+            "message": warning_msg,
+        })
+        result["severity_summary"][severity.value] += 1
 
     return result

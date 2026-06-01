@@ -159,7 +159,8 @@ class TestValidateGraph:
     def test_empty_graph(self):
         graph = {"nodes": [], "edges": []}
         result = validate_graph(graph)
-        assert result == {"issues": [], "warnings": []}
+        assert result["issues"] == []
+        assert result["warnings"] == []
 
     def test_valid_graph(self):
         graph = {

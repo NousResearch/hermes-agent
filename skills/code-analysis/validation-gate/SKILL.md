@@ -15,23 +15,51 @@ hermes.tags: [on-demand, code-analysis, quality-gate]
    import importlib.util
    spec = importlib.util.spec_from_file_location('graph_schema', 'scripts/code-scan/graph_schema.py')
    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
-   result = mod.validate_graph(graph)  # → {"issues": [...], "warnings": [...]}
+   result = mod.validate_graph(graph)  # → {"issues": [...], "warnings": [...], "severity_summary": {...}, "severity_classified_warnings": [...]}
    ```
-3. Parse results: `issues` list and `warnings` list.
+3. Parse results: `issues` list, `warnings` list, `severity_summary` dict, and `severity_classified_warnings` list.
 
 ## Phase 2 — LLM Rendering
 
 Interpret results and render a verdict:
 
-- **APPROVED** — `issues` is empty. Warnings may exist but are presented as non-blocking notes.
-- **WARNING** — `issues` is empty but `warnings` is non-empty. Render warnings as structured notes. Proceed with caution.
+- **APPROVED** — `issues` is empty and `warnings` is empty. No action needed.
+- **WARNING** — `issues` is empty but `warnings` is non-empty. Render warnings as structured notes with severity breakdown from `severity_summary`. Proceed with caution.
 - **REJECTED** — `issues` is non-empty. Render issues as structured blockers. Trigger revision gate (request changes before proceeding).
 
-**Constraint:** Do NOT validate using LLM intuition — only report what the validation script returns.
+**Constraint:** Do NOT validate using LLM intuition — only report what the validation script returns. Do NOT assign severity to warnings using LLM intuition — severity is determined deterministically by `graph_schema.py` heuristics.
+
+## Warning Severity Taxonomy (UA-002)
+
+Warnings are classified into four deterministic severity levels:
+
+| Severity | Meaning | Typical Examples |
+|----------|---------|------------------|
+| **INFO** | Non-blocking informational notices | Orphan documentation files (`docs/`, `README.md`, `CHANGELOG.md`, `.txt`, `.rst`) |
+| **MINOR** | Low-priority orphan assets | Orphan fixtures, test data, images, config files (`tests/fixtures/`, `assets/`, `.json`, `.yaml`) |
+| **MODERATE** | Potentially disconnected code worth reviewing | Orphan source files not matched by INFO/MINOR heuristics |
+| **MAJOR** | Requires attention if triggered | Reserved for future suspicious-pattern heuristics; never assigned by LLM intuition |
+
+The `severity_summary` field in the validation result provides counts per severity:
+```json
+{
+  "severity_summary": {"info": 2, "minor": 1, "moderate": 0, "major": 0}
+}
+```
+
+The `severity_classified_warnings` field provides individual entries:
+```json
+{
+  "severity_classified_warnings": [
+    {"severity": "info", "message": "Orphan node: 'docs/README.md' is not referenced by any edge"},
+    {"severity": "moderate", "message": "Orphan node: 'src/legacy.py' is not referenced by any edge"}
+  ]
+}
+```
 
 ## Validation Checks
 
-The skill delegates to `graph_schema.py` which enforces: valid `NodeType`/`EdgeType` enums (or aliases), `node_id` present + string, `filePath` present, `edge_type` resolves, `source`/`target` reference known node IDs, no self-referencing edges, orphan nodes flagged as warnings.
+The skill delegates to `graph_schema.py` which enforces: valid `NodeType`/`EdgeType` enums (or aliases), `node_id` present + string, `filePath` present, `edge_type` resolves, `source`/`target` reference known node IDs, no self-referencing edges, orphan nodes flagged as severity-classified warnings.
 
 ## Output Format
 
@@ -39,10 +67,14 @@ The skill delegates to `graph_schema.py` which enforces: valid `NodeType`/`EdgeT
 ## Validation Gate: [APPROVED | WARNING | REJECTED]
 - **Issues:** <count> critical
 - **Warnings:** <count> non-blocking
+  - INFO: <count>
+  - MINOR: <count>
+  - MODERATE: <count>
+  - MAJOR: <count>
 ### Issues (if any)
 - <issue 1>
 ### Warnings (if any)
-- <warning 1>
+- <warning 1> [severity]
 ### Recommendation
 <Proceed / Fix critical issues / Request changes>
 ```

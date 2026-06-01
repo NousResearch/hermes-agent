@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1267,3 +1267,99 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+
+class TestServePluginSkill:
+    def _write_plugin_skill(self, tmp_path, frontmatter_extra="", body="Plugin body"):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            f"""---
+name: writer
+description: Plugin writer skill.
+{frontmatter_extra}---
+
+# Writer
+
+{body}
+""",
+            encoding="utf-8",
+        )
+        return skill_md
+
+    def test_disabled_plugin_is_rejected(self, tmp_path):
+        skill_md = self._write_plugin_skill(tmp_path)
+        with patch("hermes_cli.plugins._get_disabled_plugins", return_value={"demo-plugin"}):
+            result = json.loads(
+                skills_tool_module._serve_plugin_skill(skill_md, "demo-plugin", "writer")
+            )
+
+        assert result["success"] is False
+        assert "Plugin 'demo-plugin' is disabled" in result["error"]
+        assert "hermes plugins enable demo-plugin" in result["error"]
+
+    def test_plugin_skill_serves_content_with_bundle_context(self, tmp_path):
+        skill_md = self._write_plugin_skill(tmp_path, body="Use this plugin skill.")
+        manager = MagicMock()
+        manager.list_plugin_skills.return_value = ["writer", "reviewer"]
+
+        with (
+            patch("hermes_cli.plugins._get_disabled_plugins", return_value=set()),
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+        ):
+            result = json.loads(
+                skills_tool_module._serve_plugin_skill(
+                    skill_md, "demo-plugin", "writer", preprocess=False
+                )
+            )
+
+        assert result["success"] is True
+        assert result["name"] == "demo-plugin:writer"
+        assert result["description"] == "Plugin writer skill."
+        assert "Bundle context" in result["content"]
+        assert "reviewer" in result["content"]
+        assert "Use this plugin skill." in result["content"]
+        assert result["readiness_status"] == "available"
+
+    def test_plugin_skill_unsupported_platform_returns_readiness(self, tmp_path):
+        skill_md = self._write_plugin_skill(tmp_path)
+        with (
+            patch("hermes_cli.plugins._get_disabled_plugins", return_value=set()),
+            patch.object(skills_tool_module, "skill_matches_platform", return_value=False),
+        ):
+            result = json.loads(
+                skills_tool_module._serve_plugin_skill(skill_md, "demo-plugin", "writer")
+            )
+
+        assert result["success"] is False
+        assert "not supported on this platform" in result["error"]
+        assert result["readiness_status"] == "unsupported"
+
+    def test_plugin_skill_read_failure_returns_clean_error(self, tmp_path):
+        missing = tmp_path / "missing" / "SKILL.md"
+        with patch("hermes_cli.plugins._get_disabled_plugins", return_value=set()):
+            result = json.loads(
+                skills_tool_module._serve_plugin_skill(missing, "demo-plugin", "writer")
+            )
+
+        assert result["success"] is False
+        assert result["error"].startswith("Failed to read skill 'demo-plugin:writer'")
+
+
+def test_skill_view_registry_wrapper_bumps_resolved_skill_name(monkeypatch):
+    monkeypatch.setattr(
+        skills_tool_module,
+        "skill_view",
+        lambda *args, **kwargs: json.dumps({"success": True, "name": "demo-plugin:writer"}),
+    )
+    bump_view = MagicMock()
+    bump_use = MagicMock()
+    monkeypatch.setattr("tools.skill_usage.bump_view", bump_view)
+    monkeypatch.setattr("tools.skill_usage.bump_use", bump_use)
+
+    result = json.loads(
+        skills_tool_module._skill_view_with_bump({"name": "input-name", "file_path": None})
+    )
+
+    assert result["success"] is True
+    bump_view.assert_called_once_with("demo-plugin:writer")
+    bump_use.assert_called_once_with("demo-plugin:writer")

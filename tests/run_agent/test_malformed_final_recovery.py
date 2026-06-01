@@ -117,6 +117,32 @@ def test_open_connector_final_after_tool_calls_gets_regeneration_prompt():
     assert result["final_response"] == "I found the task and claimed it."
 
 
+def test_dangling_self_correction_after_patch_tools_gets_regeneration_prompt():
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="patch", arguments="{}")
+
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", tool_calls=[tool_call], finish_reason="tool_calls"),
+        _mock_response(content="Wait, there's a logic issue", finish_reason="stop"),
+        _mock_response(content="I corrected the logic issue and kept working.", finish_reason="stop"),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("implement the MeshBoard fix")
+
+    assert agent.client.chat.completions.create.call_count == 3
+    retry_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+    assert retry_messages[-1]["role"] == "user"
+    assert "Regenerate a concise, complete final answer" in retry_messages[-1]["content"]
+    assert retry_messages[-2]["content"] == "[malformed final response omitted]"
+    assert result["final_response"] == "I corrected the logic issue and kept working."
+
+
 def test_complete_final_with_tool_calls_is_not_malformed():
     agent = _make_agent()
     content = (
@@ -131,6 +157,20 @@ def test_complete_final_with_tool_calls_is_not_malformed():
 
     assert agent._detect_malformed_tool_final_response(
         content,
+        "stop",
+        messages,
+    ) is None
+
+
+def test_standalone_short_problem_statement_is_not_malformed():
+    agent = _make_agent()
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call_1"}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": true}'},
+    ]
+
+    assert agent._detect_malformed_tool_final_response(
+        "There is a logic issue.",
         "stop",
         messages,
     ) is None

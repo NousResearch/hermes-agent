@@ -29,6 +29,7 @@ export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
 // Each entry is a fixed-width (display-width) glyph.
 const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
 const ASCII_FRAMES = ['|', '/', '-', '\\']
+const COMPACT_INFERENCE_FACES = FACES.filter(face => stringWidth(face) <= 7)
 
 // Faster tick for spinner-style indicators — they read as motion only
 // at frame rates closer to their authored interval.
@@ -315,6 +316,32 @@ const compactModelLabel = (model: string, effort?: string, fast?: boolean) => {
   return fitCompactText(label, 18)
 }
 
+const normalizeInferenceVerb = (status: string) => {
+  const normalized = status
+    .trim()
+    .toLowerCase()
+    .replace(/[.…]+$/g, '')
+    .replace(/[^a-z]+/g, ' ')
+    .trim()
+    .split(/\s+/)[0]
+
+  return VERBS.includes(normalized) ? normalized : ''
+}
+
+export const compactInferenceStatusLabel = (
+  status: string,
+  startedAt: null | number | undefined,
+  now: number
+) => {
+  const tick = Math.floor(now / FACE_TICK_MS)
+  const faces = COMPACT_INFERENCE_FACES.length > 0 ? COMPACT_INFERENCE_FACES : FACES
+  const face = faces[tick % faces.length] ?? ''
+  const verb = normalizeInferenceVerb(status) || VERBS[tick % VERBS.length] || 'working'
+  const duration = startedAt ? ` ${fmtDuration(now - startedAt)}` : ''
+
+  return `${face} ${verb}${duration}`.trim()
+}
+
 const contextStatusLabel = (usage: Usage) => {
   const ctxUsed = usage.context_used && usage.context_used > 0 ? usage.context_used : usage.total
 
@@ -554,9 +581,7 @@ export function StatusRule({
     const width = Math.max(1, cols || 1)
     const compactCtxLabel = contextStatusLabel(usage)
 
-    const primaryStatus = busy
-      ? `busy${turnStartedAt ? ` ${fmtDuration(now - turnStartedAt)}` : ''}`
-      : status || 'ready'
+    const primaryStatus = busy ? compactInferenceStatusLabel(status, turnStartedAt, now) : status || 'ready'
 
     const firstLine: CompactStatusSegment[] = [
       {

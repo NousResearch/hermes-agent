@@ -1327,6 +1327,8 @@ class AIAgent:
             return None
 
         visible_text = self._strip_think_blocks(content).strip()
+        if self._looks_like_dangling_self_correction(visible_text):
+            return "dangling self-correction after tool calls"
         if len(visible_text) < 80:
             return None
 
@@ -1345,6 +1347,29 @@ class AIAgent:
             if open_connector_tail:
                 return "open connector at final-response tail"
         return None
+
+    @staticmethod
+    def _looks_like_dangling_self_correction(content: str) -> bool:
+        """Detect a short self-correction that needs another tool/reasoning step."""
+        text = re.sub(r"\s+", " ", content or "").strip()
+        if not text or len(text) > 180:
+            return False
+        starts_like_correction = bool(
+            re.match(
+                r"^(?:wait|hold on|actually|hmm|okay,?\s+wait|one sec)\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        if not starts_like_correction:
+            return False
+        problem_marker = re.search(
+            r"\b(?:logic issue|bug|problem|mistake|wrong|not right|"
+            r"need(?:s)? to (?:fix|adjust|change|correct|rework))\b",
+            text,
+            re.IGNORECASE,
+        )
+        return bool(problem_marker)
 
     def _looks_like_codex_intermediate_ack(
         self,

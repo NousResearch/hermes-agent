@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { StatusRule, compactInferenceStatusLabel } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
@@ -202,10 +202,12 @@ describe('StatusRule compact phone layout', () => {
       })
 
       const content = textContent(element)
+      const inferenceLabel = compactInferenceStatusLabel('deliberating...', now - 45_000, now)
 
-      expect(content).toContain('- busy 45s | dflash | ctx ~20.9k/262k 8%')
+      expect(content).toContain(`- ${inferenceLabel} | dflash | ctx ~20.9k/262k 8%`)
       expect(content).toContain('dur 1m 30s | voice off | 1 session | ~/Workspaces')
-      expect(content).not.toContain('deliberating')
+      expect(content).toContain('deliberating')
+      expect(content).not.toContain('- busy')
       expect(content).not.toContain('model dfla')
     } finally {
       vi.useRealTimers()

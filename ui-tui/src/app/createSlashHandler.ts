@@ -119,6 +119,19 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
               }
               return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
             }
+
+            if (d.type === 'prefill') {
+              // /undo returns prefill: drop the backed-up message text into
+              // the composer so the user can edit and resubmit, instead of
+              // submitting it immediately like 'send'.
+              if (d.notice?.trim()) {
+                sys(d.notice)
+              }
+              if (d.message) {
+                ctx.composer.setInput(d.message)
+              }
+              return
+            }
           })
           .catch(guardedErr)
       })

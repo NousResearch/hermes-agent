@@ -7,7 +7,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -43,9 +43,13 @@ import type { ModelOptionsResponse } from '@/types/hermes'
 import { routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
 
+import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
+import { requestComposerInsert } from './composer/focus'
+import { droppedFileInlineRef } from './composer/inline-refs'
 import type { ChatBarState } from './composer/types'
 import type { DroppedFile } from './hooks/use-composer-actions'
+import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser, threadLoadingState } from './thread-loading'
 
@@ -267,6 +271,24 @@ export function ChatView({
     onReload
   })
 
+  // Drop files anywhere in the conversation area, not just on the composer
+  // input — appending the same inline `@file:` ref chips the composer drop
+  // produces (vs. attachment cards) so both surfaces behave identically.
+  const onDropFiles = useCallback(
+    (candidates: DroppedFile[]) => {
+      const refs = candidates
+        .map(candidate => droppedFileInlineRef(candidate, currentCwd))
+        .filter((ref): ref is string => Boolean(ref))
+
+      if (refs.length) {
+        requestComposerInsert(refs.join(' '), { mode: 'inline', target: 'main' })
+      }
+    },
+    [currentCwd]
+  )
+
+  const { dragActive, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles })
+
   return (
     <div
       className={cn(
@@ -285,7 +307,10 @@ export function ChatView({
 
       <NotificationStack />
 
-      <div className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]">
+      <div
+        className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+        {...dropHandlers}
+      >
         <AssistantRuntimeProvider runtime={runtime}>
           <Thread
             clampToComposer={showChatBar}
@@ -326,6 +351,7 @@ export function ChatView({
             </Suspense>
           )}
         </AssistantRuntimeProvider>
+        <ChatDropOverlay active={dragActive} />
       </div>
     </div>
   )

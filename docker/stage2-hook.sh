@@ -187,6 +187,33 @@ if [ -d "$HERMES_HOME/profiles" ]; then
     chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
 fi
 
+# Reset ownership of hermes-owned top-level state files on every boot.
+# The targeted data-volume chown above only covers hermes-owned
+# *subdirectories*; loose state files living directly under $HERMES_HOME
+# are missed. When those files are created or rewritten by
+# `docker exec <container> hermes …` (root unless `-u` is passed) they
+# land root-owned, and the unprivileged hermes runtime then hits
+# PermissionError on next startup (e.g. gateway.lock / state.db /
+# auth.json), producing a gateway restart loop.
+#
+# We use an explicit allowlist rather than a blanket `find -user root`
+# sweep so host-owned files in a bind-mounted $HERMES_HOME are never
+# touched — same targeted-ownership contract as the subdir chown above
+# (issue #19788, PR #19795). The list mirrors the top-level *file*
+# entries of hermes_cli.profile_distribution.USER_OWNED_EXCLUDE plus the
+# runtime lock files; keep them in sync if that set changes.
+for f in \
+    auth.json auth.lock .env \
+    state.db state.db-shm state.db-wal \
+    hermes_state.db \
+    response_store.db response_store.db-shm response_store.db-wal \
+    gateway.pid gateway.lock gateway_state.json processes.json \
+    active_profile; do
+    if [ -e "$HERMES_HOME/$f" ]; then
+        chown hermes:hermes "$HERMES_HOME/$f" 2>/dev/null || true
+    fi
+done
+
 # --- config.yaml permissions ---
 # Ensure config.yaml is readable by the hermes runtime user even if it
 # was edited on the host after initial ownership setup.
@@ -282,9 +309,10 @@ fi
 #   shared libraries (libGLESv2.so, libEGL.so, ...) which inherit the
 #   executable bit from Playwright's tarball but are NOT browser binaries.
 #   We only accept files whose basename is chrome / chromium /
-#   chrome-headless-shell / chromium-browser. Compare PR #18635's earlier
-#   ``find | grep -Ei 'chrome|chromium'`` which would match the path
-#   ``.../chrome-headless-shell-linux64/libGLESv2.so`` and pick a .so.
+#   chrome-headless-shell / headless_shell / chromium-browser. Compare
+#   PR #18635's earlier ``find | grep -Ei 'chrome|chromium'`` which would
+#   match the path ``.../chrome-headless-shell-linux64/libGLESv2.so`` and
+#   pick a .so.
 # - Quietly skipped when $PLAYWRIGHT_BROWSERS_PATH doesn't exist (e.g.
 #   custom builds that strip Playwright).
 if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
@@ -292,13 +320,17 @@ if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
         [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
     browser_bin=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -executable \
         \( -name 'chrome' -o -name 'chromium' \
-           -o -name 'chrome-headless-shell' -o -name 'chromium-browser' \) \
+           -o -name 'chrome-headless-shell' -o -name 'headless_shell' \
+           -o -name 'chromium-browser' \) \
         2>/dev/null | head -n 1)
     if [ -n "$browser_bin" ]; then
         echo "[stage2] Found agent-browser Chromium binary: $browser_bin"
         # Write to s6's container_environment so with-contenv picks it
         # up for all supervised services (main-hermes, dashboard, etc.).
         # Idempotent: each boot overwrites with the current path.
+        # Some container runtimes / s6-overlay versions do not create the
+        # envdir before cont-init hooks run, so create it defensively.
+        mkdir -p /run/s6/container_environment
         printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
     else
         echo "[stage2] Warning: no Chromium binary under $PLAYWRIGHT_BROWSERS_PATH; browser tool may fail"

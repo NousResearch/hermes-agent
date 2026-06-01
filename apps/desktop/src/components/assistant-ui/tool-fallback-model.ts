@@ -786,9 +786,14 @@ function toolImageUrl(args: Record<string, unknown>, result: Record<string, unkn
     return ''
   }
 
-  return candidate.toLowerCase().startsWith('data:image/') || /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
-    ? candidate
-    : ''
+  // Only inline-render images the renderer can actually fetch: data URLs or
+  // remote http(s). A bare filesystem path (e.g. vision_analyze's input image)
+  // resolves against the dev-server origin and 404s — fall back to the tool's
+  // codicon instead of a broken <img>.
+  const isDataImage = candidate.toLowerCase().startsWith('data:image/')
+  const isRemoteImage = /^https?:\/\//i.test(candidate) && /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
+
+  return isDataImage || isRemoteImage ? candidate : ''
 }
 
 function stripAnsi(value: string): string {

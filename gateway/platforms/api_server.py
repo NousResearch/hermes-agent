@@ -578,22 +578,9 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
 
 
 def _sanitize_error_msg(exc: Exception, max_len: int = 200) -> str:
-    """Return a sanitized error string safe for HTTP responses.
-
-    Truncates long messages and strips absolute paths to avoid leaking
-    internal filesystem layout or stack details to external clients.
-    """
-    import re
-    msg = str(exc)
-    # Strip absolute filesystem paths (Unix and Windows).
-    # Only match paths rooted at known system directories to avoid
-    # clobbering API endpoints like /api/v1/chat/completions.
-    _FS_ROOTS = r'(?:home|Users|opt|var|tmp|etc|usr|root|srv|proc|sys|dev|mnt|media|run|boot|lib|bin|sbin|snap|nix|private)'
-    msg = re.sub(r'(?:/' + _FS_ROOTS + r')(?:/[\w.-]+)+', '<path>', msg)
-    msg = re.sub(r'[A-Za-z]:\\(?:[\w.-]+\\)+[\w.-]+', '<path>', msg)
-    if len(msg) > max_len:
-        msg = msg[:max_len] + "..."
-    return msg
+    """Return a sanitized error string safe for HTTP responses."""
+    from hermes_cli.sanitize import sanitize_error_msg
+    return sanitize_error_msg(exc, max_len=max_len)
 
 
 if AIOHTTP_AVAILABLE:

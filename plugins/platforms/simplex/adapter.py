@@ -32,6 +32,7 @@ is missing; a configured gateway instance then fails loudly from
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -56,7 +57,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
-from gateway.calls.native.ports import NativeCallInvitation
+from gateway.calls.native.ports import NativeCallInvitation, NativeCallSignal
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 120.0
+HEALTH_CHECK_PING_TIMEOUT = 10.0
 
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
 _CORR_PREFIX = "hermes-"
@@ -158,10 +160,12 @@ def _native_call_offer_command(
         rtc_session = offer.get("rtcSession", "")
         rtc_ice_candidates = offer.get("rtcIceCandidates", "")
         capabilities = dict(offer.get("capabilities") or {})
+        call_dh_pub_key = offer.get("callDhPubKey")
     else:
         rtc_session = getattr(offer, "rtc_session", "")
         rtc_ice_candidates = getattr(offer, "rtc_ice_candidates", "")
         capabilities = dict(getattr(offer, "capabilities", {}) or {})
+        call_dh_pub_key = getattr(offer, "call_dh_pub_key", None)
     capabilities.setdefault("encryption", False)
     payload = {
         "callType": {
@@ -173,8 +177,39 @@ def _native_call_offer_command(
             "rtcIceCandidates": rtc_ice_candidates,
         },
     }
+    if call_dh_pub_key:
+        payload["callDhPubKey"] = str(call_dh_pub_key)
     encoded = json.dumps(payload, separators=(",", ":"))
     return f"/_call offer {_chat_ref_for_chat_id(chat_id)} {encoded}"
+
+
+def _native_call_invite_command(
+    chat_id: str,
+    *,
+    media: str = "audio",
+    encrypted: bool = True,
+) -> str:
+    payload = {
+        "media": media,
+        "capabilities": {"encryption": bool(encrypted)},
+    }
+    encoded = json.dumps(payload, separators=(",", ":"))
+    return f"/_call invite {_chat_ref_for_chat_id(chat_id)} {encoded}"
+
+
+def _native_call_answer_command(chat_id: str, answer: Any) -> str:
+    if isinstance(answer, dict):
+        rtc_session = answer.get("rtcSession", "")
+        rtc_ice_candidates = answer.get("rtcIceCandidates", "")
+    else:
+        rtc_session = getattr(answer, "rtc_session", "")
+        rtc_ice_candidates = getattr(answer, "rtc_ice_candidates", "")
+    payload = {
+        "rtcSession": str(rtc_session),
+        "rtcIceCandidates": str(rtc_ice_candidates),
+    }
+    encoded = json.dumps(payload, separators=(",", ":"))
+    return f"/_call answer {_chat_ref_for_chat_id(chat_id)} {encoded}"
 
 
 def _native_call_invitation_from_item(
@@ -196,6 +231,109 @@ def _native_call_invitation_from_item(
         shared_key=str(shared_key) if shared_key is not None else None,
         raw=item_content,
     )
+
+
+def _native_call_signal_from_event(
+    contact_id: str,
+    payload: dict,
+) -> NativeCallSignal:
+    event_type = str(payload.get("type") or "")
+    if event_type == "callOffer":
+        offer_payload = dict(payload.get("offer") or {})
+        shared_key = payload.get("sharedKey") or payload.get("aesKey")
+        if shared_key is not None:
+            offer_payload["sharedKey"] = str(shared_key)
+        return NativeCallSignal(
+            contact_id=str(contact_id),
+            signal_type="offer",
+            payload=offer_payload,
+            raw=payload,
+        )
+    if event_type == "callAnswer":
+        return NativeCallSignal(
+            contact_id=str(contact_id),
+            signal_type="answer",
+            payload=dict(payload.get("answer") or {}),
+            raw=payload,
+        )
+    if event_type == "callExtraInfo":
+        return NativeCallSignal(
+            contact_id=str(contact_id),
+            signal_type="extra",
+            payload=dict(payload.get("extraInfo") or payload.get("extra") or {}),
+            raw=payload,
+        )
+    if event_type == "callEnded":
+        return NativeCallSignal(
+            contact_id=str(contact_id),
+            signal_type="ended",
+            payload={},
+            raw=payload,
+        )
+    return NativeCallSignal(
+        contact_id=str(contact_id),
+        signal_type="status",
+        payload={},
+        status=str(payload.get("status") or event_type or "unknown"),
+        raw=payload,
+    )
+
+
+def _native_call_signal_from_item(
+    chat_id: str,
+    item_content: dict,
+) -> NativeCallSignal:
+    status = str(item_content.get("status") or "").lower()
+    if isinstance(item_content.get("answer"), dict):
+        return NativeCallSignal(
+            contact_id=str(chat_id),
+            signal_type="answer",
+            payload=dict(item_content["answer"]),
+            status=status,
+            raw=item_content,
+        )
+    if isinstance(item_content.get("extraInfo"), dict) or isinstance(item_content.get("extra"), dict):
+        return NativeCallSignal(
+            contact_id=str(chat_id),
+            signal_type="extra",
+            payload=dict(item_content.get("extraInfo") or item_content.get("extra") or {}),
+            status=status,
+            raw=item_content,
+        )
+    if status in {"ended", "end", "cancelled", "canceled", "rejected"}:
+        signal_type = "ended"
+    else:
+        signal_type = "status"
+    return NativeCallSignal(
+        contact_id=str(chat_id),
+        signal_type=signal_type,
+        payload={},
+        status=status,
+        raw=item_content,
+    )
+
+
+def _is_native_call_content(item_content: dict) -> bool:
+    """Return True when a chat item represents SimpleX call signaling."""
+    if not isinstance(item_content, dict):
+        return False
+    content_type = str(item_content.get("type") or "").lower()
+    if content_type == "rcvcall":
+        return True
+    if "call" in content_type and any(
+        key in item_content
+        for key in (
+            "callType",
+            "rtcSession",
+            "answer",
+            "extraInfo",
+            "extra",
+            "sharedKey",
+            "aesKey",
+        )
+    ):
+        return True
+    return False
 
 
 def _extract_chat_item_id(resp: dict) -> Optional[str]:
@@ -337,6 +475,9 @@ class SimplexAdapter(BasePlatformAdapter):
             native_calls = {}
         self.native_calls_enabled = bool(native_calls.get("enabled", False))
         self.native_call_handler = None
+        self.native_call_signal_handler = None
+        self._pending_native_call_contacts: set[str] = set()
+        self._active_native_call_contacts: set[str] = set()
 
         # Running state
         self._ws = None  # websockets connection
@@ -503,15 +644,44 @@ class SimplexAdapter(BasePlatformAdapter):
 
             elapsed = time.time() - self._last_ws_activity
             if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
+                ws = self._ws
+                if ws and await self._ws_ping_healthy(ws):
+                    self._last_ws_activity = time.time()
+                    logger.debug(
+                        "SimpleX: WS idle for %.0fs but health ping succeeded",
+                        elapsed,
+                    )
+                    continue
                 logger.warning(
-                    "SimpleX: WS idle for %.0fs, forcing reconnect", elapsed
+                    "SimpleX: WS idle for %.0fs and health ping failed; forcing reconnect",
+                    elapsed,
                 )
                 self._last_ws_activity = time.time()
-                if self._ws:
+                if ws:
                     try:
-                        await self._ws.close()
+                        await ws.close()
                     except Exception:
                         pass
+
+    async def _ws_ping_healthy(self, ws: Any) -> bool:
+        """Return True when the current WebSocket responds to a protocol ping."""
+        ping = getattr(ws, "ping", None)
+        if not callable(ping):
+            logger.warning("SimpleX: current WebSocket does not support health pings")
+            return False
+        try:
+            result = ping()
+            if inspect.isawaitable(result):
+                result = await asyncio.wait_for(
+                    result,
+                    timeout=HEALTH_CHECK_PING_TIMEOUT,
+                )
+            if result is not None and inspect.isawaitable(result):
+                await asyncio.wait_for(result, timeout=HEALTH_CHECK_PING_TIMEOUT)
+            return True
+        except Exception as exc:
+            logger.debug("SimpleX: WS health ping failed: %s", exc, exc_info=True)
+            return False
 
     # ------------------------------------------------------------------
     # Inbound event handling
@@ -633,6 +803,8 @@ class SimplexAdapter(BasePlatformAdapter):
                 await self._handle_new_chat_item(item_wrapper)
         elif resp_type == "callInvitation":
             await self._handle_call_invitation(payload)
+        elif resp_type in {"callOffer", "callAnswer", "callExtraInfo", "callEnded"}:
+            await self._handle_call_signal_event(payload)
         # Ignore all other event types (delivery receipts, contact updates, etc.)
 
     async def _handle_call_invitation(self, payload: dict) -> None:
@@ -678,6 +850,40 @@ class SimplexAdapter(BasePlatformAdapter):
             },
             {},
         )
+
+    async def _handle_call_signal_event(self, payload: dict) -> None:
+        """Process SimpleX native-call signaling events after our offer."""
+        contact = payload.get("contact") if isinstance(payload, dict) else {}
+        if not isinstance(contact, dict):
+            contact = {}
+        contact_id = str(contact.get("contactId") or contact.get("id") or "")
+        if not contact_id:
+            logger.warning(
+                "SimpleX: call signal missing contact id: event_type=%s payload_keys=%s",
+                payload.get("type") or "unknown",
+                sorted(str(key) for key in payload.keys()),
+            )
+            return
+        contact_name = (
+            contact.get("displayName")
+            or contact.get("localDisplayName")
+            or contact_id
+        )
+        source = self.build_source(
+            chat_id=contact_id,
+            chat_name=contact_name,
+            chat_type="dm",
+            user_id=contact_id,
+            user_name=contact_name,
+        )
+        signal = _native_call_signal_from_event(contact_id, payload)
+        handled = await self._handle_native_call_signal(source, contact_id, signal)
+        if not handled:
+            logger.info(
+                "SimpleX: native call signal ignored: chat_id=%s signal_type=%s",
+                contact_id,
+                signal.signal_type,
+            )
 
     async def _handle_new_chat_item(self, wrapper: dict) -> None:
         """Process a single newChatItem event into a MessageEvent."""
@@ -744,7 +950,7 @@ class SimplexAdapter(BasePlatformAdapter):
 
         item_content = chat_item.get("content") or {}
         content_type = str(item_content.get("type") or "")
-        if content_type == "rcvCall":
+        if _is_native_call_content(item_content):
             await self._handle_native_call_item(source, chat_id, item_content, meta)
             return
 
@@ -826,12 +1032,15 @@ class SimplexAdapter(BasePlatformAdapter):
         item_id = meta.get("itemId")
         status = str(item_content.get("status") or "").lower()
         if status != "pending":
-            logger.info(
-                "SimpleX: native call event ignored: chat_id=%s status=%s item_id=%s",
-                chat_id,
-                status or "unknown",
-                item_id,
-            )
+            signal = _native_call_signal_from_item(chat_id, item_content)
+            handled = await self._handle_native_call_signal(source, chat_id, signal)
+            if not handled:
+                logger.info(
+                    "SimpleX: native call event ignored: chat_id=%s status=%s item_id=%s",
+                    chat_id,
+                    status or "unknown",
+                    item_id,
+                )
             if item_id is not None:
                 await self._mark_chat_items_read(chat_id, [item_id])
             return
@@ -866,8 +1075,22 @@ class SimplexAdapter(BasePlatformAdapter):
             return
 
         if self.native_calls_enabled and callable(self.native_call_handler):
+            if (
+                chat_id in self._pending_native_call_contacts
+                or chat_id in self._active_native_call_contacts
+            ):
+                logger.info(
+                    "SimpleX: duplicate pending native call ignored: chat_id=%s item_id=%s",
+                    chat_id,
+                    item_id,
+                )
+                if item_id is not None:
+                    await self._mark_chat_items_read(chat_id, [item_id])
+                return
+
             invitation = _native_call_invitation_from_item(chat_id, item_content)
             result = None
+            self._pending_native_call_contacts.add(chat_id)
             try:
                 result = await self.native_call_handler(source, invitation)
             except Exception:
@@ -875,7 +1098,10 @@ class SimplexAdapter(BasePlatformAdapter):
                     "SimpleX: native call handler failed for chat_id=%s",
                     chat_id,
                 )
+            finally:
+                self._pending_native_call_contacts.discard(chat_id)
             if result is not None and getattr(result, "ok", False):
+                self._active_native_call_contacts.add(chat_id)
                 if item_id is not None:
                     await self._mark_chat_items_read(chat_id, [item_id])
                 return
@@ -924,6 +1150,35 @@ class SimplexAdapter(BasePlatformAdapter):
         if item_id is not None:
             await self._mark_chat_items_read(chat_id, [item_id])
 
+    async def _handle_native_call_signal(
+        self,
+        source,
+        chat_id: str,
+        signal: NativeCallSignal,
+    ) -> bool:
+        if not self.native_calls_enabled or not callable(self.native_call_signal_handler):
+            return False
+        try:
+            result = await self.native_call_signal_handler(source, signal)
+        except Exception:
+            logger.exception(
+                "SimpleX: native call signal handler failed for chat_id=%s signal_type=%s",
+                chat_id,
+                signal.signal_type,
+            )
+            return False
+        if signal.signal_type == "ended":
+            self._active_native_call_contacts.discard(chat_id)
+            self._pending_native_call_contacts.discard(chat_id)
+        if result is not None and not getattr(result, "ok", False):
+            logger.warning(
+                "SimpleX: native call signal handler rejected signal: chat_id=%s signal_type=%s code=%s",
+                chat_id,
+                signal.signal_type,
+                getattr(result, "code", ""),
+            )
+        return result is not None and bool(getattr(result, "ok", False))
+
     async def send_native_call_offer(
         self,
         chat_id: str,
@@ -933,6 +1188,25 @@ class SimplexAdapter(BasePlatformAdapter):
     ) -> bool:
         """Send a SimpleX native-call offer command."""
         await self._send_command(_native_call_offer_command(chat_id, offer, media=media))
+        return True
+
+    async def send_native_call_invitation(
+        self,
+        chat_id: str,
+        *,
+        media: str = "audio",
+        encrypted: bool = True,
+    ) -> bool:
+        """Send a SimpleX native-call invitation command."""
+        await self._send_command(
+            _native_call_invite_command(chat_id, media=media, encrypted=encrypted)
+        )
+        self._pending_native_call_contacts.add(str(chat_id))
+        return True
+
+    async def send_native_call_answer(self, chat_id: str, answer: Any) -> bool:
+        """Send a SimpleX native-call answer command."""
+        await self._send_command(_native_call_answer_command(chat_id, answer))
         return True
 
     async def send_native_call_status(self, chat_id: str, status: str) -> bool:
@@ -945,12 +1219,16 @@ class SimplexAdapter(BasePlatformAdapter):
     async def end_native_call(self, chat_id: str) -> bool:
         """End an active SimpleX native call."""
         await self._send_command(f"/_call end {_chat_ref_for_chat_id(chat_id)}")
+        self._active_native_call_contacts.discard(chat_id)
+        self._pending_native_call_contacts.discard(chat_id)
         return True
 
     async def reject_native_call(self, chat_id: str, reason_code: str = "") -> bool:
         """Tell SimpleX to reject a pending native call."""
         try:
             await self._send_command(f"/_call reject {_chat_ref_for_chat_id(chat_id)}")
+            self._active_native_call_contacts.discard(chat_id)
+            self._pending_native_call_contacts.discard(chat_id)
             return True
         except Exception as exc:
             logger.error(
@@ -968,6 +1246,24 @@ class SimplexAdapter(BasePlatformAdapter):
     async def send_offer(self, contact_id: str, offer: Any) -> None:
         """NativeCallSignalingPort: send a media offer to a contact."""
         await self.send_native_call_offer(contact_id, offer)
+
+    async def send_invitation(
+        self,
+        contact_id: str,
+        *,
+        media: str = "audio",
+        encrypted: bool = True,
+    ) -> None:
+        """NativeCallSignalingPort: send an outbound call invitation."""
+        await self.send_native_call_invitation(
+            contact_id,
+            media=media,
+            encrypted=encrypted,
+        )
+
+    async def send_answer(self, contact_id: str, answer: Any) -> None:
+        """NativeCallSignalingPort: send a media answer to a contact."""
+        await self.send_native_call_answer(contact_id, answer)
 
     async def send_status(self, contact_id: str, status: str) -> None:
         """NativeCallSignalingPort: send call status to a contact."""

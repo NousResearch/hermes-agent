@@ -171,3 +171,78 @@ class NativeCallApplication:
             message="SimpleX-native call is connecting.",
             call_id=call_id,
         )
+
+    async def start_outbound_call(
+        self,
+        source: Any,
+        *,
+        contact_id: str,
+        media: str = "audio",
+    ) -> NativeCallResult:
+        contact_id = str(contact_id or "").strip()
+        if not contact_id:
+            logger.warning("SimpleX native outbound call missing contact id")
+            return NativeCallResult(
+                ok=False,
+                code="call_simplex_native_signaling_failed",
+                message="SimpleX-native outbound call setup failed: missing contact id.",
+            )
+
+        if not _is_dm(source):
+            code = "call_private_chat_required"
+            logger.info(
+                "SimpleX native outbound call denied",
+                extra={"contact_id": contact_id, "reason_code": code},
+            )
+            return NativeCallResult(
+                ok=False,
+                code=code,
+                message="SimpleX-native outbound calls are private-only.",
+            )
+
+        try:
+            authorized = bool(self.is_authorized(source))
+        except Exception:
+            logger.exception("SimpleX native outbound call authorization check failed")
+            authorized = False
+
+        if not authorized:
+            code = "call_auth_denied"
+            logger.info(
+                "SimpleX native outbound call denied",
+                extra={"contact_id": contact_id, "reason_code": code},
+            )
+            return NativeCallResult(
+                ok=False,
+                code=code,
+                message="SimpleX-native outbound call denied.",
+            )
+
+        call_id = f"call_{uuid.uuid4().hex}"
+        try:
+            await self.signaling.send_invitation(
+                contact_id,
+                media=media,
+                encrypted=True,
+            )
+        except Exception:
+            code = "call_simplex_native_signaling_failed"
+            logger.warning(
+                "SimpleX native outbound call invitation failed",
+                extra={"call_id": call_id, "contact_id": contact_id, "reason_code": code},
+                exc_info=True,
+            )
+            return NativeCallResult(
+                ok=False,
+                code=code,
+                message="SimpleX-native outbound call signaling failed.",
+                call_id=call_id,
+            )
+
+        logger.info("SimpleX native outbound call invitation sent: call_id=%s", call_id)
+        return NativeCallResult(
+            ok=True,
+            code="call_simplex_native_outbound_invited",
+            message="SimpleX-native outbound call invitation sent.",
+            call_id=call_id,
+        )

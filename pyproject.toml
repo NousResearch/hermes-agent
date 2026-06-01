@@ -94,6 +94,11 @@ voice = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
+simplex-native-calls = [
+  "aiortc==1.14.0",
+  "aioice==0.10.2",
+  "av==16.1.0",
+]
 pty = [
   "ptyprocess==0.7.0; sys_platform != 'win32'",
   "pywinpty==2.0.15; sys_platform == 'win32'",

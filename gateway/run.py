@@ -3829,6 +3829,11 @@ class GatewayRunner:
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
 
+        # Start local outbound SimpleX call request watcher. This lets local
+        # tooling ask the already-running gateway to place native calls without
+        # opening a competing SimpleX event stream.
+        asyncio.create_task(self._simplex_native_outbound_control_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -10232,6 +10237,7 @@ class GatewayRunner:
         platform_value = getattr(adapter_platform, "value", adapter_platform)
         if str(platform_value) != "simplex":
             return
+        adapter.gateway_runner = self
         if not bool(getattr(adapter, "native_calls_enabled", False)):
             return
         try:
@@ -10243,6 +10249,14 @@ class GatewayRunner:
                 )
 
             adapter.native_call_handler = _native_call_handler
+            async def _native_call_signal_handler(source, signal, _adapter=adapter):
+                return await self._handle_simplex_native_call_signal_with_adapter(
+                    _adapter,
+                    source,
+                    signal,
+                )
+
+            adapter.native_call_signal_handler = _native_call_signal_handler
         except Exception:
             logger.exception(
                 "Failed to install SimpleX native call handler on connected adapter"
@@ -10305,6 +10319,483 @@ class GatewayRunner:
                 return adapter
         return None
 
+    def _simplex_native_call_registry(self) -> dict[str, dict[str, Any]]:
+        registry = getattr(self, "_simplex_native_calls", None)
+        if registry is None:
+            registry = {}
+            self._simplex_native_calls = registry
+        return registry
+
+    def _remember_simplex_native_call(
+        self,
+        *,
+        call_id: str,
+        adapter: Any,
+        contact_id: str,
+        media: Any,
+        source: Any | None = None,
+        answer_timeout_seconds: float | None = None,
+        direction: str = "inbound",
+    ) -> None:
+        native_call = {
+            "adapter": adapter,
+            "contact_id": contact_id,
+            "media": media,
+            "source": source,
+            "answered": False,
+            "direction": direction,
+        }
+        self._simplex_native_call_registry()[call_id] = native_call
+        if answer_timeout_seconds is not None and answer_timeout_seconds > 0:
+            native_call["answer_timeout_task"] = (
+                self._schedule_simplex_native_answer_timeout(
+                    call_id,
+                    float(answer_timeout_seconds),
+                )
+            )
+        self._trace_simplex_native_call(
+            call_id,
+            "native_call_registered",
+            contact_id=contact_id,
+        )
+
+    def _trace_simplex_native_call(self, call_id: str, event: str, **fields: Any) -> None:
+        try:
+            tracer = getattr(self, "_simplex_native_call_tracer", None)
+            if tracer is None:
+                from gateway.calls.native.tracing import NativeCallTraceWriter
+
+                tracer = NativeCallTraceWriter()
+                self._simplex_native_call_tracer = tracer
+            tracer.record(call_id, event, **fields)
+        except Exception:
+            logger.debug(
+                "SimpleX native call trace write failed",
+                extra={"call_id": call_id, "event": event},
+                exc_info=True,
+            )
+
+    def _find_simplex_native_call_by_contact(
+        self,
+        contact_id: str,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        contact_id = str(contact_id or "")
+        for call_id, native_call in self._simplex_native_call_registry().items():
+            if str(native_call.get("contact_id") or "") == contact_id:
+                return call_id, native_call
+        return None, None
+
+    def _simplex_native_answer_timeout_seconds(self, adapter) -> float:
+        extra = getattr(getattr(adapter, "config", None), "extra", {}) or {}
+        native_calls = extra.get("native_calls", {}) if isinstance(extra, dict) else {}
+        raw_timeout = (
+            native_calls.get("answer_timeout_seconds")
+            if isinstance(native_calls, dict)
+            else None
+        )
+        if raw_timeout is None and isinstance(native_calls, dict):
+            raw_timeout = native_calls.get("connect_timeout_seconds")
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError):
+            timeout = 45.0
+        return timeout if timeout > 0 else 45.0
+
+    def _schedule_simplex_native_answer_timeout(
+        self,
+        call_id: str,
+        timeout_seconds: float,
+    ) -> asyncio.Task:
+        async def _timeout() -> None:
+            try:
+                await asyncio.sleep(max(0.0, float(timeout_seconds)))
+                await self._expire_unanswered_simplex_native_call(
+                    call_id,
+                    timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "SimpleX native call answer-timeout cleanup failed",
+                    extra={"call_id": call_id},
+                    exc_info=True,
+                )
+
+        return asyncio.create_task(_timeout())
+
+    def _cancel_simplex_native_answer_timeout(self, native_call: dict[str, Any]) -> None:
+        task = native_call.pop("answer_timeout_task", None)
+        if task is None:
+            return
+        if task is asyncio.current_task():
+            return
+        done = getattr(task, "done", None)
+        if callable(done) and done():
+            return
+        cancel = getattr(task, "cancel", None)
+        if callable(cancel):
+            cancel()
+
+    async def _expire_unanswered_simplex_native_call(
+        self,
+        call_id: str,
+        timeout_seconds: float,
+    ) -> None:
+        native_call = self._simplex_native_call_registry().get(call_id)
+        if not native_call or bool(native_call.get("answered")):
+            return
+        native_call = self._simplex_native_call_registry().pop(call_id, {})
+        self._cancel_simplex_native_answer_timeout(native_call)
+        adapter = native_call.get("adapter")
+        contact_id = str(native_call.get("contact_id") or "")
+        media = native_call.get("media")
+        source = native_call.get("source")
+        self._trace_simplex_native_call(
+            call_id,
+            "native_call_answer_timeout",
+            contact_id=contact_id,
+            timeout_seconds=float(timeout_seconds),
+        )
+        if adapter is not None and contact_id:
+            end_fn = getattr(adapter, "end", None)
+            if callable(end_fn):
+                try:
+                    await end_fn(contact_id)
+                except Exception:
+                    logger.warning(
+                        "SimpleX native call timeout end signaling failed",
+                        extra={"call_id": call_id, "contact_id": contact_id},
+                        exc_info=True,
+                    )
+        if media is not None:
+            stop_fn = getattr(media, "stop", None)
+            if callable(stop_fn):
+                try:
+                    await stop_fn(call_id)
+                except Exception:
+                    logger.warning(
+                        "SimpleX native call timeout media stop failed",
+                        extra={"call_id": call_id, "contact_id": contact_id},
+                        exc_info=True,
+                    )
+        if source is not None:
+            try:
+                await self._get_call_manager().end(source)
+            except Exception:
+                logger.warning(
+                    "SimpleX native call timeout manager cleanup failed",
+                    extra={"call_id": call_id, "contact_id": contact_id},
+                    exc_info=True,
+                )
+        logger.warning(
+            "SimpleX native call timed out waiting for answer: call_id=%s contact_id=%s",
+            call_id,
+            contact_id,
+        )
+
+    async def _cleanup_simplex_native_call(self, session, source) -> bool:
+        call_id = str(getattr(session, "call_id", "") or "")
+        native_call = self._simplex_native_call_registry().pop(call_id, {})
+        self._cancel_simplex_native_answer_timeout(native_call)
+        adapter = native_call.get("adapter") or self._find_simplex_adapter(source)
+        contact_id = str(native_call.get("contact_id") or getattr(session, "chat_id", "") or "")
+        media = native_call.get("media")
+        ok = True
+
+        if adapter is not None and contact_id:
+            end_fn = getattr(adapter, "end", None)
+            if callable(end_fn):
+                try:
+                    await end_fn(contact_id)
+                except Exception:
+                    ok = False
+                    logger.warning(
+                        "SimpleX native call end signaling failed",
+                        extra={"call_id": call_id, "contact_id": contact_id},
+                        exc_info=True,
+                    )
+
+        if media is not None and call_id:
+            stop_fn = getattr(media, "stop", None)
+            if callable(stop_fn):
+                try:
+                    await stop_fn(call_id)
+                except Exception:
+                    ok = False
+                    logger.warning(
+                        "SimpleX native call media stop failed",
+                        extra={"call_id": call_id, "contact_id": contact_id},
+                        exc_info=True,
+                    )
+
+        return ok
+
+    async def _handle_simplex_native_media_event(
+        self,
+        event: dict[str, Any],
+    ) -> None:
+        call_id = str(event.get("callId") or "")
+        if not call_id:
+            return
+        event_name = str(event.get("event") or event.get("type") or "")
+        status = str(event.get("status") or "")
+        reason = str(event.get("reason") or event.get("reasonCode") or "")
+        details = event.get("details") if isinstance(event.get("details"), dict) else {}
+        self._trace_simplex_native_call(
+            call_id,
+            "native_media_event",
+            media_event=event_name,
+            status=status,
+            reason=reason,
+            details=details,
+        )
+        if event_name != "status" or status not in {"ended", "failed"}:
+            return
+
+        native_call = self._simplex_native_call_registry().pop(call_id, None)
+        if not native_call:
+            return
+        self._cancel_simplex_native_answer_timeout(native_call)
+        source = native_call.get("source")
+        contact_id = str(native_call.get("contact_id") or "")
+        if source is not None:
+            try:
+                await self._get_call_manager().end(source)
+            except Exception:
+                logger.warning(
+                    "SimpleX native call manager cleanup failed after media event",
+                    extra={"call_id": call_id, "contact_id": contact_id},
+                    exc_info=True,
+                )
+        logger.warning(
+            "SimpleX native call media ended: call_id=%s status=%s reason=%s",
+            call_id,
+            status,
+            reason,
+            extra={"call_id": call_id, "contact_id": contact_id},
+        )
+
+    async def _handle_simplex_native_call_signal_with_adapter(self, adapter, source, signal):
+        from types import SimpleNamespace
+
+        contact_id = str(getattr(signal, "contact_id", "") or "")
+        signal_type = str(getattr(signal, "signal_type", "") or "").lower()
+        payload = getattr(signal, "payload", {}) or {}
+        call_id, native_call = self._find_simplex_native_call_by_contact(contact_id)
+        if not call_id or not native_call:
+            return SimpleNamespace(
+                ok=False,
+                code="call_simplex_native_no_active_call",
+                message="SimpleX-native call signal ignored: no active native call.",
+            )
+        self._trace_simplex_native_call(
+            call_id,
+            "native_signal_received",
+            contact_id=contact_id,
+            signal_type=signal_type,
+            payload=payload,
+        )
+
+        media = native_call.get("media")
+        if signal_type == "offer":
+            from gateway.calls.native.ports import NativeMediaAnswerRequest
+            from gateway.calls.native.sidecar import SidecarMediaPort
+
+            raw = getattr(signal, "raw", {}) or {}
+            if not isinstance(raw, dict):
+                raw = {}
+            offer_payload = dict(payload) if isinstance(payload, dict) else {}
+            shared_key = (
+                offer_payload.pop("sharedKey", None)
+                or raw.get("sharedKey")
+                or raw.get("aesKey")
+            )
+            call_type = raw.get("callType") if isinstance(raw.get("callType"), dict) else {}
+            capabilities = (
+                call_type.get("capabilities")
+                if isinstance(call_type.get("capabilities"), dict)
+                else {}
+            )
+            media_name = str(call_type.get("media") or "audio")
+            encrypted = bool(capabilities.get("encryption")) or shared_key is not None
+            if media is None:
+                sidecar_command = self._simplex_native_sidecar_command(adapter)
+                if not sidecar_command:
+                    return SimpleNamespace(
+                        ok=False,
+                        code="call_simplex_native_sidecar_not_configured",
+                        message=(
+                            "SimpleX-native call setup failed: "
+                            "native WebRTC sidecar is not configured."
+                        ),
+                    )
+                media = SidecarMediaPort(
+                    command=sidecar_command,
+                    on_event=self._handle_simplex_native_media_event,
+                )
+                native_call["media"] = media
+            start_outgoing_answer = getattr(media, "start_outgoing_answer", None)
+            if not callable(start_outgoing_answer):
+                return SimpleNamespace(
+                    ok=False,
+                    code="call_simplex_native_media_no_offer_handler",
+                    message="SimpleX-native call media cannot answer offers.",
+                )
+            answer_result = await start_outgoing_answer(
+                NativeMediaAnswerRequest(
+                    call_id=call_id,
+                    contact_id=contact_id,
+                    media=media_name,
+                    offer=offer_payload,
+                    encrypted=encrypted,
+                    shared_key=str(shared_key) if shared_key is not None else None,
+                )
+            )
+            if not getattr(answer_result, "ok", False) or getattr(
+                answer_result,
+                "answer",
+                None,
+            ) is None:
+                return SimpleNamespace(
+                    ok=False,
+                    code=getattr(
+                        answer_result,
+                        "code",
+                        "call_simplex_native_answer_failed",
+                    ),
+                    message=getattr(
+                        answer_result,
+                        "message",
+                        "SimpleX-native call answer failed.",
+                    ),
+                )
+            send_answer = getattr(adapter, "send_answer", None)
+            if not callable(send_answer):
+                return SimpleNamespace(
+                    ok=False,
+                    code="call_simplex_native_signaling_no_answer_handler",
+                    message="SimpleX-native call signaling cannot send answers.",
+                )
+            try:
+                await send_answer(contact_id, answer_result.answer)
+            except Exception:
+                logger.warning(
+                    "SimpleX native call answer signaling failed",
+                    extra={"call_id": call_id, "contact_id": contact_id},
+                    exc_info=True,
+                )
+                stop = getattr(media, "stop", None)
+                if callable(stop):
+                    await stop(call_id)
+                return SimpleNamespace(
+                    ok=False,
+                    code="call_simplex_native_signaling_failed",
+                    message="SimpleX-native call answer signaling failed.",
+                )
+            native_call["answered"] = True
+            self._cancel_simplex_native_answer_timeout(native_call)
+            active_contacts = getattr(adapter, "_active_native_call_contacts", None)
+            if hasattr(active_contacts, "add"):
+                active_contacts.add(contact_id)
+            pending_contacts = getattr(adapter, "_pending_native_call_contacts", None)
+            if hasattr(pending_contacts, "discard"):
+                pending_contacts.discard(contact_id)
+            send_status = getattr(adapter, "send_status", None)
+            if callable(send_status):
+                try:
+                    await send_status(contact_id, "connected")
+                except Exception:
+                    logger.warning(
+                        "SimpleX native call connected status failed",
+                        extra={"call_id": call_id, "contact_id": contact_id},
+                        exc_info=True,
+                    )
+            return SimpleNamespace(
+                ok=True,
+                code="call_simplex_native_offer_answered",
+                message="SimpleX-native call offer answered.",
+            )
+
+        if signal_type == "answer":
+            apply_answer = getattr(media, "apply_answer", None)
+            if not callable(apply_answer):
+                return SimpleNamespace(
+                    ok=False,
+                    code="call_simplex_native_media_no_answer_handler",
+                    message="SimpleX-native call media cannot apply answers.",
+                )
+            ok = await apply_answer(call_id, payload)
+            if ok:
+                native_call["answered"] = True
+                self._cancel_simplex_native_answer_timeout(native_call)
+                send_status = getattr(adapter, "send_status", None)
+                if callable(send_status):
+                    try:
+                        await send_status(contact_id, "connected")
+                    except Exception:
+                        logger.warning(
+                            "SimpleX native call connected status failed",
+                            extra={"call_id": call_id, "contact_id": contact_id},
+                            exc_info=True,
+                        )
+            return SimpleNamespace(
+                ok=bool(ok),
+                code=(
+                    "call_simplex_native_answer_applied"
+                    if ok
+                    else "call_simplex_native_answer_failed"
+                ),
+                message=(
+                    "SimpleX-native call answer applied."
+                    if ok
+                    else "SimpleX-native call answer failed."
+                ),
+            )
+
+        if signal_type == "extra":
+            add_extra_ice = getattr(media, "add_extra_ice", None)
+            if not callable(add_extra_ice):
+                return SimpleNamespace(
+                    ok=False,
+                    code="call_simplex_native_media_no_extra_handler",
+                    message="SimpleX-native call media cannot apply extra ICE.",
+                )
+            ok = await add_extra_ice(call_id, payload)
+            return SimpleNamespace(
+                ok=bool(ok),
+                code=(
+                    "call_simplex_native_extra_applied"
+                    if ok
+                    else "call_simplex_native_extra_failed"
+                ),
+                message=(
+                    "SimpleX-native call extra ICE applied."
+                    if ok
+                    else "SimpleX-native call extra ICE failed."
+                ),
+            )
+
+        if signal_type == "ended":
+            native_call = self._simplex_native_call_registry().pop(call_id, None)
+            if native_call is not None:
+                self._cancel_simplex_native_answer_timeout(native_call)
+            stop = getattr(media, "stop", None)
+            if callable(stop):
+                await stop(call_id)
+            await self._get_call_manager().end(source)
+            return SimpleNamespace(
+                ok=True,
+                code="call_simplex_native_remote_ended",
+                message="SimpleX-native call ended by remote.",
+            )
+
+        return SimpleNamespace(
+            ok=True,
+            code="call_simplex_native_signal_ignored",
+            message="SimpleX-native call signal ignored.",
+        )
+
     async def _handle_simplex_native_call(self, source, invitation):
         from types import SimpleNamespace
 
@@ -10352,9 +10843,13 @@ class GatewayRunner:
                 reject_pending_call=True,
             )
 
+        media = SidecarMediaPort(
+            command=sidecar_command,
+            on_event=self._handle_simplex_native_media_event,
+        )
         app = NativeCallApplication(
             signaling=adapter,
-            media=SidecarMediaPort(command=sidecar_command),
+            media=media,
             is_authorized=self._is_user_authorized,
         )
         result = await app.handle_incoming_invitation(source, invitation)
@@ -10365,7 +10860,216 @@ class GatewayRunner:
                 call_id,
                 "connecting" if getattr(result, "ok", False) else "failed",
             )
+            if getattr(result, "ok", False):
+                self._remember_simplex_native_call(
+                    call_id=call_id,
+                    adapter=adapter,
+                    contact_id=str(getattr(invitation, "contact_id", "") or ""),
+                    media=media,
+                    source=source,
+                    answer_timeout_seconds=self._simplex_native_answer_timeout_seconds(
+                        adapter
+                    ),
+                )
         return result
+
+    async def _start_simplex_native_outbound_call_with_adapter(
+        self,
+        adapter,
+        source,
+        contact_id: str,
+    ):
+        from types import SimpleNamespace
+
+        from gateway.calls.native.application import NativeCallApplication
+
+        contact_id = str(contact_id or "").strip()
+        if adapter is None:
+            return SimpleNamespace(
+                ok=False,
+                code="call_simplex_ws_disconnected",
+                message=(
+                    "SimpleX-native outbound call setup failed: "
+                    "SimpleX adapter is not connected."
+                ),
+                call_id=None,
+            )
+        if not contact_id:
+            return SimpleNamespace(
+                ok=False,
+                code="call_simplex_native_missing_contact",
+                message="SimpleX-native outbound call setup failed: missing contact id.",
+                call_id=None,
+            )
+
+        sidecar_command = self._simplex_native_sidecar_command(adapter)
+        if not sidecar_command:
+            return SimpleNamespace(
+                ok=False,
+                code="call_simplex_native_sidecar_not_configured",
+                message=(
+                    "SimpleX-native outbound call setup failed: "
+                    "native WebRTC sidecar is not configured."
+                ),
+                call_id=None,
+            )
+
+        media = None
+        app = NativeCallApplication(
+            signaling=adapter,
+            media=media,
+            is_authorized=self._is_user_authorized,
+        )
+        result = await app.start_outbound_call(source, contact_id=contact_id)
+        call_id = getattr(result, "call_id", None)
+        if call_id:
+            self._get_call_manager().record_native_call(
+                source,
+                call_id,
+                "connecting" if getattr(result, "ok", False) else "failed",
+            )
+            if getattr(result, "ok", False):
+                active_contacts = getattr(adapter, "_active_native_call_contacts", None)
+                if hasattr(active_contacts, "add"):
+                    active_contacts.add(contact_id)
+                self._remember_simplex_native_call(
+                    call_id=call_id,
+                    adapter=adapter,
+                    contact_id=contact_id,
+                    media=media,
+                    source=source,
+                    answer_timeout_seconds=self._simplex_native_answer_timeout_seconds(
+                        adapter
+                    ),
+                    direction="outbound",
+                )
+                self._trace_simplex_native_call(
+                    call_id,
+                    "native_outbound_call_started",
+                    contact_id=contact_id,
+                )
+        return result
+
+    def _simplex_native_source_for_contact(
+        self,
+        adapter,
+        contact_id: str,
+        contact_name: str | None = None,
+    ) -> SessionSource:
+        contact_id = str(contact_id or "").strip()
+        contact_name = str(contact_name or contact_id)
+        build_source = getattr(adapter, "build_source", None)
+        if callable(build_source):
+            return build_source(
+                chat_id=contact_id,
+                chat_name=contact_name,
+                chat_type="dm",
+                user_id=contact_id,
+                user_name=contact_name,
+            )
+        return SessionSource(
+            platform=Platform("simplex"),
+            chat_id=contact_id,
+            chat_name=contact_name,
+            chat_type="dm",
+            user_id=contact_id,
+            user_name=contact_name,
+        )
+
+    async def _process_simplex_native_outbound_call_request(
+        self,
+        path: Path,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from gateway.calls.native.outbound_control import (
+            REQUEST_TYPE,
+            claim_simplex_outbound_call_request,
+            write_simplex_outbound_call_response,
+        )
+
+        claimed = claim_simplex_outbound_call_request(path)
+        if claimed is None:
+            return
+        claimed_path, payload = claimed
+        request_id = claimed_path.stem
+        contact_id = str(payload.get("contact_id") or "").strip()
+        response: dict[str, Any]
+        try:
+            if payload.get("type") != REQUEST_TYPE:
+                raise RuntimeError("unsupported outbound call request type")
+            if not contact_id:
+                raise RuntimeError("contact_id is required")
+            adapter = self._find_simplex_adapter(
+                SimpleNamespace(platform=Platform("simplex"))
+            )
+            if adapter is None:
+                raise RuntimeError("SimpleX adapter is not connected")
+            source = self._simplex_native_source_for_contact(
+                adapter,
+                contact_id,
+                str(payload.get("contact_name") or contact_id),
+            )
+            result = await self._start_simplex_native_outbound_call_with_adapter(
+                adapter,
+                source,
+                contact_id,
+            )
+            response = {
+                "ok": bool(getattr(result, "ok", False)),
+                "request_id": request_id,
+                "contact_id": contact_id,
+                "code": str(getattr(result, "code", "")),
+                "message": str(getattr(result, "message", "")),
+                "call_id": getattr(result, "call_id", None),
+            }
+        except Exception as exc:
+            response = {
+                "ok": False,
+                "request_id": request_id,
+                "contact_id": contact_id,
+                "code": "call_simplex_native_outbound_request_failed",
+                "message": str(exc),
+                "call_id": None,
+            }
+            logger.warning(
+                "SimpleX native outbound call request failed: %s",
+                exc,
+                extra={"request_id": request_id, "contact_id": contact_id},
+                exc_info=True,
+            )
+        finally:
+            try:
+                claimed_path.unlink(missing_ok=True)
+            except Exception:
+                logger.debug(
+                    "SimpleX native outbound claimed request cleanup failed",
+                    extra={"request_id": request_id, "path": str(claimed_path)},
+                    exc_info=True,
+                )
+        write_simplex_outbound_call_response(request_id, response)
+
+    async def _simplex_native_outbound_control_watcher(
+        self,
+        interval: float = 1.0,
+    ) -> None:
+        from gateway.calls.native.outbound_control import (
+            pending_simplex_outbound_call_requests,
+        )
+
+        await asyncio.sleep(1.0)
+        while getattr(self, "_running", False):
+            try:
+                for path in pending_simplex_outbound_call_requests():
+                    await self._process_simplex_native_outbound_call_request(path)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug(
+                    "SimpleX native outbound control watcher tick failed",
+                    exc_info=True,
+                )
+            await asyncio.sleep(max(0.1, float(interval)))
 
     async def _handle_call_command(self, event: MessageEvent) -> str:
         """Handle /call [browser|native|status|end] command."""
@@ -10379,7 +11083,22 @@ class GatewayRunner:
             result = await manager.status(event.source)
             return result.message
         if args == "end":
+            status = await manager.status(event.source)
+            cleanup_ok = True
+            if (
+                status.session is not None
+                and getattr(status.session, "mode", "") == "simplex_native"
+            ):
+                cleanup_ok = await self._cleanup_simplex_native_call(
+                    status.session,
+                    event.source,
+                )
             result = await manager.end(event.source)
+            if not cleanup_ok:
+                return (
+                    f"{result.message}\n"
+                    "SimpleX-native cleanup failed; check gateway logs."
+                )
             return result.message
         if args == "native":
             source_platform = event.source.platform

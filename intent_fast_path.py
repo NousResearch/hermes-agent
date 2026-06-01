@@ -133,7 +133,16 @@ _LEADIN = (
 # "like" is handled separately by ``_LIKE`` (below) because it is the one filler
 # that can idiomatically bridge to a connector ("what's the weather LIKE in X");
 # the others (report/today/…) must NEVER bridge to a connector.
-_FILLER = r"(?:\s+(?:report|today|now|outside|right\s+now|please))*"
+# Time qualifiers (tonight, this week, …) are also accepted as fillers — they
+# narrow the *when* of the forecast, not the *where*.
+_FILLER = (
+    r"(?:\s+(?:"
+    r"report|today|now|outside|right\s+now|please"
+    r"|tonight|tomorrow"
+    r"|this\s+week|this\s+weekend|this\s+morning|this\s+afternoon|this\s+evening"
+    r"|next\s+week|next\s+weekend|this\s+month"
+    r"))*"
+)
 
 # The idiomatic "what's the weather LIKE in Denver" bridge — the only word
 # permitted between the keyword and a connector.  Optional and singular.
@@ -205,7 +214,19 @@ _NON_PLACE_WORDS = {
     "market", "stock", "project", "team", "call", "email", "deadline",
     "sprint", "standup", "review", "roadmap", "backlog", "ticket", "issue",
     "demo", "launch", "release", "metrics", "revenue", "kpi", "okr",
+    # abstract location nouns — not geocodable; fall through to agent for clarification
+    "work", "school", "office", "class", "gym", "church", "home",
 }
+
+# Time expressions that may appear after a connector (e.g. "forecast for this
+# week") — they are NOT location names, but they also do NOT make the query
+# non-weather.  When a connector group captures one of these we treat the whole
+# query as a weather request for the default home location (no geocoding).
+_TIME_QUALIFIERS: frozenset = frozenset({
+    "today", "tonight", "tomorrow", "now", "right now",
+    "this week", "this weekend", "this morning", "this afternoon", "this evening",
+    "next week", "next weekend", "this month", "the week", "the weekend",
+})
 
 # State abbreviations / tokens we strip from a parsed location so geocoding
 # (which chokes on "City, ST ZIP") gets a clean city name.
@@ -335,30 +356,43 @@ def _weather_matcher(text: str) -> bool:
     Why: Gate the handler so we never even attempt a fast-path on unrelated text.
     What: Matches keyword-alone / connector-introduced-location / "is it
     <condition>" shapes — but the connector-captured location must pass
-    ``_connector_location_ok`` (reject "the meeting", "my code", …) — plus a
-    guarded no-connector "weather <place>" shape.
+    ``_connector_location_ok`` (reject "the meeting", "my code", …) — UNLESS the
+    captured string is a time qualifier ("this week", "tonight", …), in which case
+    we still match (the query is weather for the default home location).
+    Plus a guarded no-connector "weather <place>" shape.
     Test: True for "weather", "what's the weather in Denver", "is it raining",
-    "weather woodstock il"; False for "weather affects my mood",
+    "weather woodstock il", "what's the forecast for this week", "forecast today",
+    "weather tonight"; False for "weather affects my mood",
     "forecast for the meeting", "forecast in the lab",
     "weather report for the Q3 sales", "/weather".
     """
     m = _WEATHER_RE.match(text)
     if m:
         loc1 = m.group("loc1")
-        # Branch (a) keyword-only/filler -> no loc -> clean weather question.
-        # Branch (b) connector+loc -> the loc MUST look like a real place.
-        if loc1 is None or _connector_location_ok(loc1):
-            return True
+        if loc1 is None:
+            return True  # keyword-only / filler — clean weather question
+        if loc1.strip().lower() in _TIME_QUALIFIERS:
+            return True  # time qualifier — still weather, use default location
+        if _connector_location_ok(loc1):
+            return True  # looks like a real place
         return False
     m2 = _IS_IT_RE.match(text)
     if m2:
         loc2 = m2.group("loc2")
-        if loc2 is None or _connector_location_ok(loc2):
+        if loc2 is None:
+            return True
+        if loc2.strip().lower() in _TIME_QUALIFIERS:
+            return True  # time qualifier — still weather, use default location
+        if _connector_location_ok(loc2):
             return True
         return False
     m3 = _NO_CONNECTOR_RE.match(text)
-    if m3 and _is_place_like(m3.group("loc3")):
-        return True
+    if m3:
+        loc3 = m3.group("loc3")
+        # Time qualifiers without a connector ("weather this weekend") should
+        # match as a default-location weather request.
+        if loc3.strip().lower() in _TIME_QUALIFIERS or _is_place_like(loc3):
+            return True
     return False
 
 
@@ -381,18 +415,27 @@ def _extract_location(text: str) -> Optional[str]:
     m = _WEATHER_RE.match(text)
     if m:
         cand = m.group("loc1")
-        if cand and _connector_location_ok(cand):
-            loc = cand
+        if cand:
+            if cand.strip().lower() in _TIME_QUALIFIERS:
+                return None  # time qualifier — treat as default location request
+            if _connector_location_ok(cand):
+                loc = cand
     if not loc:
         m2 = _IS_IT_RE.match(text)
         if m2:
             cand2 = m2.group("loc2")
-            if cand2 and _connector_location_ok(cand2):
-                loc = cand2
+            if cand2:
+                if cand2.strip().lower() in _TIME_QUALIFIERS:
+                    return None  # time qualifier — treat as default location request
+                if _connector_location_ok(cand2):
+                    loc = cand2
     if not loc:
         m3 = _NO_CONNECTOR_RE.match(text)
-        if m3 and _is_place_like(m3.group("loc3")):
-            loc = m3.group("loc3")
+        if m3:
+            loc3 = m3.group("loc3")
+            # Time qualifier without connector — treat as default location (no geocode).
+            if loc3.strip().lower() not in _TIME_QUALIFIERS and _is_place_like(loc3):
+                loc = loc3
     if loc is None:
         return None
     loc = loc.strip().strip(".,!?;:").strip()
@@ -650,3 +693,10 @@ async def _weather_handler(text: str) -> Optional[str]:
 
 # Register the weather intent at module load so importers get it for free.
 register_intent(_weather_matcher, _weather_handler)
+
+
+# Time/date intent — answers "what time is it?" / "what day is it?" in <1ms.
+try:
+    import intent_time  # noqa: F401
+except ImportError:
+    pass

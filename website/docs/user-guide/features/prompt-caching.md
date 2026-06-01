@@ -28,33 +28,49 @@ Hermes handles the rest: it sends the provider's `cache_control` markers automat
 
 ## Supported Providers
 
-`cache_ttl` only takes effect for providers where Hermes injects `cache_control` markers. That's **Claude models** and **Qwen/Alibaba models**:
+`cache_ttl` takes effect for providers where Hermes injects `cache_control` markers:
 
-| Provider | `cache_ttl` effect |
-|----------|--------------------|
-| **Anthropic Claude** — native API, or via OpenRouter / Nous Portal | Yes — Hermes injects `cache_control` markers controlled by `cache_ttl` |
-| **Qwen / Alibaba** — on OpenCode / DashScope | Yes — Hermes injects `cache_control` markers controlled by `cache_ttl` |
-| **Other providers** (DeepSeek, Llama, etc.) | No effect — caching, if any, is handled by the provider's own infrastructure |
-| **Cerebras** | No effect — automatic server-side KV caching, independent of this config |
+| Provider / Model | `cache_ttl` effect | Notes |
+|------------------|--------------------|-------|
+| **Anthropic Claude** — native API, or via OpenRouter / Nous Portal | Yes | Default path; no extra config |
+| **Qwen / Alibaba** — on OpenCode / DashScope | Yes | |
+| **DeepSeek** — `deepseek-v3.2`, `deepseek-v4-flash` via OpenRouter | Yes | Requires [#20945](https://github.com/NousResearch/hermes-agent/pull/20945) — see below |
+| **Other providers** (Llama, Mistral, etc.) | No effect | Provider-side caching only |
+| **Cerebras** | No effect | Automatic server-side KV caching, independent of this config |
 
-For Claude and Qwen, Hermes attaches the markers automatically and the CLI confirms it at startup:
+For supported providers, the CLI confirms caching at startup:
 
 ```
 💾 Prompt caching: ENABLED (Claude via OpenRouter, 5m TTL)
 ```
 
-This message only appears for supported providers (Claude / Qwen). You won't see it for DeepSeek, Cerebras, or other providers — that's expected, and `cache_ttl` is safe to leave in your config either way.
+This message only appears for Claude and Qwen paths. Cerebras and DeepSeek don't emit it — that's expected.
 
-DeepSeek and Cerebras still get caching — DeepSeek via OpenRouter's infrastructure, Cerebras via automatic server-side KV caching of repeated system-prompt prefixes — but neither is driven by `cache_ttl`, and Hermes sends no `cache_control` markers to them.
+### DeepSeek via OpenRouter
+
+`deepseek/deepseek-v4-flash` and `deepseek/deepseek-v3.2` accept `cache_control` markers on OpenRouter and return real cache hits when they are present. Without them, the full prompt is re-billed on every turn.
+
+This requires the models to be in `_OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS` in `agent/agent_runtime_helpers.py`. [PR #20945](https://github.com/NousResearch/hermes-agent/pull/20945) (open, pending merge) adds these models. Once merged, `cache_ttl` controls DeepSeek caching the same way it does Claude.
+
+**Measured on production Hermes (2026-05-31, `deepseek/deepseek-v4-flash` via OpenRouter):**
+
+| Scenario | Cache hit rate |
+|----------|---------------|
+| Warmup → identical repeat | 98% |
+| Realistic 5-turn growing conversation | 87–89% (warm turns) |
+| Aggregate over multi-turn session | ~64% |
+| Baseline before patch | ~1% |
+
+### Cerebras
+
+Cerebras caches KV state of repeated system-prompt prefixes automatically at the infrastructure level. No `cache_control` markers are sent and `cache_ttl` has no effect — the caching happens regardless. An orchestrator with a stable `SOUL.md` typically sees a **91–99% cache hit rate** with **1–4 seconds** of latency savings per request.
 
 ## Why It Helps
 
-The biggest win is on the parts of the prompt that never change between turns — your system prompt and `SOUL.md`. As long as those stay stable, the model reads them from cache instead of reprocessing them every request.
-
-In practice, the orchestrator running on Cerebras sees a **91–99% cache hit rate** when the system prompt is stable, saving roughly **1–4 seconds per request**. The savings compound over a long session: every turn that hits the cache is cheaper and faster than the one before it would have been.
+The biggest win is on the parts of the prompt that never change between turns — your system prompt and `SOUL.md`. As long as those stay stable, the model reads them from cache instead of reprocessing them every request. The savings compound over a long session.
 
 ## Tips
 
 - **Leave it on.** There's no downside on unsupported models, and no per-model setup.
 - **Keep your system prompt stable.** Editing `SOUL.md` or the system prompt mid-session invalidates the cached prefix, and the cache rebuilds over the next turn or two.
-- **Use `"1h"` for slow conversations.** If you take long breaks between messages (e.g. a chat assistant you ping a few times an hour), `cache_ttl: "1h"` keeps the prefix warm past the 5-minute default.
+- **Use `"1h"` for slow conversations.** If you take long breaks between messages, `cache_ttl: "1h"` keeps the prefix warm past the 5-minute default.

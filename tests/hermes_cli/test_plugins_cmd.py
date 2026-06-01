@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,12 +10,13 @@ import pytest
 import yaml
 
 from hermes_cli.plugins_cmd import (
+    PluginOperationError,
     _copy_example_files,
     _read_manifest,
     _repo_name_from_url,
+    _resolve_git_executable,
     _resolve_git_url,
     _sanitize_plugin_name,
-    plugins_command,
 )
 
 
@@ -63,6 +62,36 @@ class TestSanitizePluginName:
         with pytest.raises(ValueError, match="must not be empty"):
             _sanitize_plugin_name("", tmp_path)
 
+    # ── allow_subdir=True ──
+
+    def test_allow_subdir_accepts_single_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "observability/langfuse", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "observability" / "langfuse").resolve()
+
+    def test_allow_subdir_strips_leading_trailing_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "/image_gen/openai/", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "image_gen" / "openai").resolve()
+
+    def test_allow_subdir_still_rejects_dot_dot(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo/../bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_still_rejects_backslash(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo\\bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_rejects_empty_after_strip(self, tmp_path):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _sanitize_plugin_name("///", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_resolves_inside_plugins_dir(self, tmp_path):
+        target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
+        assert target.is_relative_to(tmp_path.resolve())
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 
@@ -99,6 +128,69 @@ class TestResolveGitUrl:
             _resolve_git_url("a/b/c")
 
 
+# ── _resolve_git_executable ─────────────────────────────────────────────────
+
+
+class TestResolveGitExecutable:
+    """Fallback resolution when bare ``git`` is not discoverable via ``PATH``."""
+
+    def teardown_method(self):
+        _resolve_git_executable.cache_clear()
+
+    def test_prefers_shutil_which(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value="/usr/local/bin/git"):
+            assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_fallback_posix_first_matching_path(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+
+        def _isfile(p: str) -> bool:
+            return p == "/usr/local/bin/git"
+
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", side_effect=_isfile):
+                    assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_returns_none_when_unavailable(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", return_value=False):
+                    assert pc._resolve_git_executable() is None
+
+    def test_git_pull_uses_resolved_executable(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(
+            pc,
+            "_resolve_git_executable",
+            return_value="/resolved/git",
+        ):
+            with patch.object(pc.subprocess, "run") as run:
+                run.return_value = MagicMock(returncode=0, stdout="Already up to date\n", stderr="")
+                ok, msg = pc._git_pull_plugin_dir(tmp_path)
+        assert ok is True
+        run.assert_called_once()
+        assert run.call_args[0][0][0] == "/resolved/git"
+
+    def test_install_core_raises_when_git_unresolved(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc, "_resolve_git_executable", return_value=None):
+            with pytest.raises(PluginOperationError, match="git is not installed"):
+                pc._install_plugin_core("owner/repo", force=True)
+
+
 # ── _repo_name_from_url ──────────────────────────────────────────────────
 
 
@@ -124,59 +216,6 @@ class TestRepoNameFromUrl:
 
 
 # ── plugins_command dispatch ──────────────────────────────────────────────
-
-
-class TestPluginsCommandDispatch:
-    """Verify alias routing in plugins_command()."""
-
-    def _make_args(self, action, **extras):
-        args = MagicMock()
-        args.plugins_action = action
-        for k, v in extras.items():
-            setattr(args, k, v)
-        return args
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_rm_alias(self, mock_remove):
-        args = self._make_args("rm", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_uninstall_alias(self, mock_remove):
-        args = self._make_args("uninstall", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_list")
-    def test_ls_alias(self, mock_list):
-        args = self._make_args("ls")
-        plugins_command(args)
-        mock_list.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_toggle")
-    def test_none_falls_through_to_toggle(self, mock_toggle):
-        args = self._make_args(None)
-        plugins_command(args)
-        mock_toggle.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_install")
-    def test_install_dispatches(self, mock_install):
-        args = self._make_args("install", identifier="owner/repo", force=False)
-        plugins_command(args)
-        mock_install.assert_called_once_with("owner/repo", force=False)
-
-    @patch("hermes_cli.plugins_cmd.cmd_update")
-    def test_update_dispatches(self, mock_update):
-        args = self._make_args("update", name="foo")
-        plugins_command(args)
-        mock_update.assert_called_once_with("foo")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_remove_dispatches(self, mock_remove):
-        args = self._make_args("remove", name="bar")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("bar")
 
 
 # ── _read_manifest ────────────────────────────────────────────────────────
@@ -217,7 +256,6 @@ class TestCmdInstall:
 
     def test_install_requires_identifier(self):
         from hermes_cli.plugins_cmd import cmd_install
-        import argparse
 
         with pytest.raises(SystemExit):
             cmd_install("")
@@ -391,7 +429,6 @@ class TestCopyExampleFiles:
     """Test example file copying."""
 
     def test_copies_example_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -407,7 +444,6 @@ class TestCopyExampleFiles:
         console.print.assert_called()
 
     def test_skips_existing_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -424,7 +460,6 @@ class TestCopyExampleFiles:
         assert real_file.read_text() == "existing: true"
 
     def test_handles_copy_error_gracefully(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock, patch
 
         console = MagicMock()
@@ -510,7 +545,7 @@ class TestPromptPluginEnvVars:
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "langfuse.com" in printed
 
-    def test_secret_uses_getpass(self):
+    def test_secret_uses_masked_prompt(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
 
@@ -521,11 +556,11 @@ class TestPromptPluginEnvVars:
         }
 
         with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("getpass.getpass", return_value="s3cret") as mock_gp, \
+             patch("hermes_cli.plugins_cmd.masked_secret_prompt", return_value="s3cret") as mock_prompt, \
              patch("hermes_cli.config.save_env_value"):
             _prompt_plugin_env_vars(manifest, console)
 
-        mock_gp.assert_called_once()
+        mock_prompt.assert_called_once()
 
     def test_empty_input_skips(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
@@ -555,3 +590,111 @@ class TestPromptPluginEnvVars:
 
         # Should not crash, and not save anything
         mock_save.assert_not_called()
+
+
+# ── curses_radiolist ─────────────────────────────────────────────────────
+
+
+class TestCursesRadiolist:
+    """Test the curses_radiolist function."""
+
+    def test_non_tty_returns_default(self):
+        from hermes_cli.curses_ui import curses_radiolist
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            result = curses_radiolist("Pick one", ["a", "b", "c"], selected=1)
+            assert result == 1
+
+    def test_non_tty_returns_cancel_value(self):
+        from hermes_cli.curses_ui import curses_radiolist
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
+            assert result == 1
+
+    def test_keyboard_interrupt_returns_cancel_value(self):
+        from hermes_cli.curses_ui import curses_radiolist
+
+        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+            mock_stdin.isatty.return_value = True
+            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
+            assert result == -1
+
+
+# ── Provider discovery helpers ───────────────────────────────────────────
+
+
+class TestProviderDiscovery:
+    """Test provider plugin discovery and config helpers."""
+
+    def test_get_current_memory_provider_default(self, tmp_path, monkeypatch):
+        """Empty config returns empty string."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("memory:\n  provider: ''\n")
+        from hermes_cli.plugins_cmd import _get_current_memory_provider
+        result = _get_current_memory_provider()
+        assert result == ""
+
+    def test_get_current_context_engine_default(self, tmp_path, monkeypatch):
+        """Default config returns 'compressor'."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("context:\n  engine: compressor\n")
+        from hermes_cli.plugins_cmd import _get_current_context_engine
+        result = _get_current_context_engine()
+        assert result == "compressor"
+
+    def test_save_memory_provider(self, tmp_path, monkeypatch):
+        """Saving a memory provider persists to config.yaml."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("memory:\n  provider: ''\n")
+        from hermes_cli.plugins_cmd import _save_memory_provider
+        _save_memory_provider("honcho")
+        content = yaml.safe_load(config_file.read_text())
+        assert content["memory"]["provider"] == "honcho"
+
+    def test_save_context_engine(self, tmp_path, monkeypatch):
+        """Saving a context engine persists to config.yaml."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("context:\n  engine: compressor\n")
+        from hermes_cli.plugins_cmd import _save_context_engine
+        _save_context_engine("lcm")
+        content = yaml.safe_load(config_file.read_text())
+        assert content["context"]["engine"] == "lcm"
+
+    def test_discover_memory_providers_empty(self):
+        """Discovery returns empty list when import fails."""
+        with patch("plugins.memory.discover_memory_providers",
+                    side_effect=ImportError("no module")):
+            from hermes_cli.plugins_cmd import _discover_memory_providers
+            result = _discover_memory_providers()
+            assert result == []
+
+    def test_discover_context_engines_empty(self):
+        """Discovery returns empty list when import fails."""
+        with patch("plugins.context_engine.discover_context_engines",
+                    side_effect=ImportError("no module")):
+            from hermes_cli.plugins_cmd import _discover_context_engines
+            result = _discover_context_engines()
+            assert result == []
+
+
+# ── Auto-activation fix ──────────────────────────────────────────────────
+
+
+class TestNoAutoActivation:
+    """Verify that plugin engines don't auto-activate when config says 'compressor'."""
+
+    def test_compressor_default_ignores_plugin(self):
+        """When context.engine is 'compressor', a plugin-registered engine should NOT
+        be used — only explicit config triggers plugin engines."""
+        # This tests the run_agent.py logic indirectly by checking that the
+        # code path for default config doesn't call get_plugin_context_engine.
+        import run_agent as ra_module
+        source = open(ra_module.__file__).read()
+        # The old code had: "Even with default config, check if a plugin registered one"
+        # The fix removes this. Verify it's gone.
+        assert "Even with default config, check if a plugin registered one" not in source

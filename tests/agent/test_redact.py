@@ -1,7 +1,6 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import logging
-import os
 
 import pytest
 
@@ -284,3 +283,202 @@ class TestElevenLabsTavilyExaKeys:
         assert "XYZ789abcdef" not in result
         assert "HOME=/home/user" in result
         assert "SHELL=/bin/bash" in result
+
+
+class TestJWTTokens:
+    """JWT tokens start with eyJ (base64 for '{') and have dot-separated parts."""
+
+    def test_full_3part_jwt(self):
+        text = (
+            "Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+            ".eyJpc3MiOiI0MjNiZDJkYjg4MjI0MDAwIn0"
+            ".Gxgv0rru-_kS-I_60EJ7CENTnBh9UeuL3QhkMoQ-VnM"
+        )
+        result = redact_sensitive_text(text)
+        assert "Token:" in result
+        # Payload and signature must not survive
+        assert "eyJpc3Mi" not in result
+        assert "Gxgv0rru" not in result
+
+    def test_2part_jwt(self):
+        text = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        result = redact_sensitive_text(text)
+        assert "eyJzdWIi" not in result
+
+    def test_standalone_jwt_header(self):
+        text = "leaked header: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 here"
+        result = redact_sensitive_text(text)
+        assert "IkpXVCJ9" not in result
+        assert "leaked header:" in result
+
+    def test_jwt_with_base64_padding(self):
+        text = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0=.abc123def456ghij"
+        result = redact_sensitive_text(text)
+        assert "abc123def456" not in result
+
+    def test_short_eyj_not_matched(self):
+        """eyJ followed by fewer than 10 base64 chars should not match."""
+        text = "eyJust a normal word"
+        assert redact_sensitive_text(text) == text
+
+    def test_jwt_preserves_surrounding_text(self):
+        text = "before eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 after"
+        result = redact_sensitive_text(text)
+        assert result.startswith("before ")
+        assert result.endswith(" after")
+
+    def test_home_assistant_jwt_in_memory(self):
+        """Real-world pattern: HA token stored in agent memory block."""
+        text = (
+            "Home Assistant API Token: "
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+            ".eyJpc3MiOiJhYmNkZWYiLCJleHAiOjE3NzQ5NTcxMDN9"
+            ".Gxgv0rru-_kS-I_60EJ7CENTnBh9UeuL3QhkMoQ-VnM"
+        )
+        result = redact_sensitive_text(text)
+        assert "Home Assistant API Token:" in result
+        assert "Gxgv0rru" not in result
+        assert "..." in result
+
+
+class TestDiscordMentions:
+    """Discord mention snowflakes (<@ID> / <@!ID>) are public syntax, not
+    secrets — they must pass through the redactor unchanged so multi-bot
+    @-pings (DISCORD_ALLOW_BOTS=mentions) keep resolving. See issue #35611."""
+
+    def test_normal_mention_passes_through(self):
+        text = "Hello <@222589316709220353>"
+        assert redact_sensitive_text(text) == text
+
+    def test_nickname_mention_passes_through(self):
+        text = "Ping <@!1331549159177846844>"
+        assert redact_sensitive_text(text) == text
+
+    def test_multiple_mentions_pass_through(self):
+        text = "<@111111111111111111> and <@222222222222222222>"
+        assert redact_sensitive_text(text) == text
+
+    def test_short_id_passes_through(self):
+        text = "<@12345>"
+        assert redact_sensitive_text(text) == text
+
+    def test_slack_mention_passes_through(self):
+        text = "<@U024BE7LH>"
+        assert redact_sensitive_text(text) == text
+
+    def test_preserves_surrounding_text(self):
+        text = "User <@222589316709220353> said hello"
+        assert redact_sensitive_text(text) == text
+
+
+class TestWebUrlsNotRedacted:
+    """Web URLs (http/https/wss) pass through unchanged — magic-link
+    checkouts, OAuth callbacks the agent is meant to follow, and pre-signed
+    share URLs must reach the tool intact. Known credential shapes inside
+    URLs (sk-, ghp_, JWTs) are still caught by the prefix and JWT regexes.
+    DB connection-string passwords are still caught by _DB_CONNSTR_RE.
+    """
+
+    def test_oauth_callback_code_passes_through(self):
+        text = "GET https://api.example.com/oauth/cb?code=abc123xyz789&state=csrf_ok"
+        assert redact_sensitive_text(text) == text
+
+    def test_access_token_query_passes_through(self):
+        text = "Fetching https://example.com/api?access_token=opaque_value_here_1234&format=json"
+        assert redact_sensitive_text(text) == text
+
+    def test_magic_link_checkout_passes_through(self):
+        text = "Open https://checkout.example.com/resume?magic=ABCDEF123456&customer=42"
+        assert redact_sensitive_text(text) == text
+
+    def test_presigned_signature_passes_through(self):
+        text = "https://s3.amazonaws.com/bucket/k?signature=LONG_PRESIGNED_SIG&id=public"
+        assert redact_sensitive_text(text) == text
+
+    def test_https_userinfo_passes_through(self):
+        text = "URL: https://user:supersecretpw@host.example.com/path"
+        assert redact_sensitive_text(text) == text
+
+    def test_websocket_url_query_passes_through(self):
+        text = "wss://api.example.com/ws?token=opaqueWsToken123"
+        assert redact_sensitive_text(text) == text
+
+    def test_http_access_log_request_target_passes_through(self):
+        text = (
+            'INFO aiohttp.access: 127.0.0.1 "POST '
+            '/bluebubbles-webhook?password=webhookSecret123&event=new-message '
+            'HTTP/1.1" 200 173 "-" "test-client"'
+        )
+        assert redact_sensitive_text(text) == text
+
+    def test_known_prefix_inside_url_still_redacted(self):
+        """sk-/ghp_/JWT-shaped values inside a URL are still caught by
+        _PREFIX_RE / _JWT_RE — the carve-out is for opaque tokens only."""
+        text = "https://evil.com/steal?key=sk-" + "a" * 30
+        result = redact_sensitive_text(text)
+        assert "sk-" + "a" * 30 not in result
+
+    def test_db_connstr_password_still_redacted(self):
+        """DB schemes (postgres/mysql/mongodb/redis/amqp) keep their
+        userinfo redaction via _DB_CONNSTR_RE — connection strings are
+        not web URLs the agent navigates to."""
+        text = "postgres://admin:dbpass@db.internal:5432/app"
+        result = redact_sensitive_text(text)
+        assert "dbpass" not in result
+
+
+class TestFormBodyRedaction:
+    """Form-urlencoded body redaction (k=v&k=v with no other text)."""
+
+    def test_pure_form_body(self):
+        text = "password=mysecret&username=bob&token=opaqueValue"
+        result = redact_sensitive_text(text)
+        assert "mysecret" not in result
+        assert "opaqueValue" not in result
+        assert "username=bob" in result
+
+    def test_oauth_token_request(self):
+        text = "grant_type=password&client_id=app&client_secret=topsecret&username=alice&password=alicepw"
+        result = redact_sensitive_text(text)
+        assert "topsecret" not in result
+        assert "alicepw" not in result
+        assert "client_id=app" in result
+
+    def test_non_form_text_unchanged(self):
+        """Sentences with `&` should NOT trigger form redaction."""
+        text = "I have password=foo and other things"  # contains spaces
+        result = redact_sensitive_text(text)
+        # The space breaks the form regex; passthrough expected.
+        assert "I have" in result
+
+    def test_multiline_text_not_form(self):
+        """Multi-line text is never treated as form body."""
+        text = "first=1\nsecond=2"
+        # Should pass through (still subject to other redactors)
+        assert "first=1" in redact_sensitive_text(text)
+
+
+class TestXaiToken:
+    KEY = "xai-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"using key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "xai-AB" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"XAI_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "xai-tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_company_name_not_masked(self):
+        result = redact_sensitive_text("xai is a company", force=True)
+        assert result == "xai is a company"
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("xai-AB")

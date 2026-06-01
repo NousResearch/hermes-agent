@@ -9,7 +9,8 @@ body:
         Sorry you're having trouble! Please fill out the details below so we can help.
 
         **Quick checks first:**
-        - Run `hermes doctor` and include the output below
+        - Run `hermes debug share` and paste the links in the Debug Report section below
+        - If you're in a chat session, you can use `/debug` instead — it does the same thing
         - Try `hermes update` to get the latest version
         - Check the [README troubleshooting section](https://github.com/NousResearch/hermes-agent#troubleshooting)
         - For general questions, consider the [Nous Research Discord](https://discord.gg/NousResearch) for faster help
@@ -74,10 +75,21 @@ body:
       placeholder: "2.1.0"
 
   - type: textarea
-    id: doctor-output
+    id: debug-report
     attributes:
-      label: Output of `hermes doctor`
-      description: Run `hermes doctor` and paste the full output. This will be auto-formatted.
+      label: Debug Report
+      description: |
+        Run `hermes debug share` from your terminal and paste the links it prints here.
+        This uploads your system info, config, and recent logs to a paste service automatically.
+
+        If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
+
+        If the upload fails or install didn't get that far, run `hermes debug share --local` and paste the output directly.
+        If even that doesn't work, run `hermes doctor` and paste that output instead.
+      placeholder: |
+        Report   https://paste.rs/abc123
+        agent.log   https://paste.rs/def456
+        gateway.log   https://paste.rs/ghi789
       render: shell
 
   - type: textarea

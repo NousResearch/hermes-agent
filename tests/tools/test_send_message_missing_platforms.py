@@ -8,9 +8,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from tools.send_message_tool import (
     _send_dingtalk,
     _send_homeassistant,
-    _send_mattermost,
     _send_matrix,
 )
+
+# ``_send_mattermost`` moved into the mattermost plugin
+# (``plugins/platforms/mattermost/adapter.py::_standalone_send``).  Keep a
+# thin ``(token, extra, chat_id, message)``-shaped wrapper so existing test
+# bodies continue to work without rewriting every signature.
+from plugins.platforms.mattermost.adapter import (
+    _standalone_send as _mattermost_standalone_send,
+)
+
+
+async def _send_mattermost(token, extra, chat_id, message):
+    """Pre-migration ``(token, extra, chat_id, message)`` shim around the
+    plugin's ``_standalone_send(pconfig, chat_id, message)``.
+    """
+    pconfig = SimpleNamespace(token=token, extra=extra or {})
+    return await _mattermost_standalone_send(pconfig, chat_id, message)
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +138,11 @@ class TestSendMatrix:
         session.put.assert_called_once()
         call_kwargs = session.put.call_args
         url = call_kwargs[0][0]
-        assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/!room:example.com/send/m.room.message/")
+        assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/%21room%3Aexample.com/send/m.room.message/")
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer syt_tok"
-        assert call_kwargs[1]["json"] == {"msgtype": "m.text", "body": "hello matrix"}
+        payload = call_kwargs[1]["json"]
+        assert payload["msgtype"] == "m.text"
+        assert payload["body"] == "hello matrix"
 
     def test_http_error(self):
         resp = _make_aiohttp_resp(403, text_data="Forbidden")

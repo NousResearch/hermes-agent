@@ -10,8 +10,6 @@ Covers:
 """
 
 import os
-import pytest
-from unittest.mock import patch, MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +516,7 @@ class TestSwitchModelDirectAliasOverride:
 
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
-            lambda requested: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
+            lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
 
         monkeypatch.setattr("hermes_cli.models.validate_requested_model",
@@ -544,7 +542,7 @@ class TestSwitchModelDirectAliasOverride:
             lambda raw, prov: ("custom", "local-model", "local"))
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
-            lambda requested: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
+            lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
         monkeypatch.setattr("hermes_cli.models.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})

@@ -14,7 +14,6 @@ so the subparser only sets the attribute when the user explicitly provides it.
 import argparse
 import os
 import sys
-from unittest.mock import patch
 
 import pytest
 
@@ -57,83 +56,57 @@ def _build_parser():
     return parser
 
 
-class TestFlagBeforeSubcommand:
-    """Flags placed before 'chat' must propagate through."""
+class TestChatVerboseArg:
+    """Verify chat --verbose preserves config fallback when absent."""
 
-    def test_yolo_before_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["--yolo", "chat"])
-        assert getattr(args, "yolo", False) is True
+    def test_chat_without_verbose_leaves_attribute_unset(self):
+        from hermes_cli._parser import build_top_level_parser
 
-    def test_worktree_before_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["-w", "chat"])
-        assert getattr(args, "worktree", False) is True
-
-    def test_skills_before_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["-s", "myskill", "chat"])
-        assert getattr(args, "skills", None) == ["myskill"]
-
-    def test_pass_session_id_before_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["--pass-session-id", "chat"])
-        assert getattr(args, "pass_session_id", False) is True
-
-    def test_resume_before_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["-r", "abc123", "chat"])
-        assert getattr(args, "resume", None) == "abc123"
-
-
-class TestFlagAfterSubcommand:
-    """Flags placed after 'chat' must still work."""
-
-    def test_yolo_after_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["chat", "--yolo"])
-        assert getattr(args, "yolo", False) is True
-
-    def test_worktree_after_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["chat", "-w"])
-        assert getattr(args, "worktree", False) is True
-
-    def test_skills_after_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["chat", "-s", "myskill"])
-        assert getattr(args, "skills", None) == ["myskill"]
-
-    def test_resume_after_chat(self):
-        parser = _build_parser()
-        args = parser.parse_args(["chat", "-r", "abc123"])
-        assert getattr(args, "resume", None) == "abc123"
-
-
-class TestNoSubcommandDefaults:
-    """When no subcommand is given, flags must work and defaults must hold."""
-
-    def test_yolo_no_subcommand(self):
-        parser = _build_parser()
-        args = parser.parse_args(["--yolo"])
-        assert args.yolo is True
-        assert args.command is None
-
-    def test_defaults_no_flags(self):
-        parser = _build_parser()
-        args = parser.parse_args([])
-        assert getattr(args, "yolo", False) is False
-        assert getattr(args, "worktree", False) is False
-        assert getattr(args, "skills", None) is None
-        assert getattr(args, "resume", None) is None
-
-    def test_defaults_chat_no_flags(self):
-        parser = _build_parser()
+        parser, _subparsers, _chat_parser = build_top_level_parser()
         args = parser.parse_args(["chat"])
-        # With SUPPRESS, these fall through to parent defaults
-        assert getattr(args, "yolo", False) is False
-        assert getattr(args, "worktree", False) is False
-        assert getattr(args, "skills", None) is None
+
+        assert not hasattr(args, "verbose")
+
+    def test_chat_verbose_sets_attribute_true(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["chat", "--verbose"])
+
+        assert args.verbose is True
+
+    def test_cmd_chat_forwards_none_when_verbose_is_absent(self, monkeypatch):
+        import types
+        import sys
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(["chat"])
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+
+        def fake_main(**kwargs):
+            captured.update(kwargs)
+
+        setattr(fake_cli, "main", fake_main)
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+
+        main_mod.cmd_chat(args)
+
+        assert captured["quiet"] is False
+        assert "verbose" not in captured
 
 
 class TestYoloEnvVar:
@@ -170,3 +143,42 @@ class TestYoloEnvVar:
         args = parser.parse_args(["chat"])
         self._simulate_cmd_chat_yolo_check(args)
         assert os.environ.get("HERMES_YOLO_MODE") is None
+
+
+class TestAcceptHooksOnAgentSubparsers:
+    """Verify --accept-hooks is accepted at every agent-subcommand
+    position (before the subcommand, between group/subcommand, and
+    after the leaf subcommand) for gateway/cron/mcp/acp.  Regression
+    against prior behaviour where the flag only worked on the root
+    parser and `chat`, so `hermes gateway run --accept-hooks` failed
+    with `unrecognized arguments`."""
+
+    @pytest.mark.parametrize("argv", [
+        ["--accept-hooks", "gateway", "run", "--help"],
+        ["gateway", "--accept-hooks", "run", "--help"],
+        ["gateway", "run", "--accept-hooks", "--help"],
+        ["--accept-hooks", "cron", "tick", "--help"],
+        ["cron", "--accept-hooks", "tick", "--help"],
+        ["cron", "tick", "--accept-hooks", "--help"],
+        ["cron", "run", "--accept-hooks", "dummy-id", "--help"],
+        ["--accept-hooks", "mcp", "serve", "--help"],
+        ["mcp", "--accept-hooks", "serve", "--help"],
+        ["mcp", "serve", "--accept-hooks", "--help"],
+        ["acp", "--accept-hooks", "--help"],
+    ])
+    def test_accepted_at_every_position(self, argv):
+        """Invoking `hermes <argv>` must exit 0 (help) rather than
+        failing with `unrecognized arguments`."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", *argv],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, (
+            f"argv={argv!r} returned {result.returncode}\n"
+            f"stdout: {result.stdout[:300]}\n"
+            f"stderr: {result.stderr[:300]}"
+        )
+        assert "unrecognized arguments" not in result.stderr

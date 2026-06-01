@@ -9,7 +9,9 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
 import types
 
 from run_agent import AIAgent
-from tools.delegate_tool import MAX_CONCURRENT_CHILDREN
+from tools.delegate_tool import _get_max_concurrent_children
+
+MAX_CONCURRENT_CHILDREN = _get_max_concurrent_children()
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +263,34 @@ class TestGetToolCallIdStatic:
     def test_object_without_id_attr(self):
         tc = types.SimpleNamespace()
         assert AIAgent._get_tool_call_id_static(tc) == ""
+
+
+# ---------------------------------------------------------------------------
+# _get_tool_call_name_static
+# ---------------------------------------------------------------------------
+
+class TestGetToolCallNameStatic:
+
+    def test_dict_with_valid_name(self):
+        assert AIAgent._get_tool_call_name_static(
+            {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
+        ) == "terminal"
+
+    def test_dict_with_missing_function(self):
+        assert AIAgent._get_tool_call_name_static({"id": "call_1"}) == ""
+
+    def test_dict_with_none_function(self):
+        assert AIAgent._get_tool_call_name_static({"id": "call_1", "function": None}) == ""
+
+    def test_dict_with_none_name(self):
+        assert AIAgent._get_tool_call_name_static(
+            {"function": {"name": None, "arguments": "{}"}}
+        ) == ""
+
+    def test_object_with_valid_name(self):
+        tc = make_tc("read_file")
+        assert AIAgent._get_tool_call_name_static(tc) == "read_file"
+
+    def test_object_without_function_attr(self):
+        tc = types.SimpleNamespace(id="call_1")
+        assert AIAgent._get_tool_call_name_static(tc) == ""

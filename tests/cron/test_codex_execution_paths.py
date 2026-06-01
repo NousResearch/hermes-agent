@@ -74,7 +74,6 @@ class _Codex401ThenSuccessAgent(run_agent.AIAgent):
         self._cleanup_task_resources = lambda task_id: None
         self._persist_session = lambda messages, history=None: None
         self._save_trajectory = lambda messages, user_message, completed: None
-        self._save_session_log = lambda messages: None
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         type(self).refresh_attempts += 1
@@ -152,7 +151,6 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
-    runner._smart_model_routing = {}
     from unittest.mock import MagicMock, AsyncMock
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()

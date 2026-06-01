@@ -53,7 +53,6 @@ terminal_tool = terminal_module.terminal_tool
 check_terminal_requirements = terminal_module.check_terminal_requirements
 _get_env_config = terminal_module._get_env_config
 cleanup_vm = terminal_module.cleanup_vm
-get_active_environments_info = terminal_module.get_active_environments_info
 
 
 def test_modal_requirements():
@@ -286,12 +285,6 @@ def main():
         print(f"  {test_name}: {status}")
     
     print(f"\nTotal: {passed}/{total} tests passed")
-    
-    # Show active environments
-    env_info = get_active_environments_info()
-    print(f"\nActive environments after tests: {env_info['count']}")
-    if env_info['count'] > 0:
-        print(f"  Task IDs: {env_info['task_ids']}")
     
     return passed == total
 

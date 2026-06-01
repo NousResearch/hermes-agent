@@ -7,12 +7,13 @@ the provider's config schema. Writes config to config.yaml + .env.
 
 from __future__ import annotations
 
-import getpass
 import os
 import sys
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -25,97 +26,20 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
     items: list of (label, description) tuples.
     Returns selected index, or default on escape/quit.
     """
-    try:
-        import curses
-        result = [default]
-
-        def _menu(stdscr):
-            curses.curs_set(0)
-            if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, curses.COLOR_CYAN, -1)
-            cursor = default
-
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
-
-                # Title
-                try:
-                    stdscr.addnstr(0, 0, title, max_x - 1,
-                                   curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0))
-                    stdscr.addnstr(1, 0, "  ↑↓ navigate  ⏎ select  q quit", max_x - 1,
-                                   curses.color_pair(3) if curses.has_colors() else curses.A_DIM)
-                except curses.error:
-                    pass
-
-                for i, (label, desc) in enumerate(items):
-                    y = i + 3
-                    if y >= max_y - 1:
-                        break
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {label}"
-                    if desc:
-                        line += f"  {desc}"
-
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line[:max_x - 1], max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                key = stdscr.getch()
-
-                if key in (curses.KEY_UP, ord('k')):
-                    cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord('j')):
-                    cursor = (cursor + 1) % len(items)
-                elif key in (curses.KEY_ENTER, 10, 13):
-                    result[0] = cursor
-                    return
-                elif key in (27, ord('q')):
-                    return
-
-        curses.wrapper(_menu)
-        return result[0]
-
-    except Exception:
-        # Fallback: numbered input
-        print(f"\n  {title}\n")
-        for i, (label, desc) in enumerate(items):
-            marker = "→" if i == default else " "
-            d = f"  {desc}" if desc else ""
-            print(f"  {marker} {i + 1}. {label}{d}")
-        while True:
-            try:
-                val = input(f"\n  Select [1-{len(items)}] ({default + 1}): ")
-                if not val:
-                    return default
-                idx = int(val) - 1
-                if 0 <= idx < len(items):
-                    return idx
-            except (ValueError, EOFError):
-                return default
+    from hermes_cli.curses_ui import curses_radiolist
+    # Format (label, desc) tuples into display strings
+    display_items = [
+        f"{label}  {desc}" if desc else label
+        for label, desc in items
+    ]
+    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
     if secret:
-        sys.stdout.write(f"  {label}{suffix}: ")
-        sys.stdout.flush()
-        if sys.stdin.isatty():
-            val = getpass.getpass(prompt="")
-        else:
-            val = sys.stdin.readline().strip()
+        val = masked_secret_prompt(f"  {label}{suffix}: ")
     else:
         sys.stdout.write(f"  {label}{suffix}: ")
         sys.stdout.flush()
@@ -130,16 +54,18 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from pathlib import Path as _Path
+    from plugins.memory import find_provider_dir
 
-    plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    plugin_dir = find_provider_dir(provider_name)
+    if not plugin_dir:
+        return
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
         return
 
     try:
         import yaml
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             meta = yaml.safe_load(f) or {}
     except Exception:
         return
@@ -204,7 +130,7 @@ def _install_dependencies(provider_name: str) -> None:
         if check_cmd:
             try:
                 subprocess.run(
-                    check_cmd, shell=True, capture_output=True, timeout=5
+                    shlex.split(check_cmd), check=True, capture_output=True, timeout=5
                 )
             except Exception:
                 if install_cmd:
@@ -396,6 +322,9 @@ def cmd_setup(args) -> None:
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
+                    # Also write to .env if this field has an env_var
+                    if env_var and env_var not in env_writes:
+                        env_writes[env_var] = val
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name
@@ -428,7 +357,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 
     existing_lines = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
     updated_keys = set()
     new_lines = []
@@ -444,7 +373,13 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Restrict permissions — .env holds API keys and tokens.
+    try:
+        import stat
+        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass  # Windows or read-only FS
 
 
 # ---------------------------------------------------------------------------
@@ -481,12 +416,13 @@ def cmd_status(args) -> None:
                     else:
                         print(f"  Status:    not available ✗")
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        secrets = [f for f in schema if f.get("secret")]
-                        if secrets:
+                        # Check all fields that have env_var (both secret and non-secret)
+                        required_fields = [f for f in schema if f.get("env_var")]
+                        if required_fields:
                             print(f"  Missing:")
-                            for s in secrets:
-                                env_var = s.get("env_var", "")
-                                url = s.get("url", "")
+                            for f in required_fields:
+                                env_var = f.get("env_var", "")
+                                url = f.get("url", "")
                                 is_set = bool(os.environ.get(env_var))
                                 mark = "✓" if is_set else "✗"
                                 line = f"    {mark} {env_var}"
@@ -516,7 +452,11 @@ def memory_command(args) -> None:
     """Route memory subcommands."""
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
-        cmd_setup(args)
+        provider = getattr(args, "provider", None)
+        if provider:
+            cmd_setup_provider(provider)
+        else:
+            cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
     else:

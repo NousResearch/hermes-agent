@@ -213,8 +213,12 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
     assert "git stash drop stash@{0}" in out
 
 
-def test_restore_stashed_changes_prompts_before_reset_on_conflict(monkeypatch, tmp_path, capsys):
-    """When conflicts occur interactively, user is prompted before reset."""
+def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path, capsys):
+    """Conflicts always auto-reset (no prompt) and return False, even interactively.
+
+    Leaving conflict markers in source files makes hermes unrunnable (SyntaxError).
+    The stash is preserved for manual recovery; cmd_update continues normally.
+    """
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -230,43 +234,17 @@ def test_restore_stashed_changes_prompts_before_reset_on_conflict(monkeypatch, t
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
     monkeypatch.setattr("builtins.input", lambda: "y")
 
-    with pytest.raises(SystemExit, match="1"):
-        hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+    result = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
 
+    assert result is False
     out = capsys.readouterr().out
     assert "Conflicted files:" in out
     assert "hermes_cli/main.py" in out
     assert "stashed changes are preserved" in out
-    assert "Reset working tree to clean state" in out
     assert "Working tree reset to clean state" in out
+    assert "git stash apply abc123" in out
     reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
     assert len(reset_calls) == 1
-
-
-def test_restore_stashed_changes_user_declines_reset(monkeypatch, tmp_path, capsys):
-    """When user declines reset, working tree is left as-is."""
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        if cmd[1:3] == ["stash", "apply"]:
-            return SimpleNamespace(stdout="", stderr="conflict\n", returncode=1)
-        if cmd[1:3] == ["diff", "--name-only"]:
-            return SimpleNamespace(stdout="cli.py\n", stderr="", returncode=0)
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-    # First input: "y" to restore, second input: "n" to decline reset
-    inputs = iter(["y", "n"])
-    monkeypatch.setattr("builtins.input", lambda: next(inputs))
-
-    with pytest.raises(SystemExit, match="1"):
-        hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
-
-    out = capsys.readouterr().out
-    assert "left as-is" in out
-    reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
-    assert len(reset_calls) == 0
 
 
 def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_path, capsys):
@@ -327,13 +305,15 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
+    monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: ["matrix", "mcp"])
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
 
     recorded = []
 
@@ -345,17 +325,20 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
             return SimpleNamespace(returncode=0)
-        return SimpleNamespace(returncode=0)
+        # Catch-all must include stdout/stderr so consumers that parse
+        # output (e.g. the dashboard-restart `ps -A` scan added in the
+        # updater) don't crash on AttributeError.
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
@@ -363,10 +346,10 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert install_cmds == [
-        ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
     ]
 
     out = capsys.readouterr().out
@@ -379,6 +362,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     """When .[all] succeeds, no fallback should be attempted."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
 
     recorded = []
 
@@ -390,9 +374,9 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
@@ -401,6 +385,54 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert len(install_cmds) == 1
     assert ".[all]" in install_cmds[0]
+
+
+def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
+    """Termux update path should target .[termux-all] when requested."""
+    calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_load_installable_optional_extras",
+        lambda group="all": ["termux", "mcp"] if group == "termux-all" else [],
+    )
+
+    def fake_run_with_heartbeat(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-1] == ".[termux-all]":
+            raise CalledProcessError(returncode=1, cmd=cmd)
+        return None
+
+    monkeypatch.setattr(hermes_main, "_run_install_with_heartbeat", fake_run_with_heartbeat)
+
+    hermes_main._install_python_dependencies_with_optional_fallback(
+        ["/usr/bin/uv", "pip"],
+        group="termux-all",
+    )
+
+    assert calls == [
+        ["/usr/bin/uv", "pip", "install", "-e", ".[termux-all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[termux]"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+    ]
+
+
+def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch, capsys):
+    """Long quiet installs should emit periodic heartbeat lines."""
+
+    def fake_run(cmd, **kwargs):
+        hermes_main._time.sleep(1.2)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main._run_install_with_heartbeat(
+        ["uv", "pip", "install", "-e", "."],
+        heartbeat_interval_seconds=1,
+    )
+
+    out = capsys.readouterr().out
+    assert "still installing dependencies" in out
 
 
 # ---------------------------------------------------------------------------

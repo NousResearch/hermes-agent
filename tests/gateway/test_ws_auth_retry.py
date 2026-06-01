@@ -9,7 +9,6 @@ of stopping. These tests verify that auth errors now stop the reconnect.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +30,7 @@ class TestMattermostWSAuthRetry:
             headers=MagicMock(),
         )
 
-        from gateway.platforms.mattermost import MattermostAdapter
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
 
@@ -61,7 +60,7 @@ class TestMattermostWSAuthRetry:
             headers=MagicMock(),
         )
 
-        from gateway.platforms.mattermost import MattermostAdapter
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
 
@@ -79,7 +78,7 @@ class TestMattermostWSAuthRetry:
 
     def test_transient_error_retries(self):
         """A transient ConnectionError should retry (not stop immediately)."""
-        from gateway.platforms.mattermost import MattermostAdapter
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
 
@@ -130,13 +129,17 @@ class TestMatrixSyncAuthRetry:
 
         sync_count = 0
 
-        async def fake_sync(timeout=30000):
+        async def fake_sync(timeout=30000, since=None):
             nonlocal sync_count
             sync_count += 1
             return SyncError("M_UNKNOWN_TOKEN: Invalid access token")
 
         adapter._client = MagicMock()
         adapter._client.sync = fake_sync
+        adapter._client.sync_store = MagicMock()
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        adapter._pending_megolm = []
+        adapter._joined_rooms = set()
 
         async def run():
             import sys
@@ -157,13 +160,17 @@ class TestMatrixSyncAuthRetry:
 
         call_count = 0
 
-        async def fake_sync(timeout=30000):
+        async def fake_sync(timeout=30000, since=None):
             nonlocal call_count
             call_count += 1
             raise RuntimeError("HTTP 401 Unauthorized")
 
         adapter._client = MagicMock()
         adapter._client.sync = fake_sync
+        adapter._client.sync_store = MagicMock()
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        adapter._pending_megolm = []
+        adapter._joined_rooms = set()
 
         async def run():
             import types
@@ -188,7 +195,7 @@ class TestMatrixSyncAuthRetry:
 
         call_count = 0
 
-        async def fake_sync(timeout=30000):
+        async def fake_sync(timeout=30000, since=None):
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
@@ -198,6 +205,10 @@ class TestMatrixSyncAuthRetry:
 
         adapter._client = MagicMock()
         adapter._client.sync = fake_sync
+        adapter._client.sync_store = MagicMock()
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        adapter._pending_megolm = []
+        adapter._joined_rooms = set()
 
         async def run():
             import types

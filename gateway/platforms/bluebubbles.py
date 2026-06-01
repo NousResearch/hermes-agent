@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -30,6 +31,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
+from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,8 @@ _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
+_GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+
 
 def _redact(text: str) -> str:
     """Redact phone numbers and emails from log output."""
@@ -74,7 +78,7 @@ def _redact(text: str) -> str:
 def check_bluebubbles_requirements() -> bool:
     try:
         import aiohttp  # noqa: F401
-        import httpx as _httpx  # noqa: F401
+        import httpx  # noqa: F401
     except ImportError:
         return False
     return True
@@ -89,18 +93,7 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
-def _strip_markdown(text: str) -> str:
-    """Strip common markdown formatting for iMessage plain-text delivery."""
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"\*(.+?)\*", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"__(.+?)__", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"_(.+?)_", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"```[a-zA-Z0-9_+-]*\n?", "", text)
-    text = re.sub(r"`(.+?)`", r"\1", text)
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\[([^\]]+)\]\(([^\)]+)\)", r"\1", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +102,7 @@ def _strip_markdown(text: str) -> str:
 
 class BlueBubblesAdapter(BasePlatformAdapter):
     platform = Platform.BLUEBUBBLES
+    SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
 
     def __init__(self, config: PlatformConfig):
@@ -137,7 +131,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
-        self._guid_cache: Dict[str, str] = {}
+        self._guid_cache: OrderedDict[str, str] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -171,7 +165,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
         from aiohttp import web
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             await self._api_get("/api/v1/ping")
             info = await self._api_get("/api/v1/server/info")
@@ -196,7 +192,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
-        self._runner = web.AppRunner(app)
+        # The webhook auth value is carried in the query string because the
+        # BlueBubbles webhook API cannot send custom headers. Do not let
+        # aiohttp access logs write that request target to agent.log.
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
         await site.start()
@@ -207,9 +206,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.webhook_port,
             self.webhook_path,
         )
+
+        # Register webhook with BlueBubbles server
+        # This is required for the server to know where to send events
+        await self._register_webhook()
+
         return True
 
     async def disconnect(self) -> None:
+        # Unregister webhook before cleaning up
+        await self._unregister_webhook()
+
         if self.client:
             await self.client.aclose()
             self.client = None
@@ -217,6 +224,130 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._mark_disconnected()
+
+    @property
+    def _webhook_url(self) -> str:
+        """Compute the external webhook URL for BlueBubbles registration."""
+        host = self.webhook_host
+        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
+            host = "localhost"
+        return f"http://{host}:{self.webhook_port}{self.webhook_path}"
+
+    @property
+    def _webhook_register_url(self) -> str:
+        """Webhook URL registered with BlueBubbles, including the password as
+        a query param so inbound webhook POSTs carry credentials.
+
+        BlueBubbles posts events to the exact URL registered via
+        ``/api/v1/webhook``. Its webhook registration API does not support
+        custom headers, so embedding the password in the URL is the only
+        way to authenticate inbound webhooks without disabling auth.
+        """
+        base = self._webhook_url
+        if self.password:
+            return f"{base}?password={quote(self.password, safe='')}"
+        return base
+
+    @property
+    def _webhook_register_url_for_log(self) -> str:
+        """Webhook registration URL safe for logs."""
+        base = self._webhook_url
+        if self.password:
+            return f"{base}?password=***"
+        return base
+
+    async def _find_registered_webhooks(self, url: str) -> list:
+        """Return list of BB webhook entries matching *url*."""
+        try:
+            res = await self._api_get("/api/v1/webhook")
+            data = res.get("data")
+            if isinstance(data, list):
+                return [wh for wh in data if wh.get("url") == url]
+        except Exception:
+            pass
+        return []
+
+    async def _register_webhook(self) -> bool:
+        """Register this webhook URL with the BlueBubbles server.
+
+        BlueBubbles requires webhooks to be registered via API before
+        it will send events.  Checks for an existing registration first
+        to avoid duplicates (e.g. after a crash without clean shutdown).
+        """
+        if not self.client:
+            return False
+
+        webhook_url = self._webhook_register_url
+
+        # Crash resilience — reuse an existing registration if present
+        existing = await self._find_registered_webhooks(webhook_url)
+        if existing:
+            logger.info(
+                "[bluebubbles] webhook already registered: %s",
+                self._webhook_register_url_for_log,
+            )
+            return True
+
+        payload = {
+            "url": webhook_url,
+            "events": ["new-message", "updated-message"],
+        }
+
+        try:
+            res = await self._api_post("/api/v1/webhook", payload)
+            status = res.get("status", 0)
+            if 200 <= status < 300:
+                logger.info(
+                    "[bluebubbles] webhook registered with server: %s",
+                    self._webhook_register_url_for_log,
+                )
+                return True
+            else:
+                logger.warning(
+                    "[bluebubbles] webhook registration returned status %s: %s",
+                    status,
+                    res.get("message"),
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] failed to register webhook with server: %s",
+                exc,
+            )
+            return False
+
+    async def _unregister_webhook(self) -> bool:
+        """Unregister this webhook URL from the BlueBubbles server.
+
+        Removes *all* matching registrations to clean up any duplicates
+        left by prior crashes.
+        """
+        if not self.client:
+            return False
+
+        webhook_url = self._webhook_register_url
+        removed = False
+
+        try:
+            for wh in await self._find_registered_webhooks(webhook_url):
+                wh_id = wh.get("id")
+                if wh_id:
+                    res = await self.client.delete(
+                        self._api_url(f"/api/v1/webhook/{wh_id}")
+                    )
+                    res.raise_for_status()
+                    removed = True
+            if removed:
+                logger.info(
+                    "[bluebubbles] webhook unregistered: %s",
+                    self._webhook_register_url_for_log,
+                )
+        except Exception as exc:
+            logger.debug(
+                "[bluebubbles] failed to unregister webhook (non-critical): %s",
+                exc,
+            )
+        return removed
 
     # ------------------------------------------------------------------
     # Chat GUID resolution
@@ -237,6 +368,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if ";" in target:
             return target
         if target in self._guid_cache:
+            self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
         try:
             payload = await self._api_post(
@@ -249,10 +381,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if identifier == target:
                     if guid:
                         self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
                     return guid
                 for part in chat.get("participants", []) or []:
                     if (part.get("address") or "").strip() == target and guid:
                         self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
                         return guid
         except Exception:
             pass
@@ -279,6 +415,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Text sending
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> List[str]:
+        # Use the base splitter but skip pagination indicators — iMessage
+        # bubbles flow naturally without "(1/3)" suffixes.
+        chunks = BasePlatformAdapter.truncate_message(content, max_length)
+        return [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
+
     async def send(
         self,
         chat_id: str,
@@ -286,10 +429,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        text = _strip_markdown(content or "")
+        text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
+        # Split on paragraph breaks first (double newlines) so each thought
+        # becomes its own iMessage bubble, then truncate any that are still
+        # too long.
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+        chunks: List[str] = []
+        for para in (paragraphs or [text]):
+            if len(para) <= self.MAX_MESSAGE_LENGTH:
+                chunks.append(para)
+            else:
+                chunks.extend(self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH))
         last = SendResult(success=True)
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)
@@ -507,35 +659,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Tapback reactions
     # ------------------------------------------------------------------
 
-    async def send_reaction(
-        self,
-        chat_id: str,
-        message_guid: str,
-        reaction: str,
-        part_index: int = 0,
-    ) -> SendResult:
-        """Send a tapback reaction (requires Private API helper)."""
-        if not self._private_api_enabled or not self._helper_connected:
-            return SendResult(
-                success=False, error="Private API helper not connected"
-            )
-        guid = await self._resolve_chat_guid(chat_id)
-        if not guid:
-            return SendResult(success=False, error=f"Chat not found: {chat_id}")
-        try:
-            res = await self._api_post(
-                "/api/v1/message/react",
-                {
-                    "chatGuid": guid,
-                    "selectedMessageGuid": message_guid,
-                    "reaction": reaction,
-                    "partIndex": part_index,
-                },
-            )
-            return SendResult(success=True, raw_response=res)
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
-
     # ------------------------------------------------------------------
     # Chat info
     # ------------------------------------------------------------------
@@ -572,7 +695,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return _strip_markdown(content)
+        return strip_markdown(content)
 
     # ------------------------------------------------------------------
     # Inbound attachment downloading (from #4588)
@@ -767,6 +890,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
+        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
+        # the chat GUID is nested under data.chats[0].guid instead.
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),

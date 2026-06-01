@@ -19,9 +19,8 @@ Bug scenario (pre-fix):
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +36,8 @@ class TestFlushAfterCompression:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
             agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
                 session_db=session_db,

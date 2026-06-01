@@ -469,18 +469,6 @@ class TestConfigIntegration:
         assert ha.extra["watch_domains"] == ["climate"]
         assert ha.extra["cooldown_seconds"] == 45
 
-    def test_connected_platforms_includes_ha(self):
-        config = GatewayConfig(
-            platforms={
-                Platform.HOMEASSISTANT: PlatformConfig(enabled=True, token="tok"),
-                Platform.TELEGRAM: PlatformConfig(enabled=False, token="t"),
-            },
-        )
-        connected = config.get_connected_platforms()
-        assert Platform.HOMEASSISTANT in connected
-        assert Platform.TELEGRAM not in connected
-
-
 # ---------------------------------------------------------------------------
 # send() via REST API
 # ---------------------------------------------------------------------------
@@ -580,27 +568,6 @@ class TestSendViaRestApi:
 # ---------------------------------------------------------------------------
 # Toolset integration
 # ---------------------------------------------------------------------------
-
-
-class TestToolsetIntegration:
-    def test_homeassistant_toolset_resolves(self):
-        from toolsets import resolve_toolset
-
-        tools = resolve_toolset("homeassistant")
-        assert set(tools) == {"ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"}
-
-    def test_gateway_toolset_includes_ha_tools(self):
-        from toolsets import resolve_toolset
-
-        gateway_tools = resolve_toolset("hermes-gateway")
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"):
-            assert tool in gateway_tools
-
-    def test_hermes_core_tools_includes_ha(self):
-        from toolsets import _HERMES_CORE_TOOLS
-
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"):
-            assert tool in _HERMES_CORE_TOOLS
 
 
 # ---------------------------------------------------------------------------

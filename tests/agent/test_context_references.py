@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -83,6 +84,24 @@ def test_parse_references_strips_trailing_punctuation():
     assert refs[1].target == "https://example.com/docs"
 
 
+def test_parse_quoted_references_with_spaces_and_preserve_unquoted_ranges():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references(
+        'review @file:"C:\\Users\\Simba\\My Project\\main.py":7-9 '
+        'and @folder:"docs and specs" plus @file:src/main.py:1-2'
+    )
+
+    assert [ref.kind for ref in refs] == ["file", "folder", "file"]
+    assert refs[0].target == r"C:\Users\Simba\My Project\main.py"
+    assert refs[0].line_start == 7
+    assert refs[0].line_end == 9
+    assert refs[1].target == "docs and specs"
+    assert refs[2].target == "src/main.py"
+    assert refs[2].line_start == 1
+    assert refs[2].line_end == 2
+
+
 def test_expand_file_range_and_folder_listing(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
@@ -103,6 +122,55 @@ def test_expand_file_range_and_folder_listing(sample_repo: Path):
     assert "main.py" in result.message
     assert "helper.py" in result.message
     assert result.injected_tokens > 0
+    assert not result.warnings
+
+
+def test_folder_listing_falls_back_when_rg_is_blocked(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    real_run = subprocess.run
+
+    def blocked_rg(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, list) and cmd and cmd[0] == "rg":
+            raise PermissionError("rg blocked by policy")
+        return real_run(*args, **kwargs)
+
+    with patch("agent.context_references.subprocess.run", side_effect=blocked_rg):
+        result = preprocess_context_references(
+            "Review @folder:src/",
+            cwd=sample_repo,
+            context_length=100_000,
+        )
+
+    assert result.expanded
+    assert "src/" in result.message
+    assert "main.py" in result.message
+    assert "helper.py" in result.message
+    assert not result.warnings
+
+
+def test_expand_quoted_file_reference_with_spaces(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "repo"
+    folder = workspace / "docs and specs"
+    folder.mkdir(parents=True)
+    file_path = folder / "release notes.txt"
+    file_path.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        'Review @file:"docs and specs/release notes.txt":2-3',
+        cwd=workspace,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert result.message.startswith("Review")
+    assert "line 1" not in result.message
+    assert "line 2" in result.message
+    assert "line 3" in result.message
+    assert "release notes.txt" in result.message
     assert not result.warnings
 
 

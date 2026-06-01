@@ -6,12 +6,17 @@ description: "Real-world automation patterns using Hermes cron — monitoring, r
 
 # Automate Anything with Cron
 
-The [daily briefing bot tutorial](/docs/guides/daily-briefing-bot) covers the basics. This guide goes further — five real-world automation patterns you can adapt for your own workflows.
+The [daily briefing bot tutorial](/guides/daily-briefing-bot) covers the basics. This guide goes further — five real-world automation patterns you can adapt for your own workflows.
 
-For the full feature reference, see [Scheduled Tasks (Cron)](/docs/user-guide/features/cron).
+For the full feature reference, see [Scheduled Tasks (Cron)](/user-guide/features/cron).
 
 :::info Key Concept
 Cron jobs run in fresh agent sessions with no memory of your current chat. Prompts must be **completely self-contained** — include everything the agent needs to know.
+:::
+
+:::tip Don't need the LLM? You have two zero-token options.
+- **Recurring watchdog** where the script already produces the exact message (memory alerts, disk alerts, heartbeats): use [script-only cron jobs](/guides/cron-script-only). Same scheduler, no LLM. You can ask Hermes to set one up for you in chat — the `cronjob` tool knows when to pick `no_agent=True` and writes the script for you.
+- **One-shot from a script that's already running** (CI step, post-commit hook, deploy script, externally-scheduled monitor): use [`hermes send`](/guides/pipe-script-output) to pipe stdout or a file straight to Telegram / Discord / Slack / etc. without setting up a cron entry.
 :::
 
 ---
@@ -254,8 +259,8 @@ The `--deliver` flag controls where results go:
 
 **Test with `/cron run`.** Before waiting for the schedule to trigger, use `/cron run <job_id>` to execute immediately and verify the output looks right.
 
-**Schedule expressions.** Human-readable formats like `every 2h`, `30m`, and `daily at 9am` all work alongside standard cron expressions like `0 9 * * *`.
+**Schedule expressions.** Supported formats: relative delays (`30m`), intervals (`every 2h`), standard cron expressions (`0 9 * * *`), and ISO timestamps (`2025-06-15T09:00:00`). Natural language like `daily at 9am` is not supported — use `0 9 * * *` instead.
 
 ---
 
-*For the complete cron reference — all parameters, edge cases, and internals — see [Scheduled Tasks (Cron)](/docs/user-guide/features/cron).*
+*For the complete cron reference — all parameters, edge cases, and internals — see [Scheduled Tasks (Cron)](/user-guide/features/cron).*

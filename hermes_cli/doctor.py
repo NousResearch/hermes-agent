@@ -306,6 +306,23 @@ def _check_s6_supervision(issues: list[str]) -> None:
     )
 
 
+def check_certificates() -> None:
+    """Verify the certifi CA bundle is loadable.
+
+    Surfaces the SSLConfigurationError user-friendly path before they hit
+    a wall of tracebacks on the first outbound HTTPS call.
+    """
+    try:
+        from agent.ssl_guard import verify_ca_bundle_with_fallback
+        from agent.errors import SSLConfigurationError
+        verify_ca_bundle_with_fallback()
+        check_ok("SSL CA certificate bundle is valid")
+    except SSLConfigurationError as e:
+        check_fail("SSL CA certificate bundle is broken", str(e))
+    except Exception as e:
+        check_warn("SSL certificate check skipped", str(e))
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout.
 
@@ -567,7 +584,10 @@ def run_doctor(args):
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
-    
+
+    _section("SSL / CA Certificates")
+    check_certificates()
+
     _section("Required Packages")
     required_packages = [
         ("openai", "OpenAI SDK"),

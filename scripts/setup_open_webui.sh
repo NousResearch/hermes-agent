@@ -182,13 +182,13 @@ write_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-API_KEY=\$(python3 - <<'PY'
+API_KEY=\$(python3 - <<PY
 from pathlib import Path
-p = Path.home()/'.hermes'/'.env'
+p = Path.home()/".hermes"/".env"
 for raw in p.read_text().splitlines():
     line = raw.strip()
-    if line.startswith('API_SERVER_KEY='):
-        print(line.split('=', 1)[1])
+    if line.startswith("API_SERVER_KEY="):
+        print(line.split("=", 1)[1])
         break
 PY
 )

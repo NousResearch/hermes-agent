@@ -262,9 +262,10 @@ def _clear_tool_defs_cache() -> None:
 
 
 def get_tool_definitions(
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
+    skip_tool_search_assembly: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -275,6 +276,11 @@ def get_tool_definitions(
         enabled_toolsets: Only include tools from these toolsets.
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
+        skip_tool_search_assembly: When True, return the pre-assembly tool list
+            (raw schemas for every enabled tool). Used internally by the
+            tool_search / tool_describe bridge handlers so they can read the
+            real catalog, not the already-collapsed one. Public callers should
+            leave this False.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -301,6 +307,7 @@ def get_tool_definitions(
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
+            bool(skip_tool_search_assembly),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -312,7 +319,8 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
+    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
+                                       skip_tool_search_assembly=skip_tool_search_assembly)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -327,9 +335,10 @@ def get_tool_definitions(
 
 
 def _compute_tool_definitions(
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
+    skip_tool_search_assembly: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -481,7 +490,59 @@ def _compute_tool_definitions(
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
 
+    # ── Tool Search (progressive disclosure) ────────────────────────────
+    # Conditionally replace MCP + plugin (non-core) tools with three bridge
+    # tools (tool_search / tool_describe / tool_call) when the deferrable
+    # surface exceeds the configured threshold (default 10% of context
+    # window). Core Hermes tools (toolsets._HERMES_CORE_TOOLS) are NEVER
+    # deferred. See tools/tool_search.py for full design notes.
+    #
+    # This is deliberately the last step before returning — sanitization
+    # has already normalized schemas, and the assembly is idempotent in
+    # case some caller invokes get_tool_definitions twice.
+    try:
+        from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
+        ts_cfg = _load_ts_config()
+        if not skip_tool_search_assembly and ts_cfg.enabled != "off":
+            context_length = _resolve_active_context_length()
+            assembly = assemble_tool_defs(
+                filtered_tools,
+                context_length=context_length,
+                config=ts_cfg,
+            )
+            if assembly.activated and not quiet_mode:
+                print(
+                    f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
+                    f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
+                    f"Threshold ~{assembly.threshold_tokens} tokens."
+                )
+            filtered_tools = assembly.tool_defs
+    except Exception as e:  # pragma: no cover — never break tool loading
+        logger.warning("Tool search assembly skipped: %s", e)
+
     return filtered_tools
+
+
+def _resolve_active_context_length() -> int:
+    """Look up the active model's context length for the tool-search gate.
+
+    Returns 0 when the model can't be resolved — ``should_activate`` falls
+    back to a fixed token cutoff in that case.
+    """
+    try:
+        from hermes_cli.config import load_config as _load
+        cfg = _load() or {}
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+        model_id = (model_cfg.get("model") or model_cfg.get("default") or "").strip()
+        if not model_id:
+            return 0
+        from agent.model_metadata import get_model_context_length
+        return int(get_model_context_length(model_id) or 0)
+    except Exception as e:
+        logger.debug("Could not resolve active context length: %s", e)
+        return 0
 
 
 # =============================================================================
@@ -747,6 +808,8 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -760,12 +823,93 @@ def handle_function_call(
                        execute_code uses this list to determine which sandbox
                        tools to generate.  Falls back to the process-global
                        ``_last_resolved_tool_names`` for backward compat.
+        enabled_toolsets: The session's enabled toolsets.  Used to scope the
+                       Tool Search bridge catalog so ``tool_search`` /
+                       ``tool_describe`` / ``tool_call`` only see and invoke
+                       tools the session was actually granted.  ``None`` means
+                       "no restriction" (the caller scopes to every toolset),
+                       matching ``get_tool_definitions`` semantics.
+        disabled_toolsets: The session's disabled toolsets, applied as a
+                       subtraction when scoping the bridge catalog.
 
     Returns:
         Function result as a JSON string.
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+
+    # ── Tool Search bridge dispatch ──────────────────────────────────
+    # tool_search and tool_describe are pure catalog reads — handle them
+    # inline. tool_call is unwrapped to the underlying tool so that every
+    # downstream hook (pre/post, edit approval, guardrails) sees the real
+    # tool name, not the bridge.
+    _ts_mod = None
+    try:
+        from tools import tool_search as _ts_mod  # noqa: F401
+    except Exception:
+        _ts_mod = None
+
+    if _ts_mod is not None and _ts_mod.is_bridge_tool(function_name):
+        try:
+            # Use skip_tool_search_assembly=True so we see the real catalog,
+            # not the already-collapsed bridge-only list (the bridge would
+            # otherwise be searching only itself).
+            #
+            # Scope the catalog to the session's toolsets so the bridge can
+            # only surface and invoke tools the session was actually granted.
+            # Without this, a restricted-toolset session (subagent, kanban
+            # worker, curated gateway session) would see and be able to call
+            # the entire process registry via the bridge. Passing the same
+            # enabled/disabled toolsets the session was assembled with keeps
+            # the deferred catalog identical to the deferrable subset of the
+            # session's own tool list, and avoids polluting the process-global
+            # _last_resolved_tool_names with out-of-scope tools.
+            current_defs = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True, skip_tool_search_assembly=True,
+            ) or []
+        except Exception:
+            current_defs = []
+        if function_name == _ts_mod.TOOL_SEARCH_NAME:
+            return _ts_mod.dispatch_tool_search(function_args or {},
+                                                current_tool_defs=current_defs)
+        if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
+            return _ts_mod.dispatch_tool_describe(function_args or {},
+                                                  current_tool_defs=current_defs)
+        if function_name == _ts_mod.TOOL_CALL_NAME:
+            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
+            if err or not underlying_name:
+                return json.dumps({"error": err or "tool_call could not be resolved"},
+                                  ensure_ascii=False)
+            # Defense in depth: the underlying tool MUST be in the session's
+            # scoped deferrable catalog. resolve_underlying_call() only checks
+            # that the name is deferrable in the global registry; this gate
+            # additionally rejects any tool the session was not granted, so a
+            # restricted session can never invoke an out-of-scope tool through
+            # the bridge even if the catalog scoping above regressed.
+            _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
+            if underlying_name not in _scoped_deferrable:
+                return json.dumps({
+                    "error": (
+                        f"'{underlying_name}' is not available in this session. "
+                        "Use tool_search to find tools you can call."
+                    ),
+                }, ensure_ascii=False)
+            # Recurse with the underlying tool. All hooks fire against the
+            # real tool name. The bridge is invisible to hooks by design.
+            return handle_function_call(
+                function_name=underlying_name,
+                function_args=underlying_args,
+                task_id=task_id,
+                tool_call_id=tool_call_id,
+                session_id=session_id,
+                user_task=user_task,
+                enabled_tools=enabled_tools,
+                skip_pre_tool_call_hook=skip_pre_tool_call_hook,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+            )
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:

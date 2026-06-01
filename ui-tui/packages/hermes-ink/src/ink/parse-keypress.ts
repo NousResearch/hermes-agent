@@ -65,6 +65,34 @@ const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/
 const SGR_MOUSE_FRAGMENT_RE = /(?<!\d)(?:\[<|<)?(?:[0-9]|[1-9][0-9]|1\d{2}|2[0-4]\d|25[0-5]);\d+;\d+[Mm]/g
 
+// Whole-text mouse-burst noise fast path. When a heavy render blocks the event
+// loop past App's 50ms flush watchdog, a long burst of SGR mouse reports (mode
+// 1003 any-motion / 1006 SGR) can arrive as a single text token with prefixes
+// AND coordinate digits chewed off across many partial reads. The surviving
+// shards (1- and 2-param remnants, stray focus-in `[I`, lone `M`/`m`
+// terminators) are too degraded for SGR_MOUSE_FRAGMENT_RE, so the leftover
+// tail leaks into the composer and locks the user out (they can't type or exit).
+//
+// If the ENTIRE text token is drawn only from the mouse-leak alphabet
+// (`[ ] < ; I M m`, digits, and the stray spaces a burst can carry) AND it
+// carries the structural signature of mouse coordinates — ≥3 `M`/`m`
+// terminators, at least one digit, and at least one `;` separator — swallow it
+// wholesale. All three constraints together preserve real prose: `Mmm MMM mmm`
+// has no digit and no `;`, `see 1;2;3M for details` contains disqualifying
+// letters, and `1234;56;78M9;10;11M` has only two terminators.
+// eslint-disable-next-line no-control-regex
+const MOUSE_BURST_NOISE_RE = /^(?=[\s\S]*\d)(?=[\s\S]*;)(?=(?:[^Mm]*[Mm]){3})[\d;<\[\]IMm \x1b]+$/
+
+// Residual-shard variant for the gaps BETWEEN / AFTER recovered fragments
+// inside parseTextWithSgrMouseFragments. A real recovery run leaves degraded
+// remnants (e.g. `M6M`, `7M;220;1MM0M`, lone `;157;47M`) that are pure
+// mouse-leak alphabet but too short to satisfy the ≥3-terminator whole-text
+// rule. Swallow such a residue only when it is pure alphabet AND carries a
+// digit AND at least one `M`/`m` — a prose gap like ` for details ` contains
+// disqualifying letters and never matches.
+// eslint-disable-next-line no-control-regex
+const MOUSE_BURST_RESIDUE_RE = /^(?=[^\d]*\d)(?=[^Mm]*[Mm])[\d;<\[\]IMm \x1b]+$/
+
 function createPasteKey(content: string): ParsedKey {
   return {
     kind: 'key',
@@ -268,6 +296,16 @@ export function parseMultipleKeypresses(
     } else if (token.type === 'text') {
       if (inPaste) {
         pasteBuffer += token.value
+      } else if (MOUSE_BURST_NOISE_RE.test(token.value)) {
+        // Fully degraded mouse-burst noise — a heavy render (e.g. a sudo /
+        // secret prompt repaint) blocked the event loop past App's 50ms flush
+        // watchdog, so a long burst of SGR mouse reports arrived as text with
+        // prefixes AND coordinate digits chewed off. Checked BEFORE fragment
+        // recovery: a noise blob can still contain a few intact `<b;c;r M`
+        // fragments, and parseTextWithSgrMouseFragments would then return
+        // non-null and emit a pile of recovered mouse events instead of
+        // dropping the blob wholesale. Swallow it here so it never leaks into
+        // the composer (and we skip the extra fragment-recovery work mid-stall).
       } else {
         const mouseFragments = parseTextWithSgrMouseFragments(token.value)
 
@@ -674,7 +712,12 @@ function parseTextWithSgrMouseFragments(text: string): ParsedInput[] | null {
     }
 
     if (first.index! > cursor) {
-      parsed.push(parseKeypress(text.slice(cursor, first.index!)))
+      const gap = text.slice(cursor, first.index!)
+      // Skip pure mouse-leak residue between recovered fragments; only emit
+      // real text gaps as keypresses.
+      if (!MOUSE_BURST_RESIDUE_RE.test(gap)) {
+        parsed.push(parseKeypress(gap))
+      }
     }
 
     for (const match of run) {
@@ -690,7 +733,12 @@ function parseTextWithSgrMouseFragments(text: string): ParsedInput[] | null {
   }
 
   if (cursor < text.length) {
-    parsed.push(parseKeypress(text.slice(cursor)))
+    const tail = text.slice(cursor)
+    // Swallow a pure mouse-leak residue tail (the head fragments recovered, but
+    // the burst trailed off into chewed-up shards). Emit only real trailing text.
+    if (!MOUSE_BURST_RESIDUE_RE.test(tail)) {
+      parsed.push(parseKeypress(tail))
+    }
   }
 
   return parsed

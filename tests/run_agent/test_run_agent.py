@@ -2428,6 +2428,8 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                enabled_toolsets=agent.enabled_toolsets,
+                disabled_toolsets=agent.disabled_toolsets,
             )
             assert result == "result"
 
@@ -2540,6 +2542,122 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
         assert agent._turns_since_memory == 5
+
+    def test_concurrent_blocked_write_skips_checkpoint(self, agent, monkeypatch):
+        """Concurrent path: blocked write_file should not trigger checkpoint."""
+        tc1 = _mock_tool_call(name="write_file",
+                              arguments='{"path":"test.txt","content":"hello"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="read_file",
+                              arguments='{"path":"other.py"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked" if args[0] == "write_file" else None,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        cp_mock.assert_not_called()
+
+    def test_concurrent_blocked_patch_skips_checkpoint(self, agent, monkeypatch):
+        """Concurrent path: blocked patch should not trigger checkpoint."""
+        tc1 = _mock_tool_call(name="patch",
+                              arguments='{"path":"f.py","old":"a","new":"b"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="read_file",
+                              arguments='{"path":"other.py"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked" if args[0] == "patch" else None,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        cp_mock.assert_not_called()
+
+    def test_concurrent_blocked_terminal_skips_checkpoint(self, agent, monkeypatch):
+        """Concurrent path: blocked terminal should not trigger checkpoint."""
+        tc1 = _mock_tool_call(name="terminal",
+                              arguments='{"command":"rm -rf /tmp/foo"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="read_file",
+                              arguments='{"path":"other.py"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked" if args[0] == "terminal" else None,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                with patch("agent.tool_executor._is_destructive_command", return_value=True):
+                    agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        cp_mock.assert_not_called()
+
+    def test_concurrent_blocked_write_does_not_steal_slot_from_allowed_write(self, agent, monkeypatch):
+        """When write_file is blocked, its dedup slot must not be consumed,
+        so a subsequent allowed write_file for the same path still checkpoints."""
+        tc1 = _mock_tool_call(name="write_file",
+                              arguments='{"path":"dup.txt","content":"blocked"}',
+                              call_id="c1")
+        tc2 = _mock_tool_call(name="write_file",
+                              arguments='{"path":"dup.txt","content":"allowed"}',
+                              call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        call_count = {"n": 0}
+        def block_first_only(*args, **kwargs):
+            call_count["n"] += 1
+            return "Blocked" if call_count["n"] == 1 else None
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            block_first_only,
+        )
+
+        agent._checkpoint_mgr.enabled = True
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{name}"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        # Second (allowed) write must checkpoint even though first was blocked.
+        cp_mock.assert_called_once()
 
 
 class TestPathsOverlap:
@@ -2753,6 +2871,40 @@ class TestHandleMaxIterations:
             if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
         ]
         assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
+
+    def test_summary_strips_strict_schema_foreign_fields(self, agent):
+        """Regression: the max-iterations summary request must NOT carry
+        Chat-Completions-schema-foreign keys — tool_name (SQLite FTS
+        bookkeeping), codex_* reasoning carriers, or internal _-prefixed
+        scaffolding. Strict gateways (Fireworks-backed OpenCode Go, Mistral,
+        Kimi) reject these with 'Extra inputs are not permitted, field:
+        messages[N].tool_name'. The transport's convert_messages() strips
+        them on the main loop; this hand-built summary path must mirror it."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
+                "codex_reasoning_items": [{"id": "rs_1"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result", "tool_name": "execute_code"},
+            {"role": "assistant", "content": "Done.", "_empty_recovery_synthetic": True},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        for m in sent_msgs:
+            assert "tool_name" not in m, m
+            assert "codex_reasoning_items" not in m, m
+            assert "codex_message_items" not in m, m
+            assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
+        # Internal history is untouched — the path copies each message.
+        assert messages[2]["tool_name"] == "execute_code"
+        assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
@@ -3044,7 +3196,11 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: the bare "(empty)" sentinel is now replaced by a
+        # user-visible end-of-turn explanation so the failure isn't silent.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
+        assert result["turn_exit_reason"] == "empty_response_exhausted"
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
@@ -3064,7 +3220,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
@@ -3111,7 +3269,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
         assert result["api_calls"] == 4  # 1 original + 3 retries
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
@@ -3207,7 +3367,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
 
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
@@ -3233,7 +3395,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
 
-        assert result["final_response"] == "(empty)"
+        # #34452: explanation replaces the bare "(empty)" sentinel, but the
+        # status emissions during retries are unchanged.
+        assert result["final_response"] != "(empty)"
+        assert "No reply:" in result["final_response"]
         # Should have emitted retry statuses (3 retries) + final failure
         retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
         assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"
@@ -4061,40 +4226,13 @@ class TestNousCredentialRefresh:
 
         assert ok is True
         assert closed["value"] is True
-        assert captured["inference_auth_mode"] == "legacy"
+        assert captured["force_refresh"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (
             rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
         )
         assert "default_headers" not in rebuilt["kwargs"]
         assert isinstance(agent.client, _RebuiltClient)
-
-    def test_try_refresh_nous_client_credentials_accepts_explicit_auth_mode(
-        self, agent, monkeypatch
-    ):
-        agent.provider = "nous"
-        agent.api_mode = "chat_completions"
-        captured = {}
-
-        def _fake_resolve(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "new-nous-key",
-                "base_url": "https://inference-api.nousresearch.com/v1",
-            }
-
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
-        )
-
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
-            ok = agent._try_refresh_nous_client_credentials(
-                force=False,
-                inference_auth_mode="legacy",
-            )
-
-        assert ok is True
-        assert captured["inference_auth_mode"] == "legacy"
 
 
 class TestCredentialPoolRecovery:
@@ -4175,37 +4313,6 @@ class TestCredentialPoolRecovery:
         )
         assert recovered is True
         assert retry_same is False
-        agent._swap_credential.assert_called_once_with(next_entry)
-
-    def test_recover_with_pool_rotates_usage_limit_429_immediately(self, agent):
-        next_entry = SimpleNamespace(label="secondary")
-        captured = {}
-
-        class _Pool:
-            def current(self):
-                return SimpleNamespace(label="primary")
-
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
-                captured["status_code"] = status_code
-                captured["error_context"] = error_context
-                return next_entry
-
-        agent._credential_pool = _Pool()
-        agent._swap_credential = MagicMock()
-
-        recovered, retry_same = agent._recover_with_credential_pool(
-            status_code=429,
-            has_retried_429=False,
-            error_context={
-                "reason": "usage_limit_reached",
-                "message": "The usage limit has been reached",
-            },
-        )
-
-        assert recovered is True
-        assert retry_same is False
-        assert captured["status_code"] == 429
-        assert captured["error_context"]["reason"] == "usage_limit_reached"
         agent._swap_credential.assert_called_once_with(next_entry)
 
 

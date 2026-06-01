@@ -288,6 +288,27 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
+    # Pre-translate MCP servers for the ACP client path only.  Reading and
+    # translating at init time (rather than on every turn) avoids repeated
+    # YAML parsing.  The external ACP agent opens the connections -- Hermes
+    # does NOT register these servers in-process (no double-connect).
+    _is_acp = (
+        api_mode == "acp_client"
+        or (provider_name in {"acp-client", "acp_client"})
+    )
+    if _is_acp:
+        try:
+            from tools.mcp_tool import _load_mcp_config
+            from agent.transports.acp_client_session import _translate_mcp_servers
+            agent.acp_mcp_servers = _translate_mcp_servers(_load_mcp_config())
+        except Exception as _exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "ACP: could not load mcp_servers config: %s", _exc
+            )
+            agent.acp_mcp_servers = []
+    else:
+        agent.acp_mcp_servers = []
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "acp_client"}:
         agent.api_mode = api_mode
     elif agent.provider in {"acp-client", "acp_client"}:

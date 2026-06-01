@@ -55,10 +55,16 @@ def run_acp_client_turn(
         # session/set_config_option call in that case.
         model = getattr(agent, "model", None) or None
 
+        # mcp_servers: pre-translated at agent init; forwarded into session/new
+        # so the ACP agent can connect to the user's MCP tools.  Empty list
+        # when none configured (current default).
+        mcp_servers = getattr(agent, "acp_mcp_servers", None) or []
+
         agent._acp_session = ACPClientSession(
             command=command,
             args=list(args),
             model=model,
+            mcp_servers=mcp_servers,
             on_delta=on_delta,
         )
 

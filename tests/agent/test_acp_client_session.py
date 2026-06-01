@@ -27,6 +27,7 @@ from agent.transports.acp_client_session import (
     _extract_text_from_update,
     _is_tool_iteration,
     _pick_allow_option,
+    _translate_mcp_servers,
 )
 
 
@@ -875,3 +876,235 @@ class TestHelpers:
 
     def test_coerce_user_input_integer(self):
         assert _coerce_user_input(42) == "42"
+
+
+# ---------------------------------------------------------------------------
+# Tests: MCP server forwarding -- translator + session/new plumbing
+# ---------------------------------------------------------------------------
+
+
+class TestTranslateMcpServers:
+    """Unit tests for _translate_mcp_servers() covering all ACP wire shapes.
+
+    Ground truth (empirically probed against claude-agent-acp v0.39):
+      stdio  (NO type field): {name, command, args:[str], env:[{name,value}]}
+      http:  {type:"http", name, url, headers:[{name,value}]}
+      sse:   {type:"sse",  name, url, headers:[{name,value}]}
+    env/headers must always be present as arrays ([] when empty).
+    """
+
+    def test_stdio_with_env_dict_converted_to_array(self):
+        """env dict -> [{name, value}] array; no 'type' field in output."""
+        result = _translate_mcp_servers({
+            "myserver": {
+                "command": "npx",
+                "args": ["-y", "@my/mcp-server"],
+                "env": {"API_KEY": "secret", "DEBUG": "1"},
+            }
+        })
+        assert len(result) == 1
+        srv = result[0]
+        assert srv["name"] == "myserver"
+        assert srv["command"] == "npx"
+        assert srv["args"] == ["-y", "@my/mcp-server"]
+        # env must be an array, not a dict
+        assert isinstance(srv["env"], list)
+        env_map = {e["name"]: e["value"] for e in srv["env"]}
+        assert env_map == {"API_KEY": "secret", "DEBUG": "1"}
+        # stdio must NOT have a "type" field
+        assert "type" not in srv
+
+    def test_stdio_with_no_env_emits_empty_array(self):
+        """env absent in config -> env:[] in output (REQUIRED by ACP spec)."""
+        result = _translate_mcp_servers({
+            "bare": {"command": "node", "args": ["index.js"]},
+        })
+        assert len(result) == 1
+        srv = result[0]
+        assert srv["env"] == []   # must be [] not missing
+        assert "type" not in srv
+
+    def test_stdio_with_explicit_empty_env_emits_empty_array(self):
+        """env:{} in config -> env:[] in output."""
+        result = _translate_mcp_servers({
+            "srv": {"command": "python3", "args": ["-m", "mcp"], "env": {}},
+        })
+        assert result[0]["env"] == []
+
+    def test_http_with_headers_dict_converted_to_array(self):
+        """url + headers dict -> type:http + headers array."""
+        result = _translate_mcp_servers({
+            "remote": {
+                "url": "https://example.com/mcp",
+                "headers": {"X-Api-Key": "abc123", "Accept": "application/json"},
+            }
+        })
+        assert len(result) == 1
+        srv = result[0]
+        assert srv["type"] == "http"
+        assert srv["name"] == "remote"
+        assert srv["url"] == "https://example.com/mcp"
+        assert isinstance(srv["headers"], list)
+        hdr_map = {h["name"]: h["value"] for h in srv["headers"]}
+        assert hdr_map == {"X-Api-Key": "abc123", "Accept": "application/json"}
+        # http must NOT have env or command
+        assert "env" not in srv
+        assert "command" not in srv
+
+    def test_http_with_no_headers_emits_empty_array(self):
+        """headers absent -> headers:[] (REQUIRED by ACP spec)."""
+        result = _translate_mcp_servers({
+            "pub": {"url": "https://pub.example.com/mcp"},
+        })
+        srv = result[0]
+        assert srv["type"] == "http"
+        assert srv["headers"] == []
+
+    def test_sse_transport_hint_sets_type_sse(self):
+        """Hermes 'transport: sse' -> ACP type:'sse'."""
+        result = _translate_mcp_servers({
+            "events": {
+                "url": "http://localhost:8000/sse",
+                "transport": "sse",
+                "headers": {},
+            }
+        })
+        srv = result[0]
+        assert srv["type"] == "sse"
+        assert srv["name"] == "events"
+        assert srv["url"] == "http://localhost:8000/sse"
+        assert srv["headers"] == []
+
+    def test_sse_via_type_key_also_accepted(self):
+        """Hermes 'type: sse' (alternative key) -> ACP type:'sse'."""
+        result = _translate_mcp_servers({
+            "events2": {"url": "http://localhost:9000/sse", "type": "sse"},
+        })
+        assert result[0]["type"] == "sse"
+
+    def test_malformed_no_command_no_url_skipped(self):
+        """Entry with neither command nor url is skipped, not an error."""
+        result = _translate_mcp_servers({
+            "bad": {"timeout": 30, "auth": {"token": "x"}},
+        })
+        assert result == []
+
+    def test_malformed_entry_does_not_block_valid_entries(self):
+        """Malformed entry is skipped; valid sibling entries are still translated."""
+        result = _translate_mcp_servers({
+            "bad": {"timeout": 30},
+            "good": {"command": "npx", "args": []},
+        })
+        assert len(result) == 1
+        assert result[0]["name"] == "good"
+
+    def test_both_command_and_url_prefers_stdio(self):
+        """Both command+url set -> stdio wins (no type field)."""
+        result = _translate_mcp_servers({
+            "ambig": {
+                "command": "my-cmd",
+                "url": "https://remote.example.com",
+                "env": {},
+            }
+        })
+        srv = result[0]
+        assert "type" not in srv
+        assert srv["command"] == "my-cmd"
+
+    def test_hermes_only_keys_dropped(self):
+        """timeout/connect_timeout/auth/sampling are NOT forwarded to ACP."""
+        result = _translate_mcp_servers({
+            "srv": {
+                "command": "node",
+                "args": [],
+                "env": {},
+                "timeout": 30,
+                "connect_timeout": 5,
+                "auth": {"type": "oauth"},
+                "sampling": True,
+            }
+        })
+        srv = result[0]
+        for dropped in ("timeout", "connect_timeout", "auth", "sampling"):
+            assert dropped not in srv
+
+    def test_empty_config_returns_empty_list(self):
+        """No servers configured -> []."""
+        assert _translate_mcp_servers({}) == []
+
+    def test_none_config_returns_empty_list(self):
+        """None config -> []."""
+        assert _translate_mcp_servers(None) == []
+
+    def test_multiple_servers_all_translated(self):
+        """Multiple entries all appear in the output list."""
+        result = _translate_mcp_servers({
+            "stdio1": {"command": "cmd1", "args": []},
+            "http1":  {"url": "https://a.com"},
+            "sse1":   {"url": "https://b.com/sse", "transport": "sse"},
+        })
+        names = {s["name"] for s in result}
+        assert names == {"stdio1", "http1", "sse1"}
+
+
+class TestMcpServersPlumbedIntoSessionNew:
+    """Assert the translated mcp_servers list reaches session/new."""
+
+    def _make_acp_session(self, mcp_servers):
+        mock_client = MagicMock()
+        mock_client.is_alive.return_value = True
+        mock_client.initialize.return_value = {"protocolVersion": 1}
+        mock_client.take_notification.return_value = None
+        mock_client.take_server_request.return_value = None
+        mock_client.stderr_tail.return_value = []
+        # session/new returns a sessionId
+        mock_client.request.return_value = {"sessionId": "sess-mcp"}
+
+        session = ACPClientSession(
+            command="fake-acp",
+            mcp_servers=mcp_servers,
+            client_factory=lambda **kw: mock_client,
+        )
+        return session, mock_client
+
+    def test_translated_servers_forwarded_in_session_new(self):
+        """session/new receives the exact translated list, not []."""
+        servers = [
+            {"name": "srv1", "command": "npx", "args": [], "env": []},
+            {"type": "http", "name": "srv2", "url": "https://x.com", "headers": []},
+        ]
+        session, mock_client = self._make_acp_session(mcp_servers=servers)
+        session.ensure_started(cwd="/tmp")
+
+        call = mock_client.request.call_args_list[0]
+        assert call[0][0] == "session/new"
+        params = call[0][1]
+        assert params["mcpServers"] == servers
+
+    def test_empty_mcp_servers_sends_empty_list(self):
+        """None/[] -> mcpServers:[] in session/new (preserved original behavior)."""
+        session, mock_client = self._make_acp_session(mcp_servers=None)
+        session.ensure_started(cwd="/tmp")
+
+        params = mock_client.request.call_args_list[0][0][1]
+        assert params["mcpServers"] == []
+
+    def test_end_to_end_translation_to_session_new(self):
+        """Translator output -> ACPClientSession -> session/new mcpServers roundtrip."""
+        hermes_cfg = {
+            "fs-mcp": {"command": "uvx", "args": ["mcp-server-filesystem", "/data"],
+                       "env": {"HOME": "/root"}},
+        }
+        translated = _translate_mcp_servers(hermes_cfg)
+        session, mock_client = self._make_acp_session(mcp_servers=translated)
+        session.ensure_started(cwd="/tmp")
+
+        params = mock_client.request.call_args_list[0][0][1]
+        mcp_list = params["mcpServers"]
+        assert len(mcp_list) == 1
+        srv = mcp_list[0]
+        assert srv["name"] == "fs-mcp"
+        assert srv["command"] == "uvx"
+        assert srv["args"] == ["mcp-server-filesystem", "/data"]
+        assert srv["env"] == [{"name": "HOME", "value": "/root"}]
+        assert "type" not in srv  # stdio: no type field

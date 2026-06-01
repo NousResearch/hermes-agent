@@ -126,6 +126,7 @@ class ACPClientSession:
         args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
         model: Optional[str] = None,
+        mcp_servers: Optional[list[dict]] = None,
         on_delta: Optional[Callable[[str], None]] = None,
         client_factory: Optional[Callable[..., ACPClient]] = None,
     ) -> None:
@@ -140,6 +141,11 @@ class ACPClientSession:
                 when set; servers that do not support set_config_option are
                 tolerated -- the call is wrapped in a try/except and a warning
                 is logged rather than hard-failing the session.
+            mcp_servers: Pre-translated ACP McpServer dicts to forward in
+                session/new.  Build with ``_translate_mcp_servers()`` from
+                Hermes' mcp_servers config.  Hermes does NOT open these
+                connections in-process -- the external ACP agent owns them.
+                None or [] → send an empty list (current default behaviour).
             on_delta: Optional callback invoked with each text delta during streaming.
                       Bridges to Hermes' ``_fire_stream_delta`` for live output.
             client_factory: Inject a custom ACPClient constructor for testing.
@@ -148,6 +154,7 @@ class ACPClientSession:
         self._args = list(args or [])
         self._env = env
         self._model = model
+        self._mcp_servers: list[dict] = list(mcp_servers or [])
         self._on_delta = on_delta
         self._client_factory = client_factory or ACPClient
 
@@ -175,9 +182,12 @@ class ACPClientSession:
         )
         result = self._client.request(
             _METHOD_SESSION_NEW,
-            # mcpServers is required by the ACP schema (NewSessionRequest); send
-            # an empty list -- Hermes handles its own MCP surface, not the agent.
-            {"cwd": cwd or os.getcwd(), "mcpServers": []},
+            # mcpServers: forward the translated list from Hermes' mcp_servers
+            # config so the ACP agent can connect to the user's MCP tools.
+            # Hermes does NOT open these connections in-process -- the external
+            # ACP agent owns the connections (no double-connect).
+            # Empty list when no servers are configured (original default).
+            {"cwd": cwd or os.getcwd(), "mcpServers": self._mcp_servers},
             timeout=15,
         )
         session_id = result.get("sessionId") or result.get("session_id") or ""
@@ -588,6 +598,91 @@ class ACPClientSession:
         if not joined.strip():
             return prefix
         return f"{prefix}\nACP agent stderr (last {len(tail)} lines):\n{joined}"
+
+
+def _translate_mcp_servers(servers: dict) -> list[dict]:
+    """Translate Hermes mcp_servers config dict to ACP McpServer wire shapes.
+
+    Hermes config (from config.yaml ``mcp_servers:`` key) is a dict of
+    ``{name: server_cfg}`` where server_cfg contains either stdio or HTTP/SSE
+    transport fields.  The ACP server expects a typed list with exact shapes
+    (probed empirically against claude-agent-acp v0.39).
+
+    Accepted ACP shapes:
+      stdio (NO type field):
+        {"name": str, "command": str, "args": [str], "env": [{"name": str, "value": str}]}
+        env is REQUIRED and must be an array -- use [] when the config has none.
+      http:
+        {"type": "http", "name": str, "url": str, "headers": [{"name": str, "value": str}]}
+        headers is REQUIRED array.
+      sse:
+        {"type": "sse", "name": str, "url": str, "headers": [{"name": str, "value": str}]}
+        headers is REQUIRED array.
+
+    Both env/headers must be [{name, value}] arrays -- dict/object shapes are
+    rejected (-32602) by the native server.  They are always emitted ([] when
+    empty) so the server never sees a missing required field.
+
+    Hermes-only keys (timeout, connect_timeout, auth, sampling) are dropped;
+    ACP does not accept unknown fields.  Values are already ${VAR}-interpolated
+    by _load_mcp_config() -- no re-interpolation here.
+
+    Entries with neither ``command`` nor ``url`` are skipped with a warning
+    rather than crashing the session setup.
+    """
+    out = []
+    for name, cfg in (servers or {}).items():
+        if not isinstance(cfg, dict):
+            logger.warning(
+                "ACP MCP translate: skipping %r -- config is not a dict (%r)",
+                name, type(cfg).__name__,
+            )
+            continue
+
+        has_command = bool(cfg.get("command"))
+        has_url = bool(cfg.get("url"))
+
+        if has_command and has_url:
+            # Prefer stdio when both are set, matching the codex translator.
+            logger.debug(
+                "ACP MCP translate: %r has both command and url -- using stdio", name
+            )
+            has_url = False
+
+        if has_command:
+            # Stdio transport.  env dict -> [{name, value}] array (always present).
+            raw_env = cfg.get("env") or {}
+            env_array = [{"name": str(k), "value": str(v)} for k, v in raw_env.items()]
+            args = [str(a) for a in (cfg.get("args") or [])]
+            out.append({
+                "name": name,
+                "command": str(cfg["command"]),
+                "args": args,
+                "env": env_array,
+                # No "type" field for stdio -- ACP spec requires its absence.
+            })
+        elif has_url:
+            # HTTP or SSE transport.  Hermes uses "transport" key ("sse" hint).
+            # headers dict -> [{name, value}] array (always present).
+            raw_headers = cfg.get("headers") or {}
+            headers_array = [{"name": str(k), "value": str(v)} for k, v in raw_headers.items()]
+            # Hermes writes "transport" (not "type") for the sse hint.
+            # Honor explicit "type" too for forward-compat.
+            transport_hint = cfg.get("transport") or cfg.get("type") or ""
+            acp_type = "sse" if transport_hint.lower() == "sse" else "http"
+            out.append({
+                "type": acp_type,
+                "name": name,
+                "url": str(cfg["url"]),
+                "headers": headers_array,
+            })
+        else:
+            logger.warning(
+                "ACP MCP translate: skipping %r -- no 'command' or 'url' field", name
+            )
+            continue
+
+    return out
 
 
 def _pick_allow_option(options: list) -> Optional[str]:

@@ -2911,18 +2911,41 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
-    def _rewrite_local_refs(node):
+    def _rewrite_local_refs(node, *, inside_properties=False):
+        """Rewrite draft-07 ``definitions`` to draft-2020 ``$defs``.
+
+        IMPORTANT: only the *schema keyword* ``definitions`` is renamed. When
+        the recursion is descending through a ``properties`` dict, its keys
+        are *user-defined parameter names* — never JSON-Schema keywords — and
+        must be preserved verbatim. Renaming them produces ``properties.$defs``
+        (a top-level reserved keyword) and breaks downstream validators that
+        forbid ``$`` in property names (e.g. Anthropic's
+        ``^[a-zA-Z0-9_.-]{1,64}$`` regex).  See: Azure DevOps MCP's
+        ``pipelines_get_builds`` tool, whose Zod schema legitimately exposes a
+        parameter named ``definitions``.
+        """
         if isinstance(node, dict):
             normalized = {}
             for key, value in node.items():
+                if inside_properties:
+                    # Inside a properties dict: keys are user parameter names,
+                    # not schema keywords. Never rewrite. Recurse into each
+                    # value as a fresh schema node.
+                    normalized[key] = _rewrite_local_refs(value, inside_properties=False)
+                    continue
                 out_key = "$defs" if key == "definitions" else key
-                normalized[out_key] = _rewrite_local_refs(value)
+                # The value of a ``properties`` key is itself a dict whose own
+                # keys are parameter names. Mark that boundary for the recursion.
+                child_inside_properties = (key == "properties") and isinstance(value, dict)
+                normalized[out_key] = _rewrite_local_refs(
+                    value, inside_properties=child_inside_properties
+                )
             ref = normalized.get("$ref")
             if isinstance(ref, str) and ref.startswith("#/definitions/"):
                 normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
             return normalized
         if isinstance(node, list):
-            return [_rewrite_local_refs(item) for item in node]
+            return [_rewrite_local_refs(item, inside_properties=False) for item in node]
         return node
 
     def _strip_nullable_union(node):
@@ -2976,9 +2999,70 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
         return repaired
 
+    # Anthropic's tool-schema validator rejects ``properties`` keys that don't
+    # match ``^[a-zA-Z0-9_.-]{1,64}$``. Most other providers are looser, but
+    # the strictest cross-provider intersection is roughly this regex, so we
+    # apply it as a final belt-and-suspenders pass. Sanitization replaces
+    # disallowed characters with ``_`` and truncates over-long keys; collisions
+    # get an integer suffix. A warning is logged so server authors can fix the
+    # upstream Zod / Pydantic schema.
+    _SAFE_PROP_KEY = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+
+    def _sanitize_property_keys(node, *, path="$", tool_hint=""):
+        if isinstance(node, list):
+            return [_sanitize_property_keys(item, path=f"{path}[{i}]", tool_hint=tool_hint) for i, item in enumerate(node)]
+        if not isinstance(node, dict):
+            return node
+        out = {}
+        for k, v in node.items():
+            if k == "properties" and isinstance(v, dict):
+                new_props: dict = {}
+                for pk, pv in v.items():
+                    safe_pk = pk
+                    if not isinstance(pk, str) or not _SAFE_PROP_KEY.match(pk):
+                        raw = pk if isinstance(pk, str) else str(pk)
+                        safe_pk = re.sub(r"[^a-zA-Z0-9_.-]", "_", raw)[:64] or "_"
+                        # Disambiguate against any existing/sibling key
+                        base = safe_pk
+                        suffix = 1
+                        while safe_pk in new_props:
+                            safe_pk = f"{base[:60]}_{suffix}"
+                            suffix += 1
+                        try:
+                            logger.warning(
+                                "MCP schema: renamed invalid property key %r -> %r "
+                                "at %s.properties (tool=%s) to satisfy provider "
+                                "regex ^[a-zA-Z0-9_.-]{1,64}$",
+                                raw, safe_pk, path, tool_hint or "?",
+                            )
+                        except Exception:
+                            pass
+                    new_props[safe_pk] = _sanitize_property_keys(
+                        pv, path=f"{path}.properties.{safe_pk}", tool_hint=tool_hint
+                    )
+                # Update ``required`` to use the renamed keys when applicable
+                req = node.get("required")
+                if isinstance(req, list):
+                    # We can only safely rename in ``required`` if we have a 1:1 map,
+                    # which we do because pk -> safe_pk is built in order.
+                    rename = {}
+                    for (orig_pk, _), (new_pk, _) in zip(v.items(), new_props.items()):
+                        if orig_pk != new_pk:
+                            rename[orig_pk] = new_pk
+                    if rename:
+                        out["required"] = [rename.get(r, r) for r in req]
+                out[k] = new_props
+            elif k == "required" and "required" in out:
+                # Already handled above when we rewrote ``properties``.
+                continue
+            else:
+                out[k] = _sanitize_property_keys(v, path=f"{path}.{k}", tool_hint=tool_hint)
+        return out
+
     normalized = _rewrite_local_refs(schema)
     normalized = _strip_nullable_union(normalized)
     normalized = _repair_object_shape(normalized)
+    normalized = _sanitize_property_keys(normalized)
 
     # Ensure top-level is a well-formed object schema
     if not isinstance(normalized, dict):

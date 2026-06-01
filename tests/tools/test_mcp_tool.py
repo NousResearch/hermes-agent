@@ -185,6 +185,113 @@ class TestSchemaConversion:
         assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
         assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
 
+    def test_property_named_definitions_is_not_renamed(self):
+        """A user parameter named ``definitions`` must NOT be renamed to ``$defs``.
+
+        Regression for the Azure DevOps MCP ``pipelines_get_builds`` tool,
+        whose Zod schema legitimately exposes ``definitions: z.array(...)`` as
+        a parameter name. Previously ``_rewrite_local_refs`` blindly renamed
+        every dict key named ``definitions`` (including parameter names inside
+        ``properties``), producing ``properties.$defs`` which then failed
+        Anthropic's ``^[a-zA-Z0-9_.-]{1,64}$`` validator with HTTP 400.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "definitions": {
+                    "type": "array",
+                    "items": {"type": "number", "minimum": 1},
+                    "description": "Array of build definition IDs to filter builds",
+                },
+            },
+            "required": ["project"],
+        })
+
+        assert "definitions" in schema["properties"]
+        assert "$defs" not in schema["properties"]
+        assert schema["properties"]["definitions"]["type"] == "array"
+        # And the schema-keyword form is still rewritten correctly when present
+        # as a sibling of properties (covered by other tests).
+
+    def test_property_named_definitions_alongside_schema_definitions(self):
+        """Both forms can coexist: keyword renamed, property kept verbatim."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "definitions": {"type": "array", "items": {"type": "string"}},
+                "payload": {"$ref": "#/definitions/P"},
+            },
+            "required": ["definitions"],
+            "definitions": {
+                "P": {"type": "object", "properties": {"k": {"type": "string"}}},
+            },
+        })
+
+        # Schema-keyword form was rewritten
+        assert "$defs" in schema
+        assert "definitions" not in {k for k in schema.keys() if k != "properties"} - {"properties"}
+        assert "P" in schema["$defs"]
+        assert schema["properties"]["payload"]["$ref"] == "#/$defs/P"
+        # Property-name form preserved verbatim
+        assert "definitions" in schema["properties"]
+        assert schema["properties"]["definitions"]["type"] == "array"
+        # Required still references the original parameter name
+        assert "definitions" in schema["required"]
+
+    def test_invalid_property_keys_are_sanitized(self):
+        """Property keys outside ^[a-zA-Z0-9_.-]{1,64}$ are renamed defensively.
+
+        Belt-and-suspenders pass: if an MCP server emits a property key with
+        characters Anthropic rejects (``$``, ``@``, spaces, unicode, …), we
+        rename it so the whole tool list still validates.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "ok": {"type": "string"},
+                "$weird": {"type": "string"},
+                "has spaces": {"type": "integer"},
+            },
+            "required": ["$weird"],
+        })
+
+        keys = list(schema["properties"].keys())
+        import re as _re
+        regex = _re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+        for k in keys:
+            assert regex.match(k), f"key {k!r} still fails Anthropic regex"
+        assert "ok" in schema["properties"]
+        # ``$weird`` -> ``_weird``; required list is rewritten in lockstep
+        assert "_weird" in schema["properties"]
+        assert "_weird" in schema["required"]
+        # ``has spaces`` -> ``has_spaces``
+        assert "has_spaces" in schema["properties"]
+
+    def test_valid_property_keys_are_unchanged(self):
+        """Sanitizer must be a no-op on clean schemas."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        inp = {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "x.y": {"type": "string"},
+                "snake_case": {"type": "integer"},
+                "kebab-case": {"type": "boolean"},
+            },
+            "required": ["project"],
+        }
+        schema = _normalize_mcp_input_schema(inp)
+        assert set(schema["properties"].keys()) == {"project", "x.y", "snake_case", "kebab-case"}
+        assert schema["required"] == ["project"]
+
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""
         from tools.mcp_tool import _normalize_mcp_input_schema

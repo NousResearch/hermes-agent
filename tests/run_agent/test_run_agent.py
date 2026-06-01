@@ -2080,6 +2080,41 @@ class TestConcurrentToolExecution:
             assert len(m["content"]) < 150_000
             assert ("Truncated" in m["content"] or "<persisted-output>" in m["content"])
 
+    def test_invoke_tool_does_not_dispatch_unexposed_memory_provider_tool(self, agent):
+        """Concurrent helper must not bypass valid_tool_names for memory providers."""
+        manager = _FakeProviderMemoryManager()
+        agent._memory_manager = manager
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value='{"error":"Unknown tool"}',
+        ) as mock_hfc:
+            result = agent._invoke_tool("ext_retain", {"content": "x"}, "task-1")
+
+        assert manager.calls == []
+        assert json.loads(result) == {"error": "Unknown tool"}
+        mock_hfc.assert_called_once()
+
+    def test_sequential_does_not_dispatch_unexposed_memory_provider_tool(self, agent):
+        """Sequential path must not bypass valid_tool_names for memory providers."""
+        manager = _FakeProviderMemoryManager()
+        agent._memory_manager = manager
+        tool_call = _mock_tool_call(
+            name="ext_retain", arguments='{"content":"x"}', call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value='{"error":"Unknown tool"}',
+        ) as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert manager.calls == []
+        assert json.loads(messages[0]["content"]) == {"error": "Unknown tool"}
+        mock_hfc.assert_called_once()
+
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
         with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:

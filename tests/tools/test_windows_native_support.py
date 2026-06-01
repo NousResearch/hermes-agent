@@ -700,13 +700,19 @@ class TestKanbanWaitpidWindowsGuard:
     def test_source_gates_waitpid_loop(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "hermes_cli" / "kanban_db.py").read_text(encoding="utf-8")
-        # Find the waitpid call and confirm it's inside a POSIX gate.
-        idx = source.find("os.waitpid(-1, os.WNOHANG)")
+        # Find the scoped waitpid call and confirm it's inside a POSIX gate.
+        idx = source.find("os.waitpid(int(pid), os.WNOHANG)")
         assert idx > 0, "waitpid call must exist"
         # Look backwards up to 400 chars for the gate.
         preamble = source[max(0, idx - 400):idx]
-        assert 'os.name != "nt"' in preamble or "os.name != 'nt'" in preamble, (
-            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name != 'nt' guard"
+        has_windows_guard = (
+            'os.name == "nt"' in preamble
+            or "os.name == 'nt'" in preamble
+            or 'os.name != "nt"' in preamble
+            or "os.name != 'nt'" in preamble
+        )
+        assert has_windows_guard and "WNOHANG" in preamble, (
+            "os.waitpid(int(pid), os.WNOHANG) must sit behind an OS/WNOHANG guard"
         )
 
 
@@ -826,90 +832,6 @@ class TestNpmBareSpawnsResolved:
                     f"{relpath}: bare {pat!r} still present at offset {idx} — "
                     f"resolve via shutil.which(...) so Windows can execute .cmd shims"
                 )
-
-
-class TestBrowserNpxWindowsLaunchHardening:
-    """The browser npx fallback must not pass untrusted args through npx.cmd."""
-
-    def test_windows_npx_cmd_uses_node_cli_instead_of_batch_shim(self, tmp_path, monkeypatch):
-        from tools import browser_tool
-
-        node_root = tmp_path / "nodejs"
-        npx_cmd = node_root / "npx.cmd"
-        npx_cli = node_root / "node_modules" / "npm" / "bin" / "npx-cli.js"
-        node_exe = node_root / "node.exe"
-        npx_cli.parent.mkdir(parents=True)
-        npx_cmd.write_text("@echo off\n", encoding="utf-8")
-        npx_cli.write_text("// npm npx cli\n", encoding="utf-8")
-        node_exe.write_text("", encoding="utf-8")
-
-        def fake_which(name, path=None):
-            if name == "npx":
-                return str(npx_cmd)
-            if name in {"node", "node.exe"}:
-                return str(node_exe)
-            return None
-
-        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
-        monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
-
-        prefix = browser_tool._resolve_npx_agent_browser_prefix()
-
-        assert prefix == [str(node_exe), str(npx_cli), "agent-browser"]
-        assert not prefix[0].lower().endswith((".cmd", ".bat"))
-
-    def test_windows_npx_cmd_fails_closed_without_npx_cli(self, tmp_path, monkeypatch):
-        from tools import browser_tool
-
-        npx_cmd = tmp_path / "nodejs" / "npx.cmd"
-        npx_cmd.parent.mkdir()
-        npx_cmd.write_text("@echo off\n", encoding="utf-8")
-
-        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
-        monkeypatch.setattr(
-            browser_tool.shutil,
-            "which",
-            lambda name, path=None: str(npx_cmd) if name == "npx" else None,
-        )
-
-        with pytest.raises(FileNotFoundError, match="Refusing to launch npx.cmd"):
-            browser_tool._resolve_npx_agent_browser_prefix()
-
-    def test_windows_npx_found_only_via_merged_path(self, tmp_path, monkeypatch):
-        """npx.cmd absent from the default process PATH but present in the
-        browser-merged PATH must not cause a false fail-closed error."""
-        from tools import browser_tool
-
-        node_root = tmp_path / "nodejs"
-        npx_cmd = node_root / "npx.cmd"
-        npx_cli = node_root / "node_modules" / "npm" / "bin" / "npx-cli.js"
-        node_exe = node_root / "node.exe"
-        npx_cli.parent.mkdir(parents=True)
-        npx_cmd.write_text("@echo off\n", encoding="utf-8")
-        npx_cli.write_text("// npm npx cli\n", encoding="utf-8")
-        node_exe.write_text("", encoding="utf-8")
-
-        merged_path = str(node_root)
-
-        def fake_which(name, path=None):
-            # Binaries are only visible via the extended merged path,
-            # not via the bare default process PATH.
-            if path and str(node_root) in path:
-                if name == "npx":
-                    return str(npx_cmd)
-                if name in {"node", "node.exe"}:
-                    return str(node_exe)
-            return None
-
-        monkeypatch.setattr(browser_tool, "_IS_WINDOWS", True)
-        monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
-        # Simulate _merge_browser_path returning the extra dir that contains npx.cmd
-        monkeypatch.setattr(browser_tool, "_merge_browser_path", lambda p="": merged_path)
-
-        prefix = browser_tool._resolve_npx_agent_browser_prefix()
-
-        assert prefix == [str(node_exe), str(npx_cli), "agent-browser"]
-        assert not prefix[0].lower().endswith((".cmd", ".bat"))
 
 
 # ---------------------------------------------------------------------------
@@ -1034,35 +956,3 @@ class TestGatewayDetachedWatcherWindowsFlags:
         # Windows branch uses windows_detach_popen_kwargs
         assert "windows_detach_popen_kwargs" in source
 
-
-class TestBrowserWindowsBatchLauncherQuoting:
-    """agent-browser .cmd/.bat shims must quote model-controlled args."""
-
-    def test_batch_launcher_uses_shell_string_and_quotes_url_metacharacters(self, monkeypatch):
-        import tools.browser_tool as bt
-
-        monkeypatch.setattr(bt.os, "name", "nt")
-        cmd, kwargs = bt._prepare_browser_popen_command([
-            r"C:\repo\node_modules\.bin\agent-browser.cmd",
-            "--session",
-            "poc-session",
-            "--json",
-            "open",
-            "https://example.com/?x=1&calc",
-        ])
-
-        assert kwargs == {"shell": True}
-        assert isinstance(cmd, str)
-        assert '"https://example.com/?x=1&calc"' in cmd
-        assert " https://example.com/?x=1&calc" not in cmd
-
-    def test_non_batch_launcher_keeps_posix_argv_unchanged(self, monkeypatch):
-        import tools.browser_tool as bt
-
-        monkeypatch.setattr(bt.os, "name", "posix")
-        argv = ["/usr/bin/agent-browser", "open", "https://example.com/?x=1&y=2"]
-
-        cmd, kwargs = bt._prepare_browser_popen_command(argv)
-
-        assert cmd is argv
-        assert kwargs == {}

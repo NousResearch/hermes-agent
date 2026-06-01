@@ -12,6 +12,7 @@ from tools.session_search_tool import (
     _get_session_search_max_concurrency,
     _list_recent_sessions,
     _HIDDEN_SESSION_SOURCES,
+    _excluded_sources_for,
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
 )
@@ -26,6 +27,13 @@ class TestHiddenSessionSources:
 
     def test_tool_source_is_hidden(self):
         assert "tool" in _HIDDEN_SESSION_SOURCES
+
+    def test_acp_source_is_hidden_by_default(self):
+        assert "acp" in _HIDDEN_SESSION_SOURCES
+
+    def test_current_source_can_search_itself(self):
+        assert "acp" not in _excluded_sources_for("acp")
+        assert "acp" in _excluded_sources_for("telegram")
 
     def test_standard_sources_not_hidden(self):
         for src in ("cli", "telegram", "discord", "slack", "cron"):
@@ -253,26 +261,24 @@ class TestRecentSessionListing:
         assert result["success"] is True
         mock_db.list_sessions_rich.assert_called_once_with(
             limit=10,
-            exclude_sources=["tool"],
+            exclude_sources=["tool", "acp"],
             order_by_last_active=True,
         )
 
-    def test_recent_mode_scopes_to_current_source_when_known(self):
+    def test_current_source_scopes_recent_listing(self):
         from unittest.mock import MagicMock
 
         mock_db = MagicMock()
         mock_db.list_sessions_rich.return_value = []
 
-        result = json.loads(
-            _list_recent_sessions(mock_db, limit=5, session_source="cli")
-        )
+        result = json.loads(_list_recent_sessions(mock_db, limit=5, current_source="telegram"))
 
         assert result["success"] is True
         mock_db.list_sessions_rich.assert_called_once_with(
             limit=10,
-            source="cli",
-            exclude_sources=["tool"],
+            exclude_sources=["tool", "acp"],
             order_by_last_active=True,
+            source="telegram",
         )
 
     def test_current_child_session_excludes_root_lineage_even_when_child_id_is_longer(self):
@@ -370,7 +376,7 @@ class TestSessionSearch:
             query="secret",
             source_filter=["cli"],
             role_filter=None,
-            exclude_sources=["tool"],
+            exclude_sources=["tool", "acp"],
             limit=50,
             offset=0,
         )
@@ -620,3 +626,71 @@ class TestSessionSearch:
         assert entry["source"] == "api_server", (
             f"source should be parent's 'api_server', got {entry['source']!r}"
         )
+
+
+class TestSessionSearchSourceIsolation:
+    def test_search_filters_to_current_source_and_excludes_acp_for_gateway(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        result = json.loads(session_search(
+            query="secret",
+            db=mock_db,
+            current_source="telegram",
+        ))
+
+        assert result["success"] is True
+        mock_db.search_messages.assert_called_once_with(
+            query="secret",
+            role_filter=None,
+            exclude_sources=["tool", "acp"],
+            source_filter=["telegram"],
+            limit=50,
+            offset=0,
+        )
+
+    def test_acp_matches_are_not_returned_without_acp_source(self, tmp_path):
+        from tools.session_search_tool import session_search
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("acp-session", source="acp")
+        db.append_message("acp-session", role="user", content="SECRET_ACP_TOKEN_12345")
+        db.create_session("telegram-session", source="telegram")
+        db.append_message("telegram-session", role="user", content="ordinary gateway text")
+
+        result = json.loads(session_search(
+            query="SECRET_ACP_TOKEN_12345",
+            db=db,
+            current_source="telegram",
+        ))
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["results"] == []
+
+    def test_acp_source_can_search_acp_sessions(self, tmp_path, monkeypatch):
+        from tools import session_search_tool as tool
+        from hermes_state import SessionDB
+
+        async def _fake_summary(conversation_text, query, session_meta):
+            return "matched acp session"
+
+        monkeypatch.setattr(tool, "_summarize_session", _fake_summary)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("acp-session", source="acp")
+        db.append_message("acp-session", role="user", content="ACP_SELF_LOOKUP_TOKEN")
+
+        result = json.loads(tool.session_search(
+            query="ACP_SELF_LOOKUP_TOKEN",
+            db=db,
+            current_source="acp",
+        ))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["source"] == "acp"

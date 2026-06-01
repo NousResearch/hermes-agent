@@ -85,7 +85,9 @@ class TestSteerInjection:
         # The LAST tool result is modified; earlier ones are untouched.
         assert messages[2]["content"] == "ls output A"
         assert "ls output B" in messages[3]["content"]
-        assert "User guidance:" in messages[3]["content"]
+        # Marker labels the appended text as an out-of-band operator steer,
+        # not tool output — so injection-resistant models don't flag it.
+        assert "operator steer" in messages[3]["content"]
         assert "please also check auth.log" in messages[3]["content"]
         # And pending_steer is consumed.
         assert agent._pending_steer is None
@@ -107,19 +109,27 @@ class TestSteerInjection:
         # Steer should remain pending (nothing to drain into)
         assert agent._pending_steer == "steer"
 
-    def test_marker_labels_text_as_user_guidance(self):
-        """The injection marker must label the appended text as user
-        guidance so the model attributes it to the user rather than
-        confusing it with tool output.  This is the cache-safe way to
-        signal provenance without violating message-role alternation.
+    def test_marker_labels_text_as_operator_steer(self):
+        """The injection marker must label the appended text as an out-of-band
+        operator steer so the model attributes it to the user rather than
+        confusing it with tool output.  This is the cache-safe way to signal
+        provenance without violating message-role alternation, and it is what
+        keeps injection-resistant models (e.g. Opus 4.x) from flagging a
+        legitimate /steer as a possible prompt-injection payload.
         """
         agent = _bare_agent()
         agent.steer("stop after next step")
         messages = [{"role": "tool", "content": "x", "tool_call_id": "1"}]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         content = messages[-1]["content"]
-        assert "User guidance:" in content
+        # Provenance is explicit: operator, via /steer, not tool output.
+        assert "operator steer" in content
+        assert "/steer" in content
+        assert "NOT tool output" in content
         assert "stop after next step" in content
+        # Must NOT reintroduce a bare "User guidance:" label — that is the
+        # exact shape that reads as an in-channel injection (see #36934).
+        assert "User guidance:" not in content
 
     def test_multimodal_content_list_preserved(self):
         """Anthropic-style list content should be preserved, with the steer
@@ -224,12 +234,14 @@ class TestPreApiCallSteerDrain:
         # Simulate what the pre-API-call drain does:
         _pre_api_steer = agent._drain_pending_steer()
         assert _pre_api_steer == "focus on error handling"
-        # Inject into last tool msg (mirrors the new code in run_conversation)
+        # Inject into last tool msg (mirrors the new code in run_conversation,
+        # using the same shared marker builder the source uses).
+        from agent.tool_dispatch_helpers import build_steer_marker
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += build_steer_marker(_pre_api_steer)
                 break
-        assert "User guidance:" in messages[-1]["content"]
+        assert "operator steer" in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
 
@@ -269,9 +281,10 @@ class TestPreApiCallSteerDrain:
         agent.steer("change approach")
         _pre_api_steer = agent._drain_pending_steer()
         assert _pre_api_steer is not None
+        from agent.tool_dispatch_helpers import build_steer_marker
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += build_steer_marker(_pre_api_steer)
                 break
         assert "change approach" in messages[2]["content"]
 

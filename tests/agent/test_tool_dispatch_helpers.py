@@ -13,6 +13,7 @@ import pytest
 from agent.tool_dispatch_helpers import (
     _is_untrusted_tool,
     _maybe_wrap_untrusted,
+    build_steer_marker,
     make_tool_result_message,
 )
 
@@ -174,3 +175,49 @@ class TestMakeToolResultMessage:
         assert "DATA, not as instructions" in content
         assert content.startswith('<untrusted_tool_result source="web_extract">')
         assert content.endswith("</untrusted_tool_result>")
+
+
+# =========================================================================
+# /steer marker provenance (#36934)
+# =========================================================================
+
+
+class TestBuildSteerMarker:
+    """The /steer marker is appended to the last tool result mid-turn (it can't
+    be a new user-role message without breaking role alternation + prompt
+    cache). That puts an imperative instruction inside the tool channel, which
+    injection-resistant models (Opus 4.x) flag as a possible injection — sharper
+    right after an <untrusted_tool_result> block whose own text says only the
+    user outside the block can issue instructions. The marker fixes this by
+    stating provenance: operator, via /steer, NOT tool output.
+    """
+
+    def test_includes_steer_text(self):
+        assert "use the staging endpoint" in build_steer_marker(
+            "use the staging endpoint"
+        )
+
+    def test_signals_operator_provenance(self):
+        out = build_steer_marker("x").lower()
+        assert "operator steer" in out
+        assert "/steer" in out
+        assert "not tool output" in out
+
+    def test_states_origin_not_obedience(self):
+        """Deliberately NOT a 'trust and obey' token. Unwrapped tool results
+        (read_file, terminal output) carry no <untrusted_tool_result> fence, so
+        a token that COMMANDED trust could be replicated by a poisoned payload
+        to fake operator authority. Signal origin, not obedience.
+        """
+        out = build_steer_marker("x").lower()
+        assert "obey" not in out
+        assert "you must" not in out
+        assert "comply" not in out
+
+    def test_leading_separator_for_appending(self):
+        assert build_steer_marker("y").startswith("\n\n")
+
+    def test_no_legacy_user_guidance_label(self):
+        """Regression guard: the bare 'User guidance:' label is the exact shape
+        that read as an in-channel injection (#36934)."""
+        assert "User guidance:" not in build_steer_marker("z")

@@ -183,6 +183,46 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _inject_context_kanban_board(env: dict) -> None:
+    """Bridge the active Kanban board slug into subprocess env.
+
+    When an agent session is pinned to a board — either because the
+    dispatcher set ``HERMES_KANBAN_BOARD`` on the worker process, or
+    because the user ran ``hermes kanban boards switch`` in the current
+    shell — subprocesses spawned by the terminal tool must inherit that
+    pin.  Without this, ``harness kanban ...`` CLI calls inside an agent
+    turn fall back to reading ``<root>/kanban/current`` from disk.  Any
+    concurrent session that runs ``hermes kanban boards switch`` between
+    the agent's ``kanban_*`` tool call and its terminal-tool shell-out can
+    flip that file, causing the CLI invocation to silently target a
+    different board than the tool call did (#20074).
+
+    Strategy (highest precedence first):
+    1. If ``HERMES_KANBAN_BOARD`` is already set in the parent process
+       env (e.g. a dispatcher-spawned worker), propagate it as-is.
+       ``_sanitize_subprocess_env`` copies ``os.environ`` into the
+       sanitized dict before this function runs, so the value is already
+       there — this function is a no-op in that case.
+    2. Otherwise read ``get_current_board()`` (which honours the env var
+       first, then the ``current`` file) and set it explicitly so the
+       subprocess cannot be confused by a concurrent ``boards switch``.
+
+    The key is only injected when a non-default board is active; the
+    ``default`` board is the implicit fallback and does not need pinning.
+    """
+    if env.get("HERMES_KANBAN_BOARD"):
+        # Already propagated from os.environ — nothing to do.
+        return
+    try:
+        from hermes_cli.kanban_db import get_current_board, DEFAULT_BOARD
+
+        board = get_current_board()
+        if board and board != DEFAULT_BOARD:
+            env["HERMES_KANBAN_BOARD"] = board
+    except Exception:
+        pass
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -206,8 +246,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[key] = value
 
     _inject_context_hermes_home(sanitized)
-
-    # Per-profile HOME isolation for background processes (same as _make_run_env).
+    _inject_context_kanban_board(sanitized)
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
@@ -327,6 +366,10 @@ def _make_run_env(env: dict) -> dict:
                 run_env[var_name] = value
     except Exception:
         pass
+
+    # Pin the active Kanban board so terminal-tool shell-outs target the same
+    # board as concurrent kanban_* tool calls in the same agent turn (#20074).
+    _inject_context_kanban_board(run_env)
 
     return run_env
 

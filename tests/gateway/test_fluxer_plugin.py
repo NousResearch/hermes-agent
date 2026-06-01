@@ -292,7 +292,7 @@ async def test_send_can_disable_user_mentions_too(monkeypatch):
 async def test_send_image_file_posts_multipart_payload(tmp_path, monkeypatch):
     from gateway.config import PlatformConfig
 
-    image = tmp_path / "zofka.png"
+    image = tmp_path / "sample.png"
     image.write_bytes(b"png-data")
     adapter = FluxerAdapter(
         PlatformConfig(
@@ -314,8 +314,8 @@ async def test_send_image_file_posts_multipart_payload(tmp_path, monkeypatch):
     assert path == "/channels/chan-1/messages"
     assert kwargs["payload"]["content"] == "look"
     assert kwargs["payload"]["allowed_mentions"] == {"parse": ["users"], "replied_user": True}
-    assert kwargs["payload"]["attachments"] == [{"id": 0, "filename": "zofka.png", "title": "zofka.png"}]
-    assert kwargs["files"] == [("files[0]", image.resolve(), "zofka.png")]
+    assert kwargs["payload"]["attachments"] == [{"id": 0, "filename": "sample.png", "title": "sample.png"}]
+    assert kwargs["files"] == [("files[0]", image.resolve(), "sample.png")]
 
 
 @pytest.mark.asyncio
@@ -820,7 +820,7 @@ async def test_application_command_interaction_dispatches_slash_text(monkeypatch
                 "channel_id": "chan-1",
                 "guild_id": "guild-1",
                 "channel": {"id": "chan-1", "name": "bot-home", "type": 0},
-                "member": {"user": {"id": "user-1", "username": "Elkim", "bot": False}},
+                "member": {"user": {"id": "user-1", "username": "Alice", "bot": False}},
                 "data": {"name": "model", "options": [{"name": "model", "value": "gpt-5.5"}]},
             },
         }
@@ -1166,13 +1166,13 @@ async def test_backlog_recovery_fetches_home_channel_and_dispatches_recent_messa
                     "id": "old-msg",
                     "content": "too old",
                     "created_at": "2026-06-01T09:59:00Z",
-                    "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                    "author": {"id": "user-1", "username": "Alice", "bot": False},
                 },
                 {
                     "id": "new-msg",
                     "content": "recover me",
                     "created_at": "2026-06-01T10:00:30Z",
-                    "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                    "author": {"id": "user-1", "username": "Alice", "bot": False},
                 },
             ]
         }
@@ -1206,7 +1206,7 @@ async def test_backlog_recovery_dedupes_seen_messages(monkeypatch):
                 "channel_id": "chan-1",
                 "content": "already handled",
                 "created_at": "2026-06-01T10:00:30Z",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
             }
         ]
     )
@@ -1425,7 +1425,7 @@ async def test_message_create_dispatches_normalized_event(monkeypatch):
                 "channel_id": "chan-1",
                 "channel_type": "dm",
                 "content": "morning",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
                 "guild_id": None,
             },
         }
@@ -1438,7 +1438,7 @@ async def test_message_create_dispatches_normalized_event(monkeypatch):
     assert event.source.chat_id == "chan-1"
     assert event.source.chat_type == "dm"
     assert event.source.user_id == "user-1"
-    assert event.source.user_name == "Elkim"
+    assert event.source.user_name == "Alice"
     assert event.source.message_id == "msg-1"
 
 
@@ -1468,7 +1468,7 @@ async def test_message_create_classifies_numeric_thread_channels_and_remembers_t
                 "channel_id": "thread-1",
                 "channel_type": 11,
                 "content": "<@bot-1> continue here",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
             },
         }
     )
@@ -1481,7 +1481,7 @@ async def test_message_create_classifies_numeric_thread_channels_and_remembers_t
                 "channel_id": "thread-1",
                 "channel_type": 11,
                 "content": "follow-up without mention",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
             },
         }
     )
@@ -1516,7 +1516,7 @@ async def test_channel_message_requires_direct_mention_by_default(monkeypatch):
                 "channel_id": "chan-1",
                 "channel_type": "channel",
                 "content": "I think Hermes mentioned that yesterday",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
             },
         }
     )
@@ -1550,7 +1550,7 @@ async def test_channel_message_processes_and_strips_direct_address(monkeypatch):
                 "channel_id": "chan-1",
                 "channel_type": "channel",
                 "content": "Hermes, check this please",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
             },
         }
     )
@@ -1586,7 +1586,7 @@ async def test_home_channel_is_free_response_even_with_require_mention(monkeypat
                 "channel_id": "chan-1",
                 "channel_type": "channel",
                 "content": "continue here",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
             },
         }
     )
@@ -1628,7 +1628,7 @@ async def test_message_create_dispatches_image_attachment(monkeypatch):
                     "channel_id": "chan-1",
                     "channel_type": "dm",
                     "content": "",
-                    "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                    "author": {"id": "user-1", "username": "Alice", "bot": False},
                     "attachments": [
                         {
                             "id": "att-1",
@@ -1687,7 +1687,7 @@ async def test_message_create_dispatches_voice_attachment_when_flagged(monkeypat
                     "channel_type": "dm",
                     "content": "",
                     "flags": 1 << 13,
-                    "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                    "author": {"id": "user-1", "username": "Alice", "bot": False},
                     "attachments": [
                         {
                             "id": "att-voice",
@@ -1733,7 +1733,7 @@ async def test_message_create_includes_embedded_reply_context(monkeypatch):
                 "channel_id": "chan-1",
                 "channel_type": "dm",
                 "content": "yes, do this",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
                 "referenced_message": {"id": "msg-parent", "content": "Please check this file"},
             },
         }
@@ -1771,7 +1771,7 @@ async def test_message_create_fetches_reply_context_from_message_reference(monke
                 "channel_id": "chan-1",
                 "channel_type": "dm",
                 "content": "that one",
-                "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                "author": {"id": "user-1", "username": "Alice", "bot": False},
                 "message_reference": {"message_id": "msg-parent"},
             },
         }
@@ -1804,7 +1804,7 @@ async def test_message_create_ignores_own_bot_messages(monkeypatch):
                 "id": "msg-1",
                 "channel_id": "chan-1",
                 "content": "echo",
-                "author": {"id": "bot-1", "username": "Žofka", "bot": True},
+                "author": {"id": "bot-1", "username": "HermesBot", "bot": True},
             },
         }
     )

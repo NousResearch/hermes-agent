@@ -24,6 +24,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    OPERATOR_RULES_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -48,6 +49,24 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_operator_rules_guidance_pins_required_workflows(self):
+        assert "ontology_context" in OPERATOR_RULES_GUIDANCE
+        assert "web_search_matrix" in OPERATOR_RULES_GUIDANCE
+        assert "NEVER substitute `web_search`" in OPERATOR_RULES_GUIDANCE
+        assert "workspace_backlog_orchestrator" in OPERATOR_RULES_GUIDANCE
+        assert "selected_work" in OPERATOR_RULES_GUIDANCE
+        assert "Session-local todo is scratchpad only" in OPERATOR_RULES_GUIDANCE
+        assert "one command per terminal call" in OPERATOR_RULES_GUIDANCE
+        assert "Use tool `workdir` instead of `cd &&`" in OPERATOR_RULES_GUIDANCE
+        assert "workspace-orchestrator:<IDENTIFIER>" in OPERATOR_RULES_GUIDANCE
+        assert "workspace-orchestrator:git-hygiene:<IDENTIFIER>" in OPERATOR_RULES_GUIDANCE
+        assert "codex_delegate" in OPERATOR_RULES_GUIDANCE
+        assert "native isolated checkout/worktree fallback" in OPERATOR_RULES_GUIDANCE
+        assert "writing_style_guard" in OPERATOR_RULES_GUIDANCE
+        assert "direct operator voice" in OPERATOR_RULES_GUIDANCE
+        assert "per-session containers plus explicit host access" in OPERATOR_RULES_GUIDANCE
+        assert "not security" in OPERATOR_RULES_GUIDANCE
 
 
 # =========================================================================
@@ -1186,6 +1205,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

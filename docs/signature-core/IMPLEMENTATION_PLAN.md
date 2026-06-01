@@ -16,10 +16,12 @@
 1. Extender páginas `/w/<token>` para que approve abra modal de firma.
 2. Capturar typed/drawn signature en browser.
 3. Enviar evento `approved` con `signature_text`, `signature_image_sha256`, `approval_context`.
-4. Ingestar evento en Signature Core y crear approval hash.
-5. Generar/reemplazar el PDF descargable con una versión visiblemente firmada: sello en la primera página, signer/date/hash, página de auditoría, preservando el PDF original/hash aprobado.
-6. Registrar el PDF firmado como `signature.attachments.kind='completed_pdf'` con SHA-256 propio.
-7. Mostrar hash de aprobación, hash del PDF firmado y respuesta del agente en bitácora.
+4. Para rechazar, abrir modal propio y exigir motivo antes de enviar `event_type='rejected'` con `metadata.rejection_reason`.
+5. Ingestar evento en Signature Core y crear approval hash.
+6. Al primer `approved` o `rejected`, marcar workspace/quote con decisión final, mostrar ese estado y deshabilitar ambos botones; eventos posteriores no deben cambiar la decisión comercial.
+7. Generar/reemplazar el PDF descargable con una versión visiblemente firmada: sello en la primera página, signer/date/hash, página de auditoría, preservando el PDF original/hash aprobado.
+8. Registrar el PDF firmado como `signature.attachments.kind='completed_pdf'` con SHA-256 propio.
+9. Mostrar hash de aprobación, hash del PDF firmado, motivo de rechazo cuando aplique y respuesta del agente en bitácora.
 
 ## Sprint 3 — PDF/document signing requests
 1. Generar páginas `/sign/<slug>` para PDFs independientes.

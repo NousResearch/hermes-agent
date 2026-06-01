@@ -219,8 +219,8 @@ def _ddgs_package_available() -> bool:
     return ddgs_package_available()
 
 
-# Backward-compatible alias retained for callers/tests that patched the
-# earlier name.
+# Backward-compatible alias: some test suites still monkeypatch the older
+# ``_ddgs_package_importable`` name, so keep it resolvable to the same helper.
 _ddgs_package_importable = _ddgs_package_available
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────

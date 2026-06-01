@@ -107,7 +107,13 @@ simplex-streaming = ["pipecat-ai==1.3.0"]
 simplex-streaming-local-stt = ["faster-whisper==1.2.1"]
 # Local streaming TTS for SimpleX voice (opt-in; Piper neural VITS, 22050Hz
 # voices resampled to 16k in the build_piper_tts factory). Not in [all].
-simplex-streaming-local-tts = ["piper-tts==1.4.2"]
+simplex-streaming-local-tts = [
+  "piper-tts==1.4.2",
+  # audioop (22050->16k resample) was removed from the stdlib in Python 3.13;
+  # audioop-lts backports it. Declared here so the extra is self-sufficient on
+  # 3.13+ rather than relying on a transitive (discord-py).
+  "audioop-lts==0.2.2; python_version >= '3.13'",
+]
 pty = [
   "ptyprocess==0.7.0; sys_platform != 'win32'",
   "pywinpty==2.0.15; sys_platform == 'win32'",

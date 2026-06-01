@@ -1812,6 +1812,7 @@ simplex-streaming-local-stt = [
     { name = "faster-whisper" },
 ]
 simplex-streaming-local-tts = [
+    { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "piper-tts" },
 ]
 slack = [
@@ -1879,6 +1880,7 @@ requires-dist = [
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.86.0" },
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
+    { name = "audioop-lts", marker = "python_full_version >= '3.13' and extra == 'simplex-streaming-local-tts'", specifier = "==0.2.2" },
     { name = "av", marker = "extra == 'simplex-native-calls'", specifier = "==16.1.0" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.1" },

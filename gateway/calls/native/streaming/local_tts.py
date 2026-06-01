@@ -30,7 +30,6 @@ from .types import (
 
 __all__ = ["StreamingTTS", "build_piper_tts"]
 
-_PROVIDER = "piper"
 _TARGET_RATE = 16000
 
 
@@ -228,8 +227,16 @@ def build_piper_tts(
         src_rate = 0
         raw = bytearray()
         for chunk in loaded_voice.synthesize(text):
+            rate = int(chunk.sample_rate)
             if src_rate == 0:
-                src_rate = int(chunk.sample_rate)
+                src_rate = rate
+            elif rate != src_rate:
+                # The single-ratecv resample below assumes one uniform rate;
+                # fail loudly rather than emit garbled audio on a multi-rate voice.
+                raise RuntimeError(
+                    f"Piper emitted mixed sample rates ({src_rate} then {rate}); "
+                    "the resampler assumes a single rate per utterance"
+                )
             raw.extend(chunk.audio_int16_bytes)
         data = bytes(raw)
         if not data or src_rate == _TARGET_RATE:

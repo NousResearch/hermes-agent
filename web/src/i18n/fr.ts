@@ -575,6 +575,9 @@ export const fr: Translations = {
     createTask: "Créer une tâche dans cette colonne",
     noTasks: "— aucune tâche —",
     unassigned: "non assigné",
+    needsAssignee: "Assignation requise",
+    needsAssigneeHint:
+      "Les dépendances sont satisfaites, mais le dispatcher ignore cette tâche tant que vous n'assignez pas de profil.",
     untitled: "(sans titre)",
     loadingDetail: "Chargement…",
     addComment: "Ajouter un commentaire… (Enter pour envoyer)",

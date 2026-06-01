@@ -576,6 +576,9 @@ export const tr: Translations = {
     createTask: "Bu sütunda görev oluştur",
     noTasks: "— görev yok —",
     unassigned: "atanmamış",
+    needsAssignee: "Atanan kişi gerekli",
+    needsAssigneeHint:
+      "Bağımlılıklar karşılandı, ancak siz bir profil atayana kadar dispatcher bu görevi atlar.",
     untitled: "(başlıksız)",
     loadingDetail: "Yükleniyor…",
     addComment: "Yorum ekle… (göndermek için Enter)",

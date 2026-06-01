@@ -576,6 +576,9 @@ export const hu: Translations = {
     createTask: "Feladat létrehozása ebben az oszlopban",
     noTasks: "— nincsenek feladatok —",
     unassigned: "nincs felelős",
+    needsAssignee: "Felelős szükséges",
+    needsAssigneeHint:
+      "A függőségek teljesültek, de a dispatcher átugorja ezt a feladatot, amíg nem rendel hozzá profilt.",
     untitled: "(névtelen)",
     loadingDetail: "Betöltés…",
     addComment: "Hozzászólás hozzáadása… (Enter a beküldéshez)",

@@ -576,6 +576,9 @@ export const uk: Translations = {
     createTask: "Створити задачу в цьому стовпці",
     noTasks: "— немає задач —",
     unassigned: "не призначено",
+    needsAssignee: "Потрібен виконавець",
+    needsAssigneeHint:
+      "Залежності задоволені, але диспетчер пропускає цю задачу, поки ви не призначите профіль.",
     untitled: "(без назви)",
     loadingDetail: "Завантаження…",
     addComment: "Додати коментар… (Enter для надсилання)",

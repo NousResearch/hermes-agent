@@ -576,6 +576,9 @@ export const zhHant: Translations = {
     createTask: "在此欄建立任務",
     noTasks: "— 沒有任務 —",
     unassigned: "未指派",
+    needsAssignee: "需要負責人",
+    needsAssigneeHint:
+      "相依項目已滿足，但在您指派設定檔之前，排程器會略過此任務。",
     untitled: "（無標題）",
     loadingDetail: "載入中…",
     addComment: "新增留言…（按 Enter 送出）",

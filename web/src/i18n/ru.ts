@@ -576,6 +576,9 @@ export const ru: Translations = {
     createTask: "Создать задачу в этой колонке",
     noTasks: "— нет задач —",
     unassigned: "без исполнителя",
+    needsAssignee: "Нужен исполнитель",
+    needsAssigneeHint:
+      "Зависимости выполнены, но диспетчер пропускает эту задачу, пока вы не назначите профиль.",
     untitled: "(без названия)",
     loadingDetail: "Загрузка…",
     addComment: "Добавить комментарий… (Enter — отправить)",

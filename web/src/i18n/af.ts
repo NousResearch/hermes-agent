@@ -576,6 +576,9 @@ export const af: Translations = {
     createTask: "Skep taak in hierdie kolom",
     noTasks: "— geen take —",
     unassigned: "nie toegewys nie",
+    needsAssignee: "Toegewysde nodig",
+    needsAssigneeHint:
+      "Afhanklikhede is bevredig, maar die dispatcher slaan hierdie taak oor totdat jy 'n profiel toewys.",
     untitled: "(sonder titel)",
     loadingDetail: "Word gelaai…",
     addComment: "Voeg 'n opmerking by… (Enter om in te dien)",

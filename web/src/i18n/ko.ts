@@ -576,6 +576,9 @@ export const ko: Translations = {
     createTask: "이 열에 작업 만들기",
     noTasks: "— 작업 없음 —",
     unassigned: "미지정",
+    needsAssignee: "담당자 필요",
+    needsAssigneeHint:
+      "종속성은 충족되었지만, 프로필을 지정할 때까지 디스패처가 이 작업을 건너뜁니다.",
     untitled: "(제목 없음)",
     loadingDetail: "불러오는 중…",
     addComment: "댓글 추가… (Enter로 전송)",

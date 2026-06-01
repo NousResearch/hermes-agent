@@ -576,6 +576,9 @@ export const ga: Translations = {
     createTask: "Cruthaigh tasc sa cholún seo",
     noTasks: "— gan tascanna —",
     unassigned: "gan sannadh",
+    needsAssignee: "Sannaí ag teastáil",
+    needsAssigneeHint:
+      "Tá na spleáchais sásaithe, ach scipeálann an dispatcher an tasc seo go dtí go sannann tú próifíl.",
     untitled: "(gan teideal)",
     loadingDetail: "Á luchtú…",
     addComment: "Cuir nóta tráchta… (Enter chun seoladh)",

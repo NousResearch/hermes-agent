@@ -576,6 +576,9 @@ export const ja: Translations = {
     createTask: "この列にタスクを作成",
     noTasks: "— タスクはありません —",
     unassigned: "未割り当て",
+    needsAssignee: "担当者が必要",
+    needsAssigneeHint:
+      "依存関係は満たされていますが、プロファイルを割り当てるまで、ディスパッチャーはこのタスクをスキップします。",
     untitled: "（タイトルなし）",
     loadingDetail: "読み込み中…",
     addComment: "コメントを追加…（Enter で送信）",

@@ -575,6 +575,9 @@ export const es: Translations = {
     createTask: "Crear tarea en esta columna",
     noTasks: "— sin tareas —",
     unassigned: "sin asignar",
+    needsAssignee: "Falta asignar",
+    needsAssigneeHint:
+      "Las dependencias están satisfechas, pero el dispatcher omite esta tarea hasta que asignes un perfil.",
     untitled: "(sin título)",
     loadingDetail: "Cargando…",
     addComment: "Añadir un comentario… (Enter para enviar)",

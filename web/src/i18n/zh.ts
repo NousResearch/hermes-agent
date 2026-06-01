@@ -572,6 +572,9 @@ export const zh: Translations = {
     createTask: "在此列创建任务",
     noTasks: "— 无任务 —",
     unassigned: "未分配",
+    needsAssignee: "需要负责人",
+    needsAssigneeHint:
+      "依赖项已满足，但在您分配配置文件之前，调度器会跳过此任务。",
     untitled: "（无标题）",
     loadingDetail: "加载中…",
     addComment: "添加评论…（按回车提交）",

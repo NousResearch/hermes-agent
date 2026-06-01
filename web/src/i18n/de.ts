@@ -575,6 +575,9 @@ export const de: Translations = {
     createTask: "Aufgabe in dieser Spalte erstellen",
     noTasks: "— keine Aufgaben —",
     unassigned: "nicht zugewiesen",
+    needsAssignee: "Zuständige Person fehlt",
+    needsAssigneeHint:
+      "Abhängigkeiten sind erfüllt, aber der Dispatcher überspringt diese Aufgabe, bis du ein Profil zuweist.",
     untitled: "(ohne Titel)",
     loadingDetail: "Wird geladen…",
     addComment: "Kommentar hinzufügen… (Enter zum Senden)",

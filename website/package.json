@@ -36,6 +36,7 @@
   },
   "overrides": {
     "serialize-javascript": "^7.0.5",
+    "undici": ">=7.24.0",
     "uuid": "^14.0.0"
   },
   "browserslist": {

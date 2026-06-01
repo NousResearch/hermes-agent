@@ -228,6 +228,26 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def _slack_context_tools_loaded() -> bool:
+    """True iff the agent will actually have Slack read tools this session.
+
+    The gateway can only promise Slack history/thread lookup when the Slack
+    context toolset is enabled for this platform and a bot token is configured.
+    Return False on any error so a bad config keeps the conservative platform
+    note instead of promising tools the agent lacks.
+    """
+    if not ((os.environ.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_TOKEN") or "").strip()):
+        return False
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = load_config()
+        enabled = _get_platform_tools(cfg, "slack", include_default_mcp_servers=False)
+        return "slack" in enabled
+    except Exception:
+        return False
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -316,15 +336,36 @@ def build_session_context_prompt(
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
-        lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. The gateway may inline the "
-            "current message's Slack block/attachment payload when available, but "
-            "you still cannot call Slack APIs yourself."
-        )
+        if _slack_context_tools_loaded():
+            src = context.source
+            id_lines = ["", "**Slack context tools:**"]
+            id_lines.append(
+                "  - You can use read-only Slack tools: `slack_get_thread`, "
+                "`slack_get_messages`, and `slack_list_channels`."
+            )
+            id_lines.append(f"  - Channel ID for tool calls: `{src.chat_id}`")
+            if src.chat_name and src.chat_name != src.chat_id:
+                id_lines.append(f"  - Channel name: `{src.chat_name}`")
+            if src.thread_id:
+                id_lines.append(f"  - Thread timestamp for `slack_get_thread`: `{src.thread_id}`")
+            if src.message_id:
+                id_lines.append(f"  - Triggering message timestamp: `{src.message_id}`")
+            id_lines.append(
+                "  - Use these tools to verify Slack thread/channel context when "
+                "debugging reports. They are read-only; do not promise Slack "
+                "admin actions such as pinning, channel management, or listing users."
+            )
+            lines.extend(id_lines)
+        else:
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Slack. "
+                "You do NOT have access to Slack-specific APIs — you cannot search "
+                "channel history, pin/unpin messages, manage channels, or list users. "
+                "Do not promise to perform these actions. The gateway may inline the "
+                "current message's Slack block/attachment payload when available, but "
+                "you still cannot call Slack APIs yourself."
+            )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
         # Discord tools loaded this session — i.e. the user opted into

@@ -74,13 +74,14 @@ DEFAULT_CASES: tuple[CanaryCase, ...] = (
         name="short-fragment-detector",
         marker="CANARY_FRAGMENT_OK",
         prompt=(
-            "Run a Python check from the Hermes checkout at `{source_root}` that imports "
-            "`looks_like_incomplete_final_fragment` from `agent.stall_retry` and "
-            "verifies `looks_like_incomplete_final_fragment("
-            "\"I see a lot of discord-res tasks (digest Discord content) and some\", "
-            "\"stop\", False, 400)` returns true. "
+            "Run a Python check from the Hermes checkout at `{source_root}`. "
+            "Set `PYTHONPATH={source_root}` so Python can find the `agent` package, "
+            "then import `looks_like_incomplete_final_fragment` from `agent.stall_retry` and "
+            "verify `looks_like_incomplete_final_fragment(`\n"
+            "    \"I see a lot of discord-res tasks (digest Discord content) and some\", "
+            "\"stop\", False, 400)` returns True. "
             "If the check passes, reply exactly CANARY_FRAGMENT_OK and nothing "
-            "else. If it fails, do not use the marker; summarize the failure."
+            "else. If it fails, do not use the marker; summarize the failure.\"\n"
         ),
     ),
 )

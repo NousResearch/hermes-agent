@@ -2851,6 +2851,14 @@ def apply_closeout_transition(
                 metadata={"closeout_phase": "closed"},
             )
         else:
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="completed",
+                status=review_phase,
+                summary=f"Kanban closeout advanced to {review_phase}",
+                metadata={"closeout_phase": review_phase},
+            )
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -2860,7 +2868,8 @@ def apply_closeout_transition(
                        completed_at = NULL,
                        claim_lock = NULL,
                        claim_expires = NULL,
-                       worker_pid = NULL
+                       worker_pid = NULL,
+                       current_run_id = NULL
                  WHERE id = ?
                    AND status != 'archived'
                 """,
@@ -2872,7 +2881,6 @@ def apply_closeout_transition(
             )
             if cur.rowcount != 1:
                 return False
-            run_id = _current_run_id(conn, task_id)
 
         _append_event(
             conn,
@@ -3781,6 +3789,31 @@ def claim_task(
         return get_task(conn, task_id)
 
 
+def _reviewer_profile_for_worker_done_handoff(row: sqlite3.Row | Mapping[str, Any]) -> Optional[str]:
+    """Return the verifier profile declared for a governed worker_done handoff."""
+    try:
+        if row["review_phase"] != "worker_done" or row["status"] != "blocked":
+            return None
+    except Exception:
+        return None
+    evidence = _row_closeout_evidence(row)
+    loop = evidence.get("reviewer_loop") if isinstance(evidence.get("reviewer_loop"), Mapping) else {}
+    enabled = (
+        evidence.get("require_verifier_result_contract") is True
+        or evidence.get("require_reviewer_loop") is True
+        or loop.get("enabled") is True
+        or loop.get("required") is True
+    )
+    if not enabled:
+        return None
+    profile = str(
+        evidence.get("reviewer_profile")
+        or loop.get("reviewer_profile")
+        or "verifier"
+    ).strip()
+    return profile or None
+
+
 def claim_review_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3856,6 +3889,108 @@ def claim_review_task(
         return get_task(conn, task_id)
 
 
+def claim_verifier_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reviewer_profile: Optional[str] = None,
+    ttl_seconds: Optional[int] = None,
+    claimer: Optional[str] = None,
+) -> Optional[Task]:
+    """Atomically claim a blocked ``worker_done`` handoff for verifier review.
+
+    The original task assignee remains the worker owner for later remediation.
+    The returned transient Task is routed to ``reviewer_profile`` so dispatcher
+    spawning uses a separate verifier agent/profile.
+    """
+    now = int(time.time())
+    lock = claimer or _claimer_id()
+    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ? AND status = 'blocked' "
+            "AND review_phase = 'worker_done' AND claim_lock IS NULL",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        profile = (reviewer_profile or _reviewer_profile_for_worker_done_handoff(row) or "").strip()
+        if not profile:
+            return None
+        stale_run_id = _end_run(
+            conn,
+            task_id,
+            outcome="reclaimed",
+            status="reclaimed",
+            summary="worker_done verifier claim reclaimed stale run pointer",
+            metadata={"reason": "verifier_handoff_claim"},
+        )
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status        = 'running',
+                   claim_lock    = ?,
+                   claim_expires = ?,
+                   started_at    = COALESCE(started_at, ?),
+                   worker_pid    = NULL
+             WHERE id = ?
+               AND status = 'blocked'
+               AND review_phase = 'worker_done'
+               AND claim_lock IS NULL
+            """,
+            (lock, expires, now, task_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        trow = conn.execute(
+            "SELECT max_runtime_seconds, current_step_key FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        run_cur = conn.execute(
+            """
+            INSERT INTO task_runs (
+                task_id, profile, step_key, status,
+                claim_lock, claim_expires, max_runtime_seconds,
+                started_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                profile,
+                trow["current_step_key"] if trow else None,
+                lock,
+                expires,
+                trow["max_runtime_seconds"] if trow else None,
+                now,
+            ),
+        )
+        run_id = run_cur.lastrowid
+        conn.execute(
+            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
+            (run_id, task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "claimed",
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "source_status": "blocked",
+                "source_phase": "worker_done",
+                "reviewer_profile": profile,
+                "stale_run_reclaimed": stale_run_id,
+            },
+            run_id=run_id,
+        )
+        task = get_task(conn, task_id)
+        if task is not None:
+            task.assignee = profile
+            task.goal_mode = False
+        return task
+
+
 def heartbeat_claim(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3921,7 +4056,7 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, review_phase "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -3985,12 +4120,13 @@ def release_stale_claims(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
         with write_txn(conn):
+            target_status = "blocked" if row["review_phase"] == "worker_done" else "ready"
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                (target_status, row["id"], row["claim_lock"], now),
             )
             if cur.rowcount != 1:
                 continue
@@ -4014,6 +4150,7 @@ def release_stale_claims(
                 "now": now,
                 "host_local": host_local,
                 "heartbeat_stale": bool(heartbeat_stale),
+                "target_status": target_status,
             }
             payload.update(termination)
             _append_event(
@@ -5832,7 +5969,7 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, "
+        "SELECT t.id, t.worker_pid, t.review_phase, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -5881,12 +6018,13 @@ def enforce_max_runtime(
                     pass
 
         with write_txn(conn):
+            target_status = "blocked" if row["review_phase"] == "worker_done" else "ready"
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running'",
-                (tid,),
+                (target_status, tid),
             )
             if cur.rowcount == 1:
                 payload = {
@@ -5894,6 +6032,7 @@ def enforce_max_runtime(
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": int(row["max_runtime_seconds"]),
                     "sigkill": killed,
+                    "target_status": target_status,
                 }
                 run_id = _end_run(
                     conn, tid,
@@ -6088,7 +6227,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, review_phase FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6140,11 +6279,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            target_status = "blocked" if row["review_phase"] == "worker_done" else "ready"
+            event_payload = dict(event_payload)
+            event_payload["target_status"] = target_status
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running'",
-                (row["id"],),
+                (target_status, row["id"]),
             )
             if cur.rowcount == 1:
                 run_id = _end_run(
@@ -6375,6 +6517,72 @@ def _record_spawn_failure(
         release_claim=True,
         end_run=True,
     )
+
+
+def _record_verifier_spawn_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error: str,
+    *,
+    failure_limit: int = None,
+) -> bool:
+    """Record verifier spawn failure without leaking worker_done into ready.
+
+    Verifier dispatch runs against the original task row, but it is a review
+    handoff, not worker work.  On startup/workspace failure the task must remain
+    parked at ``blocked/worker_done`` so a future dispatcher tick retries the
+    verifier path instead of raw worker dispatch.
+    """
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT consecutive_failures, max_retries FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        failures = int(row["consecutive_failures"] or 0) + 1 if row else 1
+        task_override = row["max_retries"] if row and "max_retries" in row.keys() else None
+        effective_limit = int(task_override) if task_override is not None else int(failure_limit)
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="spawn_failed",
+            status="spawn_failed",
+            error=error[:500],
+            metadata={"failures": failures, "phase": "worker_done_verifier"},
+        )
+        conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'blocked',
+                   review_phase = 'worker_done',
+                   claim_lock = NULL,
+                   claim_expires = NULL,
+                   worker_pid = NULL,
+                   current_run_id = NULL,
+                   consecutive_failures = ?,
+                   last_failure_error = ?
+             WHERE id = ?
+            """,
+            (failures, error[:500], task_id),
+        )
+        payload = {
+            "error": error[:500],
+            "failures": failures,
+            "phase": "worker_done_verifier",
+            "ready_requeued": False,
+        }
+        _append_event(conn, task_id, "spawn_failed", payload, run_id=run_id)
+        if failures >= effective_limit:
+            _append_event(
+                conn,
+                task_id,
+                "gave_up",
+                {**payload, "effective_limit": effective_limit},
+                run_id=run_id,
+            )
+            return True
+    return False
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -6938,6 +7146,84 @@ def dispatch_once(
                 )
         except Exception as exc:
             auto = _record_spawn_failure(
+                conn, claimed.id, str(exc),
+                failure_limit=failure_limit,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+
+    # ---- worker_done verifier dispatch ----
+    # Governed worker completions park in blocked/worker_done until a separate
+    # verifier agent inspects the structured handoff and calls closeout into
+    # review_ready or bounded remediation.  This is intentionally NOT a raw
+    # ready/worker respawn path: the original task assignee stays intact for
+    # remediation, while the transient spawned Task is routed to reviewer_profile.
+    verifier_rows = conn.execute(
+        "SELECT * FROM tasks "
+        "WHERE status = 'blocked' AND review_phase = 'worker_done' "
+        "  AND claim_lock IS NULL "
+        "ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    for row in verifier_rows:
+        if max_spawn is not None and running_count + spawned >= max_spawn:
+            break
+        reviewer_profile = _reviewer_profile_for_worker_done_handoff(row)
+        if not reviewer_profile:
+            result.skipped_unassigned.append(row["id"])
+            continue
+        try:
+            from hermes_cli.profiles import profile_exists
+        except Exception:
+            profile_exists = None  # type: ignore[assignment]
+        if profile_exists is not None and not profile_exists(reviewer_profile):
+            result.skipped_nonspawnable.append(row["id"])
+            continue
+        if dry_run:
+            result.spawned.append((row["id"], reviewer_profile, ""))
+            continue
+        claimed = claim_verifier_task(
+            conn,
+            row["id"],
+            reviewer_profile=reviewer_profile,
+            ttl_seconds=ttl_seconds,
+        )
+        if claimed is None:
+            continue
+        try:
+            workspace = resolve_workspace(claimed, board=board)
+        except Exception as exc:
+            auto = _record_verifier_spawn_failure(
+                conn, claimed.id, f"workspace: {exc}",
+                failure_limit=failure_limit,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+            continue
+        set_workspace_path(conn, claimed.id, str(workspace))
+        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        claimed.skills = ["sdlc-review"]
+        claimed.goal_mode = False
+        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        try:
+            import inspect
+            try:
+                sig = inspect.signature(_spawn)
+                if "board" in sig.parameters:
+                    pid = _spawn(claimed, str(workspace), board=board)
+                else:
+                    pid = _spawn(claimed, str(workspace))
+            except (TypeError, ValueError):
+                pid = _spawn(claimed, str(workspace))
+            if pid:
+                _set_worker_pid(conn, claimed.id, int(pid))
+            result.spawned.append((claimed.id, reviewer_profile, str(workspace)))
+            spawned += 1
+            if _per_profile_cap is not None:
+                _per_profile_running[reviewer_profile] = (
+                    _per_profile_running.get(reviewer_profile, 0) + 1
+                )
+        except Exception as exc:
+            auto = _record_verifier_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
             )

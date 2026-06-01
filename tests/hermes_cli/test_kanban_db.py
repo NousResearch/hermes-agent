@@ -1655,6 +1655,42 @@ def test_governed_goal_worker_completion_hands_off_to_worker_done(kanban_home):
     assert "missing_verifier_pass" in review_ready.blockers
 
 
+def test_review_ready_transition_closes_active_verifier_run(kanban_home):
+    """A verifier PASS handoff must not leave current_run_id pointing at a closed run."""
+    evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "reviewer_loop": {"enabled": True, "required": True, "reviewer_profile": "verifier"},
+        "verification": {"allowed": True, "blockers": []},
+    }
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="verify me", assignee="arisu")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', closeout_evidence=? WHERE id=?",
+            (json.dumps(evidence), task_id),
+        )
+        conn.commit()
+        claimed = kb.claim_verifier_task(conn, task_id, reviewer_profile="verifier")
+        assert claimed is not None
+        run_id = kb.get_task(conn, task_id).current_run_id
+
+        assert kb.apply_closeout_transition(
+            conn,
+            task_id,
+            review_phase="review_ready",
+            closeout_evidence=evidence,
+        ) is True
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "review_ready"
+        assert task.current_run_id is None
+        run = conn.execute(
+            "SELECT status, outcome FROM task_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        assert dict(run) == {"status": "review_ready", "outcome": "completed"}
+
+
 def test_legacy_worker_completion_without_reviewer_loop_still_finalizes(kanban_home):
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="legacy worker", goal_mode=True)
@@ -1778,6 +1814,244 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable
     # c is now running
     with kb.connect() as conn:
         assert kb.get_task(conn, c).status == "running"
+
+
+def test_dispatch_spawns_verifier_for_worker_done_handoff(kanban_home, all_assignees_spawnable):
+    """worker_done handoffs must spawn a verifier agent, not rerun worker."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(
+            {
+                "task_id": task.id,
+                "assignee": task.assignee,
+                "skills": list(task.skills or []),
+                "goal_mode": task.goal_mode,
+                "workspace": workspace,
+            }
+        )
+        return 4242
+
+    evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "reviewer_loop": {
+            "enabled": True,
+            "required": True,
+            "reviewer_profile": "verifier",
+            "attempt": 1,
+            "max_attempts": 3,
+        },
+    }
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed handoff",
+            body="Reviewer-loop contract\n\nDone criteria:\n- prove it",
+            assignee="arisu",
+            workspace_kind="dir",
+            workspace_path=str(kanban_home),
+            goal_mode=True,
+        )
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', "
+            "closeout_evidence=?, claim_lock=NULL, claim_expires=NULL, worker_pid=NULL "
+            "WHERE id=?",
+            (json.dumps(evidence), task_id),
+        )
+        conn.commit()
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert res.spawned == [(task_id, "verifier", str(kanban_home))]
+        assert spawns == [
+            {
+                "task_id": task_id,
+                "assignee": "verifier",
+                "skills": ["sdlc-review"],
+                "goal_mode": False,
+                "workspace": str(kanban_home),
+            }
+        ]
+        task = kb.get_task(conn, task_id)
+        assert task.status == "running"
+        assert task.review_phase == "worker_done"
+        assert task.assignee == "arisu"
+        assert task.worker_pid == 4242
+        assert task.current_run_id is not None
+        run = conn.execute(
+            "SELECT profile, status, outcome FROM task_runs WHERE id=?",
+            (task.current_run_id,),
+        ).fetchone()
+        assert dict(run) == {"profile": "verifier", "status": "running", "outcome": None}
+
+
+def test_dispatch_dry_run_reports_worker_done_verifier_without_claiming(kanban_home, all_assignees_spawnable):
+    evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "reviewer_loop": {"enabled": True, "required": True, "reviewer_profile": "verifier"},
+    }
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="dry verifier", assignee="arisu")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', closeout_evidence=? WHERE id=?",
+            (json.dumps(evidence), task_id),
+        )
+        conn.commit()
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.spawned == [(task_id, "verifier", "")]
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+        assert task.current_run_id is None
+
+
+def test_dispatch_verifier_spawn_failure_keeps_worker_done_blocked(kanban_home, all_assignees_spawnable):
+    def boom(task, workspace):
+        raise RuntimeError("verifier unavailable")
+
+    evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "reviewer_loop": {"enabled": True, "required": True, "reviewer_profile": "verifier"},
+    }
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="verifier spawn fail", assignee="arisu")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', closeout_evidence=? WHERE id=?",
+            (json.dumps(evidence), task_id),
+        )
+        conn.commit()
+
+        res = kb.dispatch_once(conn, spawn_fn=boom)
+
+        assert res.spawned == []
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+        assert task.current_run_id is None
+        assert task.claim_lock is None
+        assert task.last_failure_error == "verifier unavailable"
+        events = kb.list_events(conn, task_id)
+        assert any(
+            event.kind == "spawn_failed"
+            and event.payload.get("phase") == "worker_done_verifier"
+            and event.payload.get("ready_requeued") is False
+            for event in events
+        )
+
+
+def test_release_stale_verifier_claim_keeps_worker_done_blocked(kanban_home):
+    evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "reviewer_loop": {"enabled": True, "required": True, "reviewer_profile": "verifier"},
+    }
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="stale verifier", assignee="arisu")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', closeout_evidence=? WHERE id=?",
+            (json.dumps(evidence), task_id),
+        )
+        conn.commit()
+        claimed = kb.claim_verifier_task(conn, task_id, reviewer_profile="verifier")
+        assert claimed is not None
+        conn.execute(
+            "UPDATE tasks SET claim_expires=? WHERE id=?",
+            (int(time.time()) - 1, task_id),
+        )
+        conn.commit()
+
+        assert kb.release_stale_claims(conn) == 1
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+        assert task.current_run_id is None
+        events = kb.list_events(conn, task_id)
+        assert any(
+            event.kind == "reclaimed" and event.payload.get("target_status") == "blocked"
+            for event in events
+        )
+
+
+def test_max_runtime_verifier_claim_keeps_worker_done_blocked(kanban_home, monkeypatch):
+    evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "reviewer_loop": {"enabled": True, "required": True, "reviewer_profile": "verifier"},
+    }
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="timed verifier",
+            assignee="arisu",
+            max_runtime_seconds=1,
+        )
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', closeout_evidence=? WHERE id=?",
+            (json.dumps(evidence), task_id),
+        )
+        conn.commit()
+        claimed = kb.claim_verifier_task(conn, task_id, reviewer_profile="verifier")
+        assert claimed is not None
+        run_id = kb.get_task(conn, task_id).current_run_id
+        conn.execute(
+            "UPDATE tasks SET worker_pid=999999, started_at=? WHERE id=?",
+            (int(time.time()) - 10, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid=999999, started_at=? WHERE id=?",
+            (int(time.time()) - 10, run_id),
+        )
+        conn.commit()
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+
+        assert kb.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None) == [task_id]
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+        assert task.current_run_id is None
+        events = kb.list_events(conn, task_id)
+        assert any(
+            event.kind == "timed_out" and event.payload.get("target_status") == "blocked"
+            for event in events
+        )
+
+
+def test_crashed_verifier_claim_keeps_worker_done_blocked(kanban_home, monkeypatch):
+    evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "reviewer_loop": {"enabled": True, "required": True, "reviewer_profile": "verifier"},
+    }
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="crashed verifier", assignee="arisu")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', closeout_evidence=? WHERE id=?",
+            (json.dumps(evidence), task_id),
+        )
+        conn.commit()
+        claimed = kb.claim_verifier_task(conn, task_id, reviewer_profile="verifier")
+        assert claimed is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid=999999, started_at=? WHERE id=?",
+            (int(time.time()) - 120, task_id),
+        )
+        conn.commit()
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        monkeypatch.setattr(kb, "_classify_worker_exit", lambda pid: ("unknown", None))
+
+        assert kb.detect_crashed_workers(conn) == [task_id]
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+        assert task.current_run_id is None
+        events = kb.list_events(conn, task_id)
+        assert any(
+            event.kind == "crashed" and event.payload.get("target_status") == "blocked"
+            for event in events
+        )
 
 
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):

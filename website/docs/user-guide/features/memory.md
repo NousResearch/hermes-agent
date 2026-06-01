@@ -19,6 +19,8 @@ Two files make up the agent's memory:
 
 Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
 
+Project/repo/topic-specific notes can be stored as scoped memories under `~/.hermes/memories/scopes/<scope_type>/<scope>.md`. Scoped memories use the same `§`-delimited format as `MEMORY.md`, but they are not part of the global memory file. Repo-scoped memories are injected only when Hermes is running from the matching git repository.
+
 :::info
 Character limits keep memory focused. When memory is full, the agent consolidates or replaces entries to make room for new information.
 :::
@@ -53,6 +55,21 @@ The agent uses the `memory` tool with these actions:
 - **add** — Add a new memory entry
 - **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
+
+For project/repo/topic-specific notes, the tool can also receive:
+
+- `scope_type` — one of `project`, `repo`, or `topic`
+- `scope` — a short scope name such as `drawmyjob`
+
+Example:
+
+```python
+memory(action="add", target="memory",
+       scope_type="repo", scope="drawmyjob",
+       content="Run tests with: node --experimental-strip-types --test '**/*.test.ts'")
+```
+
+This writes to `~/.hermes/memories/scopes/repo/drawmyjob.md` instead of the always-loaded `MEMORY.md`.
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
 

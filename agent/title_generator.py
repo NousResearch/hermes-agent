@@ -6,16 +6,34 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
+import re
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
 
 logger = logging.getLogger(__name__)
 
-# Callback signature: (task_name, exception) -> None. Used to surface
-# auxiliary failures to the user through AIAgent._emit_auxiliary_failure
-# so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
-# become visible instead of piling up as NULL session titles.
+# XML tarzı açılış/kapanış etiketleri
+_REASONING_TAG_RE = re.compile(
+    r"<(think|thought|reasoning|chain-of-thought|inner-monologue)[^>]*>.*?</\1>",
+    re.DOTALL | re.IGNORECASE
+)
+_REASONING_TAG_SELF_CLOSE_RE = re.compile(
+    r"<(think|thought|reasoning|chain-of-thought|inner-monologue)[^>]*/>",
+    re.DOTALL | re.IGNORECASE
+)
+# Köşeli parantez tarzı açılış/kapanış etiketleri (GLM 5.1)
+_REASONING_TAG_BRACKET_RE = re.compile(
+    r"\[(think|thought|reasoning|chain-of-thought|inner-monologue)\][^\[]*\[/\1\]",
+    re.DOTALL | re.IGNORECASE
+)
+_REASONING_TAG_BRACKET_SELF_CLOSE_RE = re.compile(
+    r"\[(think|thought|reasoning|chain-of-thought|inner-monologue)/\]",
+    re.DOTALL | re.IGNORECASE
+)
+# Markdown kod bloklarını temizle
+_CODE_BLOCK_RE = re.compile(r"```[a-zA-Z]*\s*\n?", re.DOTALL)
+
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
@@ -24,6 +42,35 @@ _TITLE_PROMPT = (
     "following exchange. The title should capture the main topic or intent. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+
+def _strip_reasoning_blocks(text: str) -> str:
+    """Model yanıtındaki içsel düşünce (reasoning) bloklarını temizler.
+
+    Desteklenen formatlar:
+    - XML tarzı: <thinking>...</thinking> (standard),  (DeepSeek-R1)
+    - Köşeli parantez tarzı: [thinking]...[/thinking], [THINKING]...[/THINKING] (GLM 5.1)
+    - Self-closing: <thinking/>, [thinking/]
+    İç içe geçmiş yapıları iteratif while döngüleri ile güvenle temizler.
+    """
+    if not text:
+        return ""
+    cleaned = text
+    # önce parantez tarzını iteratif temizle (en içteki bloklar önce)
+    while re.search(_REASONING_TAG_BRACKET_RE, cleaned) or re.search(_REASONING_TAG_BRACKET_SELF_CLOSE_RE, cleaned):
+        if re.search(_REASONING_TAG_BRACKET_RE, cleaned):
+            cleaned = _REASONING_TAG_BRACKET_RE.sub("", cleaned, count=1)
+        if re.search(_REASONING_TAG_BRACKET_SELF_CLOSE_RE, cleaned):
+            cleaned = _REASONING_TAG_BRACKET_SELF_CLOSE_RE.sub("", cleaned, count=1)
+    # sonra XML tarzını iteratif temizle (en içteki bloklar önce)
+    while re.search(_REASONING_TAG_RE, cleaned) or re.search(_REASONING_TAG_SELF_CLOSE_RE, cleaned):
+        if re.search(_REASONING_TAG_RE, cleaned):
+            cleaned = _REASONING_TAG_RE.sub("", cleaned, count=1)
+        if re.search(_REASONING_TAG_SELF_CLOSE_RE, cleaned):
+            cleaned = _REASONING_TAG_SELF_CLOSE_RE.sub("", cleaned, count=1)
+    # Markdown kod bloklarını temizle
+    cleaned = _CODE_BLOCK_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def generate_title(
@@ -45,8 +92,8 @@ def generate_title(
     of silently accumulating untitled sessions.
     """
     # Truncate long messages to keep the request small
-    user_snippet = user_message[:500] if user_message else ""
-    assistant_snippet = assistant_response[:500] if assistant_response else ""
+    user_snippet = _strip_reasoning_blocks(user_message or "")[:500]
+    assistant_snippet = _strip_reasoning_blocks(assistant_response or "")[:500]
 
     messages = [
         {"role": "system", "content": _TITLE_PROMPT},

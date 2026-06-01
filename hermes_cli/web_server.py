@@ -49,6 +49,9 @@ from hermes_cli.config import (
     save_env_value,
     remove_env_value,
     check_config_version,
+    detect_install_method,
+    format_docker_update_message,
+    recommended_update_command_for_method,
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
@@ -772,6 +775,26 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 # report liveness and exit code without shelling out to ``ps``.
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 
+# ``name`` → completed synthetic action result for actions the server handled
+# without spawning a subprocess (for example, unsupported Docker updates).
+_ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
+
+
+def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:
+    """Record a non-spawned action result and write it to the action log."""
+    log_file_name = _ACTION_LOG_FILES[name]
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _ACTION_LOG_DIR / log_file_name
+    with open(log_path, "ab", buffering=0) as log_file:
+        log_file.write(
+            f"\n=== {name} completed {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+        )
+        log_file.write(message.encode("utf-8", errors="replace"))
+        if not message.endswith("\n"):
+            log_file.write(b"\n")
+    _ACTION_PROCS.pop(name, None)
+    _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
+
 
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
@@ -805,6 +828,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
+    _ACTION_RESULTS.pop(name, None)
     _ACTION_PROCS[name] = proc
     return proc
 
@@ -841,6 +865,19 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    install_method = detect_install_method(PROJECT_ROOT)
+    if install_method == "docker":
+        message = format_docker_update_message()
+        _record_completed_action("hermes-update", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "hermes-update",
+            "error": "docker_update_unsupported",
+            "message": message,
+            "update_command": recommended_update_command_for_method(install_method),
+        }
+
     try:
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:
@@ -1065,9 +1102,10 @@ async def get_action_status(name: str, lines: int = 200):
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:
+        result = _ACTION_RESULTS.get(name)
         running = False
-        exit_code: Optional[int] = None
-        pid: Optional[int] = None
+        exit_code = result.get("exit_code") if result else None
+        pid = result.get("pid") if result else None
     else:
         exit_code = proc.poll()
         running = exit_code is None

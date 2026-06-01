@@ -673,6 +673,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/features/acp',
         'user-guide/features/provider-routing',
         'user-guide/features/fallback-providers',
+        'user-guide/features/prompt-caching',
         'user-guide/features/credential-pools',
       ],
     },

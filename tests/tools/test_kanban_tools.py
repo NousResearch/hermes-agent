@@ -542,6 +542,120 @@ Done criteria:
         conn.close()
 
 
+def test_worker_done_closeout_preserves_generated_governed_package(monkeypatch, tmp_path):
+    """Worker-submitted legacy closeout evidence must not overwrite generated governance.
+
+    A live DC-029 smoke showed workers can pass a handcrafted worker_done
+    package with legacy `done_criteria_ledger.v1` and no worker
+    `per_criterion` claims. The tool must preserve/normalize the generated
+    worker_done package from `complete_task()` so verifier handoff is usable.
+    """
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_closeout as kc
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "arisu")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    body = """
+Goal: Run a read-only smoke.
+End-state/output: worker_done package for verifier review.
+Scope/non-goals: no mutation.
+Acceptance criteria: Done criteria must have evidence.
+Verification requirements: read-only proof.
+Authority boundary: no prod, secret, billing, customer, env, provider, git, or gateway mutation authority.
+Repo/lane truth: sandbox repo.
+Risk flags: env, secret, prod, customer, billing, provider, gateway restart are forbidden.
+Dependencies/blockers: none.
+Routing verdict: direct-kanban.
+Reviewer-loop contract: required reviewer_profile verifier.
+Review package expectation: no PR expected for read-only smoke.
+Done criteria:
+- Confirm repo exists.
+- Confirm no forbidden side effects were performed.
+"""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="legacy worker closeout smoke",
+            body=body,
+            assignee="arisu",
+            goal_mode=True,
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        claim = kb.claim_task(conn, tid)
+        assert claim is not None
+        run_id = kb.get_task(conn, tid).current_run_id
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+
+    legacy_evidence = {
+        "schema": "kanban_closeout_evidence.v1",
+        "done_criteria_ledger": {
+            "schema": "done_criteria_ledger.v1",
+            "criteria": [{"id": "legacy", "text": "legacy criterion"}],
+            "forbidden_actions": [],
+        },
+        "worker_evidence": {
+            "schema": "kanban_worker_evidence.v1",
+            "changed_files": [],
+            "read_only": True,
+            "forbidden_side_effects": False,
+        },
+    }
+
+    out = kt._handle_complete({
+        "summary": "worker read-only evidence ready",
+        "metadata": {
+            "changed_files": [],
+            "forbidden_actions_performed": False,
+            "read_only": True,
+            "evidence_refs": ["command:test -d repo"],
+            "commands": {"dc-01-confirm-repo-exists": "test -d repo"},
+        },
+        "closeout_target_phase": "worker_done",
+        "closeout_evidence": legacy_evidence,
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+    assert result["closeout"]["status"] == "transitioned"
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        evidence = task.closeout_evidence
+        ledger = evidence["done_criteria_ledger"]
+        worker = evidence["worker_evidence"]
+        assert ledger["schema"] == "kanban_done_criteria_ledger.v1"
+        assert worker["schema"] == "kanban_worker_evidence.v1"
+        assert worker["criteria_hash"] == ledger["criteria_hash"]
+        assert worker["authority_boundary_confirmed"] is True
+        assert worker["forbidden_actions_performed"] == []
+        assert worker["per_criterion"]
+        for criterion in ledger["criteria"]:
+            item = worker["per_criterion"][criterion["id"]]
+            assert item["claim"] == "satisfied"
+            assert item["evidence_refs"] or item["notes"]
+        check = kc.verify_closeout_transition(
+            "worker_done", evidence, current_phase=None, live_pr_provider=lambda *_: {}
+        )
+        assert check.allowed is True, check.blockers
+    finally:
+        conn.close()
+
+
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     from tools import kanban_tools as kt
 

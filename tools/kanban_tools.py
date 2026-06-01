@@ -347,6 +347,34 @@ def _as_list(value: Any) -> list:
     return [value]
 
 
+def _merge_worker_done_evidence(
+    generated_closeout: Any,
+    submitted_closeout: dict,
+) -> dict:
+    """Preserve generated governed worker_done evidence over worker prose.
+
+    Workers may submit handcrafted closeout evidence. Treat that as
+    supplemental metadata, not as authority to overwrite the canonical
+    done_criteria_ledger / worker_evidence package produced by the DB layer.
+    """
+
+    generated = _as_dict(generated_closeout).copy()
+    submitted = dict(submitted_closeout or {})
+    merged = generated.copy()
+    for key, value in submitted.items():
+        if key in {
+            "done_criteria_ledger",
+            "worker_evidence",
+            "require_done_criteria_ledger",
+            "require_worker_evidence_contract",
+            "require_verifier_result_contract",
+            "reviewer_loop",
+        } and generated.get(key) is not None:
+            continue
+        merged[key] = value
+    return merged
+
+
 def _merge_verifier_review_ready_evidence(
     existing_closeout: Any,
     submitted_closeout: dict,
@@ -746,6 +774,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            post_complete_task = kb.get_task(conn, tid)
+            generated_closeout = (
+                post_complete_task.closeout_evidence
+                if post_complete_task is not None
+                and isinstance(post_complete_task.closeout_evidence, dict)
+                else existing_closeout
+            )
             closeout_result = None
             if closeout_evidence is not None:
                 from hermes_cli import kanban_closeout
@@ -757,6 +792,11 @@ def _handle_complete(args: dict, **kw) -> str:
                         closeout_evidence,
                         metadata=metadata,
                         summary=summary if summary is not None else result,
+                    )
+                else:
+                    closeout_evidence = _merge_worker_done_evidence(
+                        generated_closeout,
+                        closeout_evidence,
                     )
                 worker_done = kanban_closeout.transition_task_closeout(
                     conn,

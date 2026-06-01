@@ -13,6 +13,7 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.HERMES_SSH_KEY }}
           HOST_KEY: ${{ secrets.HERMES_HOST_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
@@ -22,8 +23,8 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 root@5.189.159.195 'bash -se' <<'REMOTE'
           set -euo pipefail
           cd /opt/hermes/app
-          git remote set-url origin https://github.com/adrozdenko/hermes-agent.git
           git config --global --add safe.directory /opt/hermes/app
+          git remote set-url origin https://github.com/adrozdenko/hermes-agent.git
           git fetch origin main
           git reset --hard origin/main
           docker build -t hermes-agent:local .

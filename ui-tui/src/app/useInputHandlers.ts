@@ -479,6 +479,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return cActions.clearIn()
     }
 
+    if (isCtrl(key, ch, 'x')) {
+      return patchOverlayState({ sessions: true })
+    }
+
     if (key.ctrl && ch.toLowerCase() === 'c') {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({

@@ -24,7 +24,6 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock, patch
 
 import pytest
 

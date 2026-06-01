@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -59,6 +60,8 @@ _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+
+_GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 
 
 def _redact(text: str) -> str:
@@ -128,7 +131,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
-        self._guid_cache: Dict[str, str] = {}
+        self._guid_cache: OrderedDict[str, str] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -365,6 +368,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if ";" in target:
             return target
         if target in self._guid_cache:
+            self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
         try:
             payload = await self._api_post(
@@ -377,10 +381,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if identifier == target:
                     if guid:
                         self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
                     return guid
                 for part in chat.get("participants", []) or []:
                     if (part.get("address") or "").strip() == target and guid:
                         self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
                         return guid
         except Exception:
             pass

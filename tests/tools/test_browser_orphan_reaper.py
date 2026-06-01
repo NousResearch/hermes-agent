@@ -2,10 +2,7 @@
 daemons whose Python parent exited without cleaning up."""
 
 import os
-import signal
-import textwrap
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

@@ -11,6 +11,7 @@ def _make_cli():
     cli_obj.conversation_history = []
     cli_obj.agent = None
     cli_obj._session_db = MagicMock()
+    cli_obj._pending_resume_sessions = None
     # _handle_resume_command now triggers _display_resumed_history (#31695),
     # which reads self.resume_display. "minimal" short-circuits the recap so
     # the test only exercises session-switch behavior.
@@ -75,3 +76,148 @@ class TestCliResumeCommand:
         assert "out of range" in printed.lower()
         assert "/resume" in printed
         assert cli_obj.session_id == "current_session"
+
+    def test_handle_resume_strips_outer_brackets(self):
+        """Users copy `<session_id>` from the usage hint literally.
+
+        Strip outer ``<>``, ``[]``, ``""``, and ``''`` before lookup so
+        ``/resume <abc123>`` works the same as ``/resume abc123``.
+        """
+        cli_obj = _make_cli()
+        cli_obj._session_db.get_session.return_value = {"id": "sess_alpha", "title": "Alpha"}
+        cli_obj._session_db.get_messages_as_conversation.return_value = []
+        cli_obj._session_db.resolve_resume_session_id.return_value = "sess_alpha"
+
+        for raw in ("<sess_alpha>", "[sess_alpha]", '"sess_alpha"', "'sess_alpha'"):
+            cli_obj.session_id = "current_session"
+            with (
+                patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="sess_alpha"),
+                patch("cli._cprint"),
+            ):
+                cli_obj._handle_resume_command(f"/resume {raw}")
+            assert cli_obj.session_id == "sess_alpha", (
+                f"bracket-stripping failed for {raw!r}: session_id stayed {cli_obj.session_id}"
+            )
+
+    def test_handle_resume_does_not_strip_partial_brackets(self):
+        """Mismatched or single brackets must pass through unmodified.
+
+        ``"<half`` (just an open angle) is not a wrapping pair, so the
+        lookup should treat it verbatim — preserving the existing
+        not-found error path instead of mangling the input.
+        """
+        cli_obj = _make_cli()
+        cli_obj._session_db.get_session.return_value = None
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj._handle_resume_command("/resume <half")
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert "<half" in printed
+
+
+class TestPendingResumeNumberedSelection:
+    """Bare `/resume` arms a one-shot prompt so the next bare number resumes.
+
+    Regression coverage for #34584: previously, running `/resume` (no args)
+    printed the recent-sessions list but left no selection state armed, so
+    typing just `3` on the next line was sent to the agent as chat instead of
+    resuming session #3.
+    """
+
+    def test_bare_resume_arms_pending_selection(self):
+        cli_obj = _make_cli()
+        sessions = [
+            {"id": "sess_002", "title": "Coding"},
+            {"id": "sess_001", "title": "Research"},
+        ]
+        cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
+        cli_obj._show_recent_sessions = MagicMock(return_value=True)
+
+        with patch("cli._cprint"):
+            cli_obj._handle_resume_command("/resume")
+
+        assert cli_obj._pending_resume_sessions == sessions
+
+    def test_bare_resume_no_sessions_does_not_arm(self):
+        cli_obj = _make_cli()
+        cli_obj._show_recent_sessions = MagicMock(return_value=False)
+        cli_obj._list_recent_sessions = MagicMock(return_value=[])
+
+        with patch("cli._cprint"):
+            cli_obj._handle_resume_command("/resume")
+
+        assert cli_obj._pending_resume_sessions is None
+
+    def test_pending_number_resumes_selected_session(self):
+        cli_obj = _make_cli()
+        sessions = [
+            {"id": "sess_002", "title": "Coding"},
+            {"id": "sess_001", "title": "Research"},
+        ]
+        cli_obj._pending_resume_sessions = sessions
+        # _handle_resume_command("/resume 2") re-resolves the index via
+        # _list_recent_sessions, so it must return the same list.
+        cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
+        cli_obj._session_db.get_session.return_value = {"id": "sess_001", "title": "Research"}
+        cli_obj._session_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "hello"},
+        ]
+        cli_obj._session_db.resolve_resume_session_id.return_value = "sess_001"
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint"),
+        ):
+            consumed = cli_obj._consume_pending_resume_selection("2")
+
+        assert consumed is True
+        assert cli_obj.session_id == "sess_001"
+        # One-shot: prompt is disarmed after consuming.
+        assert cli_obj._pending_resume_sessions is None
+
+    def test_pending_out_of_range_consumed_with_message(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]
+
+        with patch("cli._cprint") as mock_cprint:
+            consumed = cli_obj._consume_pending_resume_selection("9")
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        # An out-of-range number is still consumed (not sent to the agent),
+        # and the prompt is disarmed.
+        assert consumed is True
+        assert "out of range" in printed.lower()
+        assert cli_obj.session_id == "current_session"
+        assert cli_obj._pending_resume_sessions is None
+
+    def test_pending_non_numeric_falls_through_and_disarms(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]
+
+        with patch("cli._cprint"):
+            consumed = cli_obj._consume_pending_resume_selection("hello there")
+
+        # Free text is NOT consumed (caller treats it as chat), but the
+        # one-shot prompt is disarmed so a later number isn't hijacked.
+        assert consumed is False
+        assert cli_obj._pending_resume_sessions is None
+
+    def test_no_pending_returns_false(self):
+        cli_obj = _make_cli()
+        assert cli_obj._pending_resume_sessions is None
+        assert cli_obj._consume_pending_resume_selection("3") is False
+
+    def test_pending_disarmed_by_other_command(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]
+        # Stub out the help handler so process_command("/help") is cheap.
+        cli_obj.show_help = MagicMock()
+
+        cli_obj.process_command("/help")
+
+        # A non-resume command disarms the one-shot prompt (#34584).
+        assert cli_obj._pending_resume_sessions is None

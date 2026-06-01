@@ -76,7 +76,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
 logger = logging.getLogger(__name__)
@@ -95,7 +95,6 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform
-from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -1585,8 +1584,8 @@ def interactive_setup() -> None:
         suffix = " [keep current]" if existing else ""
         try:
             if secret:
-                import getpass
-                value = getpass.getpass(f"{prompt}{suffix}: ")
+                from hermes_cli.secret_prompt import masked_secret_prompt
+                value = masked_secret_prompt(f"{prompt}{suffix}: ")
             else:
                 value = input(f"{prompt}{suffix}: ").strip()
         except (EOFError, KeyboardInterrupt):

@@ -11,13 +11,11 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -30,6 +28,7 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
 )
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +139,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     token = (args.access_token or "").strip()
     if not token:
-        token = getpass.getpass(f"  Paste access token ({token_env}): ").strip()
+        token = masked_secret_prompt(f"  Paste access token ({token_env}): ").strip()
     if not token:
         console.print("  [red]Empty token, aborting.[/red]")
         return 1

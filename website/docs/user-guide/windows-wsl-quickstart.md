@@ -65,7 +65,7 @@ Hermes does not work reliably on WSL1 — WSL1 translates Linux syscalls on the 
 
 ### Distro choice
 
-Ubuntu (LTS) is what we test against. Debian works. Arch and NixOS work for people who want them, but the one-line installer assumes a Debian-derived `apt` system — see the [Nix setup guide](/docs/getting-started/nix-setup) for that path.
+Ubuntu (LTS) is what we test against. Debian works. Arch and NixOS work for people who want them, but the one-line installer assumes a Debian-derived `apt` system — see the [Nix setup guide](/getting-started/nix-setup) for that path.
 
 ### Enable systemd (recommended)
 
@@ -105,7 +105,7 @@ source ~/.bashrc
 hermes
 ```
 
-The installer treats WSL2 as plain Linux — nothing WSL-specific is needed. See [Installation](/docs/getting-started/installation) for the full layout.
+The installer treats WSL2 as plain Linux — nothing WSL-specific is needed. See [Installation](/getting-started/installation) for the full layout.
 
 ## Filesystem: crossing the Windows ↔ WSL2 boundary
 
@@ -188,7 +188,7 @@ dos2unix path/to/script.sh
 
 Clone inside WSL. Always, unless you have a specific reason not to. A typical Hermes workflow (`hermes chat`, tool calls that `rg`/`ripgrep` the repo, file watchers, background gateway) will be dramatically faster and more reliable against `~/code/myrepo` than `/mnt/c/Users/you/myrepo`.
 
-One exception: **MCP bridges that launch Windows binaries.** If you're using `chrome-devtools-mcp` through `cmd.exe` (see [MCP guide: WSL → Windows Chrome](/docs/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)), Windows may complain with a `UNC` warning if Hermes's current working directory is `~`. In that case, start Hermes from somewhere under `/mnt/c/` so the Windows process has a drive-letter cwd.
+One exception: **MCP bridges that launch Windows binaries.** If you're using `chrome-devtools-mcp` through `cmd.exe` (see [MCP guide: WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)), Windows may complain with a `UNC` warning if Hermes's current working directory is `~`. In that case, start Hermes from somewhere under `/mnt/c/` so the Windows process has a drive-letter cwd.
 
 ## Networking: WSL ↔ Windows
 
@@ -200,7 +200,7 @@ Two cases come up constantly.
 
 Most common: you're running **Ollama, LM Studio, or a llama-server on Windows**, and Hermes (inside WSL) needs to hit it.
 
-The canonical how-to for this lives in the providers guide: **[WSL2 Networking for Local Models →](/docs/integrations/providers#wsl2-networking-windows-users)**
+The canonical how-to for this lives in the providers guide: **[WSL2 Networking for Local Models →](/integrations/providers#wsl2-networking-windows-users)**
 
 Short version:
 
@@ -214,7 +214,7 @@ For the full table (Ollama / LM Studio / vLLM / SGLang bind addresses, firewall 
 This is the reverse direction and is less documented elsewhere, but it's what you need for:
 
 - Using the Hermes **web dashboard** from a Windows browser.
-- Using the **OpenAI-compatible API server** (exposed by `hermes gateway` when `API_SERVER_ENABLED=true`) from a Windows-side tool. See the [API Server feature page](/docs/user-guide/features/api-server).
+- Using the **OpenAI-compatible API server** (exposed by `hermes gateway` when `API_SERVER_ENABLED=true`) from a Windows-side tool. See the [API Server feature page](/user-guide/features/api-server).
 - Testing a **messaging gateway** (Telegram, Discord, etc.) where the platform pings a local webhook URL — usually you'd use `cloudflared`/`ngrok` rather than raw port forwarding.
 
 #### Subcase 2a: from the Windows host itself
@@ -254,11 +254,37 @@ This is the real pain. Traffic flows **LAN device → Windows host → WSL VM**,
 
 Because the WSL VM IP drifts on each restart in NAT mode, a one-shot rule survives only until the next `wsl --shutdown`. For anything persistent, either use mirrored mode or put the port-proxy step in a script that runs at Windows login.
 
-For webhooks from cloud messaging providers (Telegram `setWebhook`, Slack events, etc.), don't fight port-forwarding — use `cloudflared` tunnels. See the [webhooks guide](/docs/user-guide/messaging/webhooks).
+For webhooks from cloud messaging providers (Telegram `setWebhook`, Slack events, etc.), don't fight port-forwarding — use `cloudflared` tunnels. See the [webhooks guide](/user-guide/messaging/webhooks).
 
 ## Running Hermes services long-term on Windows
 
-The Hermes [Tool Gateway](/docs/user-guide/features/tool-gateway) and the API server are long-lived processes. In WSL2 you have a few options for keeping them up.
+The Hermes [Tool Gateway](/user-guide/features/tool-gateway) and the API server are long-lived processes. In WSL2 you have a few options for keeping them up.
+
+### Desktop shortcut for opening Hermes quickly
+
+If you just want a double-click launcher for an interactive Hermes shell, create
+it on the Windows side and have it jump into WSL for you:
+
+1. Right-click the Windows desktop and choose **New -> Shortcut**.
+2. For the target, use your distro name (replace `Ubuntu` if needed):
+
+   ```text
+   wt.exe -w 0 -p "Ubuntu" wsl.exe -d Ubuntu --cd ~ -- bash -ic "hermes"
+   ```
+
+3. Name it something obvious like `Hermes`.
+
+That opens Windows Terminal, starts your WSL distro, drops you in your Linux
+home directory, and launches Hermes. If `hermes` is not on PATH yet, open WSL
+once manually and run `source ~/.bashrc`, or replace the command with
+`uv run hermes` inside your project checkout.
+
+Optional polish:
+
+- **Custom icon:** open **Properties -> Change Icon** and point it at an `.ico`
+  file, such as the Hermes favicon from the repo.
+- **Pinned launcher:** once the shortcut works, pin it to Start or Taskbar so
+  you do not have to browse for it again.
 
 ### Inside WSL with systemd (recommended)
 
@@ -292,7 +318,7 @@ If you're running a **Windows-native** local-model server (Ollama for Windows, L
 ## Common pitfalls
 
 **"Connection refused" to my Windows-hosted Ollama / LM Studio.**
-See [WSL2 Networking](/docs/integrations/providers#wsl2-networking-windows-users). Ninety percent of the time the server is bound to `127.0.0.1` and needs `0.0.0.0` (Ollama: `OLLAMA_HOST=0.0.0.0`), or you're missing a firewall rule.
+See [WSL2 Networking](/integrations/providers#wsl2-networking-windows-users). Ninety percent of the time the server is bound to `127.0.0.1` and needs `0.0.0.0` (Ollama: `OLLAMA_HOST=0.0.0.0`), or you're missing a firewall rule.
 
 **Massive slowness on `git status` / `hermes chat` in a repo.**
 You're probably working under `/mnt/c/...`. Move the repo to `~/code/...` (Linux side). Order-of-magnitude faster.
@@ -326,7 +352,7 @@ WSL2 stores its VM disk as a sparse VHDX under `%LOCALAPPDATA%\Packages\...`. It
 
 ## Where to go next
 
-- **[Installation](/docs/getting-started/installation)** — actual install steps (Linux/WSL2/Termux all use the same installer).
-- **[Integrations → Providers → WSL2 Networking](/docs/integrations/providers#wsl2-networking-windows-users)** — the canonical networking deep-dive for local model servers.
-- **[MCP guide → WSL → Windows Chrome](/docs/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — controlling your signed-in Windows Chrome from Hermes in WSL.
-- **[Tool Gateway](/docs/user-guide/features/tool-gateway)** and **[Web Dashboard](/docs/user-guide/features/web-dashboard)** — the long-lived services you'll most often want to expose from WSL to the rest of your network.
+- **[Installation](/getting-started/installation)** — actual install steps (Linux/WSL2/Termux all use the same installer).
+- **[Integrations → Providers → WSL2 Networking](/integrations/providers#wsl2-networking-windows-users)** — the canonical networking deep-dive for local model servers.
+- **[MCP guide → WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — controlling your signed-in Windows Chrome from Hermes in WSL.
+- **[Tool Gateway](/user-guide/features/tool-gateway)** and **[Web Dashboard](/user-guide/features/web-dashboard)** — the long-lived services you'll most often want to expose from WSL to the rest of your network.

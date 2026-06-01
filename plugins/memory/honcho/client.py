@@ -708,10 +708,21 @@ class HonchoClientConfig:
         # for Honcho session ID compatibility. This takes priority over strategy-
         # based resolution because gateway platforms need per-chat isolation that
         # cwd-based strategies cannot provide.
+        #
+        # When multiple Hermes profiles share a single HERMES_HOME and the same
+        # chat, this key is identical for every profile. Prefix with ``ai_peer``
+        # (the profile-distinguishing side, since the human peer is shared per
+        # chat on the gateway) when ``session_peer_prefix`` is enabled so each
+        # profile gets its own Honcho session. See issue #36160.
         if gateway_session_key:
-            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
+            raw_key = (
+                f"{self.ai_peer}-{gateway_session_key}"
+                if self.session_peer_prefix and self.ai_peer
+                else gateway_session_key
+            )
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', raw_key).strip('-')
             if sanitized:
-                return self._enforce_session_id_limit(sanitized, gateway_session_key)
+                return self._enforce_session_id_limit(sanitized, raw_key)
 
         # per-session: inherit Hermes session_id (new Honcho session each run)
         if self.session_strategy == "per-session" and session_id:

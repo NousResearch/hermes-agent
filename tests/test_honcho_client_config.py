@@ -125,3 +125,72 @@ def test_save_config_sets_owner_only_permissions(tmp_path, monkeypatch):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestHonchoGatewaySessionPrefix:
+    """When multiple profiles share one HERMES_HOME and a single chat, the
+    gateway_session_key resolves to the same value for every profile, so all
+    profiles collapse into one Honcho session (#36160). The fix prefixes the
+    gateway key with ``ai_peer`` (the profile-distinguishing side) when
+    ``session_peer_prefix`` is enabled — mirroring the pattern of the other
+    prefix branches in ``resolve_session_name``.
+    """
+
+    def test_gateway_session_key_unprefixed_by_default(self, tmp_path, monkeypatch):
+        """When ``session_peer_prefix`` is False (the default), the gateway
+        session key is used as-is — preserves the existing behaviour so
+        single-profile deployments are unaffected.
+        """
+        monkeypatch.chdir(tmp_path)
+        cfg = HonchoClientConfig(
+            workspace_id="test",
+            api_key="test-key",
+            session_peer_prefix=False,
+        )
+
+        result = cfg.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+
+        assert result == "agent-main-telegram-dm-8439114563"
+
+    def test_gateway_session_key_prefixed_with_ai_peer_when_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        """When ``session_peer_prefix`` is True, the gateway session key is
+        prefixed with the configured ``ai_peer`` so profiles sharing one
+        chat resolve to distinct Honcho sessions.
+        """
+        monkeypatch.chdir(tmp_path)
+        cfg = HonchoClientConfig(
+            workspace_id="test",
+            api_key="test-key",
+            session_peer_prefix=True,
+            ai_peer="alpha",
+        )
+
+        result = cfg.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+
+        assert result == "alpha-agent-main-telegram-dm-8439114563"
+
+    def test_gateway_session_key_uses_default_ai_peer_hermes_when_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        """When ``session_peer_prefix`` is True and ``ai_peer`` is left at
+        its default of ``hermes``, the prefix is ``hermes-``. This is the
+        out-of-the-box behaviour for any user who enables the prefix knob.
+        """
+        monkeypatch.chdir(tmp_path)
+        cfg = HonchoClientConfig(
+            workspace_id="test",
+            api_key="test-key",
+            session_peer_prefix=True,
+        )
+
+        result = cfg.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+
+        assert result == "hermes-agent-main-telegram-dm-8439114563"

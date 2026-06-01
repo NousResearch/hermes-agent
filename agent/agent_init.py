@@ -1244,6 +1244,14 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+    try:
+        compression_soft_request_limit = int(_compression_cfg.get("soft_request_limit", 0) or 0)
+    except (TypeError, ValueError):
+        compression_soft_request_limit = 0
+    compression_soft_request_limit = max(0, compression_soft_request_limit)
+    compression_retry_on_provider_error = str(
+        _compression_cfg.get("retry_compress_on_provider_error", False)
+    ).strip().lower() in {"true", "1", "yes", "on"}
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
@@ -1499,6 +1507,12 @@ def init_agent(
             extractive_fallback_enabled=compression_extractive_fallback_enabled,
         )
     agent.compression_enabled = compression_enabled
+    agent.compression_soft_request_limit = compression_soft_request_limit
+    agent.retry_compress_on_provider_error = compression_retry_on_provider_error
+    try:
+        agent.context_compressor.soft_request_limit = compression_soft_request_limit
+    except Exception:
+        pass
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

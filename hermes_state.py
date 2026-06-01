@@ -226,6 +226,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    user_id_alt TEXT,
+    chat_type TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    session_key TEXT,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -821,6 +826,11 @@ class SessionDB:
         prompt_cache_key: str = None,
         prompt_cache_supported: Optional[bool] = None,
         user_id: str = None,
+        user_id_alt: str = None,
+        chat_type: str = None,
+        chat_id: str = None,
+        thread_id: str = None,
+        session_key: str = None,
         parent_session_id: str = None,
         lineage_id: str = None,
     ) -> None:
@@ -830,14 +840,20 @@ class SessionDB:
 
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                """INSERT OR IGNORE INTO sessions (id, source, user_id, user_id_alt,
+                   chat_type, chat_id, thread_id, session_key, model, model_config,
                    system_prompt, prompt_cache_key, prompt_cache_supported,
                    parent_session_id, lineage_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
                     user_id,
+                    user_id_alt,
+                    chat_type,
+                    chat_id,
+                    thread_id,
+                    session_key,
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,

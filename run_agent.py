@@ -31,13 +31,21 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+import logging
+logger = logging.getLogger(__name__)
+
+# Early SSL certificate guard (after hermes_bootstrap)
+try:
+    from agent.ssl_guard import verify_ca_bundle_with_fallback
+    verify_ca_bundle_with_fallback()
+except Exception as e:
+    logger.warning(f"SSL guard failed: {e}")
+
 import asyncio
 import base64
 import copy
 import hashlib
 import json
-import logging
-logger = logging.getLogger(__name__)
 import os
 import re
 import sys

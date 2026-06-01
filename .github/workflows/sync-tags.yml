@@ -19,6 +19,8 @@ jobs:
           ref: develop # 👈 OBLIGATORIO: Le dice a GitHub que empiece trabajando en tu rama develop
 
       - name: Sync Process
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN_SYNC_PAT }}
         run: |
           # 1. Configurar la identidad del bot
           git config --global user.name "github-actions[bot]"

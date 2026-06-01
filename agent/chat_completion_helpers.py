@@ -1752,6 +1752,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _active_slot_by_idx: dict = {}  # raw_index -> current slot in tool_calls_acc
         finish_reason = None
         model_name = None
+        response_id = None
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
@@ -1780,6 +1781,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if agent._interrupt_requested:
                 break
 
+            if hasattr(chunk, "id") and chunk.id:
+                response_id = chunk.id
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
@@ -1952,7 +1955,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             finish_reason=effective_finish_reason,
         )
         return SimpleNamespace(
-            id="stream-" + str(uuid.uuid4()),
+            id=response_id or "stream-" + str(uuid.uuid4()),
             model=model_name,
             choices=[mock_choice],
             usage=usage_obj,

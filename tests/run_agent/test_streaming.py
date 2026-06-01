@@ -14,7 +14,7 @@ import pytest
 
 def _make_stream_chunk(
     content=None, tool_calls=None, finish_reason=None,
-    model=None, reasoning_content=None, usage=None,
+    model=None, reasoning_content=None, usage=None, chunk_id=None,
 ):
     """Build a mock streaming chunk matching OpenAI's ChatCompletionChunk shape."""
     delta = SimpleNamespace(
@@ -29,6 +29,7 @@ def _make_stream_chunk(
         finish_reason=finish_reason,
     )
     chunk = SimpleNamespace(
+        id=chunk_id,
         choices=[choice],
         model=model,
         usage=usage,
@@ -66,9 +67,9 @@ class TestStreamingAccumulator:
         from run_agent import AIAgent
 
         chunks = [
-            _make_stream_chunk(content="Hello"),
-            _make_stream_chunk(content=" world"),
-            _make_stream_chunk(content="!", finish_reason="stop", model="test-model"),
+            _make_stream_chunk(content="Hello", chunk_id="gen-or-123"),
+            _make_stream_chunk(content=" world", chunk_id="gen-or-123"),
+            _make_stream_chunk(content="!", finish_reason="stop", model="test-model", chunk_id="gen-or-123"),
             _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=10, completion_tokens=3)),
         ]
 
@@ -89,11 +90,13 @@ class TestStreamingAccumulator:
 
         response = agent._interruptible_streaming_api_call({})
 
+        assert response is not None
         assert response.choices[0].message.content == "Hello world!"
         assert response.choices[0].message.tool_calls is None
         assert response.choices[0].finish_reason == "stop"
         assert response.usage is not None
         assert response.usage.completion_tokens == 3
+        assert response.id == "gen-or-123"
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

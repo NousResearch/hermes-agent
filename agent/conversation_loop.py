@@ -31,6 +31,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
+from agent.khaw_usage_recorder import record_openrouter_generation
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     _repair_tool_call_arguments,
@@ -1969,7 +1970,12 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
-                
+
+                # Best-effort KHAW ledger hook: record OpenRouter generation
+                # ids after a successful response so ``khaw fde spend`` can
+                # reconcile detailed per-model cost/token/provider usage later.
+                record_openrouter_generation(agent, response)
+
                 has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call
                 # success" only means we got bytes back, not that we got

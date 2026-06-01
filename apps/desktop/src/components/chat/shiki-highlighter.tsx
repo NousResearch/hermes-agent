@@ -30,6 +30,18 @@ interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 
+/**
+ * `github-light-default` colors comments `#6e7781` (~4.2:1 against the code
+ * card background) — borderline unreadable at our 11px code size, and worst of
+ * all for shell snippets where a single `#` turns the rest of the line into one
+ * long comment span. Remap light-mode comments to GitHub's darker muted gray
+ * (`#57606a`, ~6.4:1). Dark mode (`#8b949e`, ~6.1:1) already reads fine, so we
+ * leave it untouched. Keyed per theme name so the bump only applies in light.
+ */
+const SHIKI_COLOR_REPLACEMENTS: Record<string, Record<string, string>> = {
+  'github-light-default': { '#6e7781': '#57606a' }
+}
+
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
@@ -76,6 +88,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
             <ShikiHighlighter
               addDefaultStyles={false}
               as="div"
+              colorReplacements={SHIKI_COLOR_REPLACEMENTS}
               defaultColor="light-dark()"
               delay={120}
               language={language || 'text'}

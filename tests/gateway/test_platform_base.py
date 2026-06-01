@@ -431,7 +431,8 @@ class TestExtractMedia:
         assert media[0][0] == "/real/file.png"
 
     def test_media_mixed_code_and_prose(self):
-        """Real MEDIA: in prose + example in code block: only prose extracted."""
+        """Real MEDIA: in prose + example in code block: only prose extracted,
+        and the code block survives verbatim in the delivered text."""
         content = (
             "Here is your file:\n"
             "MEDIA:/output/report.pdf\n"
@@ -443,6 +444,19 @@ class TestExtractMedia:
         assert len(media) == 1
         assert media[0][0] == "/output/report.pdf"
         assert "Done." in cleaned
+        # The real tag is stripped from the delivered text...
+        assert "MEDIA:/output/report.pdf" not in cleaned
+        # ...but the fenced code block (incl. its example MEDIA: line) must
+        # survive verbatim — masking is a locator, not a text rewrite.
+        assert "```text\nMEDIA:/example/path.pdf\n```" in cleaned
+
+    def test_inline_code_survives_when_real_media_present(self):
+        """When a real MEDIA: tag is delivered, an inline-code example in the
+        same reply must not be blanked to whitespace."""
+        content = "See MEDIA:/r/a.png and `MEDIA:/ex/b.png` inline"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/r/a.png"]
+        assert "`MEDIA:/ex/b.png`" in cleaned
 
 
 class TestMediaInsideSerializedJson:

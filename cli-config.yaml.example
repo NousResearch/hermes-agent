@@ -1380,3 +1380,40 @@ updates:
 #       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
 #       # in ~/.hermes/.env over putting it here in config.yaml.
 #       #   client_secret: ""
+
+
+# =============================================================================
+# External secret sources
+# =============================================================================
+# Pull provider API keys from an external secret manager at process startup
+# instead of storing them in ~/.hermes/.env. The bootstrap credential for the
+# manager lives in .env (or your shell / desktop session); every other key can
+# stay in the manager and rotate centrally. Failures never block startup —
+# Hermes warns once and continues with whatever .env already had.
+#
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/secrets/
+#
+# secrets:
+#   # ---- Bitwarden Secrets Manager (bws CLI) --------------------------------
+#   bitwarden:
+#     enabled: false
+#     access_token_env: BWS_ACCESS_TOKEN   # bootstrap token, sourced from .env
+#     project_id: ""                       # UUID of the BSM project to sync
+#     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
+#     cache_ttl_seconds: 300               # 0 disables caching
+#     override_existing: true              # BSM values win over existing env
+#     auto_install: true                   # lazy-download bws into ~/.hermes/bin
+#
+#   # ---- 1Password (op CLI) -------------------------------------------------
+#   onepassword:
+#     enabled: false
+#     # Map env-var names to op:// secret references. Each is resolved with a
+#     # single `op read` at startup.
+#     env:
+#       OPENAI_API_KEY: "op://Private/OpenAI/api key"
+#       ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"
+#     account: ""                                   # op --account shorthand; "" = default
+#     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN  # headless auth; unset = desktop session
+#     binary_path: ""                               # "" = resolve op via PATH; else absolute path
+#     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
+#     override_existing: true                       # resolved values win over existing env

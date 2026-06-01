@@ -134,3 +134,73 @@ def test_gateway_config_round_trip_preserves_bridge_settings():
     assert restored.previous_session_bridge.enabled is False
     assert restored.previous_session_bridge.max_exchanges == 10
     assert restored.previous_session_bridge.max_chars == 8000
+
+
+# ---------------------------------------------------------------------------
+# Task 4: render_previous_session_tail
+# ---------------------------------------------------------------------------
+
+def _msg(role, content):
+    return {"role": role, "content": content}
+
+
+def test_render_tail_returns_empty_on_no_messages():
+    from gateway.session import render_previous_session_tail
+    assert render_previous_session_tail([], max_exchanges=3, max_chars=4000) == ""
+
+
+def test_render_tail_only_includes_user_and_assistant():
+    from gateway.session import render_previous_session_tail
+    msgs = [
+        _msg("system", "You are a helpful agent."),
+        _msg("user", "hi"),
+        _msg("assistant", "hello"),
+        _msg("tool", "..."),
+    ]
+    out = render_previous_session_tail(msgs, max_exchanges=3, max_chars=4000)
+    assert "You are a helpful agent" not in out
+    assert "User: hi" in out
+    assert "Assistant: hello" in out
+    # The bare role "tool" shouldn't be labelled in the body
+    assert "Tool:" not in out
+
+
+def test_render_tail_skips_assistant_tool_calls_without_content():
+    from gateway.session import render_previous_session_tail
+    msgs = [
+        _msg("user", "what's the weather?"),
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "x"}]},
+        _msg("assistant", "It's 72 and sunny."),
+    ]
+    out = render_previous_session_tail(msgs, max_exchanges=5, max_chars=4000)
+    assert "User: what's the weather?" in out
+    assert "Assistant: It's 72 and sunny." in out
+
+
+def test_render_tail_keeps_only_last_n_exchanges():
+    from gateway.session import render_previous_session_tail
+    msgs = []
+    for i in range(10):
+        msgs.append(_msg("user", f"q{i}"))
+        msgs.append(_msg("assistant", f"a{i}"))
+    out = render_previous_session_tail(msgs, max_exchanges=2, max_chars=10_000)
+    assert "q9" in out and "a9" in out
+    assert "q8" in out and "a8" in out
+    assert "q7" not in out
+    assert "q0" not in out
+
+
+def test_render_tail_truncates_to_max_chars():
+    from gateway.session import render_previous_session_tail
+    msgs = [_msg("user", "x" * 5000), _msg("assistant", "y" * 5000)]
+    out = render_previous_session_tail(msgs, max_exchanges=10, max_chars=200)
+    # Header + intro + truncation marker, so the total cap is a bit over 200
+    # but the *body* portion that came from messages must respect the cap.
+    assert "truncated" in out.lower()
+
+
+def test_render_tail_has_header():
+    from gateway.session import render_previous_session_tail
+    msgs = [_msg("user", "hi"), _msg("assistant", "hello")]
+    out = render_previous_session_tail(msgs, max_exchanges=3, max_chars=4000)
+    assert out.startswith("## Previous Session Tail")

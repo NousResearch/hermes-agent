@@ -228,6 +228,72 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def render_previous_session_tail(
+    messages: List[Dict[str, Any]],
+    *,
+    max_exchanges: int,
+    max_chars: int,
+) -> str:
+    """
+    Render the tail of a prior session's messages as a system-prompt block.
+
+    Filters to user/assistant text turns only — system prompts, tool calls,
+    and tool results are skipped (irrelevant for conversational continuity
+    and full of noise that would burn context).
+
+    Keeps at most ``max_exchanges`` user+assistant pairs, taken from the END
+    of the conversation. Hard-caps body content at ``max_chars`` chars,
+    inserting a truncation marker if needed.
+
+    Returns "" when there are no eligible messages.
+    """
+    if not messages:
+        return ""
+
+    # Filter to user/assistant text turns. Tool calls live in role=assistant
+    # with content=None and tool_calls populated — drop those, keep only
+    # actual text replies.
+    convo = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if role not in ("user", "assistant"):
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        convo.append((role, content.strip()))
+
+    if not convo:
+        return ""
+
+    # Keep the trailing 2*max_exchanges turns (one user + one assistant each).
+    keep = max(1, 2 * int(max_exchanges))
+    convo = convo[-keep:]
+
+    body_lines = []
+    for role, content in convo:
+        label = "User" if role == "user" else "Assistant"
+        body_lines.append(f"{label}: {content}")
+    body = "\n\n".join(body_lines)
+
+    if len(body) > max_chars:
+        truncated = body[-max_chars:]
+        # Don't cut mid-line — start at the first newline boundary
+        nl = truncated.find("\n")
+        if nl != -1:
+            truncated = truncated[nl + 1:]
+        body = f"[…earlier turns truncated…]\n{truncated}"
+
+    header = "## Previous Session Tail"
+    intro = (
+        "The previous session just rotated out due to inactivity. "
+        "Here are the most recent user/assistant turns from that session "
+        "so you have continuity with what the user last saw. "
+        "Tool calls and intermediate data are omitted."
+    )
+    return f"{header}\n\n{intro}\n\n{body}"
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,

@@ -415,7 +415,8 @@ class AiortcAudioPeer:
         self._ice_gather_complete = asyncio.Event()
         self._audio_relay_task: asyncio.Task | None = None
         self._output_track = None
-        self._accumulator: AudioUtteranceAccumulator | None = None
+        self._accumulator: Any | None = None
+        self._pipeline: Any | None = None
         self._remote_audio_frame_count = 0
         self._terminal_callback: Callable[[str, str, dict[str, Any]], Any] | None = None
         self._event_callback: Callable[[str, dict[str, Any]], Any] | None = None
@@ -453,18 +454,36 @@ class AiortcAudioPeer:
         )
         self._ice_candidates = []
         self._ice_gather_complete.clear()
-        self._output_track = _create_queued_audio_track(
-            self.config.sample_rate,
-            self._schedule_event,
-        )
-        self._accumulator = AudioUtteranceAccumulator(
-            call_id=call_id,
-            pipeline=pipeline,
-            output_track=self._output_track,
-            sample_rate=self.config.sample_rate,
-            voice_rms_threshold=self.config.voice_rms_threshold,
-            silence_seconds=self.config.silence_seconds,
-        )
+        if getattr(pipeline, "is_streaming", False):
+            # Live streaming path (Slice 6b): the session owns turn detection and
+            # outbound audio. Build a live PCM track, wire it as the transport's
+            # outbound sink + barge-in drop hook, and feed inbound frames straight
+            # into the pipeline via the direct-feed accumulator.
+            self._pipeline = pipeline
+            self._output_track = _create_pcm_streaming_track(self.config.sample_rate)
+            pipeline.transport.set_outbound_sink(
+                self._output_track.enqueue,
+                drop=self._output_track.drop_pending,
+            )
+            self._accumulator = _DirectFeedAccumulator(
+                pipeline,
+                call_id,
+                self.config.sample_rate,
+            )
+        else:
+            self._pipeline = None
+            self._output_track = _create_queued_audio_track(
+                self.config.sample_rate,
+                self._schedule_event,
+            )
+            self._accumulator = AudioUtteranceAccumulator(
+                call_id=call_id,
+                pipeline=pipeline,
+                output_track=self._output_track,
+                sample_rate=self.config.sample_rate,
+                voice_rms_threshold=self.config.voice_rms_threshold,
+                silence_seconds=self.config.silence_seconds,
+            )
         self._install_event_handlers()
         self._pc.addTrack(self._output_track)
         logger.info("SimpleX native WebRTC peer started: call_id=%s", self._call_id)
@@ -621,6 +640,9 @@ class AiortcAudioPeer:
                 except asyncio.CancelledError:
                     pass
             self._audio_relay_task = None
+        pipeline = self._pipeline
+        if pipeline is not None and getattr(pipeline, "is_streaming", False):
+            await pipeline.aclose()
         if self._pc is not None:
             await self._pc.close()
             self._pc = None
@@ -1593,6 +1615,131 @@ def _frame_from_pcm16(pcm16: bytes, *, sample_rate: int, pts: int):
     for plane in frame.planes:
         plane.update(pcm16)
     return frame
+
+
+# Max buffered outbound frames before drop-oldest kicks in (back-pressure, I2).
+_PCM_STREAMING_QUEUE_MAXSIZE = 50
+
+
+def _create_pcm_streaming_track(target_rate: int):
+    """Build a live outbound PCM ``MediaStreamTrack`` for the streaming pipeline.
+
+    Plays the session's 16k TTS ``av.AudioFrame``s out the aiortc peer at the
+    SimpleX rate (``target_rate``, 48k). A bounded queue (drop-oldest on overflow
+    with a ``logger.warning``) provides back-pressure; a PERSISTENT
+    ``av.AudioResampler`` keeps resample phase continuous across ``recv()`` calls.
+    Wall-clock pacing is allowed here (outside ``streaming/**``).
+    """
+    try:
+        from aiortc.mediastreams import MediaStreamTrack
+    except ImportError as exc:
+        raise SimplexNativeSidecarError(
+            "call_simplex_native_dependency_missing",
+            "SimpleX native calls require aiortc.",
+        ) from exc
+
+    class PcmStreamingTrack(MediaStreamTrack):
+        kind = "audio"
+
+        def __init__(self) -> None:
+            super().__init__()
+            from av import AudioResampler
+
+            self._target_rate = target_rate
+            self._queue: asyncio.Queue[Any] = asyncio.Queue(
+                maxsize=_PCM_STREAMING_QUEUE_MAXSIZE
+            )
+            # Persistent resampler: phase continuity across frames (M1).
+            self._resampler = AudioResampler(
+                format="s16", layout="mono", rate=target_rate
+            )
+            self._pts = 0
+            self._time_base = fractions.Fraction(1, target_rate)
+            self._start_time = 0.0
+            self._frame_count = 0
+
+        async def enqueue(self, frame: Any) -> None:
+            try:
+                self._queue.put_nowait(frame)
+            except asyncio.QueueFull:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                logger.warning(
+                    "SimpleX native WebRTC outbound PCM queue full; dropping oldest frame"
+                )
+                self._queue.put_nowait(frame)
+
+        def drop_pending(self) -> int:
+            count = 0
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                count += 1
+            return count
+
+        async def recv(self):
+            await self._pace()
+            try:
+                frame = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return self._silence_frame()
+            converted_frames = self._resampler.resample(frame)
+            for converted in converted_frames:
+                samples = int(getattr(converted, "samples", 0) or 0)
+                if samples <= 0:
+                    continue
+                converted.pts = self._pts
+                converted.time_base = self._time_base
+                self._pts += samples
+                return converted
+            # Resampler buffered everything (0 output frames): emit silence.
+            return self._silence_frame()
+
+        async def _pace(self) -> None:
+            if self._start_time == 0.0:
+                self._start_time = time.monotonic()
+            else:
+                target = self._start_time + (self._frame_count * 0.02)
+                now = time.monotonic()
+                if now < target:
+                    await asyncio.sleep(target - now)
+            self._frame_count += 1
+
+        def _silence_frame(self):
+            frame_bytes = (self._target_rate // 50) * 2
+            frame = _frame_from_pcm16(
+                bytes(frame_bytes), sample_rate=self._target_rate, pts=self._pts
+            )
+            self._pts += self._target_rate // 50
+            return frame
+
+    return PcmStreamingTrack()
+
+
+class _DirectFeedAccumulator:
+    """Direct-feed inbound accumulator for the streaming pipeline.
+
+    Bypasses the turn-based RMS ``AudioUtteranceAccumulator``: the session is the
+    turn detector, so every relayed frame is fed straight to ``process_pcm16``.
+    The ack is discarded — outbound audio flows out via the transport sink.
+    Signature matches the relay's ``await accumulator.accept_pcm16(pcm16)``.
+    """
+
+    def __init__(self, pipeline: Any, call_id: str, native_rate: int) -> None:
+        self._pipeline = pipeline
+        self._call_id = str(call_id or "")
+        self._native_rate = int(native_rate)
+
+    async def accept_pcm16(self, pcm16: bytes, *, now: float | None = None) -> None:
+        await self._pipeline.process_pcm16(
+            call_id=self._call_id,
+            pcm16=pcm16,
+            sample_rate=self._native_rate,
+        )
 
 
 def _read_wav_pcm16_mono(path: Path) -> tuple[bytes, int]:

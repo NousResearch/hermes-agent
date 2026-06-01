@@ -5,10 +5,11 @@ import os
 import stat
 import sys
 from io import BytesIO
-from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 import pytest
+
+import asyncio
 
 from tools.mcp_oauth import (
     HermesTokenStorage,
@@ -20,6 +21,8 @@ from tools.mcp_oauth import (
     _is_interactive,
     _wait_for_callback,
     _make_callback_handler,
+    _redirect_handler,
+    _paste_callback_reader,
 )
 
 
@@ -239,6 +242,64 @@ class TestUtilities:
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setattr(os, "name", "posix")
         assert _can_open_browser() is True
+
+
+class TestRedirectHandlerSshHint:
+    """_redirect_handler must print an SSH tunnel hint on remote sessions."""
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_ssh_hint_shown_on_ssh_session(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49200)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth?foo=bar"))
+
+        err = capsys.readouterr().err
+        assert "49200" in err
+        assert "ssh -N -L" in err
+        assert "Remote session detected" in err
+
+    def test_ssh_hint_shown_via_ssh_tty(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49201)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "49201" in err
+        assert "ssh -N -L" in err
+
+    def test_no_ssh_hint_on_local_session(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49202)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda url, **kw: True)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "ssh -N -L" not in err
+
+    def test_no_ssh_hint_when_port_not_set(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", None)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "ssh -N -L" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -560,3 +621,210 @@ def test_build_oauth_auth_preserves_server_url_path():
     assert captured["server_url"] == "https://mcp.notion.com/mcp"
 
 
+
+class TestPasteCallbackReader:
+    """_paste_callback_reader parses redirect URLs / query strings from stdin."""
+
+    def _empty_result(self):
+        return {"auth_code": None, "state": None, "error": None}
+
+    def test_parses_full_local_redirect_url(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "http://127.0.0.1:37949/callback?code=abc&state=xyz\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "abc"
+        assert result["state"] == "xyz"
+        assert result["error"] is None
+
+    def test_parses_remote_provider_url(self, monkeypatch):
+        """User pastes the URL their browser ended up on, including a real host."""
+        result = self._empty_result()
+        url = "https://mcp.linear.app/callback?code=deadbeef&state=eyJ0ZXN0Ijoi"
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: url + "\n"))
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "deadbeef"
+        assert result["state"] == "eyJ0ZXN0Ijoi"
+
+    def test_parses_bare_query_string(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "code=token123&state=st1\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "token123"
+        assert result["state"] == "st1"
+
+    def test_parses_leading_question_mark(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "?code=tok&state=stA\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "tok"
+        assert result["state"] == "stA"
+
+    def test_captures_error_param(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "https://example/cb?error=access_denied\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] == "access_denied"
+
+    def test_empty_input_noop(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] is None
+
+    def test_garbage_input_noop(self, monkeypatch, capsys):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "not a url at all\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] is None
+        err = capsys.readouterr().err
+        assert "did not contain" in err or "Could not parse" in err
+
+    def test_skips_when_http_listener_already_won(self, monkeypatch):
+        """If HTTP listener filled the result first, paste must not overwrite."""
+        result = {"auth_code": "from_http", "state": "http_state", "error": None}
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "code=from_paste&state=paste_state\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "from_http"
+        assert result["state"] == "http_state"
+
+    def test_swallows_stdin_errors(self, monkeypatch):
+        """OSError / interrupt on readline must not propagate."""
+        result = self._empty_result()
+        def raise_oserror():
+            raise OSError("stdin closed")
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=raise_oserror))
+        _paste_callback_reader(result)  # must not raise
+        assert result["auth_code"] is None
+
+
+class TestWaitForCallbackPasteIntegration:
+    """_wait_for_callback offers the paste prompt only when interactive."""
+
+    def test_paste_prompt_shown_on_tty(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        # Make stdin readline block forever so HTTP listener path drives the test;
+        # we just want to verify the prompt was printed and the thread spawned.
+        def block_forever():
+            import threading
+            threading.Event().wait()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=block_forever))
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback())
+        err = capsys.readouterr().err
+        assert "paste the redirect URL" in err
+
+    def test_paste_prompt_NOT_shown_when_noninteractive(self, monkeypatch, capsys):
+        """Preserves existing invariant: no input() / paste prompt in headless runs."""
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
+                with pytest.raises(OAuthNonInteractiveError):
+                    asyncio.run(_wait_for_callback())
+        err = capsys.readouterr().err
+        assert "paste the redirect URL" not in err
+
+
+class TestPasteCallbackSkipToken:
+    """User can type `skip` (or similar) at the paste prompt to bail out."""
+
+    def _empty_result(self):
+        return {"auth_code": None, "state": None, "error": None}
+
+    @pytest.mark.parametrize("token", ["skip", "SKIP", "Skip", "cancel", "s", "n", "no", "q", "quit"])
+    def test_skip_tokens_set_sentinel(self, monkeypatch, token):
+        from tools.mcp_oauth import _USER_SKIPPED_SENTINEL
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: token + "\n"))
+        _paste_callback_reader(result)
+        assert result["error"] == _USER_SKIPPED_SENTINEL
+        assert result["auth_code"] is None
+
+    def test_skip_message_printed(self, monkeypatch, capsys):
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+        _paste_callback_reader(result)
+        err = capsys.readouterr().err
+        assert "OAuth skipped" in err
+        assert "hermes mcp login" in err
+
+    def test_skip_does_not_overwrite_http_winner(self, monkeypatch):
+        """If HTTP listener already wrote a code, `skip` must not stomp it."""
+        result = {"auth_code": "from_http", "state": "x", "error": None}
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "from_http"
+        assert result["error"] is None
+
+    def test_skip_token_not_parsed_as_url(self, monkeypatch, capsys):
+        """`skip` must NOT fall through to URL parsing (which would silently no-op)."""
+        from tools.mcp_oauth import _USER_SKIPPED_SENTINEL
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+        _paste_callback_reader(result)
+        # Must take skip path, not the "did not contain code=" path
+        assert result["error"] == _USER_SKIPPED_SENTINEL
+        err = capsys.readouterr().err
+        assert "did not contain" not in err
+
+
+class TestWaitForCallbackSkipIntegration:
+    """_wait_for_callback maps the skip sentinel to OAuthNonInteractiveError."""
+
+    def test_skip_raises_non_interactive_error(self, monkeypatch):
+        """Skip token must raise OAuthNonInteractiveError (mcp_tool handles as non-fatal)."""
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError, match="user_skipped"):
+                asyncio.run(_wait_for_callback())
+
+    def test_paste_prompt_mentions_skip(self, monkeypatch, capsys):
+        """The interactive prompt must tell users about the skip option."""
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback())
+        err = capsys.readouterr().err
+        assert "skip" in err.lower()

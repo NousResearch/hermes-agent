@@ -5,11 +5,13 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
+import { TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
+import { recordParentLifecycle } from './lib/parentLog.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -21,11 +23,14 @@ if (!process.stdin.isTTY) {
 // terminal tab can still have mouse/focus/paste modes enabled.
 resetTerminalModes()
 
-// Clear visible screen + scrollback buffer. Without this, tmux may retain
-// stale TUI output in its scrollback buffer from the previous session,
-// which is visible when the user scrolls up or briefly before AlternateScreen
-// takes over on restart. See entry.tsx → AlternateScreen flow.
-process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
+// Desktop terminals benefit from a clean startup slate because the TUI usually
+// runs in AlternateScreen. On Termux we keep prior output intact so users can
+// review/copy earlier assistant replies after reopening the app.
+if (TERMUX_TUI_MODE) {
+  process.stdout.write('\n')
+} else {
+  process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
+}
 
 const gw = new GatewayClient()
 
@@ -39,23 +44,33 @@ setupGracefulExit({
     () => {
       resetTerminalModes()
 
-      return gw.kill()
+      return gw.kill('graceful-exit-cleanup')
     }
   ],
   onError: (scope, err) => {
-    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
 
-    process.stderr.write(`hermes-tui ${scope}: ${message.slice(0, 2000)}\n`)
+    recordParentLifecycle(`${scope}: ${message.split('\n')[0]?.slice(0, 400) ?? ''}`)
+    process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
   },
   onSignal: signal => {
+    // The next line in the crash log is the child's `=== SIGTERM received ===`
+    // (gw.kill forwards SIGTERM regardless of which signal hit us) — this is
+    // what tells SIGHUP (terminal/SSH dropped) apart from a real SIGTERM.
+    recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
     resetTerminalModes()
-    process.stderr.write(`hermes-tui: received ${signal}\n`)
+    process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
   }
 })
 
 const stopMemoryMonitor = startMemoryMonitor({
   onCritical: (snap, dump) => {
+    // process.exit(137) closes the child's stdin → the gateway logs a clean
+    // EOF, NOT SIGTERM. Recording it here is the only way a crash report can
+    // attribute a death to Node OOM rather than a signal-driven kill.
+    recordParentLifecycle(`memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`)
     resetTerminalModes()
+    process.stderr.write(`hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`)
     process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)

@@ -101,6 +101,11 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("**Hello** `world`") == "Hello world"
 
+    def test_format_message_preserves_underscores_in_identifiers(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        text = "Use /api_v2 with FEATURE_FLAG_NAME and config_file.json"
+        assert adapter.format_message(text) == text
+
     def test_strip_markdown_headers(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("## Heading\ntext") == "Heading\ntext"
@@ -297,7 +302,6 @@ class TestBlueBubblesAttachmentDownload:
         """Image MIME routes to cache_image_from_bytes."""
         adapter = _make_adapter(monkeypatch)
         import asyncio
-        import httpx
 
         # Mock the HTTP client response
         class MockResponse:
@@ -446,6 +450,14 @@ class TestBlueBubblesWebhookUrl:
         """Passwords with special characters must be URL-encoded."""
         adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
         assert "password=W9fTC%26L5JL%2A%40" in adapter._webhook_register_url
+
+    def test_register_url_for_log_masks_password(self, monkeypatch):
+        """Log-safe webhook URLs must never expose the webhook password."""
+        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
+        safe_url = adapter._webhook_register_url_for_log
+        assert safe_url.endswith("?password=***")
+        assert "W9fTC" not in safe_url
+        assert "%26" not in safe_url
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""

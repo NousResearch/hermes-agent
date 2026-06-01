@@ -12,7 +12,6 @@ Currently:
   Windows path that works.
 """
 
-import sys
 
 
 class TestMatrixHiddenOnWindows:

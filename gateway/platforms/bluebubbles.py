@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -59,6 +60,8 @@ _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+
+_GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 
 
 def _redact(text: str) -> str:
@@ -128,7 +131,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
-        self._guid_cache: Dict[str, str] = {}
+        self._guid_cache: OrderedDict[str, str] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -189,7 +192,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
-        self._runner = web.AppRunner(app)
+        # The webhook auth value is carried in the query string because the
+        # BlueBubbles webhook API cannot send custom headers. Do not let
+        # aiohttp access logs write that request target to agent.log.
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
         await site.start()
@@ -242,6 +248,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return f"{base}?password={quote(self.password, safe='')}"
         return base
 
+    @property
+    def _webhook_register_url_for_log(self) -> str:
+        """Webhook registration URL safe for logs."""
+        base = self._webhook_url
+        if self.password:
+            return f"{base}?password=***"
+        return base
+
     async def _find_registered_webhooks(self, url: str) -> list:
         """Return list of BB webhook entries matching *url*."""
         try:
@@ -269,7 +283,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         existing = await self._find_registered_webhooks(webhook_url)
         if existing:
             logger.info(
-                "[bluebubbles] webhook already registered: %s", webhook_url
+                "[bluebubbles] webhook already registered: %s",
+                self._webhook_register_url_for_log,
             )
             return True
 
@@ -284,7 +299,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if 200 <= status < 300:
                 logger.info(
                     "[bluebubbles] webhook registered with server: %s",
-                    webhook_url,
+                    self._webhook_register_url_for_log,
                 )
                 return True
             else:
@@ -324,7 +339,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     removed = True
             if removed:
                 logger.info(
-                    "[bluebubbles] webhook unregistered: %s", webhook_url
+                    "[bluebubbles] webhook unregistered: %s",
+                    self._webhook_register_url_for_log,
                 )
         except Exception as exc:
             logger.debug(
@@ -352,6 +368,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if ";" in target:
             return target
         if target in self._guid_cache:
+            self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
         try:
             payload = await self._api_post(
@@ -364,10 +381,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if identifier == target:
                     if guid:
                         self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
                     return guid
                 for part in chat.get("participants", []) or []:
                     if (part.get("address") or "").strip() == target and guid:
                         self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
                         return guid
         except Exception:
             pass
@@ -934,4 +955,3 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             asyncio.create_task(self.mark_read(session_chat_id))
 
         return web.Response(text="ok")
-

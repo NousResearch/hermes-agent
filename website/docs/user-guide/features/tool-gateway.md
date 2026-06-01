@@ -39,19 +39,33 @@ Bring your own keys anytime — per-tool, whenever you want to. The gateway isn'
 
 ## Get started
 
+There are three ways in — pick whichever fits where you are:
+
 ```bash
-hermes model          # Pick Nous Portal as your provider
+hermes setup --portal     # Fresh install: Nous OAuth + set Nous as provider + turn on the Tool Gateway in one go
 ```
 
-When you select Nous Portal, Hermes offers to turn on the Tool Gateway. Accept, and you're done — every supported tool is live on the next run.
+```bash
+hermes model              # Switch your inference provider to Nous Portal — Hermes then offers to turn on the gateway for all tools
+```
+
+```bash
+hermes tools              # Enable the gateway per-tool — pick "Nous Subscription" for any tool you want
+```
+
+`hermes setup --portal` and `hermes model` are the all-at-once paths: log in once, optionally flip every tool to the gateway. `hermes tools` is the à la carte path — turn on just the tools you want, one at a time.
+
+**You don't have to log in first.** With `hermes tools`, the Nous-managed backends (Web search, Image, Video, TTS, Browser) are always listed, even if you've never signed into Nous Portal. Select one and Hermes runs the Portal login right there if you aren't already authenticated — no need to run `hermes model` beforehand. If your Nous OAuth is already active, selecting the backend enables it immediately with no extra prompt. This path only logs you in and turns on the one tool you picked — it does **not** switch your inference provider, and it does **not** prompt you to enable the gateway for every other tool.
 
 Check what's active at any time:
 
 ```bash
-hermes status
+hermes portal status      # Portal auth + Tool Gateway routing summary
+hermes portal tools       # Gateway catalog with current routing per tool
+hermes status             # Full system status (Tool Gateway is one section)
 ```
 
-You'll see a section like:
+`hermes portal status` shows a section like:
 
 ```
 ◆ Nous Tool Gateway
@@ -82,7 +96,7 @@ Switch any tool at any time via:
 hermes tools          # Interactive picker for each tool category
 ```
 
-Select the tool, pick **Nous Subscription** as the provider (or any direct provider you prefer). No config editing required.
+Select the tool, pick **Nous Subscription** as the provider (or any direct provider you prefer). No config editing required. If you aren't logged into Nous Portal yet, picking **Nous Subscription** kicks off the Portal login inline — you don't need to authenticate through `hermes model` first.
 
 ## Using individual image models
 

@@ -1,6 +1,5 @@
 """Tests for the provider module registry and profiles."""
 
-import pytest
 from providers import get_provider_profile, _REGISTRY
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
 
@@ -41,6 +40,10 @@ class TestNvidiaProfile:
     def test_base_url(self):
         p = get_provider_profile("nvidia")
         assert "nvidia.com" in p.base_url
+
+    def test_billing_header_not_profile_wide(self):
+        p = get_provider_profile("nvidia")
+        assert p.default_headers == {}
 
 
 class TestKimiProfile:
@@ -93,6 +96,11 @@ class TestOpenRouterProfile:
         p = get_provider_profile("openrouter")
         body = p.build_extra_body(provider_preferences={"allow": ["anthropic"]})
         assert body["provider"] == {"allow": ["anthropic"]}
+
+    def test_extra_body_session_id(self):
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(session_id="test-session-123")
+        assert body["session_id"] == "test-session-123"
 
     def test_extra_body_no_prefs(self):
         p = get_provider_profile("openrouter")

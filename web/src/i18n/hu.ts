@@ -127,6 +127,8 @@ export const hu: Translations = {
 
   sessions: {
     title: "Munkamenetek",
+    history: "Előzmények",
+    overview: "Áttekintés",
     searchPlaceholder: "Keresés üzenettartalomban...",
     noSessions: "Még nincsenek munkamenetek",
     noMatch: "Nincs a keresésnek megfelelő munkamenet",
@@ -269,7 +271,7 @@ export const hu: Translations = {
       "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",
     identifierLabel: "Git URL vagy owner/repo",
     inactive: "inaktív",
-    installBtn: "Telepítés Gitből",
+    installBtn: "Telepítés",
     installHeading: "Telepítés GitHubról / Git URL-ről",
     installHint: "Használjon owner/repo rövidítést vagy teljes https:// vagy git@ klónozási URL-t.",
     memoryProviderLabel: "Memória-szolgáltató",
@@ -367,6 +369,8 @@ export const hu: Translations = {
     description: "API-kulcsok és titkok kezelése a következő helyen:",
     hideAdvanced: "Speciális elrejtése",
     showAdvanced: "Speciális megjelenítése",
+    showLess: "Kevesebb",
+    showMore: "Több",
     llmProviders: "LLM-szolgáltatók",
     providersConfigured: "{configured} / {total} szolgáltató beállítva",
     getKey: "Kulcs lekérése",
@@ -392,7 +396,7 @@ export const hu: Translations = {
     disconnect: "Lecsatlakozás",
     managedExternally: "Külsőleg kezelt",
     copied: "Másolva ✓",
-    cli: "CLI",
+    cli: "Másolás",
     copyCliCommand: "CLI-parancs másolása (külső / tartalék)",
     connect: "Csatlakozás",
     sessionExpires: "A munkamenet {time} múlva lejár",
@@ -419,7 +423,7 @@ export const hu: Translations = {
   },
 
   language: {
-    switchTo: "Váltás angolra",
+    switchTo: "Nyelv váltása",
   },
 
   theme: {
@@ -654,6 +658,7 @@ export const hu: Translations = {
     columnLabels: {
       triage: "Triázs",
       todo: "Tennivaló",
+      scheduled: "Ütemezett",
       ready: "Indulásra kész",
       running: "Folyamatban",
       blocked: "Blokkolva",
@@ -663,7 +668,8 @@ export const hu: Translations = {
     columnHelp: {
       triage: "Nyers ötletek — egy specifier kidolgozza a specifikációt",
       todo: "Függőségekre vár vagy nincs felelőse",
-      ready: "Kiosztva, dispatcher tickre vár",
+      scheduled: "Ismert időzítésre vagy ütemezett utánkövetésre vár",
+      ready: "A függőségek teljesültek; rendelj hozzá profilt az indításhoz",
       running: "Worker felvette — folyamatban",
       blocked: "A worker emberi beavatkozást kért",
       done: "Befejezve",

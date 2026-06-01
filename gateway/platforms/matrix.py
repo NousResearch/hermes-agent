@@ -138,7 +138,8 @@ _OUTBOUND_MENTION_RE = re.compile(
 )
 
 _E2EE_INSTALL_HINT = (
-    "Install with: pip install 'mautrix[encryption]'  (requires libolm C library)"
+    "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  "
+    "(requires libolm C library)"
 )
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
@@ -214,9 +215,22 @@ def _create_matrix_session(proxy_url: str | None):
 
 
 def _check_e2ee_deps() -> bool:
-    """Return True if mautrix E2EE dependencies (python-olm) are available."""
+    """Return True if mautrix E2EE dependencies are available.
+
+    Verifies python-olm (via mautrix.crypto.OlmMachine), the SQLite crypto
+    store backend (mautrix.crypto.store.asyncpg.PgCryptoStore — yes, the
+    PgCryptoStore class also drives the sqlite backend in mautrix 0.21),
+    and the database drivers actually used at connect time (``asyncpg`` for
+    the underlying upgrade_table machinery, ``aiosqlite`` for the
+    ``sqlite:///`` URL we pass to ``Database.create``).  Without all four,
+    encrypted rooms fail at connect time with a confusing
+    ``No module named 'asyncpg'`` (#31116).
+    """
     try:
         from mautrix.crypto import OlmMachine  # noqa: F401
+        from mautrix.crypto.store.asyncpg import PgCryptoStore  # noqa: F401
+        import asyncpg  # noqa: F401
+        import aiosqlite  # noqa: F401
 
         return True
     except (ImportError, AttributeError):
@@ -226,8 +240,13 @@ def _check_e2ee_deps() -> bool:
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
-    Lazy-installs mautrix via ``tools.lazy_deps.ensure("platform.matrix")``
-    on first call if not present. Rebinds all module-level type globals on success.
+    Lazy-installs the full ``platform.matrix`` feature group via
+    ``tools.lazy_deps.ensure_and_bind`` whenever any of the declared
+    packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
+    missing — not just mautrix itself.  Previously this short-circuited on
+    ``import mautrix``, which left the other four packages uninstalled
+    forever and broke E2EE connect with ``No module named 'asyncpg'``
+    (#31116).  Rebinds module-level type globals on success.
     """
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
     password = os.getenv("MATRIX_PASSWORD", "")
@@ -239,9 +258,20 @@ def check_matrix_requirements() -> bool:
     if not homeserver:
         logger.warning("Matrix: MATRIX_HOMESERVER not set")
         return False
+
+    # Check whether any package in the platform.matrix feature group is
+    # missing.  ``feature_missing`` is cheap (per-spec importlib.metadata
+    # lookups) and correctly handles ``mautrix[encryption]`` by stripping
+    # the extras marker before checking the bare package.
     try:
-        import mautrix  # noqa: F401
-    except ImportError:
+        from tools.lazy_deps import feature_missing, ensure_and_bind
+        missing = feature_missing("platform.matrix")
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Matrix: lazy_deps lookup failed: %s", exc)
+        missing = ()
+        ensure_and_bind = None  # type: ignore[assignment]
+
+    if missing or ensure_and_bind is None:
         def _import():
             from mautrix.types import (
                 ContentURI, EventID, EventType, PaginationDirection,
@@ -261,10 +291,14 @@ def check_matrix_requirements() -> bool:
                 "UserID": UserID,
             }
 
-        from tools.lazy_deps import ensure_and_bind
+        if ensure_and_bind is None:
+            return False
         if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
             logger.warning(
-                "Matrix: mautrix not installed. Run: pip install 'mautrix[encryption]'"
+                "Matrix: required packages not installed (%s). "
+                "Run: pip install 'mautrix[encryption]' asyncpg aiosqlite "
+                "Markdown aiohttp-socks",
+                ", ".join(missing) if missing else "platform.matrix",
             )
             return False
 
@@ -348,6 +382,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task: Optional[asyncio.Task] = None
         self._closing = False
         self._startup_ts: float = 0.0
+        # Clock-skew detection: count grace-check drops that happen well
+        # after startup (i.e. not initial-sync backfill).  If the host's
+        # system clock is set ahead of real time, the startup grace check
+        # `event_ts < startup_ts - 5` silently drops every live message.
+        # See #12614 — the symptom is "bot joins rooms but never replies".
+        # Drops only count when their skew matches the first sampled drop
+        # (within 60s), so varied-age backfill from freshly-invited rooms
+        # doesn't trip the heuristic.
+        self._late_grace_drops: int = 0
+        self._late_grace_skew: float = 0.0
+        self._clock_skew_warned: bool = False
 
         # Cache: room_id → bool (is DM)
         self._dm_rooms: Dict[str, bool] = {}
@@ -369,6 +414,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._require_mention: bool = os.getenv(
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in {"false", "0", "no"}
+        self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         free_rooms_raw = config.extra.get("free_response_rooms")
         if free_rooms_raw is None:
             free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
@@ -456,6 +502,27 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    @staticmethod
+    def _parse_thread_require_mention(config) -> bool:
+        """Parse thread_require_mention from config.extra or env var.
+
+        Handles both YAML booleans and string values (``\"true\"``, ``\"false\"``,
+        ``\"yes\"``, ``\"no\"``, ``\"on\"``, ``\"off\"``, ``\"1\"``, ``\"0\"``).
+        Falls back to ``MATRIX_THREAD_REQUIRE_MENTION`` env var, default ``false``.
+        Mirrors Discord adapter's parsing pattern.
+        """
+        configured = config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, bool):
+                return configured
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            # int, float, etc. — truthiness fallback
+            return bool(configured)
+        return os.getenv(
+            "MATRIX_THREAD_REQUIRE_MENTION", "false"
+        ).lower() in {"true", "1", "yes", "on"}
 
     # ------------------------------------------------------------------
     # E2EE helpers
@@ -842,6 +909,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Initial sync to catch up, then start background sync.
         self._startup_ts = time.time()
+        # Reset clock-skew detector for each connect cycle so a reconnect
+        # after the user fixes NTP doesn't inherit stale counters.
+        self._late_grace_drops = 0
+        self._late_grace_skew = 0.0
+        self._clock_skew_warned = False
         self._closing = False
 
         try:
@@ -1542,6 +1614,49 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         event_ts = raw_ts / 1000.0 if raw_ts else 0.0
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+            # If we are well past startup but events are still being dropped
+            # by the grace check, the host clock is probably set ahead of
+            # real time — every live event then looks "older than startup".
+            # Warn once so users can fix NTP instead of chasing a ghost.
+            # See #12614 (Schnurzel700, April 2026).
+            #
+            # Filter out backfill (events legitimately old) by requiring:
+            #  - we are >30s past startup (initial-sync replay window closed)
+            #  - the skew is *consistent* across consecutive drops, which is
+            #    the signature of a constant clock offset rather than a
+            #    variable-age room history.  Backfill from a freshly invited
+            #    room can deliver events spanning hours/days — those skews
+            #    will be all over the place and reset the counter.
+            if not self._clock_skew_warned and (
+                time.time() - self._startup_ts > 30
+            ):
+                skew = self._startup_ts - event_ts
+                # Sanity bound: malformed events with negative or absurd
+                # timestamps shouldn't count.
+                if 5 < skew < 86400:
+                    if self._late_grace_drops == 0:
+                        self._late_grace_skew = skew
+                        self._late_grace_drops = 1
+                    elif abs(skew - self._late_grace_skew) < 60:
+                        # Consistent offset → likely real clock skew.
+                        self._late_grace_drops += 1
+                    else:
+                        # Varied skew → likely backfill, restart sampling.
+                        self._late_grace_skew = skew
+                        self._late_grace_drops = 1
+                    if self._late_grace_drops >= 3:
+                        logger.warning(
+                            "Matrix: dropped %d consecutive live events as "
+                            "'too old' more than 30s after startup (skew "
+                            "≈ %.0fs). The host system clock is likely set "
+                            "ahead of real time, which causes the startup "
+                            "grace filter to silently discard every incoming "
+                            "message. Run `timedatectl set-ntp true` (or "
+                            "sync NTP) and restart the bot.",
+                            self._late_grace_drops,
+                            skew,
+                        )
+                        self._clock_skew_warned = True
             return
 
         # Extract content from the event.
@@ -1639,6 +1754,21 @@ class MatrixAdapter(BasePlatformAdapter):
                         "(set MATRIX_REQUIRE_MENTION=false to disable)",
                         event_id,
                         room_id,
+                    )
+                    return None
+
+            # Thread-level @mention gating: even in a bot-participated thread,
+            # require @mention when thread_require_mention is enabled.
+            # Prevents infinite reply loops in multi-agent shared rooms
+            # where multiple bots all participate in the same thread.
+            elif (self._thread_require_mention and in_bot_thread
+                  and not is_free_room):
+                if not is_mentioned:
+                    logger.debug(
+                        "Matrix: ignoring message %s in thread %s — "
+                        "no @mention (thread_require_mention=true)",
+                        event_id,
+                        thread_id,
                     )
                     return None
 
@@ -2106,7 +2236,8 @@ class MatrixAdapter(BasePlatformAdapter):
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
                     return
-                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+                if not _allow_all and not (self._allowed_user_ids and sender in self._allowed_user_ids):
                     logger.info(
                         "Matrix: ignoring approval reaction from unauthorized user %s on %s",
                         sender, reacts_to,

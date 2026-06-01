@@ -95,7 +95,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     "Run `hermes setup` or set OPENROUTER_API_KEY."
                 )
             agent._compression_warning = msg
-            agent._emit_status(msg)
+            agent._emit_status(msg, category="compression")
             logger.warning(
                 "No auxiliary LLM provider for compression — "
                 "summaries will be unavailable."
@@ -209,7 +209,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"         threshold: 0.{safe_pct:02d}"
             )
             agent._compression_warning = msg
-            agent._emit_status(msg)
+            agent._emit_status(msg, category="compression")
             logger.warning(
                 "Auxiliary compression model %s has %d token context, "
                 "below the main model's compression threshold of %d "
@@ -302,7 +302,8 @@ def compress_context(
         focus_topic,
     )
     agent._emit_status(
-        "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+        "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+        category="compression",
     )
 
     # Notify external memory provider before compression discards context
@@ -331,7 +332,8 @@ def compress_context(
             agent._emit_warning(
                 f"⚠ Compression aborted: {_err}. "
                 "No messages were dropped — conversation continues unchanged. "
-                "Run /compress to retry, or /new to start a fresh session."
+                "Run /compress to retry, or /new to start a fresh session.",
+                category="compression",
             )
         _existing_sp = getattr(agent, "_cached_system_prompt", None)
         if not _existing_sp:
@@ -344,7 +346,8 @@ def compress_context(
             agent._last_compression_summary_warning = summary_error
             agent._emit_warning(
                 f"⚠ Compression summary failed: {summary_error}. "
-                "Inserted a fallback context marker."
+                "Inserted a fallback context marker.",
+                category="compression",
             )
     else:
         # No hard failure — but did the configured aux model error out
@@ -361,7 +364,8 @@ def compress_context(
                 agent._emit_warning(
                     f"ℹ Configured compression model '{_aux_fail_model}' failed "
                     f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                    "check auxiliary.compression.model in config.yaml."
+                    "check auxiliary.compression.model in config.yaml.",
+                    category="compression",
                 )
 
     todo_snapshot = agent._todo_store.format_for_injection()

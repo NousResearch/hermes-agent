@@ -2343,12 +2343,17 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
-    def _emit_status(self, message: str) -> None:
+    def _emit_status(self, message: str, category: str = "general") -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
         CLI users see the message via ``_vprint(force=True)`` so it is always
         visible regardless of verbose/quiet mode.  Gateway consumers receive
         it through ``status_callback("lifecycle", ...)``.
+
+        Args:
+            message: The status message text.
+            category: Optional category for filtering (e.g. "compression").
+                      Consumers can use this to selectively display events.
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
@@ -2359,16 +2364,20 @@ class AIAgent:
             pass
         if self.status_callback:
             try:
-                self.status_callback("lifecycle", message)
+                self.status_callback("lifecycle", message, category=category)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
-    def _emit_warning(self, message: str) -> None:
+    def _emit_warning(self, message: str, category: str = "general") -> None:
         """Emit a user-visible warning through the same status plumbing.
 
         Unlike debug logs, these warnings are meant for degraded side paths
         such as auxiliary compression or memory flushes where the main turn can
         continue but the user needs to know something important failed.
+
+        Args:
+            message: The warning message text.
+            category: Optional category for filtering (e.g. "compression").
         """
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
@@ -2376,7 +2385,7 @@ class AIAgent:
             pass
         if self.status_callback:
             try:
-                self.status_callback("warn", message)
+                self.status_callback("warn", message, category=category)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
 
@@ -2543,7 +2552,7 @@ class AIAgent:
         msg = getattr(self, "_compression_warning", None)
         if msg and self.status_callback:
             try:
-                self.status_callback("lifecycle", msg)
+                self.status_callback("lifecycle", msg, category="compression")
             except Exception:
                 pass
 

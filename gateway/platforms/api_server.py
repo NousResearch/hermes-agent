@@ -1262,6 +1262,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key: Optional[str] = None,
         x_user_token: Optional[str] = None,
         params_overrides: Optional[Dict[str, Any]] = None,
+        status_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1321,6 +1322,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             gateway_session_key=gateway_session_key,
             request_overrides=params_overrides or None,
+            status_callback=status_callback,
         )
         return agent
 
@@ -1712,6 +1714,20 @@ class APIServerAdapter(BasePlatformAdapter):
             _approval_token = set_current_session_key(chat_session_key)
             register_gateway_notify(chat_session_key, chat_approval_notify)
 
+            # Lifecycle status callback — pushes compression events to SSE
+            # as tool progress events so frontends display them without changes
+            def _on_lifecycle(event_type: str, message: str, category: str = "general") -> None:
+                if category != "compression":
+                    return  # Only forward compression-related events
+                from agent.display import get_tool_emoji
+                _stream_q.put(("__tool_progress__", {
+                    "tool": "compression",
+                    "emoji": get_tool_emoji("terminal") if event_type == "warn" else "🗜️",
+                    "label": message,
+                    "toolCallId": "",
+                    "status": "warning" if event_type == "warn" else "running",
+                }))
+
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
@@ -1727,6 +1743,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 model_override=model_name,
                 x_user_token=x_user_token,
                 params_overrides=overrides,
+                status_callback=_on_lifecycle,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3688,6 +3705,7 @@ class APIServerAdapter(BasePlatformAdapter):
         x_user_token: Optional[str] = None,
         params_overrides: Optional[Dict[str, Any]] = None,
         model_override: Optional[str] = None,
+        status_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3708,6 +3726,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 x_user_token=x_user_token,
                 params_overrides=params_overrides,
+                status_callback=status_callback,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

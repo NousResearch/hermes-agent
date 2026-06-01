@@ -896,6 +896,20 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                # WhatsApp bridge settings — without these keys the shared-key loop
+                # skips the whatsapp: block entirely when enabled is not explicit,
+                # so bridge_port / bridge_script / session_path never reach extra.
+                if plat == Platform.WHATSAPP:
+                    if "bridge_port" in platform_cfg:
+                        bridged["bridge_port"] = platform_cfg["bridge_port"]
+                    if "bridge_script" in platform_cfg:
+                        bridged["bridge_script"] = platform_cfg["bridge_script"]
+                    if "session_path" in platform_cfg:
+                        bridged["session_path"] = platform_cfg["session_path"]
+                    if "text_batch_delay_seconds" in platform_cfg:
+                        bridged["text_batch_delay_seconds"] = platform_cfg["text_batch_delay_seconds"]
+                    if "text_batch_split_delay_seconds" in platform_cfg:
+                        bridged["text_batch_split_delay_seconds"] = platform_cfg["text_batch_split_delay_seconds"]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

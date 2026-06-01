@@ -433,6 +433,41 @@ def test_redirect_fires_inside_s6_container(
     assert excinfo.value.argv == ["sleep", "sleep", "infinity"]
 
 
+def test_redirect_falls_back_to_python_heartbeat_when_sleep_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Minimal s6 images may not have a ``sleep`` binary. The redirect
+    should keep the CMD alive with Python instead of crashing with
+    FileNotFoundError."""
+    from hermes_cli import gateway as gw
+
+    rec = _stub_s6(monkeypatch, on_s6=True)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    execvp_calls: list[list[str]] = []
+    heartbeat_calls: list[str] = []
+
+    def missing_sleep(file: str, args: list[str]) -> None:
+        execvp_calls.append([file, *args])
+        raise FileNotFoundError(file)
+
+    monkeypatch.setattr("hermes_cli.gateway.os.execvp", missing_sleep)
+    monkeypatch.setattr(
+        "hermes_cli.gateway._block_forever_until_signal",
+        lambda: heartbeat_calls.append("entered"),
+    )
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+    assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is True
+
+    assert rec.calls == [("start", "gateway-default")]
+    assert execvp_calls == [["sleep", "sleep", "infinity"]]
+    assert heartbeat_calls == ["entered"]
+    err = capsys.readouterr().err
+    assert "s6 supervision" in err
+    assert "`sleep` was not found" in err
+
+
 def test_redirect_short_circuits_supervised_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,6 +1,7 @@
-"""Regression tests for #28712 — kanban dispatcher must not auto-promote
-worker-initiated ``kanban_block`` (sticky blocks), but must keep
-auto-recovering circuit-breaker blocks.
+"""Regression tests for #28712 and the follow-up circuit-breaker loop fix.
+
+Kanban dispatcher must not auto-promote worker-initiated ``kanban_block``
+sticky blocks or circuit-breaker ``gave_up`` blocks.
 
 The bug: when a worker called ``kanban_block(reason="review-required:
 ...")`` to hand off to a human, the dispatcher's ``recompute_ready``
@@ -14,8 +15,8 @@ These tests pin down:
 * Worker / operator-initiated blocks are sticky and survive
   ``recompute_ready``.
 * Circuit-breaker blocks (``gave_up`` event, status flipped via
-  ``_record_task_failure``) still auto-recover — the original intent
-  of #40c1decb3 is preserved.
+  ``_record_task_failure``) are sticky too. Retrying without an explicit
+  unblock just re-enters the same failed worker path.
 * An explicit ``kanban_unblock`` clears the sticky state.
 * The full block → promote → crash → ``gave_up`` loop is broken after
   this fix: subsequent ticks leave the task blocked.
@@ -132,11 +133,12 @@ def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
         assert task.last_failure_error is None
 
 
-def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> None:
-    """The circuit-breaker emits ``gave_up`` (not ``blocked``).  Make
-    sure ``_has_sticky_block`` doesn't accidentally treat ``gave_up``
-    as sticky — otherwise we'd regress the safety net for genuinely
-    transient crashes."""
+def test_gave_up_event_makes_block_sticky(kanban_home: Path) -> None:
+    """The circuit-breaker emits ``gave_up`` (not ``blocked``).
+
+    Treat it as sticky so parentless tasks and already-satisfied child
+    tasks do not immediately respawn into the same failure.
+    """
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")
         child = kb.create_task(conn, title="child", parents=[parent])
@@ -155,8 +157,25 @@ def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> No
         conn.commit()
 
         promoted = kb.recompute_ready(conn)
-        assert promoted == 1
-        assert kb.get_task(conn, child).status == "ready"
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+
+def test_parentless_gave_up_block_does_not_respawn(kanban_home: Path) -> None:
+    """Root tasks have no parents, so ``all(parents done)`` is vacuously
+    true. A ``gave_up`` root must still stay blocked."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="root")
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', NULL, ?)",
+            (tid, int(time.time())),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
 
 
 # ---------------------------------------------------------------------------

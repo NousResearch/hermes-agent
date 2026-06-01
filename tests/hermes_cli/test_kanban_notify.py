@@ -384,6 +384,55 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
 
 
 @pytest.mark.asyncio
+async def test_notifier_allows_configured_cross_profile_source(kanban_home):
+    """kanban.notification_sources lets one gateway deliver another profile's subscriptions."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="owned task", assignee="backend-engineer")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            notifier_profile="orchestrator",
+        )
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_notifier_profile = "default"
+    runner._kanban_notification_sources = {"orchestrator"}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_home):
     """The gateway for the profile that created/subscribed the task reports it."""
     import hermes_cli.kanban_db as kb

@@ -2780,7 +2780,7 @@ def _synthesize_ended_run(
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
-    worker/operator ``kanban_block`` call (#28712).
+    worker/operator ``kanban_block`` call or by the failure circuit breaker.
 
     A ``blocked`` status can come from two very different sources:
 
@@ -2792,28 +2792,25 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
-      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
-      automatically once the underlying conditions change (e.g. parents
-      finish, transient infra error clears).
+      ``"gave_up"``, not ``"blocked"``.  It must also be sticky:
+      auto-promoting it on the next dispatcher tick re-enters the same
+      broken worker path forever, especially for parentless root tasks.
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
+    The cheapest signal is the most recent block-state event for the task.
+    If the most recent one is ``"blocked"`` or ``"gave_up"``, the task is sticky and
     ``recompute_ready`` must *not* auto-promote it.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Returns ``False`` when there is no such event at all (e.g. direct DB
+    manipulation of old rows), preserving the legacy auto-recover path
+    only for rows with no durable block/failure event.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {"blocked", "gave_up"}
 
 
 def recompute_ready(conn: sqlite3.Connection) -> int:

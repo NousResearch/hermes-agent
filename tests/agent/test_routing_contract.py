@@ -101,6 +101,26 @@ def test_front_door_high_label_is_allowed_for_inline_current_session():
     assert check.execution_surface == "active_session"
 
 
+def test_front_door_label_ignores_sentence_punctuation():
+    check = _check(
+        "Routing Decision: quick check -> current profile -> inline(read-only) "
+        "-> front_door/gpt-5.5-high."
+    )
+
+    assert check.violation is None
+    assert check.execution_surface == "active_session"
+
+
+def test_front_door_label_ignores_parenthetical_note():
+    check = _check(
+        "Routing Decision: quick check -> current profile -> inline(read-only) "
+        "-> front_door/openai-codex/gpt-5.5-high (quota guard inactive)."
+    )
+
+    assert check.violation is None
+    assert check.execution_surface == "active_session"
+
+
 def test_kanban_model_routing_satisfies_architecture_xhigh_lane():
     check = _check(
         "Routing Decision: architecture work -> kanban-orchestrator -> kanban_create "

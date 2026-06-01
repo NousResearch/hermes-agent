@@ -300,7 +300,7 @@ def _guard_enabled() -> bool:
 
 
 def _parse_lane_label(label: str) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
-    clean = label.strip().strip("`").strip()
+    clean = _clean_lane_label(label)
     lane_name = clean
     tail = ""
     if "/" in clean:
@@ -323,6 +323,21 @@ def _parse_lane_label(label: str) -> tuple[str, Optional[str], Optional[str], Op
             else:
                 model = tail.strip() or None
     return lane_name, provider, model, effort
+
+
+def _clean_lane_label(label: str) -> str:
+    """Return a lane label stripped of prose punctuation.
+
+    Models often emit a correct route line as a sentence, e.g.
+    ``front_door/gpt-5.5-high.``. The terminal period is not part of the
+    model name or effort, so remove sentence punctuation before parsing.
+    """
+    clean = label.strip().strip("`").strip()
+    clean = clean.rstrip("`.,;!?").strip()
+    # Drop a final parenthetical annotation before trimming sentence
+    # punctuation. The route contract is the compact label before the note.
+    clean = re.sub(r"\s+\([^)]*\)\s*$", "", clean)
+    return clean.rstrip("`.,;!?").strip()
 
 
 def _normalize_lane_key(value: Any) -> str:

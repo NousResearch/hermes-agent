@@ -116,7 +116,12 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
-def _auto_subscribe_gateway_source(kb, conn, task_id: str, gateway_source: Optional[dict] = None) -> None:
+def _auto_subscribe_gateway_source(
+    kb,
+    conn,
+    task_id: str,
+    gateway_source: Optional[dict] = None,
+) -> dict[str, Any]:
     """Create a kanban notify subscription when gateway source context is set.
 
     ``agent/agent_runtime_helpers.py`` passes the originating gateway chat as
@@ -126,21 +131,32 @@ def _auto_subscribe_gateway_source(kb, conn, task_id: str, gateway_source: Optio
 
     For compatibility with older call paths and tests, falls back to the
     ``HERMES_KANBAN_SUB_*`` environment variables when ``gateway_source`` is
-    not provided. Silent no-op on CLI / batch / docker paths where no gateway
-    source exists.
+    not provided. When ``kanban.auto_subscribe_home_on_create`` is enabled,
+    tool-created tasks without a gateway source subscribe configured gateway
+    home channels instead, so orchestrator-created durable work still closes
+    the loop.
     """
     if gateway_source is not None:
         platform = gateway_source.get("platform")
         chat_id = gateway_source.get("chat_id")
         thread_id = gateway_source.get("thread_id") or None
         user_id = gateway_source.get("user_id") or None
+        source = "gateway_source"
     else:
         platform = os.environ.get("HERMES_KANBAN_SUB_PLATFORM")
         chat_id = os.environ.get("HERMES_KANBAN_SUB_CHAT_ID")
         thread_id = os.environ.get("HERMES_KANBAN_SUB_THREAD_ID") or None
         user_id = os.environ.get("HERMES_KANBAN_SUB_USER_ID") or None
+        source = "gateway_env"
     if not platform or not chat_id:
-        return
+        if gateway_source is not None:
+            return {
+                "subscribed": False,
+                "count": 0,
+                "source": source,
+                "reason": "missing_gateway_source_fields",
+            }
+        return _auto_subscribe_home_channels(kb, conn, task_id)
     notifier_profile = os.environ.get("HERMES_PROFILE") or None
     try:
         kb.add_notify_sub(
@@ -152,6 +168,12 @@ def _auto_subscribe_gateway_source(kb, conn, task_id: str, gateway_source: Optio
             user_id=user_id,
             notifier_profile=notifier_profile,
         )
+        return {
+            "subscribed": True,
+            "count": 1,
+            "source": source,
+            "channels": [str(platform).lower()],
+        }
     except Exception:
         # Best-effort only — never fail a kanban_create because of
         # a subscription glitch.
@@ -159,6 +181,117 @@ def _auto_subscribe_gateway_source(kb, conn, task_id: str, gateway_source: Optio
             "auto-subscribe skipped for %s: add_notify_sub raised", task_id,
             exc_info=True,
         )
+        return {
+            "subscribed": False,
+            "count": 0,
+            "source": source,
+            "reason": "add_notify_sub_failed",
+        }
+
+
+def _auto_subscribe_home_channels(kb, conn, task_id: str) -> dict[str, Any]:
+    """Subscribe configured home channels for non-gateway tool-created tasks.
+
+    This is opt-in because CLI/batch callers may intentionally manage their
+    own subscriptions. It is useful for front-door orchestrator sessions that
+    create durable Kanban work from a local TUI/CLI session where there is no
+    originating messaging chat to auto-subscribe.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    kanban_cfg = cfg.get("kanban") if isinstance(cfg, dict) else {}
+    if not isinstance(kanban_cfg, dict):
+        kanban_cfg = {}
+    if not bool(kanban_cfg.get("auto_subscribe_home_on_create")):
+        return {
+            "subscribed": False,
+            "count": 0,
+            "source": "none",
+            "reason": "no_gateway_source",
+        }
+
+    homes = _configured_home_channels()
+    allowed = _parse_platform_filter(
+        kanban_cfg.get("auto_subscribe_home_platforms", "*")
+    )
+    selected = [
+        h for h in homes
+        if "*" in allowed or str(h.get("platform", "")).lower() in allowed
+    ]
+    if not selected:
+        return {
+            "subscribed": False,
+            "count": 0,
+            "source": "home_channel",
+            "reason": "no_configured_home_channels",
+        }
+
+    notifier_profile = os.environ.get("HERMES_PROFILE") or None
+    subscribed: list[str] = []
+    for home in selected:
+        platform = str(home.get("platform") or "").lower()
+        chat_id = str(home.get("chat_id") or "")
+        if not platform or not chat_id:
+            continue
+        try:
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=(home.get("thread_id") or None),
+                notifier_profile=notifier_profile,
+            )
+            subscribed.append(platform)
+        except Exception:
+            logger.debug(
+                "home-channel auto-subscribe skipped for %s on %s",
+                task_id,
+                platform,
+                exc_info=True,
+            )
+    return {
+        "subscribed": bool(subscribed),
+        "count": len(subscribed),
+        "source": "home_channel",
+        "channels": subscribed,
+        "reason": None if subscribed else "add_notify_sub_failed",
+    }
+
+
+def _configured_home_channels() -> list[dict[str, Any]]:
+    try:
+        from gateway.config import load_gateway_config
+
+        gw_cfg = load_gateway_config()
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for platform, pcfg in getattr(gw_cfg, "platforms", {}).items():
+        home = getattr(pcfg, "home_channel", None) if pcfg else None
+        if not home:
+            continue
+        platform_value = getattr(platform, "value", str(platform)).lower()
+        out.append({
+            "platform": platform_value,
+            "chat_id": getattr(home, "chat_id", "") or "",
+            "thread_id": getattr(home, "thread_id", "") or "",
+        })
+    return out
+
+
+def _parse_platform_filter(raw: Any) -> set[str]:
+    if raw in (None, "", True):
+        return {"*"}
+    if isinstance(raw, str):
+        return {p.strip().lower() for p in raw.split(",") if p.strip()} or {"*"}
+    if isinstance(raw, (list, tuple, set)):
+        return {str(p).strip().lower() for p in raw if str(p).strip()} or {"*"}
+    return {"*"}
 
 
 def _stamp_worker_session_metadata(
@@ -1244,7 +1377,9 @@ def _handle_create(args: dict, **kw) -> str:
             # Auto-subscribe the originating gateway chat so the user
             # receives terminal-event notifications without polling.
             # Mirrors the gateway's auto-subscribe on /kanban create.
-            _auto_subscribe_gateway_source(kb, conn, new_tid, kw.get("gateway_source"))
+            notification_state = _auto_subscribe_gateway_source(
+                kb, conn, new_tid, kw.get("gateway_source")
+            )
             skill_list = list(skills or []) if isinstance(skills, (list, tuple)) else []
             _append_kanban_route_telemetry(
                 "route.selected",
@@ -1291,6 +1426,7 @@ def _handle_create(args: dict, **kw) -> str:
                 model_provider_override=(model_routing_decision or {}).get("provider"),
                 model_reasoning_effort=(model_routing_decision or {}).get("reasoning_effort"),
                 model_routing=model_routing_decision,
+                notifications=notification_state,
             )
         finally:
             conn.close()

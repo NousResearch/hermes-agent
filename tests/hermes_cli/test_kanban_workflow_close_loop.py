@@ -151,14 +151,61 @@ def test_auto_subscribe_gateway_source_no_env_is_noop(kb_conn, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_SUB_THREAD_ID", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_SUB_USER_ID", raising=False)
 
+    import hermes_cli.config as hermes_config
     from tools.kanban_tools import _auto_subscribe_gateway_source
 
+    monkeypatch.setattr(hermes_config, "load_config", lambda: {})
     tid = kb.create_task(kb_conn, title="T", assignee="w")
-    _auto_subscribe_gateway_source(kb, kb_conn, tid)
+    result = _auto_subscribe_gateway_source(kb, kb_conn, tid)
 
     subs = kb.list_notify_subs(kb_conn)
     # No env vars -> no subscription
     assert len(subs) == 0
+    assert result["reason"] == "no_gateway_source"
+
+
+def test_auto_subscribe_home_channel_when_enabled(kb_conn, monkeypatch):
+    """Local/TUI orchestrator-created tasks can opt into home notifications."""
+    monkeypatch.delenv("HERMES_KANBAN_SUB_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_SUB_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_SUB_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_SUB_USER_ID", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+
+    import hermes_cli.config as hermes_config
+    from tools import kanban_tools
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "auto_subscribe_home_on_create": True,
+                "auto_subscribe_home_platforms": ["telegram"],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        kanban_tools,
+        "_configured_home_channels",
+        lambda: [
+            {"platform": "telegram", "chat_id": "123456", "thread_id": "789"},
+            {"platform": "discord", "chat_id": "ignored", "thread_id": ""},
+        ],
+    )
+
+    tid = kb.create_task(kb_conn, title="T", assignee="w")
+    result = kanban_tools._auto_subscribe_gateway_source(kb, kb_conn, tid)
+
+    assert result["subscribed"] is True
+    assert result["source"] == "home_channel"
+    assert result["channels"] == ["telegram"]
+    subs = kb.list_notify_subs(kb_conn, task_id=tid)
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "123456"
+    assert subs[0]["thread_id"] == "789"
+    assert subs[0]["notifier_profile"] == "orchestrator"
 
 
 def test_auto_subscribe_gateway_source_creates_sub(kb_conn, monkeypatch):

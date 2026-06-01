@@ -326,18 +326,22 @@
   position: fixed;
   inset: 0;
   background: var(--color-background);
-  z-index: 60;
+  z-index: 45;
   display: flex;
   justify-content: stretch;
 }
 
+@media (min-width: 1024px) {
+  .hermes-kanban-drawer-shade {
+    left: var(--hermes-sidebar-width, 19.2rem);
+  }
+}
+
 .hermes-kanban-drawer {
-  width: 100vw;
+  width: 100%;
   height: 100vh;
-  /* Dynamic viewport unit excludes mobile/iPad browser chrome so the bottom
-     comment row stays reachable. Falls back to 100vh on older browsers. */
   height: 100dvh;
-  max-height: 100dvh;
+  min-height: 0;
   background: var(--color-card);
   border-left: 0;
   display: flex;
@@ -352,28 +356,14 @@
 }
 
 .hermes-kanban-drawer-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.75rem 0.9rem;
-  /* Honor the top safe-area inset (iPad/browser chrome) so the back button
-     and task id are never clipped under the dashboard/header rail. */
-  padding-top: max(0.75rem, calc(0.75rem + env(safe-area-inset-top)));
   border-bottom: 1px solid var(--color-border);
   background: var(--color-card);
   font-family: var(--font-mono, ui-monospace, monospace);
-}
-
-/* On tablet/mobile the dashboard shell can render a fixed top bar above the
-   plugin content. Keep the full-screen card header below it. */
-@media (max-width: 1366px) {
-  .hermes-kanban-drawer-head {
-    padding-top: calc(3.5rem + env(safe-area-inset-top));
-  }
 }
 
 .hermes-kanban-drawer-back {
@@ -409,13 +399,10 @@
 .hermes-kanban-attachment-link:hover { text-decoration: underline; }
 
 .hermes-kanban-drawer-body {
-  flex: 1;
-  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   padding: 0.9rem;
-  /* When no comment row is rendered (loading / error states), the scrolling
-     body is the bottom-most element — extend its bottom padding past the
-     mobile browser chrome so the last content stays readable. */
-  padding-bottom: max(0.9rem, calc(0.9rem + env(safe-area-inset-bottom)));
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
@@ -509,6 +496,55 @@
   gap: 0.35rem;
 }
 
+.hermes-kanban-workspace-tabs {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.35rem;
+}
+
+.hermes-kanban-workspace-tab {
+  appearance: none;
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+  color: var(--color-muted-foreground);
+  border-radius: var(--radius-sm, 0.25rem) var(--radius-sm, 0.25rem) 0 0;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.hermes-kanban-workspace-tab:hover,
+.hermes-kanban-workspace-tab--active {
+  color: var(--color-foreground);
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 14%, transparent);
+}
+
+.hermes-kanban-card-chat {
+  min-height: min(62vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+
+.hermes-kanban-card-chat-frame {
+  width: 100%;
+  min-height: min(58vh, 720px);
+  flex: 1;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: #0d2626;
+}
+
+.hermes-kanban-card-terminal-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-muted-foreground);
+  font-size: 0.8rem;
+}
+
 .hermes-kanban-section-head {
   font-size: 0.72rem;
   font-weight: 600;
@@ -574,8 +610,6 @@
   display: flex;
   gap: 0.4rem;
   padding: 0.55rem 0.75rem;
-  /* Keep the comment input clear of the mobile browser nav bar / home
-     indicator by extending the bottom padding with the safe-area inset. */
   padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
   border-top: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-card) 90%, transparent);

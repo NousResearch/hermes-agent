@@ -24,6 +24,8 @@ def _trim(text: Optional[str], limit: int) -> str:
 
 def _workspace_path(task: kanban_db.Task) -> Path:
     if not task.workspace_path:
+        if task.workspace_kind == "scratch":
+            return Path.home().resolve()
         raise CardContextError(
             f"task {task.id} has no workspace_path; set a concrete repo/workspace before launching Claude Code"
         )

@@ -193,6 +193,9 @@ class TestBuildSessionContextPrompt:
 
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
+        assert "under 700 characters" in prompt
+        assert "one short bullet list" in prompt
+        assert "do not dump logs" in prompt
 
     def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
         config = GatewayConfig(

@@ -1,0 +1,18 @@
+{
+  "name": "Rolly Dashboard",
+  "short_name": "Rolly",
+  "description": "Rolly dashboard and realtime voice calls.",
+  "start_url": "/voice",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#050505",
+  "theme_color": "#050505",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "any",
+      "type": "image/x-icon"
+    }
+  ]
+}

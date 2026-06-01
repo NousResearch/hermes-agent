@@ -42,7 +42,9 @@ import logging
 import os
 import shlex
 import sqlite3
+import subprocess
 import time
+import urllib.parse
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -53,7 +55,7 @@ from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
-from hermes_cli.kanban_card_context import CardContextError, build_claude_card_launch
+from hermes_cli.kanban_card_context import CardContextError, build_card_context, build_claude_card_launch
 
 log = logging.getLogger(__name__)
 
@@ -566,28 +568,156 @@ def get_task(
         conn.close()
 
 
+def _run_tmux(args: list[str], *, timeout: int = 15) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["tmux", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def _tmux_has_session(session_name: str) -> bool:
+    return _run_tmux(["has-session", "-t", session_name], timeout=5).returncode == 0
+
+
+def _tmux_has_window(target: str) -> bool:
+    return _run_tmux(["list-windows", "-t", target], timeout=5).returncode == 0
+
+
+def _tmux_target(session_name: str, window_name: str) -> str:
+    return f"{session_name}:{window_name}"
+
+
+def _build_rolly_chat_prompt(task_id: str, title: str | None) -> str:
+    title_line = f"Title: {title}" if title else "Title: (unknown)"
+    return (
+        f"You are Rolly Chat inside Kanban card {task_id}. {title_line}. "
+        "This conversation is specifically about this card. Start by briefly orienting yourself "
+        "to the card, then ask what Deniz wants to do next unless the next message already gives direction."
+    )
+
+
+def _tui_shell_command() -> str:
+    """Return a shell command that launches the production Hermes TUI."""
+    from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
+
+    argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
+    env = {
+        "NODE_ENV": "production",
+        "HERMES_TUI_INLINE": "1",
+        "HERMES_TUI_DISABLE_MOUSE": "1",
+    }
+    env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    return f"cd {shlex.quote(str(cwd))} && {env_prefix} " + " ".join(shlex.quote(part) for part in argv)
+
+
+def _seed_tmux_window(target: str, text: str) -> None:
+    """Paste text into a tmux pane and submit it once."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
+        fh.write(text)
+        path = fh.name
+    try:
+        buffer_name = f"seed-{target.replace(':', '-')}"
+        proc = _run_tmux(["load-buffer", "-b", buffer_name, path], timeout=5)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "tmux load-buffer failed").strip())
+        proc = _run_tmux(["paste-buffer", "-d", "-b", buffer_name, "-t", target], timeout=5)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "tmux paste-buffer failed").strip())
+        _run_tmux(["send-keys", "-t", target, "Enter"], timeout=5)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 @router.get("/tasks/{task_id}/claude-context")
 def get_task_claude_context(task_id: str, board: Optional[str] = Query(None)):
-    """Return a copy-paste Claude Code launch prompt for a card workspace.
-
-    v0 deliberately does not auto-launch Claude Code or touch tmux/user
-    sessions. The server validates the card and workdir, then returns the
-    exact prompt plus a shell hint the browser can copy.
-    """
+    """Return a copy-paste Claude Code launch prompt for a card workspace."""
     board = _resolve_board(board)
     try:
+        card_context = build_card_context(task_id, board=board)
         launch = build_claude_card_launch(task_id, board=board)
     except CardContextError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    command = f"cd {shlex.quote(launch['workspace_path'])} && claude"
+    session_name = f"card-{task_id}".replace("_", "-")
+    command = f"tmux new-session -A -s {shlex.quote(session_name)} -c {shlex.quote(launch['workspace_path'])}"
     return {
         "task_id": launch["task_id"],
+        "title": (card_context.get("task") or {}).get("title"),
         "workspace_path": launch["workspace_path"],
         "prompt": launch["prompt"],
         "command": command,
-        "mode": "manual-copy",
+        "mode": "card-tmux-two-window",
+        "session_name": session_name,
+        "rolly_target": _tmux_target(session_name, "rolly-chat"),
+        "terminal_target": _tmux_target(session_name, "terminal"),
+    }
+
+
+@router.post("/tasks/{task_id}/tmux-session")
+def start_task_tmux_session(task_id: str, board: Optional[str] = Query(None)):
+    """Start/reuse a card-scoped tmux session with Rolly chat + terminal windows."""
+    context = get_task_claude_context(task_id, board=board)
+    session_name = str(context["session_name"])
+    workspace_path = str(context["workspace_path"])
+    rolly_target = str(context["rolly_target"])
+    terminal_target = str(context["terminal_target"])
+    prompt = str(context["prompt"])
+
+    session_exists = _tmux_has_session(session_name)
+    seeded_rolly = False
+    if not session_exists:
+        proc = _run_tmux([
+            "new-session", "-d", "-s", session_name, "-n", "rolly-chat", "-c", workspace_path,
+            _tui_shell_command(),
+        ])
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "tmux failed").strip()
+            raise HTTPException(status_code=500, detail=detail[:500])
+        proc = _run_tmux(["new-window", "-t", session_name, "-n", "terminal", "-c", workspace_path])
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "tmux new-window failed").strip()
+            raise HTTPException(status_code=500, detail=detail[:500])
+        seeded_rolly = True
+    else:
+        if not _tmux_has_window(rolly_target):
+            proc = _run_tmux(["new-window", "-t", session_name, "-n", "rolly-chat", "-c", workspace_path, _tui_shell_command()])
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "tmux rolly-chat window failed").strip()
+                raise HTTPException(status_code=500, detail=detail[:500])
+            seeded_rolly = True
+        if not _tmux_has_window(terminal_target):
+            proc = _run_tmux(["new-window", "-t", session_name, "-n", "terminal", "-c", workspace_path])
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "tmux terminal window failed").strip()
+                raise HTTPException(status_code=500, detail=detail[:500])
+
+    if seeded_rolly:
+        time.sleep(1.2)
+        try:
+            _seed_tmux_window(rolly_target, _build_rolly_chat_prompt(task_id, context.get("title")))
+        except Exception as exc:
+            log.warning("failed to seed Rolly card chat prompt for %s: %s", task_id, exc)
+
+    return {
+        **context,
+        "started": not session_exists,
+        "seeded_rolly": seeded_rolly,
+        "attach_command": f"tmux attach-session -t {shlex.quote(session_name)}",
+        "rolly_attach_command": f"tmux attach-session -t {shlex.quote(rolly_target)}",
+        "terminal_attach_command": f"tmux attach-session -t {shlex.quote(terminal_target)}",
+        "rolly_terminal_url": f"/api/pty?pty_mode=tmux&tmux_session={urllib.parse.quote(rolly_target)}",
+        "terminal_url": f"/api/pty?pty_mode=tmux&tmux_session={urllib.parse.quote(terminal_target)}",
+        "prompt": prompt,
     }
 
 

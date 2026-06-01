@@ -132,15 +132,17 @@ def test_claude_context_endpoint_returns_manual_copy_launch(client, tmp_path):
     r = client.get(f"/api/plugins/kanban/tasks/{task_id}/claude-context")
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["mode"] == "manual-copy"
+    assert data["mode"] == "card-tmux-two-window"
     assert data["task_id"] == task_id
     assert data["workspace_path"] == str(workspace.resolve())
-    assert data["command"] == f"cd '{workspace.resolve()}' && claude"
+    expected_session = "card-" + task_id.replace("_", "-")
+    assert data["command"] == f"tmux new-session -A -s {expected_session} -c '{workspace.resolve()}'"
+    assert data["session_name"] == expected_session
     assert "Implement card workspace" in data["prompt"]
     assert "manual Claude Code" in data["prompt"]
 
 
-def test_claude_context_endpoint_rejects_missing_workspace(client):
+def test_claude_context_endpoint_defaults_scratch_workspace_to_home(client):
     r = client.post(
         "/api/plugins/kanban/tasks",
         json={"title": "No workspace yet"},
@@ -149,8 +151,56 @@ def test_claude_context_endpoint_rejects_missing_workspace(client):
     task_id = r.json()["task"]["id"]
 
     r = client.get(f"/api/plugins/kanban/tasks/{task_id}/claude-context")
-    assert r.status_code == 409
-    assert "workspace_path" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["workspace_path"] == str(Path.home().resolve())
+    expected_session = "card-" + task_id.replace("_", "-")
+    assert data["command"] == f"tmux new-session -A -s {expected_session} -c {Path.home().resolve()}"
+    assert data["session_name"] == expected_session
+
+
+def test_tmux_session_endpoint_starts_card_tmux_windows(client, tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Run terminal", "workspace_kind": "dir", "workspace_path": str(workspace)},
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+    expected_session = "card-" + task_id.replace("_", "-")
+    calls = []
+
+    class Result:
+        def __init__(self, returncode=0):
+            self.returncode = returncode
+            self.stdout = ""
+            self.stderr = ""
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ["tmux", "has-session"]:
+            return Result(1)
+        return Result(0)
+
+    monkeypatch.setattr("hermes_dashboard_plugin_kanban_test.subprocess.run", fake_run)
+    monkeypatch.setattr("hermes_dashboard_plugin_kanban_test._tui_shell_command", lambda: "hermes --tui")
+
+    r = client.post(f"/api/plugins/kanban/tasks/{task_id}/tmux-session")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["started"] is True
+    assert data["session_name"] == expected_session
+    assert data["rolly_target"] == f"{expected_session}:rolly-chat"
+    assert data["terminal_target"] == f"{expected_session}:terminal"
+    assert data["terminal_url"] == f"/api/pty?pty_mode=tmux&tmux_session={expected_session}%3Aterminal"
+    assert data["rolly_terminal_url"] == f"/api/pty?pty_mode=tmux&tmux_session={expected_session}%3Arolly-chat"
+    assert data["attach_command"] == f"tmux attach-session -t {expected_session}"
+    assert calls[0][0] == ["tmux", "has-session", "-t", expected_session]
+    assert calls[1][0] == [
+        "tmux", "new-session", "-d", "-s", expected_session, "-n", "rolly-chat", "-c", str(workspace.resolve()), "hermes --tui",
+    ]
+    assert calls[2][0] == ["tmux", "new-window", "-t", expected_session, "-n", "terminal", "-c", str(workspace.resolve())]
 
 
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
@@ -260,12 +310,14 @@ def test_dashboard_card_detail_is_fullscreen_not_sidebar():
     drawer_block = css.split(".hermes-kanban-drawer {")[1].split("}", 1)[0]
     shade_block = css.split(".hermes-kanban-drawer-shade {")[1].split("}", 1)[0]
 
-    assert "width: 100vw;" in drawer_block
-    assert "max-height: 100dvh;" in drawer_block
+    assert "width: 100%;" in drawer_block
+    assert "height: 100dvh;" in drawer_block
+    assert "left: var(--hermes-sidebar-width, 19.2rem);" in css
+    assert "position: sticky;" not in css.split(".hermes-kanban-drawer-head {")[1].split("}", 1)[0]
     assert "justify-content: stretch;" in shade_block
     assert "--hermes-kanban-drawer-width" not in drawer_block
     assert "hermes-kanban-drawer-back" in css
-    assert "max-width: 1366px" in css
+    assert "max-width: 1366px" not in css
 
 
 def test_dashboard_client_side_filtering_includes_tenant_filter():

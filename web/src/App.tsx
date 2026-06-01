@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -23,6 +24,7 @@ import {
   Clock,
   Code,
   Cpu,
+  Mic,
   Database,
   Download,
   Eye,
@@ -75,6 +77,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import VoiceCallPage from "@/pages/VoiceCallPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -85,9 +88,38 @@ import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
+import {
+  getRollyUser,
+  getRollyUserSlug,
+  ROLLY_DASHBOARD_USERS,
+  setRollyUserSlug,
+} from "@/lib/rollyIdentity";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
+}
+
+function RollyIdentityGate({ currentUser, onSelect }: { currentUser: string; onSelect: (slug: string) => void }) {
+  if (getRollyUser(currentUser)) return null;
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-sm border border-current/20 bg-background-base/95 p-5 text-midground shadow-2xl">
+        <Typography className="font-mondwest text-display text-xl uppercase tracking-[0.12em]">
+          Who are you?
+        </Typography>
+        <p className="mt-2 text-sm text-text-secondary">
+          This labels every dashboard action and session. It is not security.
+        </p>
+        <div className="mt-4 grid gap-2">
+          {ROLLY_DASHBOARD_USERS.map((user) => (
+            <Button key={user.slug} onClick={() => onSelect(user.slug)} className="justify-start">
+              {user.label}{user.admin ? " · admin" : ""}
+            </Button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -117,6 +149,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/voice": VoiceCallPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -145,6 +178,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/voice", labelKey: "voice", label: "Voice", icon: Mic },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -181,6 +215,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   FileText,
   KeyRound,
   MessageSquare,
+  Mic,
   Package,
   Settings,
   Puzzle,
@@ -321,7 +356,8 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
 export default function App() {
   const { t } = useI18n();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname, search } = location;
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -350,7 +386,20 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  const isChromelessChatRoute =
+    isChatRoute && new URLSearchParams(search).get("embed") === "1";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+  const [rollyUser, setRollyUser] = useState(() => getRollyUserSlug());
+  const selectRollyUser = useCallback((slug: string) => {
+    const selected = setRollyUserSlug(slug);
+    if (selected) setRollyUser(selected);
+  }, []);
+  useEffect(() => {
+    const updateUser = () => setRollyUser(getRollyUserSlug());
+    window.addEventListener("rolly-user-change", updateUser);
+    updateUser();
+    return () => window.removeEventListener("rolly-user-change", updateUser);
+  }, []);
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -428,6 +477,10 @@ export default function App() {
   );
 
   const layoutVariant = theme.layoutVariant ?? "standard";
+  const sidebarWidth = isDesktopCollapsed ? "4.2rem" : "19.2rem";
+  const rootStyle = {
+    "--hermes-sidebar-width": sidebarWidth,
+  } as CSSProperties;
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -452,18 +505,41 @@ export default function App() {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
+  if (isChromelessChatRoute) {
+    return (
+      <div
+        data-layout-variant={layoutVariant}
+        data-layout-chrome="none"
+        className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
+        style={rootStyle}
+      >
+        <SelectionSwitcher />
+        <RollyIdentityGate currentUser={rollyUser} onSelect={selectRollyUser} />
+        <Backdrop />
+        <PageHeaderProvider pluginTabs={pluginTabMeta}>
+          <main className="relative z-2 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-0">
+            <ChatPage isActive />
+          </main>
+        </PageHeaderProvider>
+        <PluginSlot name="overlay" />
+      </div>
+    );
+  }
+
   return (
     <div
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
+      style={rootStyle}
     >
       <SelectionSwitcher />
+      <RollyIdentityGate currentUser={rollyUser} onSelect={selectRollyUser} />
       <Backdrop />
       <PluginSlot name="backdrop" />
 
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+          "lg:hidden shrink-0 min-h-14",
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
           "bg-background-base/90 backdrop-blur-sm",
@@ -508,7 +584,7 @@ export default function App() {
 
       <PluginSlot name="header-banner" />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"

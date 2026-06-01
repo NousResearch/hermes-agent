@@ -29,6 +29,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
+import { PtyTerminalPane } from "@/components/PtyTerminalPane";
 import { registerSlot, PluginSlot } from "./slots";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,7 @@ export function exposePluginSDK() {
       TabsList,
       TabsTrigger,
       PluginSlot,
+      PtyTerminalPane,
     },
 
     // Utilities

@@ -83,6 +83,14 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_allowed_reverse_proxy_host_env(self, monkeypatch):
+        """Trusted local reverse proxies can expose loopback dashboards under HTTPS."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_HOSTS", "dash.tailnet.ts.net")
+        assert _is_accepted_host("dash.tailnet.ts.net:9119", "127.0.0.1")
+        assert not _is_accepted_host("evil.example:9119", "127.0.0.1")
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware

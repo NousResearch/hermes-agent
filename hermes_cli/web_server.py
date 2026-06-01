@@ -11,12 +11,14 @@ Usage:
 
 import asyncio
 import hmac
+import hashlib
 import importlib.util
 import json
 import logging
 import os
 import re
 import secrets
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -26,6 +28,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -53,6 +56,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+import hermes_cli.kanban_db as kanban_db
 from utils import env_var_enabled
 
 try:
@@ -159,6 +163,9 @@ def _require_token(request: Request) -> None:
 class VoiceToolRequest(BaseModel):
     name: str
     arguments: Dict[str, Any] = {}
+    call_id: Optional[str] = None
+    realtime_call_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 class VoiceTranscriptEvent(BaseModel):
@@ -171,6 +178,66 @@ class VoiceTranscriptEvent(BaseModel):
     sequence: Optional[int] = None
     elapsed_ms: Optional[int] = None
     metadata: Dict[str, Any] = {}
+
+
+class VoiceTaskStartRequest(BaseModel):
+    call_id: str
+    request: str
+    user: Optional[str] = None
+    parent_event_sequence: Optional[int] = None
+
+
+class VoiceMeetInviteRequest(BaseModel):
+    call_id: str
+    user: Optional[str] = None
+
+
+class VoiceTask:
+    def __init__(self, task_id: str, call_id: str, user: str, request: str, session_id: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.task_id = task_id
+        self.call_id = call_id
+        self.user = user
+        self.request = request
+        self.session_id = session_id
+        self.status = "queued"
+        self.result: Optional[str] = None
+        self.error: Optional[str] = None
+        self.progress: list[Dict[str, Any]] = [
+            {"timestamp": now, "event_type": "queued", "message": "Queued background Rolly work."}
+        ]
+        self.call_ended = False
+        self.post_call_notification: Dict[str, Any] = {"status": "not_needed"}
+        self.created_at = now
+        self.updated_at = now
+
+    def mark(self, status: str, message: str, *, error: str | None = None, result: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.status = status
+        self.updated_at = now
+        if error is not None:
+            self.error = error
+        if result is not None:
+            self.result = result
+        self.progress.append({"timestamp": now, "event_type": status, "message": message})
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "task_id": self.task_id,
+            "call_id": self.call_id,
+            "user": self.user,
+            "request": self.request,
+            "session_id": self.session_id,
+            "status": self.status,
+            "progress": list(self.progress[-50:]),
+            "result": self.result,
+            "error": self.error,
+            "call_ended": self.call_ended,
+            "post_call_notification": dict(self.post_call_notification),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
 
 
 def _voice_api_key() -> str:
@@ -208,11 +275,57 @@ def _voice_transcript_path(call_id: str) -> Path:
     return root / f"{safe}.jsonl"
 
 
+def _voice_session_id(call_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id).strip("._") or "unknown-call"
+    return f"dashboard_voice_{safe}"
+
+
+def _voice_session_db():
+    from hermes_state import SessionDB
+    return SessionDB()
+
+
+def _voice_ensure_state_session(call_id: str, user: str, *, mode: str | None = None) -> str:
+    session_id = _voice_session_id(call_id)
+    db = _voice_session_db()
+    if not db.get_session(session_id):
+        db.create_session(
+            session_id=session_id,
+            source="dashboard-voice",
+            user_id=user,
+            model=os.getenv("HERMES_VOICE_REALTIME_MODEL", "gpt-realtime-2"),
+            model_config={
+                "voice_call_id": call_id,
+                "voice_mode": mode,
+                "jsonl_path": str(_voice_transcript_path(call_id)),
+            },
+        )
+    return session_id
+
+
+def _voice_persist_state_event(event: VoiceTranscriptEvent, user: str) -> str | None:
+    session_id = _voice_ensure_state_session(event.call_id, user, mode=str(event.metadata.get("mode") or "solo"))
+    platform_id = f"{event.call_id}:{event.role}:{event.sequence or int(time.time() * 1000)}"
+    db = _voice_session_db()
+    if event.event_type == "call_end":
+        db.end_session(session_id, "voice_call_end")
+        return session_id
+    if event.event_type == "call_start":
+        return session_id
+    if event.event_type == "transcript" and event.role in {"user", "rolly", "assistant"} and event.text.strip():
+        role = "assistant" if event.role == "rolly" else event.role
+        db.append_message(session_id=session_id, role=role, content=event.text, platform_message_id=platform_id, observed=True)
+        return session_id
+    return session_id
+
+
 def _save_voice_transcript_event(event: VoiceTranscriptEvent, request: Request) -> Path:
     user = event.user or _voice_auth_context(request) or "unknown dashboard user"
+    session_id = _voice_persist_state_event(event, user)
     record: Dict[str, Any] = {
         "timestamp": event.timestamp or datetime.now(timezone.utc).isoformat(),
         "call_id": event.call_id,
+        "session_id": session_id,
         "user": user,
         "role": event.role,
         "event_type": event.event_type,
@@ -227,44 +340,523 @@ def _save_voice_transcript_event(event: VoiceTranscriptEvent, request: Request) 
     path = _voice_transcript_path(event.call_id)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _voice_update_call_state(event, user)
     return path
 
 
-def _voice_session_config(user: str | None = None) -> Dict[str, Any]:
+def _voice_update_call_state(event: VoiceTranscriptEvent, user: str) -> None:
+    now = event.timestamp or datetime.now(timezone.utc).isoformat()
+    if event.event_type not in {"call_start", "call_end"}:
+        return
+    with _VOICE_CALLS_LOCK:
+        state = _VOICE_CALLS.setdefault(event.call_id, {"call_id": event.call_id, "participants": set()})
+        participants = state.get("participants")
+        if not isinstance(participants, set):
+            participants = set(participants or [])
+            state["participants"] = participants
+        participants.add(user)
+        state["updated_at"] = now
+        if event.event_type == "call_start":
+            state.setdefault("started_at", now)
+            state["ended_at"] = None
+        elif event.event_type == "call_end":
+            state["ended_at"] = now
+    if event.event_type == "call_end":
+        ended_tasks: list[VoiceTask] = []
+        with _VOICE_TASKS_LOCK:
+            for task in _VOICE_TASKS.values():
+                if task.call_id == event.call_id:
+                    task.call_ended = True
+                    task.updated_at = now
+                    ended_tasks.append(task)
+        for task in ended_tasks:
+            if task.status in {"complete", "failed", "cancelled"}:
+                _voice_maybe_notify_post_call(task, task.status)
+
+
+def _voice_call_has_ended(call_id: str) -> bool:
+    with _VOICE_CALLS_LOCK:
+        return bool((_VOICE_CALLS.get(call_id) or {}).get("ended_at"))
+
+
+def _voice_send_post_call_notification(task: VoiceTask) -> bool:
+    target = os.getenv("HERMES_VOICE_TELEGRAM_HANDOFF_TARGET", "").strip()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not target or not token:
+        return False
+    chat_id, _, thread_id = target.partition(":")
+    status = task.status
+    summary = task.result if status == "complete" else task.error
+    message = (
+        f"Rolly Voice background task {task.task_id}: {status}\n"
+        f"Call: {task.call_id}\n"
+        f"Transcript: {_voice_transcript_path(task.call_id)}\n"
+        f"{_voice_bound_text(summary or task.request, 900)}"
+    )
+    from tools.send_message_tool import _send_telegram
+
+    asyncio.run(_send_telegram(token, chat_id, message, thread_id=thread_id or None, disable_link_previews=True))
+    return True
+
+
+def _voice_maybe_notify_post_call(task: VoiceTask, final_status: str) -> None:
+    if not task.call_ended and not _voice_call_has_ended(task.call_id):
+        return
+    task.call_ended = True
+    current = task.post_call_notification.get("status")
+    if current in {"sent", "skipped_unconfigured", "failed"}:
+        return
+    task.post_call_notification = {"status": "pending", "final_status": final_status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        sent = _voice_send_post_call_notification(task)
+    except Exception as exc:
+        task.post_call_notification = {
+            "status": "failed",
+            "final_status": final_status,
+            "error": str(exc)[:500],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _voice_task_event(task, "post_call_notification_error", str(exc)[:700], {"task_id": task.task_id, "status": final_status})
+        return
+    task.post_call_notification = {
+        "status": "sent" if sent else "skipped_unconfigured",
+        "final_status": final_status,
+        "target": "telegram" if sent else None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    event = "post_call_notification_sent" if sent else "post_call_notification_skipped"
+    text = "Telegram handoff sent after call end." if sent else "Telegram handoff skipped: HERMES_VOICE_TELEGRAM_HANDOFF_TARGET/TELEGRAM_BOT_TOKEN not configured."
+    _voice_task_event(task, event, text, {"task_id": task.task_id, "status": final_status})
+
+
+_VOICE_TOOL_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
+_VOICE_TOOL_CACHE_LOCK = threading.Lock()
+_VOICE_TOOL_CACHE_TTL_SECONDS = 600
+_VOICE_TASKS: Dict[str, VoiceTask] = {}
+_VOICE_TASKS_LOCK = threading.Lock()
+_VOICE_CALLS: Dict[str, Dict[str, Any]] = {}
+_VOICE_CALLS_LOCK = threading.Lock()
+_VOICE_TASK_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("HERMES_VOICE_TASK_WORKERS", "4")), thread_name_prefix="voice-rolly")
+
+
+def _voice_append_jsonl_record(call_id: str, record: Dict[str, Any]) -> None:
+    path = _voice_transcript_path(call_id)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _voice_task_event(task: VoiceTask, event_type: str, text: str, metadata: Dict[str, Any] | None = None) -> None:
+    _voice_append_jsonl_record(
+        task.call_id,
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "call_id": task.call_id,
+            "session_id": _voice_session_id(task.call_id),
+            "user": task.user,
+            "role": "tool",
+            "event_type": event_type,
+            "text": text,
+            "metadata": {"task_id": task.task_id, "task_session_id": task.session_id, **(metadata or {})},
+        },
+    )
+
+
+def _voice_task_status_lookup(query: str | None = None, limit: int = 1600) -> str:
+    task_ids = re.findall(r"\bvt_[A-Za-z0-9_-]+\b", query or "")
+    if not task_ids:
+        return ""
+    rows: list[str] = []
+    with _VOICE_TASKS_LOCK:
+        for task_id in task_ids:
+            task = _VOICE_TASKS.get(task_id)
+            if task is not None:
+                latest = task.progress[-1]["message"] if task.progress else task.status
+                rows.append(f"{task_id}: {task.status}; updated {task.updated_at}; {latest}")
+    missing = [task_id for task_id in task_ids if not any(row.startswith(f"{task_id}:") for row in rows)]
+    if missing:
+        transcript_root = Path(get_hermes_home()) / "voice-transcripts"
+        latest_by_task: dict[str, tuple[str, str, str]] = {}
+        for path in sorted(transcript_root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)[:20]:
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+                task_id = str(metadata.get("task_id") or "")
+                if task_id in missing:
+                    status = str(metadata.get("status") or record.get("event_type") or "status unavailable")
+                    text = _voice_bound_text(str(record.get("text") or ""), 240)
+                    latest_by_task[task_id] = (status, str(record.get("timestamp") or "unknown time"), text)
+        for task_id in missing:
+            hit = latest_by_task.get(task_id)
+            if hit:
+                status, timestamp, text = hit
+                rows.append(f"{task_id}: {status}; updated {timestamp}; {text}")
+            else:
+                rows.append(f"{task_id}: status unavailable; no live task or recent transcript event found")
+    return _voice_bound_text("\n".join(rows), limit)
+
+
+def _voice_task_worker(task_id: str) -> None:
+    with _VOICE_TASKS_LOCK:
+        task = _VOICE_TASKS[task_id]
+        task.mark("running", "Rolly is working in the background.")
+    _voice_task_event(task, "delegation_started", "Rolly background task started.")
+    try:
+        result = _run_voice_research(task.request, user=task.user, source="dashboard-voice-background", parent_call_id=task.call_id)
+        with _VOICE_TASKS_LOCK:
+            task.mark("complete", "Rolly background task completed.", result=result)
+        _voice_task_event(task, "delegation_result", result, {"status": "complete"})
+        _voice_maybe_notify_post_call(task, "complete")
+    except Exception as exc:
+        message = str(exc)[:1200]
+        with _VOICE_TASKS_LOCK:
+            task.mark("failed", f"Rolly background task failed: {message}", error=message)
+        _voice_task_event(task, "delegation_error", message, {"status": "failed"})
+        _voice_maybe_notify_post_call(task, "failed")
+
+
+def _voice_start_background_task(call_id: str, request_text: str, user: str) -> VoiceTask:
+    _voice_ensure_state_session(call_id, user, mode="solo")
+    task_id = f"vt_{uuid.uuid4().hex[:12]}"
+    task = VoiceTask(task_id=task_id, call_id=call_id, user=user, request=request_text, session_id=f"voice_task_{task_id}")
+    with _VOICE_TASKS_LOCK:
+        _VOICE_TASKS[task_id] = task
+    _voice_task_event(task, "delegation_queued", "Background Rolly task queued.", {"request": request_text})
+    _VOICE_TASK_EXECUTOR.submit(_voice_task_worker, task_id)
+    return task
+
+
+def _voice_bound_text(text: str, limit: int) -> str:
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _voice_read_markdown(path: Path, limit: int) -> str:
+    try:
+        return _voice_bound_text(path.read_text(encoding="utf-8", errors="ignore"), limit)
+    except OSError:
+        return ""
+
+
+def _voice_memory_snapshot(limit: int = 1800) -> str:
+    root = Path(get_hermes_home()) / "memories"
+    chunks: list[str] = []
+    for name in ("USER.md", "MEMORY.md"):
+        path = root / name
+        if path.exists():
+            text = _voice_read_markdown(path, limit // 2)
+            if text:
+                chunks.append(f"{name}: {text}")
+    return _voice_bound_text("\n".join(chunks), limit)
+
+
+def _voice_brain_lookup_text(query: str | None = None, limit: int = 1800) -> str:
+    root = Path(os.getenv("ROLLY_BRAIN_ROOT", "/Users/rolly/rolly-brain")) / "wiki"
+    if not root.exists():
+        return ""
+    terms = [t.lower() for t in re.findall(r"[A-Za-z0-9_-]{3,}", query or "")]
+    candidates = sorted(root.rglob("*.md"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)[:200]
+    hits: list[str] = []
+    scored: list[tuple[int, Path, str]] = []
+    for path in candidates:
+        rel = path.relative_to(root)
+        text = _voice_read_markdown(path, 900)
+        haystack = f"{rel} {text}".lower()
+        score = sum(1 for term in terms if term in haystack)
+        if terms and score == 0:
+            continue
+        scored.append((score, path, text))
+    for _score, path, text in sorted(scored, key=lambda item: item[0], reverse=True):
+        rel = path.relative_to(root)
+        hits.append(f"{rel}: {text}")
+        if len("\n".join(hits)) >= limit:
+            break
+    return _voice_bound_text("\n".join(hits), limit)
+
+
+def _voice_kanban_digest(query: str | None = None, limit: int = 2200) -> str:
+    active = ("triage", "todo", "scheduled", "ready", "running", "blocked", "review")
+    try:
+        con = kanban_db.connect()
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            f"""
+            SELECT id, title, status, assignee, priority, body
+            FROM tasks
+            WHERE status IN ({','.join('?' for _ in active)})
+            ORDER BY priority DESC, created_at DESC
+            LIMIT 40
+            """,
+            active,
+        ).fetchall()
+        con.close()
+    except sqlite3.Error:
+        return ""
+    terms = [t.lower() for t in re.findall(r"[A-Za-z0-9_-]{3,}", query or "")]
+    lines: list[str] = []
+    for row in rows:
+        body = row["body"] or ""
+        haystack = f"{row['id']} {row['title']} {row['status']} {row['assignee'] or ''} {body}".lower()
+        if terms and not all(term in haystack for term in terms[:4]):
+            continue
+        preview = _voice_bound_text(body, 220)
+        assignee = f" @{row['assignee']}" if row["assignee"] else ""
+        lines.append(f"{row['id']} [{row['status']}]{assignee}: {row['title']} — {preview}".rstrip(" —"))
+        if len("\n".join(lines)) >= limit:
+            break
+    return _voice_bound_text("\n".join(lines), limit)
+
+
+def _voice_recent_sessions(query: str | None = None, limit: int = 1600) -> str:
+    db_path = Path(get_hermes_home()) / "state.db"
+    if not db_path.exists():
+        return ""
+    try:
+        con = sqlite3.connect(str(db_path))
+        con.row_factory = sqlite3.Row
+        if query:
+            rows = con.execute(
+                """
+                SELECT session_id, role, content, timestamp
+                FROM messages
+                WHERE content LIKE ? AND role IN ('user','assistant')
+                ORDER BY timestamp DESC
+                LIMIT 8
+                """,
+                (f"%{query}%",),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """
+                SELECT session_id, role, content, timestamp
+                FROM messages
+                WHERE role IN ('user','assistant')
+                ORDER BY timestamp DESC
+                LIMIT 8
+                """
+            ).fetchall()
+        con.close()
+    except sqlite3.Error:
+        return ""
+    lines = [f"{r['session_id']} {r['role']}: {_voice_bound_text(r['content'], 260)}" for r in rows]
+    return _voice_bound_text("\n".join(lines), limit)
+
+
+def _voice_context_pack(user: str | None = None) -> Dict[str, Any]:
+    speaker = _voice_speaker_label(user)
+    return {
+        "user": speaker,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "memory": _voice_memory_snapshot(),
+        "kanban": _voice_kanban_digest(),
+        "brain": _voice_brain_lookup_text("MIX Rolly voice current work", limit=1600),
+        "sessions": _voice_recent_sessions(limit=1000),
+    }
+
+
+def _voice_render_context_pack(pack: Dict[str, Any], limit: int = 7000) -> str:
+    sections = [
+        f"Dashboard user: {pack.get('user')}",
+        f"Generated: {pack.get('generated_at')}",
+        f"Durable memory:\n{pack.get('memory') or '(none)'}",
+        f"Active Kanban:\n{pack.get('kanban') or '(none)'}",
+        f"Rolly brain/wiki:\n{pack.get('brain') or '(none)'}",
+        f"Recent sessions:\n{pack.get('sessions') or '(none)'}",
+    ]
+    return _voice_bound_text("\n\n".join(sections), limit)
+
+
+def _voice_tool_result(text: str, *, tool_name: str, data: Dict[str, Any] | None = None, cached: bool = False) -> Dict[str, Any]:
+    return {"ok": True, "result": _voice_bound_text(text, 2200), "data": data or {}, "error": None, "tool_name": tool_name, "cached": cached}
+
+
+def _voice_tool_cache_key(payload: VoiceToolRequest, user: str | None = None) -> str | None:
+    explicit = payload.idempotency_key or payload.realtime_call_id or str(payload.arguments.get("_realtime_call_id") or "")
+    if explicit or payload.call_id:
+        normalized = json.dumps(
+            {"user": _voice_speaker_label(user), "explicit": explicit, "name": payload.name, "arguments": payload.arguments, "call_id": payload.call_id},
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return None
+
+
+def _voice_tool_dispatch(payload: VoiceToolRequest, user: str | None = None) -> Dict[str, Any]:
+    args = payload.arguments or {}
+    name = payload.name
+    if name in {"research", "rolly"}:
+        question = str(args.get("request") or args.get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Missing question")
+        return _voice_tool_result(_run_voice_research(question, user=user), tool_name=name)
+    if name == "memory_lookup":
+        return _voice_tool_result(_voice_memory_snapshot(), tool_name=name)
+    if name == "brain_lookup":
+        query = str(args.get("query") or "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="Missing query")
+        return _voice_tool_result(_voice_brain_lookup_text(query), tool_name=name)
+    if name == "kanban_lookup":
+        return _voice_tool_result(_voice_kanban_digest(str(args.get("query") or "").strip() or None), tool_name=name)
+    if name == "session_lookup":
+        return _voice_tool_result(_voice_recent_sessions(str(args.get("query") or "").strip() or None), tool_name=name)
+    if name == "context_lookup":
+        query = str(args.get("query") or "").strip()
+        sources = args.get("sources") or ["memory", "kanban", "brain", "sessions", "voice_tasks"]
+        if not isinstance(sources, list):
+            sources = ["memory", "kanban", "brain", "sessions", "voice_tasks"]
+        parts: list[str] = []
+        task_status = _voice_task_status_lookup(query or None)
+        if task_status:
+            parts.append(f"Voice tasks:\n{task_status}")
+        if "memory" in sources:
+            parts.append(f"Memory:\n{_voice_memory_snapshot()}")
+        if "kanban" in sources:
+            parts.append(f"Kanban:\n{_voice_kanban_digest(query or None)}")
+        if "brain" in sources:
+            parts.append(f"Brain:\n{_voice_brain_lookup_text(query or None)}")
+        if "sessions" in sources:
+            parts.append(f"Sessions:\n{_voice_recent_sessions(query or None)}")
+        return _voice_tool_result("\n\n".join(parts), tool_name=name)
+    if name == "rolly_background":
+        request_text = str(args.get("request") or "").strip()
+        if not request_text:
+            raise HTTPException(status_code=400, detail="Missing request")
+        if not payload.call_id:
+            raise HTTPException(status_code=400, detail="Missing call_id")
+        task = _voice_start_background_task(payload.call_id, request_text, _voice_speaker_label(user))
+        return _voice_tool_result(
+            f"Queued background Rolly task {task.task_id}. The voice UI will inject the result back into this live call when it is ready; briefly tell the user you will jump back in if the call is still live.",
+            tool_name=name,
+            data=task.to_dict(),
+        )
+    raise HTTPException(status_code=400, detail="Unsupported voice tool")
+
+
+def _voice_mode(value: str | None) -> str:
+    return "meet" if (value or "").strip().lower() == "meet" else "solo"
+
+
+def _voice_speaking_rate_config() -> Dict[str, Any]:
+    raw = os.getenv("HERMES_VOICE_SPEAKING_RATE", "1.08").strip() or "1.08"
+    try:
+        requested = float(raw)
+    except ValueError:
+        requested = 1.08
+    requested = max(0.25, min(4.0, requested))
+    return {
+        "requested": requested,
+        "explicit_control_supported": False,
+        "provider": "openai-realtime-webrtc",
+        "status": "provider has no explicit realtime speech-rate field; applied as speaking-style instruction",
+    }
+
+
+def _voice_session_config(user: str | None = None, mode: str = "solo") -> Dict[str, Any]:
     model = os.getenv("HERMES_VOICE_REALTIME_MODEL", "gpt-realtime-2")
     voice = os.getenv("HERMES_VOICE_REALTIME_VOICE", "cedar")
     speaker = _voice_speaker_label(user)
+    mode = _voice_mode(mode)
+    context_pack = _voice_render_context_pack(_voice_context_pack(user))
+    speaking_rate = _voice_speaking_rate_config()
+    rate_instruction = (
+        f"Speak at a slightly faster but still natural and clear pace (configured rate preference {speaking_rate['requested']:.2f}x). "
+        "OpenAI Realtime WebRTC does not expose an explicit speech-rate field here, so treat this as a style instruction. "
+    )
+    mode_instruction = (
+        "MEET MODE: this may be a multi-person conversation. Stay silent unless someone explicitly says a wake phrase like 'Hey Rolly', 'Hey Rowley', or 'Hey Rowy', or directly asks Rolly to speak. "
+        "After answering, return to silent listening. Preserve speaker wording in transcript-derived context; dashboard auth identifies this browser participant. "
+        if mode == "meet"
+        else "SOLO MODE: this is a one-on-one Rolly call; answer naturally when the user speaks. "
+    )
     return {
         "type": "realtime",
         "model": model,
         "instructions": (
             "You are Rolly, the concise AI ops and dev colleague for MIX/Suelio. "
             f"You are speaking with dashboard user: {speaker}. Use that identity for context and attribution. "
+            "Session-start context pack follows; treat it as useful but possibly stale.\n"
+            f"{context_pack}\n"
+            f"{mode_instruction}"
+            f"{rate_instruction}"
             "This is a live phone-call style conversation: speak naturally, briefly, and do not mention implementation details. "
+            "Spoken responses should usually fit 10-15 seconds. If more exists, give the short answer first and offer to continue. "
             "Call transcript events, tool calls/results, timestamps, elapsed time, and an end-call marker are saved to local JSONL for later improvement. "
-            "You have no useful long-term/project context inside the realtime model itself. "
-            "When the user asks about Rolly state, past work, files, code, web/current facts, or wants an action, call the rolly tool with a short exact request. "
-            "Summarize tool results conversationally and ask at most one brief follow-up."
+            "Prefer fast lookup tools (context_lookup, memory_lookup, kanban_lookup, brain_lookup, session_lookup) for context. "
+            "Use rolly_background for long or action-oriented work; it queues real background Rolly work and returns a task id. "
+            "When rolly_background is queued, tell the user you will jump back in with the result if this call is still live; do not claim there is no live push channel. "
+            "During active work, interpret user follow-ups as steer by default; clear stop/cancel means cancel intent, and 'when done' means queue. "
+            "Never call a tool twice for the same user intent. Summarize tool results conversationally and ask at most one brief follow-up."
         ),
         "tools": [
             {
                 "type": "function",
-                "name": "rolly",
-                "description": "Ask full Rolly/Hermes to use its normal context and tools for research, memory/session lookup, files, code, or actions. Use this whenever local realtime context is insufficient.",
+                "name": "context_lookup",
+                "description": "Fast local lookup across Rolly memory, brain/wiki notes, Kanban active work, and recent sessions. Use before slow/background work.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "request": {
-                            "type": "string",
-                            "description": "The concise task or question for full Rolly, preserving user wording when important.",
-                        }
+                        "query": {"type": "string", "description": "Short lookup query."},
+                        "sources": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["memory", "brain", "kanban", "sessions"]},
+                            "description": "Optional source subset.",
+                        },
                     },
-                    "required": ["request"],
+                    "required": ["query"],
                     "additionalProperties": False,
                 },
-            }
+            },
+            {
+                "type": "function",
+                "name": "memory_lookup",
+                "description": "Fast read-only lookup of durable Rolly/User memory.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False},
+            },
+            {
+                "type": "function",
+                "name": "kanban_lookup",
+                "description": "Fast lookup of active Kanban/source-of-truth work items.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False},
+            },
+            {
+                "type": "function",
+                "name": "brain_lookup",
+                "description": "Fast lookup of curated Rolly brain/wiki markdown notes with provenance.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False},
+            },
+            {
+                "type": "function",
+                "name": "session_lookup",
+                "description": "Fast lookup of recent Rolly conversation history.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False},
+            },
+            {
+                "type": "function",
+                "name": "rolly_background",
+                "description": "Use only for long-running or action-oriented work. Returns pending status immediately; do not claim completion.",
+                "parameters": {"type": "object", "properties": {"request": {"type": "string"}}, "required": ["request"], "additionalProperties": False},
+            },
+            {
+                "type": "function",
+                "name": "rolly",
+                "description": "Slow full Rolly bridge for exceptional foreground questions only. Prefer fast lookup tools or rolly_background.",
+                "parameters": {"type": "object", "properties": {"request": {"type": "string"}}, "required": ["request"], "additionalProperties": False},
+            },
         ],
         "tool_choice": "auto",
+        "metadata": {
+            "speaking_rate": speaking_rate,
+        },
         "audio": {
             "input": {
                 "transcription": {"model": "gpt-4o-mini-transcribe"},
@@ -272,9 +864,11 @@ def _voice_session_config(user: str | None = None) -> Dict[str, Any]:
                 "turn_detection": {
                     # Phone-call behavior: let the Realtime API decide when the
                     # user has semantically finished speaking, then immediately
-                    # generate a spoken response and allow barge-in interrupts.
+                    # generate a spoken response in solo mode and allow barge-in
+                    # interrupts. Meet mode disables auto-response so the UI can
+                    # hard-gate speech on the "Hey Rolly" wake phrase.
                     "type": "semantic_vad",
-                    "create_response": True,
+                    "create_response": mode == "solo",
                     "interrupt_response": True,
                 },
             },
@@ -283,7 +877,7 @@ def _voice_session_config(user: str | None = None) -> Dict[str, Any]:
     }
 
 
-def _create_openai_realtime_call(sdp: str, user: str | None = None) -> str:
+def _create_openai_realtime_call(sdp: str, user: str | None = None, mode: str = "solo") -> str:
     """Create an OpenAI Realtime WebRTC call and return answer SDP."""
     api_key = _voice_api_key()
     boundary = f"----hermes-realtime-{uuid.uuid4().hex}"
@@ -297,7 +891,7 @@ def _create_openai_realtime_call(sdp: str, user: str | None = None) -> str:
     body = b"".join(
         [
             part("sdp", sdp, "application/sdp"),
-            part("session", json.dumps(_voice_session_config(user=user)), "application/json"),
+            part("session", json.dumps(_voice_session_config(user=user, mode=mode)), "application/json"),
             f"--{boundary}--\r\n".encode("utf-8"),
         ]
     )
@@ -323,10 +917,10 @@ def _create_openai_realtime_call(sdp: str, user: str | None = None) -> str:
         raise HTTPException(status_code=502, detail=f"Failed to create voice call: {exc}") from exc
 
 
-def _create_openai_realtime_session(user: str | None = None) -> Dict[str, Any]:
+def _create_openai_realtime_session(user: str | None = None, mode: str = "solo") -> Dict[str, Any]:
     """Create an ephemeral OpenAI Realtime session for legacy dashboard voice UI."""
     api_key = _voice_api_key()
-    session = _voice_session_config(user=user)
+    session = _voice_session_config(user=user, mode=mode)
     body = json.dumps({"session": session}).encode()
     req = urllib.request.Request(
         "https://api.openai.com/v1/realtime/client_secrets",
@@ -345,19 +939,22 @@ def _create_openai_realtime_session(user: str | None = None) -> Dict[str, Any]:
     return data
 
 
-def _run_voice_research(question: str, user: str | None = None) -> str:
+def _run_voice_research(question: str, user: str | None = None, *, source: str = "dashboard-voice", parent_call_id: str | None = None) -> str:
     """Bridge a voice tool call into the CLI-first Rolly runtime."""
     speaker = _voice_speaker_label(user)
     prompt = (
-        f"Dashboard voice user: {speaker}\n\n"
-        "You are answering a live voice call through Rolly Voice. Use normal Rolly context/tools. "
-        "Keep the final answer brief and spoken-conversation friendly.\n\n"
+        f"Dashboard voice user: {speaker}\n"
+        f"Voice call id: {parent_call_id or 'foreground'}\n\n"
+        "You are handling work delegated from a live Rolly Voice call. Use normal Rolly context/tools. "
+        "The user-facing surface is only Rolly; do not mention internal Fast/Regular layers. "
+        "Return a voice handoff answer, not a full report: 2-4 short spoken sentences unless the user explicitly asked for detail. "
+        "If more detail exists, say it is available and can be expanded.\n\n"
         f"User request: {question}"
     )
     env = os.environ.copy()
     env.setdefault("HERMES_HOME", str(get_hermes_home()))
     proc = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "--source", "dashboard-voice", "-Q"],
+        [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "--source", source, "-Q"],
         cwd=str(PROJECT_ROOT),
         env=env,
         text=True,
@@ -375,7 +972,8 @@ def _run_voice_research(question: str, user: str | None = None) -> str:
 
 @app.post("/api/voice/session")
 async def create_voice_session(request: Request):
-    return _create_openai_realtime_session(user=_voice_auth_context(request))
+    mode = _voice_mode(request.query_params.get("mode") or request.headers.get("X-Rolly-Voice-Mode"))
+    return _create_openai_realtime_session(user=_voice_auth_context(request), mode=mode)
 
 
 @app.post("/api/voice/call")
@@ -383,22 +981,93 @@ async def create_voice_call(request: Request):
     sdp = (await request.body()).decode("utf-8", "ignore")
     if not sdp.strip():
         raise HTTPException(status_code=400, detail="Missing SDP offer")
-    answer = _create_openai_realtime_call(sdp, user=_voice_auth_context(request))
+    mode = _voice_mode(request.query_params.get("mode") or request.headers.get("X-Rolly-Voice-Mode"))
+    answer = _create_openai_realtime_call(sdp, user=_voice_auth_context(request), mode=mode)
     return Response(content=answer, media_type="application/sdp")
+
+
+@app.post("/api/voice/meet/invite")
+async def create_voice_meet_invite(payload: VoiceMeetInviteRequest, request: Request):
+    if not env_var_enabled("HERMES_VOICE_MEET_INVITES", default=False):
+        raise HTTPException(status_code=404, detail="Voice meet invites are disabled")
+    call_id = re.sub(r"[^A-Za-z0-9_.-]", "_", payload.call_id).strip("._")
+    if not call_id:
+        raise HTTPException(status_code=400, detail="Missing call_id")
+    user = payload.user or _voice_auth_context(request) or "unknown dashboard user"
+    _voice_ensure_state_session(call_id, user, mode="meet")
+    base = os.getenv("HERMES_DASHBOARD_PUBLIC_URL") or str(request.base_url).rstrip("/")
+    base = base.rstrip("/")
+    invite_url = f"{base}/voice?mode=meet&call_id={urllib.parse.quote(call_id)}"
+    return {
+        "ok": True,
+        "mode": "meet",
+        "call_id": call_id,
+        "invite_url": invite_url,
+        "feature_flag": "HERMES_VOICE_MEET_INVITES",
+    }
+
+
+@app.get("/api/voice/context")
+async def get_voice_context(request: Request, debug: bool = False):
+    user = _voice_auth_context(request)
+    pack = _voice_context_pack(user)
+    context = _voice_render_context_pack(pack)
+    response: Dict[str, Any] = {
+        "ok": True,
+        "user": _voice_speaker_label(user),
+        "context": context,
+        "chars": len(context),
+        "sections": {k: len(str(v or "")) for k, v in pack.items() if k not in {"user", "generated_at"}},
+    }
+    if debug:
+        response["pack"] = pack
+    return response
 
 
 @app.post("/api/voice/tool")
 async def run_voice_tool(payload: VoiceToolRequest, request: Request):
-    if payload.name not in {"research", "rolly"}:
-        raise HTTPException(status_code=400, detail="Unsupported voice tool")
-    question = str(payload.arguments.get("request") or payload.arguments.get("question") or "").strip()
-    if not question:
-        raise HTTPException(status_code=400, detail="Missing question")
+    user = _voice_auth_context(request)
+    key = _voice_tool_cache_key(payload, user=user)
+    now = time.time()
+    if key:
+        with _VOICE_TOOL_CACHE_LOCK:
+            stale = [cache_key for cache_key, (created, _value) in _VOICE_TOOL_CACHE.items() if now - created > _VOICE_TOOL_CACHE_TTL_SECONDS]
+            for cache_key in stale:
+                _VOICE_TOOL_CACHE.pop(cache_key, None)
+            cached = _VOICE_TOOL_CACHE.get(key)
+            if cached and now - cached[0] <= _VOICE_TOOL_CACHE_TTL_SECONDS:
+                result = dict(cached[1])
+                result["cached"] = True
+                return result
     try:
-        result = _run_voice_research(question, user=_voice_auth_context(request))
+        result = _voice_tool_dispatch(payload, user=user)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)[:700]) from exc
-    return {"ok": True, "result": result, "error": None}
+    if key and payload.name != "rolly_background":
+        with _VOICE_TOOL_CACHE_LOCK:
+            _VOICE_TOOL_CACHE[key] = (time.time(), dict(result))
+    return result
+
+
+@app.post("/api/voice/tasks")
+async def start_voice_task(payload: VoiceTaskStartRequest, request: Request):
+    user = payload.user or _voice_auth_context(request) or "unknown dashboard user"
+    request_text = payload.request.strip()
+    if not request_text:
+        raise HTTPException(status_code=400, detail="Missing request")
+    task = _voice_start_background_task(payload.call_id, request_text, _voice_speaker_label(user))
+    return task.to_dict()
+
+
+@app.get("/api/voice/tasks/{task_id}")
+async def get_voice_task(task_id: str, _request: Request):
+    with _VOICE_TASKS_LOCK:
+        task = _VOICE_TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Voice task not found")
+        return task.to_dict()
 
 
 @app.post("/api/voice/transcript")

@@ -2102,6 +2102,13 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
+    def test_resolve_chat_argv_can_attach_tmux_session(self):
+        argv, cwd, env = self.ws_module._resolve_chat_argv(pty_mode="tmux", tmux_session="card-t-123")
+
+        assert argv == ["tmux", "attach-session", "-t", "card-t-123"]
+        assert cwd is None
+        assert isinstance(env, dict)
+
     def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
         from starlette.websockets import WebSocketDisconnect

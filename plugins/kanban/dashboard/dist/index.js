@@ -20,6 +20,7 @@
   const {
     Card, CardContent,
     Badge, Button, Input, Label, Select, SelectOption,
+    PtyTerminalPane,
   } = SDK.components;
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
@@ -3219,7 +3220,9 @@
     const [busy, setBusy] = useState(false);
     const [err, setErr] = useState(null);
     const [copied, setCopied] = useState(null);
-    const hasWorkspace = !!(task && task.workspace_path);
+    const [terminalReady, setTerminalReady] = useState(false);
+    const [terminalNonce, setTerminalNonce] = useState(0);
+    const hasLaunchWorkspace = !!(task && (task.workspace_path || task.workspace_kind === "scratch"));
 
     const loadContext = function () {
       if (!task || busy) return;
@@ -3227,6 +3230,19 @@
       setErr(null);
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/claude-context`, props.boardSlug))
         .then(function (d) { setPayload(d); })
+        .catch(function (e) { setErr(parseApiErrorMessage(e)); })
+        .finally(function () { setBusy(false); });
+    };
+    const startTerminal = function () {
+      if (!task || busy) return;
+      setBusy(true);
+      setErr(null);
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/tmux-session`, props.boardSlug), { method: "POST" })
+        .then(function (d) {
+          setPayload(d);
+          setTerminalReady(true);
+          setTerminalNonce(function (n) { return n + 1; });
+        })
         .catch(function (e) { setErr(parseApiErrorMessage(e)); })
         .finally(function () { setBusy(false); });
     };
@@ -3240,25 +3256,30 @@
         tx(i18n, "cardWorkspace", "Card workspace")),
       h("div", { className: "text-xs text-muted-foreground mb-2" },
         tx(i18n, "cardWorkspaceHint",
-          "Manual Claude Code launch only: copy the command and prompt; nothing is auto-started.")),
-      !hasWorkspace ? h("div", { className: "text-xs text-destructive mb-2" },
+          "Start a card-scoped tmux session in the browser. Copy the prompt, then paste it into Claude Code when ready.")),
+      !hasLaunchWorkspace ? h("div", { className: "text-xs text-destructive mb-2" },
         tx(i18n, "cardWorkspaceNoWorkspace",
           "Set a concrete workspace_path before launching Claude Code.")) : null,
+      task && !task.workspace_path && task.workspace_kind === "scratch" ? h("div", { className: "text-xs text-muted-foreground mb-2" },
+        tx(i18n, "cardWorkspaceScratchHome",
+          "Scratch card: terminal starts in /Users/rolly; cd manually as needed.")) : null,
       h("div", { className: "flex flex-wrap items-center gap-2 mb-2" },
         h(Button, {
           size: "sm",
           variant: "outline",
-          disabled: busy || !hasWorkspace,
-          onClick: loadContext,
+          disabled: busy || !hasLaunchWorkspace,
+          onClick: startTerminal,
         }, busy
-          ? tx(i18n, "preparing", "Preparing…")
-          : (payload ? tx(i18n, "refreshLaunchContext", "Refresh launch context")
-                     : tx(i18n, "prepareClaudeCode", "Prepare Claude Code prompt"))),
-        payload ? h(Button, {
+          ? tx(i18n, "starting", "Starting…")
+          : (terminalReady ? tx(i18n, "restartTerminal", "Reconnect terminal")
+                         : tx(i18n, "startTerminal", "Start card tmux"))),
+        h(Button, {
           size: "sm",
           variant: "outline",
-          onClick: function () { copyTextToClipboard(payload.command, function () { markCopied("command"); }); },
-        }, copied === "command" ? tx(i18n, "copied", "Copied") : tx(i18n, "copyCommand", "Copy command")) : null,
+          disabled: busy || !hasLaunchWorkspace,
+          onClick: loadContext,
+        }, payload ? tx(i18n, "refreshPrompt", "Refresh prompt")
+                   : tx(i18n, "preparePrompt", "Prepare prompt")),
         payload ? h(Button, {
           size: "sm",
           variant: "outline",
@@ -3266,14 +3287,51 @@
         }, copied === "prompt" ? tx(i18n, "copied", "Copied") : tx(i18n, "copyPrompt", "Copy prompt")) : null,
       ),
       err ? h("div", { className: "text-xs text-destructive mb-2" }, err) : null,
+      terminalReady && payload && payload.terminal_target && PtyTerminalPane ? h(PtyTerminalPane, {
+        key: `${payload.terminal_target}:${terminalNonce}`,
+        title: `Terminal for ${task.id}`,
+        className: "hermes-kanban-card-chat-frame hermes-kanban-card-terminal-frame",
+        tmuxTarget: payload.terminal_target,
+        autoFocus: true,
+      }) : null,
       payload ? h("div", { className: "space-y-2" },
-        h(MetaRow, { label: tx(i18n, "mode", "Mode"), value: payload.mode || "manual-copy" }),
+        h(MetaRow, { label: tx(i18n, "mode", "Mode"), value: payload.mode || "browser-tmux-plus-copy-prompt" }),
         h(MetaRow, { label: tx(i18n, "workspace", "Workspace"), value: payload.workspace_path || "" }),
-        h("div", { className: "text-xs font-medium" }, tx(i18n, "command", "Command")),
-        h("pre", { className: "hermes-kanban-codeblock text-xs whitespace-pre-wrap" }, payload.command || ""),
+        payload.attach_command ? h(MetaRow, { label: tx(i18n, "attach", "Attach"), value: payload.attach_command }) : null,
         h("div", { className: "text-xs font-medium" }, tx(i18n, "prompt", "Prompt")),
         h("pre", { className: "hermes-kanban-codeblock text-xs whitespace-pre-wrap" }, payload.prompt || ""),
       ) : null,
+    );
+  }
+
+  function RollyChatSection(props) {
+    const { t: i18n } = useI18n();
+    const task = props.task;
+    const [payload, setPayload] = useState(null);
+    const [err, setErr] = useState(null);
+
+    useEffect(function () {
+      if (!task) return;
+      var cancelled = false;
+      setErr(null);
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/tmux-session`, props.boardSlug), { method: "POST" })
+        .then(function (d) { if (!cancelled) setPayload(d); })
+        .catch(function (e) { if (!cancelled) setErr(parseApiErrorMessage(e)); });
+      return function () { cancelled = true; };
+    }, [task && task.id, props.boardSlug]);
+
+    return h("div", { className: "hermes-kanban-card-chat" },
+      h("div", { className: "text-xs text-muted-foreground mb-2" },
+        tx(i18n, "rollyChatHint", "Card-scoped Rolly chat. Use this to discuss or drive this card.")),
+      err ? h("div", { className: "text-xs text-destructive mb-2" }, err) : null,
+      payload && payload.rolly_target && PtyTerminalPane ? h(PtyTerminalPane, {
+        key: payload.rolly_target,
+        title: `Rolly chat for ${task.id}`,
+        className: "hermes-kanban-card-chat-frame",
+        tmuxTarget: payload.rolly_target,
+        autoFocus: true,
+      }) : h("div", { className: "hermes-kanban-card-chat-frame hermes-kanban-card-terminal-placeholder" },
+        tx(i18n, "starting", "Starting…")),
     );
   }
 
@@ -3284,6 +3342,17 @@
     const events = props.data.events || [];
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
+    const [activePane, setActivePane] = useState("chat");
+    const tab = function (key, label) {
+      return h("button", {
+        key,
+        type: "button",
+        role: "tab",
+        "aria-selected": activePane === key,
+        className: cn("hermes-kanban-workspace-tab", activePane === key ? "hermes-kanban-workspace-tab--active" : ""),
+        onClick: function () { setActivePane(key); },
+      }, label);
+    };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -3329,10 +3398,17 @@
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
-      h(CardWorkspaceSection, {
+      h("div", { className: "hermes-kanban-workspace-tabs", role: "tablist" },
+        tab("details", tx(i18n, "details", "Details")),
+        tab("chat", tx(i18n, "rollyChat", "Rolly Chat")),
+        tab("terminal", tx(i18n, "terminalCc", "Terminal / CC")),
+      ),
+      activePane === "chat" ? h(RollyChatSection, { task: t }) : null,
+      activePane === "terminal" ? h(CardWorkspaceSection, {
         task: t,
         boardSlug: props.boardSlug,
-      }),
+      }) : null,
+      activePane === "details" ? h(React.Fragment, null,
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,
@@ -3435,6 +3511,7 @@
       ),
       h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
       h(RunHistorySection, { runs: props.data.runs || [] }),
+      ) : null,
     );
   }
 

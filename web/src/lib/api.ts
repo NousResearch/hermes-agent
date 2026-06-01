@@ -18,6 +18,7 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import { getRollyUserSlug } from "@/lib/rollyIdentity";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -51,6 +52,10 @@ export async function fetchJSON<T>(
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
+  }
+  const rollyUser = getRollyUserSlug();
+  if (rollyUser && !headers.has("X-Rolly-User")) {
+    headers.set("X-Rolly-User", rollyUser);
   }
   const res = await fetch(`${BASE}${url}`, {
     ...init,
@@ -278,12 +283,14 @@ export const api = {
       method: "POST",
       headers: user ? { "X-Rolly-User": user } : undefined,
     }),
-  createVoiceCall: async (sdp: string, user?: string) => {
+  createVoiceCall: async (sdp: string, user?: string, mode: "solo" | "meet" = "solo") => {
     const headers = new Headers({ "Content-Type": "application/sdp" });
     const token = window.__HERMES_SESSION_TOKEN__;
     if (token) setSessionHeader(headers, token);
-    if (user) headers.set("X-Rolly-User", user);
-    const res = await fetch(`${BASE}/api/voice/call`, {
+    const rollyUser = user || getRollyUserSlug();
+    if (rollyUser) headers.set("X-Rolly-User", rollyUser);
+    headers.set("X-Rolly-Voice-Mode", mode);
+    const res = await fetch(`${BASE}/api/voice/call?mode=${encodeURIComponent(mode)}`, {
       method: "POST",
       headers,
       body: sdp,
@@ -294,11 +301,21 @@ export const api = {
     }
     return res.text();
   },
+  createVoiceMeetInvite: (body: { call_id: string; user?: string }) =>
+    fetchJSON<VoiceMeetInviteResponse>("/api/voice/meet/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   runVoiceTool: (body: VoiceToolRequest, user?: string) =>
     fetchJSON<VoiceToolResponse>("/api/voice/tool", {
       method: "POST",
       headers: user ? { "Content-Type": "application/json", "X-Rolly-User": user } : { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+    }),
+  getVoiceTask: (taskId: string, user?: string) =>
+    fetchJSON<VoiceTaskResponse>(`/api/voice/tasks/${encodeURIComponent(taskId)}`, {
+      headers: user ? { "X-Rolly-User": user } : undefined,
     }),
   saveVoiceTranscript: (body: VoiceTranscriptEvent, user?: string) =>
     fetchJSON<{ ok: boolean; path: string }>("/api/voice/transcript", {
@@ -738,6 +755,9 @@ export interface AudioAnalysisResponse {
 export interface VoiceToolRequest {
   name: string;
   arguments: Record<string, unknown>;
+  call_id?: string;
+  realtime_call_id?: string;
+  idempotency_key?: string;
 }
 
 export interface VoiceTranscriptEvent {
@@ -755,13 +775,45 @@ export interface VoiceTranscriptEvent {
 export interface VoiceToolResponse {
   ok: boolean;
   result: string;
+  data?: Record<string, unknown>;
+  tool_name?: string;
+  cached?: boolean;
   error?: string;
+}
+
+export interface VoiceTaskProgress {
+  timestamp: string;
+  event_type: string;
+  message: string;
+}
+
+export interface VoiceTaskResponse {
+  ok: boolean;
+  task_id: string;
+  call_id: string;
+  user: string;
+  request: string;
+  session_id: string;
+  status: "queued" | "running" | "complete" | "failed" | "cancelled" | string;
+  progress: VoiceTaskProgress[];
+  result?: string | null;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface VoiceSessionResponse {
   endpoint: string;
   model: string;
   client_secret: string;
+}
+
+export interface VoiceMeetInviteResponse {
+  ok: boolean;
+  mode: "meet";
+  call_id: string;
+  invite_url: string;
+  feature_flag: string;
 }
 
 export interface AnalyticsDailyEntry {

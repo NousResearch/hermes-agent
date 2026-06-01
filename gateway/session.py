@@ -315,7 +315,18 @@ def build_session_context_prompt(
         lines.append(f"**User ID:** {uid}")
 
     # Platform-specific behavioral notes
-    if context.source.platform == Platform.SLACK:
+    if context.source.platform == Platform.TELEGRAM:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are responding on Telegram. "
+            "Default to brief mobile-chat replies: answer in under 700 characters "
+            "unless the user explicitly asks for detail, a document, or code. "
+            "Use at most one short bullet list, avoid tables, and do not dump logs, "
+            "diffs, or long verification output into chat. For tool-heavy work, "
+            "report only the outcome and the key verification result, then offer "
+            "to expand if useful."
+        )
+    elif context.source.platform == Platform.SLACK:
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Slack. "

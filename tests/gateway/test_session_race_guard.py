@@ -260,12 +260,13 @@ def test_merge_pending_message_event_promotes_document_followups_over_text():
 
 
 @pytest.mark.asyncio
-async def test_recent_telegram_text_followup_is_queued_without_interrupt():
+async def test_recent_telegram_text_followup_steers_without_interrupt_or_queue():
     runner = _make_runner()
     event = _make_event(text="follow-up")
     session_key = build_session_key(event.source)
 
     fake_agent = MagicMock()
+    fake_agent.steer.return_value = True
     fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
     runner._running_agents[session_key] = fake_agent
     import time as _time
@@ -274,19 +275,21 @@ async def test_recent_telegram_text_followup_is_queued_without_interrupt():
     result = await runner._handle_message(event)
 
     assert result is None
+    fake_agent.steer.assert_called_once_with("follow-up")
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
-    assert adapter._pending_messages[session_key].text == "follow-up"
+    assert session_key not in adapter._pending_messages
 
 
 @pytest.mark.asyncio
-async def test_recent_telegram_followups_append_in_pending_queue():
+async def test_recent_telegram_followups_append_via_agent_steer():
     runner = _make_runner()
     first = _make_event(text="part one")
     second = _make_event(text="part two")
     session_key = build_session_key(first.source)
 
     fake_agent = MagicMock()
+    fake_agent.steer.return_value = True
     fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
     runner._running_agents[session_key] = fake_agent
     import time as _time
@@ -295,9 +298,10 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     await runner._handle_message(first)
     await runner._handle_message(second)
 
+    assert [call.args[0] for call in fake_agent.steer.call_args_list] == ["part one", "part two"]
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
-    assert adapter._pending_messages[session_key].text == "part one\npart two"
+    assert session_key not in adapter._pending_messages
 
 
 # ------------------------------------------------------------------

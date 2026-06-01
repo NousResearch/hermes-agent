@@ -41,6 +41,7 @@ function buildWsUrl(
   authParam: [string, string],
   resume: string | null,
   channel: string,
+  terminalParams?: URLSearchParams,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   // ``authParam`` is ``["token", <session>]`` in loopback mode and
@@ -48,7 +49,15 @@ function buildWsUrl(
   // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
   const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
   if (resume) qs.set("resume", resume);
+  terminalParams?.forEach((value, key) => {
+    if (key === "pty_mode" || key === "tmux_session") qs.set(key, value);
+  });
   return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
+}
+
+function buildKanbanPrompt(taskId: string, title: string | null): string {
+  const titleLine = title ? `Title: ${title}` : "Title: (unknown)";
+  return `You are Rolly Chat inside Kanban card ${taskId}. ${titleLine}. This conversation is specifically about this card. Start by briefly orienting yourself to the card, then ask what Deniz wants to do next unless the next message already gives direction.`;
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
@@ -164,7 +173,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const kanbanTaskParam = searchParams.get("kanban_task");
+  const kanbanTitleParam = searchParams.get("kanban_title");
+  const ptyModeParam = searchParams.get("pty_mode");
+  const tmuxSessionParam = searchParams.get("tmux_session");
+  const terminalParams = useMemo(() => {
+    const params = new URLSearchParams();
+    if (ptyModeParam) params.set("pty_mode", ptyModeParam);
+    if (tmuxSessionParam) params.set("tmux_session", tmuxSessionParam);
+    return params;
+  }, [ptyModeParam, tmuxSessionParam]);
+  const initialKanbanPrompt = useMemo(
+    () => kanbanTaskParam ? buildKanbanPrompt(kanbanTaskParam, kanbanTitleParam) : null,
+    [kanbanTaskParam, kanbanTitleParam],
+  );
+  const initialPromptSentRef = useRef<string | null>(null);
+  const channel = useMemo(() => generateChannelId(), [resumeParam, kanbanTaskParam, kanbanTitleParam, ptyModeParam, tmuxSessionParam]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -567,7 +591,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel);
+      const url = buildWsUrl(authParam, resumeParam, channel, terminalParams);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -579,6 +603,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      if (initialKanbanPrompt && initialPromptSentRef.current !== initialKanbanPrompt) {
+        initialPromptSentRef.current = initialKanbanPrompt;
+        window.setTimeout(() => {
+          if (!unmounting && ws.readyState === WebSocket.OPEN) {
+            ws.send(initialKanbanPrompt);
+            window.setTimeout(() => {
+              if (!unmounting && ws.readyState === WebSocket.OPEN) ws.send("\r");
+            }, 120);
+          }
+        }, 400);
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -674,7 +709,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, terminalParams, initialKanbanPrompt]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

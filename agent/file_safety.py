@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import re
+import shlex
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -637,4 +640,329 @@ def get_container_mirror_warning(
         f"explicit user direction, retry with ``cross_profile=True``. "
         f"(Defense-in-depth — not a security boundary; the terminal tool "
         f"can still bypass.)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Terminal / execute_code write-safe-root guard (#36645)
+#
+# ``HERMES_WRITE_SAFE_ROOT`` only protects the Hermes native ``Write`` / ``Edit``
+# tools. The ``terminal`` tool (shell) and ``execute_code`` (arbitrary Python)
+# can write anywhere on disk — e.g. ``cd /root/.hermes/skills/x && python3 -c
+# "open('out.png','wb')..."`` lands a file outside the session work_dir even
+# though the safe root is set. In broker / multi-user deployments that file is
+# then unreachable to the user (broker file endpoints reject paths outside the
+# session dir with 403).
+#
+# Full enforcement needs kernel sandboxing (seccomp / landlock / mount
+# namespaces). That is platform-specific and heavy. The guard below is the
+# lighter "simpler approach" from the issue: a best-effort *static* scan of the
+# command / code for filesystem write targets, resolved against the live cwd
+# (tracking ``cd`` between ``&&`` segments), filtered through
+# ``is_write_denied()``. The result is surfaced to the model so a respectful
+# model self-corrects (``warn`` mode, default) or the call is refused outright
+# (``block`` mode, for locked-down broker deployments).
+#
+# THIS IS NOT A SECURITY BOUNDARY. The agent runs as the same OS user with
+# unrestricted shell access; a determined model or malicious instruction can
+# always obfuscate a write past the parser. Treat it as defense-in-depth and a
+# confusion-reducer, exactly like the read-deny and cross-profile guards above.
+# ---------------------------------------------------------------------------
+
+_TERMINAL_WRITE_GUARD_ENV = "HERMES_TERMINAL_WRITE_GUARD"
+
+# Shell builtins / commands whose destination operand(s) are filesystem write
+# targets. Value = how to read the targets from the argument list.
+_DEST_LAST_ARG_CMDS = {"cp", "mv", "install", "rsync"}
+_DEST_ALL_ARGS_CMDS = {"touch", "mkdir", "tee"}
+
+# Redirection operators that create / overwrite / append to a file. The token
+# immediately following one of these is the write target.
+_REDIRECT_OPS = {">", ">>", "&>", "&>>", "1>", "1>>", "2>", "2>>"}
+
+# Python ``open(..., mode)`` modes that write. Matches w / a / x / + flavors.
+_PY_OPEN_RE = re.compile(
+    r"""open\(\s*(?P<q>['"])(?P<path>[^'"]+)(?P=q)\s*,\s*"""
+    r"""(?P<mq>['"])(?P<mode>[^'"]*)(?P=mq)""",
+    re.IGNORECASE,
+)
+# Path(...).write_text(...) / .write_bytes(...) and similar — capture the path
+# literal in the chained ``Path("...")`` / ``open("...")``-free helpers.
+_PY_WRITE_HELPER_RE = re.compile(
+    r"""(?P<q>['"])(?P<path>[^'"]+)(?P=q)\s*\)?\s*\.\s*(?:write_text|write_bytes)\(""",
+    re.IGNORECASE,
+)
+
+
+def get_terminal_write_guard_mode() -> str:
+    """Return the configured guard mode: ``"off"``, ``"warn"`` (default), or ``"block"``.
+
+    Read from ``HERMES_TERMINAL_WRITE_GUARD``. Unknown / unset values fall back
+    to ``"warn"`` so the guard is on by default but never disruptive unless an
+    operator explicitly opts into ``block``. The guard is a no-op regardless of
+    mode when ``HERMES_WRITE_SAFE_ROOT`` is unset.
+    """
+    val = (os.getenv(_TERMINAL_WRITE_GUARD_ENV, "") or "").strip().lower()
+    if val in {"off", "warn", "block"}:
+        return val
+    return "warn"
+
+
+def _temp_dir_prefixes() -> list[str]:
+    """Realpath prefixes for system temp dirs — writes here are noise, not leaks.
+
+    Sessions routinely shell out to tooling that writes scratch files to
+    ``/tmp`` (or ``$TMPDIR``). Those are ephemeral and not user-visible
+    artifacts, so excluding them keeps the warn-mode signal focused on real
+    out-of-root writes (skills dumping into ``~/.hermes/...``, project files
+    outside the session dir, etc.).
+
+    Exception: when the safe root *itself* lives inside a temp dir — the broker
+    layout uses ``/tmp/hermes_sessions/<user>/<session>/`` as the safe root —
+    that temp dir is NOT excluded, otherwise a write to a sibling ``/tmp/...``
+    path (the exact leak #36645 describes) would be silently dropped.
+    """
+    safe_root = get_safe_write_root()
+    prefixes: list[str] = []
+    seen: set[str] = set()
+    for d in (tempfile.gettempdir(), "/tmp", "/var/tmp", os.getenv("TMPDIR", "")):
+        if not d:
+            continue
+        try:
+            prefix = os.path.realpath(d) + os.sep
+        except Exception:
+            continue
+        if prefix in seen:
+            continue
+        # Don't suppress a temp dir that contains the configured safe root.
+        if safe_root and (safe_root == prefix[:-1] or safe_root.startswith(prefix)):
+            continue
+        seen.add(prefix)
+        prefixes.append(prefix)
+    return prefixes
+
+
+def _resolve_against(cwd: Optional[str], target: str) -> Optional[str]:
+    """Resolve ``target`` to an absolute realpath, anchored at ``cwd`` if relative."""
+    target = target.strip()
+    if not target:
+        return None
+    try:
+        expanded = os.path.expanduser(target)
+        if os.path.isabs(expanded):
+            base = expanded
+        elif cwd:
+            base = os.path.join(cwd, expanded)
+        else:
+            base = expanded
+        return os.path.realpath(base)
+    except Exception:
+        return None
+
+
+def _split_shell_segments(command: str) -> list[str]:
+    """Split a command line into sequential segments on ``&&``, ``||``, ``;``.
+
+    Best-effort: splits on the operators as raw substrings. Operators inside
+    quotes are rare in agent-issued commands and a stray split only ever makes
+    the guard slightly more conservative (more candidate targets), never less
+    safe. Pipes (``|``) and background (``&``) are treated as segment breaks too
+    so each simple command is scanned independently.
+    """
+    # Normalize the multi-char operators to ';' then split. Order matters so
+    # '&&' / '||' / '&>' aren't mangled by the single-char passes.
+    tmp = command
+    for op in ("&&", "||", ";", "\n"):
+        tmp = tmp.replace(op, "\x00")
+    # Single '|' (pipe) — but not '||' (already handled). Replace remaining.
+    tmp = tmp.replace("|", "\x00")
+    return [s for s in tmp.split("\x00") if s.strip()]
+
+
+def _shell_write_targets_in_segment(segment: str, cwd: Optional[str]) -> list[str]:
+    """Extract redirection + dest-arg write targets from one shell segment."""
+    targets: list[str] = []
+    try:
+        lex = shlex.shlex(segment, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        # Unbalanced quotes etc. — give up on this segment (best-effort).
+        return targets
+
+    words = [t for t in tokens if t not in {"&"}]
+
+    # Redirections: token after a redirect operator is the file.
+    for i, tok in enumerate(words):
+        if tok in _REDIRECT_OPS and i + 1 < len(words):
+            resolved = _resolve_against(cwd, words[i + 1])
+            if resolved:
+                targets.append(resolved)
+        # ``2>file`` style where shlex glued the fd+op (rare) — handled by the
+        # split above producing ['2', '>', 'file'] in most cases.
+
+    # Identify the command word (skip leading VAR=value assignments and the
+    # 'env' wrapper) so we can read dest-arg semantics.
+    cmd_idx = 0
+    while cmd_idx < len(words) and (
+        "=" in words[cmd_idx] and not words[cmd_idx].startswith(("/", ".", "-"))
+    ):
+        cmd_idx += 1
+    if cmd_idx >= len(words):
+        return targets
+
+    cmd = os.path.basename(words[cmd_idx])
+    operands = [
+        w
+        for w in words[cmd_idx + 1 :]
+        if w not in _REDIRECT_OPS and not w.startswith("-")
+    ]
+    # Drop redirect targets from operands so we don't double count / misread.
+    redirect_targets = {
+        words[i + 1]
+        for i, tok in enumerate(words)
+        if tok in _REDIRECT_OPS and i + 1 < len(words)
+    }
+    operands = [w for w in operands if w not in redirect_targets]
+
+    if cmd in _DEST_LAST_ARG_CMDS and operands:
+        resolved = _resolve_against(cwd, operands[-1])
+        if resolved:
+            targets.append(resolved)
+    elif cmd in _DEST_ALL_ARGS_CMDS:
+        for op in operands:
+            resolved = _resolve_against(cwd, op)
+            if resolved:
+                targets.append(resolved)
+    elif cmd == "dd":
+        for w in words[cmd_idx + 1 :]:
+            if w.startswith("of="):
+                resolved = _resolve_against(cwd, w[len("of="):])
+                if resolved:
+                    targets.append(resolved)
+
+    return targets
+
+
+def _python_write_targets_in_text(text: str, cwd: Optional[str]) -> list[str]:
+    """Extract obvious Python write targets (``open(p, 'w')`` etc.) from text.
+
+    Used both for ``execute_code`` source and for ``python3 -c "..."`` payloads
+    embedded in shell commands — the latter is the exact repro in #36645.
+    Best-effort literal matching only; dynamically-built paths are not caught.
+    """
+    targets: list[str] = []
+    for m in _PY_OPEN_RE.finditer(text):
+        mode = m.group("mode")
+        if any(c in mode for c in ("w", "a", "x", "+")):
+            resolved = _resolve_against(cwd, m.group("path"))
+            if resolved:
+                targets.append(resolved)
+    for m in _PY_WRITE_HELPER_RE.finditer(text):
+        resolved = _resolve_against(cwd, m.group("path"))
+        if resolved:
+            targets.append(resolved)
+    return targets
+
+
+def _cd_target_in_segment(segment: str) -> Optional[str]:
+    """If the segment is a ``cd <dir>``, return the raw directory argument."""
+    try:
+        lex = shlex.shlex(segment, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = [t for t in lex]
+    except ValueError:
+        return None
+    words = [t for t in tokens if t not in {"&"}]
+    if words and os.path.basename(words[0]) == "cd":
+        args = [w for w in words[1:] if not w.startswith("-")]
+        if args:
+            return args[0]
+    return None
+
+
+def find_unsafe_shell_writes(command: str, cwd: Optional[str] = None) -> list[str]:
+    """Best-effort list of write targets in ``command`` blocked by the safe root.
+
+    Walks the command segment-by-segment, tracking ``cd`` so that relative write
+    targets (including those inside ``python3 -c`` payloads) resolve against the
+    directory in effect at that point. Returns the de-duplicated, sorted set of
+    resolved paths that ``is_write_denied()`` rejects, excluding system temp dirs.
+
+    Returns an empty list when ``HERMES_WRITE_SAFE_ROOT`` is unset (the guard is
+    inert without a configured safe root). This is a heuristic, not a boundary —
+    see the module-level note for #36645.
+    """
+    if get_safe_write_root() is None:
+        return []
+    if not command or not isinstance(command, str):
+        return []
+
+    current_cwd = os.path.realpath(os.path.expanduser(cwd)) if cwd else os.getcwd()
+    candidates: list[str] = []
+
+    for segment in _split_shell_segments(command):
+        cd_target = _cd_target_in_segment(segment)
+        if cd_target is not None:
+            resolved_cd = _resolve_against(current_cwd, cd_target)
+            if resolved_cd:
+                current_cwd = resolved_cd
+            continue
+        candidates.extend(_shell_write_targets_in_segment(segment, current_cwd))
+        candidates.extend(_python_write_targets_in_text(segment, current_cwd))
+
+    return _filter_denied_targets(candidates)
+
+
+def find_unsafe_code_writes(code: str, cwd: Optional[str] = None) -> list[str]:
+    """Best-effort list of Python write targets in ``code`` blocked by the safe root.
+
+    For the ``execute_code`` tool, which runs arbitrary Python rather than a
+    shell line. Returns empty when ``HERMES_WRITE_SAFE_ROOT`` is unset.
+    """
+    if get_safe_write_root() is None:
+        return []
+    if not code or not isinstance(code, str):
+        return []
+    base_cwd = os.path.realpath(os.path.expanduser(cwd)) if cwd else os.getcwd()
+    return _filter_denied_targets(_python_write_targets_in_text(code, base_cwd))
+
+
+def _filter_denied_targets(candidates: list[str]) -> list[str]:
+    """Keep only candidates blocked by ``is_write_denied()``, minus temp dirs."""
+    temp_prefixes = _temp_dir_prefixes()
+    denied: set[str] = set()
+    for path in candidates:
+        if any(path == p[:-1] or path.startswith(p) for p in temp_prefixes):
+            continue
+        try:
+            if is_write_denied(path):
+                denied.add(path)
+        except Exception:
+            continue
+    return sorted(denied)
+
+
+def build_unsafe_write_warning(targets: list[str], *, blocked: bool = False) -> str:
+    """Render the model-facing message for out-of-safe-root write targets."""
+    safe_root = get_safe_write_root() or "(unset)"
+    shown = targets[:10]
+    listing = "\n".join(f"  - {t}" for t in shown)
+    if len(targets) > len(shown):
+        listing += f"\n  - ... and {len(targets) - len(shown)} more"
+    verb = "BLOCKED" if blocked else "WARNING"
+    tail = (
+        "Command refused. Write inside the safe root, or ask the user to "
+        "relax HERMES_TERMINAL_WRITE_GUARD."
+        if blocked
+        else "These writes will NOT be reachable by the user in broker / "
+        "multi-user mode. Write inside the safe root instead (use the "
+        "session work_dir, the Write tool, or a relative path under the "
+        "safe root)."
+    )
+    return (
+        f"[safe_root_guard {verb}] HERMES_WRITE_SAFE_ROOT={safe_root}. "
+        f"This command appears to write outside the safe root:\n{listing}\n{tail} "
+        f"(Defense-in-depth — not a security boundary; obfuscated writes can "
+        f"still bypass this check.)"
     )

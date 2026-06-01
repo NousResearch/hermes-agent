@@ -7149,6 +7149,45 @@ class GatewayRunner:
 
         return "pair"
 
+    def _build_cron_delivery_note(self, source) -> Optional[str]:
+        """Drain buffered cron deliveries for ``source`` and format a system note.
+
+        Returns None when nothing is pending. The returned text is prepended to
+        the system prompt (not the message array) so the agent gains awareness of
+        what its crons sent without breaking user/assistant alternation.
+        """
+        platform = getattr(source, "platform", None)
+        chat_id = getattr(source, "chat_id", None)
+        if platform is None or chat_id in (None, ""):
+            return None
+        platform_key = getattr(platform, "value", None) or str(platform)
+
+        from cron.pending_notices import drain
+
+        entries = drain(platform_key, str(chat_id))
+        if not entries:
+            return None
+
+        _PER_ENTRY_CAP = 1500
+        lines = [
+            "[System note: Since your last reply, the following automated cron "
+            "job(s) delivered messages to THIS chat. The user has already seen "
+            "them, but they are NOT in your message history. Use them as context; "
+            "do not re-send unless the user asks.",
+            "",
+        ]
+        for e in entries:
+            name = (e.get("job_name") or "cron").strip()
+            ts = (e.get("ts") or "").strip()
+            text = (e.get("text") or "").strip()
+            if len(text) > _PER_ENTRY_CAP:
+                text = text[:_PER_ENTRY_CAP].rstrip() + " […truncated]"
+            header = f"• {name}" + (f" (delivered {ts})" if ts else "")
+            lines.append(f"{header}:\n{text}")
+            lines.append("")
+        lines.append("]")
+        return "\n".join(lines)
+
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self.adapters.get(source.platform)
@@ -8754,7 +8793,19 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # Surface any cron jobs that delivered to this chat since the last turn.
+        # Cron deliveries don't enter message history (assistant-role mirroring
+        # broke alternation, #2313/#2221), so we fold them into the SYSTEM PROMPT
+        # here — alternation-safe, like the auto-reset note below — and drain the
+        # buffer once consumed.  See cron/pending_notices.py.
+        try:
+            cron_note = self._build_cron_delivery_note(source)
+            if cron_note:
+                context_prompt = cron_note + "\n\n" + context_prompt
+        except Exception as e:
+            logger.debug("Cron delivery note injection skipped (non-fatal): %s", e)
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):

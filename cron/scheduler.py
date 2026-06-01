@@ -640,10 +640,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
+    #
+    # notify_session (on by default; set cron.notify_session: false to disable)
+    # buffers each delivery so the chat's next interactive turn surfaces it in
+    # the system prompt — see cron/pending_notices.py.  This does NOT inject
+    # into message history (that broke alternation, #2313/#2221).
     wrap_response = True
+    notify_session = True
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {})
+        wrap_response = cron_cfg.get("wrap_response", True)
+        notify_session = cron_cfg.get("notify_session", True)
     except Exception:
         pass
 
@@ -664,6 +672,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
+    # For the session notice we want the raw job output (no wrapper/footer),
+    # with MEDIA tags stripped so the buffered text stays clean.
+    _, notice_text = BasePlatformAdapter.extract_media(content)
+    notice_text = (notice_text or "").strip()
 
     try:
         config = load_gateway_config()
@@ -771,6 +784,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    _record_session_notice(
+                        notify_session, platform_name, chat_id,
+                        notice_text, thread_id, job,
+                    )
             except Exception as e:
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -804,10 +821,43 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _record_session_notice(
+                notify_session, platform_name, chat_id,
+                notice_text, thread_id, job,
+            )
 
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
+
+
+def _record_session_notice(
+    enabled: bool,
+    platform_name: str,
+    chat_id: str,
+    text: str,
+    thread_id: Optional[str],
+    job: dict,
+) -> None:
+    """Buffer a delivered cron message for the chat's next interactive turn.
+
+    No-ops when disabled or empty. Best-effort: delivery has already
+    succeeded, so a buffering failure must never surface as a delivery error.
+    """
+    if not enabled or not text:
+        return
+    try:
+        from cron.pending_notices import record
+
+        record(
+            platform_name,
+            str(chat_id),
+            job.get("name", job.get("id", "")),
+            text,
+            thread_id=thread_id,
+        )
+    except Exception as e:
+        logger.debug("Job '%s': session notice not buffered (%s)", job.get("id"), e)
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds

@@ -809,6 +809,56 @@ class TestDeliverResultWrapping:
 
         mirror_mock.assert_not_called()
 
+    def test_records_session_notice_on_delivery(self):
+        """Successful delivery buffers a pending session notice (push side)."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.pending_notices.record") as rec_mock:
+            job = {
+                "id": "test-job",
+                "name": "PR Watch",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Hello!")
+
+        rec_mock.assert_called_once()
+        args, kwargs = rec_mock.call_args
+        assert args[0] == "telegram"
+        assert args[1] == "123"
+        assert args[2] == "PR Watch"
+        assert args[3] == "Hello!"
+
+    def test_notify_session_false_skips_notice(self):
+        """cron.notify_session: false disables the push buffer."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"notify_session": False}}), \
+             patch("cron.pending_notices.record") as rec_mock:
+            job = {
+                "id": "test-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Hello!")
+
+        rec_mock.assert_not_called()
+
     def test_origin_delivery_preserves_thread_id(self):
         """Origin delivery should forward thread_id to the send helper."""
         from gateway.config import Platform

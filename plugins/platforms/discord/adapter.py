@@ -3487,6 +3487,21 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        @tree.command(name="ideation", description="Brainstorm mode — no code, just planning")
+        @discord.app_commands.describe(topic="Topic to brainstorm, or: build, spec, clear")
+        async def slash_ideation(interaction: discord.Interaction, topic: str = ""):
+            await self._run_simple_slash(interaction, f"/ideation {topic}".strip())
+
+        @tree.command(name="goal", description="Set or manage a session goal")
+        @discord.app_commands.describe(args="Goal text, or: status, pause, resume, clear")
+        async def slash_goal(interaction: discord.Interaction, args: str = ""):
+            await self._run_simple_slash(interaction, f"/goal {args}".strip())
+
+        @tree.command(name="plan", description="Plan mode — write a plan, no execution")
+        @discord.app_commands.describe(topic="What to plan")
+        async def slash_plan(interaction: discord.Interaction, topic: str = ""):
+            await self._run_simple_slash(interaction, f"/plan {topic}".strip())
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash

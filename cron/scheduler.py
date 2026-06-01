@@ -954,7 +954,19 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         # shutil.which returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
         # traceback.
-        _bash = shutil.which("bash") or (
+        #
+        # On Windows, prefer Git Bash over WSL bash.  shutil.which may
+        # find C:\Users\...\WindowsApps\bash.exe (WSL) first, which
+        # doesn't understand MSYS or C: drive paths.  Git Bash lives
+        # next to git.exe, so look there first.
+        _bash = None
+        if sys.platform == "win32":
+            git_exe = shutil.which("git")
+            if git_exe:
+                git_bash = Path(git_exe).parent.parent.parent / "usr" / "bin" / "bash.exe"
+                if git_bash.is_file():
+                    _bash = str(git_bash)
+        _bash = _bash or shutil.which("bash") or (
             "/bin/bash" if os.path.isfile("/bin/bash") else None
         )
         if _bash is None:
@@ -963,7 +975,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        # Use Windows-native path (C:/Users/...) on Windows.  Git Bash
+        # understands these natively.  Avoid /c/ MSYS paths — they break
+        # if WSL bash is picked up instead.
+        argv = [_bash, str(path).replace("\\", "/")]
     else:
         argv = [sys.executable, str(path)]
 

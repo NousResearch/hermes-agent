@@ -6807,10 +6807,11 @@ def _default_spawn(
             if sk and sk != "kanban-worker":
                 cmd.extend(["--skills", sk])
     if task.model_override:
-        cmd.extend([
-            "chat",
-            "-q", prompt,
-        ])
+        cmd.extend(["-m", task.model_override])
+    cmd.extend([
+        "chat",
+        "-q", prompt,
+    ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

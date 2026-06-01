@@ -1067,8 +1067,8 @@ async def test_pin_helpers_use_fluxer_discord_shaped_pin_routes(monkeypatch):
     assert pinned is True
     assert unpinned is True
     assert adapter._request.await_args_list[0].args == ("GET", "/channels/chan-1/messages/pins")
-    assert adapter._request.await_args_list[1].args == ("PUT", "/channels/chan-1/messages/pins/msg-1")
-    assert adapter._request.await_args_list[2].args == ("DELETE", "/channels/chan-1/messages/pins/msg-1")
+    assert adapter._request.await_args_list[1].args == ("PUT", "/channels/chan-1/pins/msg-1")
+    assert adapter._request.await_args_list[2].args == ("DELETE", "/channels/chan-1/pins/msg-1")
 
 
 @pytest.mark.asyncio

@@ -5,11 +5,21 @@ description: "Use Hermes from Fluxer, an open-source Discord-like chat platform 
 
 # Fluxer
 
-[Fluxer](https://fluxer.app/) is a Discord-like open-source chat platform with channels, DMs, rich Markdown, reactions, and file uploads. Hermes talks to Fluxer through the bot REST API for outbound messages and the Fluxer Gateway WebSocket for inbound events.
+[Fluxer](https://fluxer.app/) is a free, open-source Discord-like chat platform with channels, DMs, rich Markdown, reactions, files, and voice/video chat. Hermes talks to Fluxer through the bot REST API for outbound messages and the Fluxer Gateway WebSocket for inbound events.
 
-Fluxer is a good fit when you want a self-hostable, chat-first surface for Hermes with Discord-style UX but without depending on Discord.
+Fluxer is a good fit when you want a self-hostable, chat-first surface for Hermes with Discord-style UX but without depending on Discord. The hosted web app also ships as an installable PWA (`display: standalone` in the web manifest), so privacy-oriented users can get an app-like mobile experience today while native mobile apps continue to mature.
 
 > Run `hermes gateway setup` and pick **Fluxer** for a guided setup when the plugin is installed.
+
+## Why Fluxer is interesting for Hermes
+
+Fluxer is not just “another Discord target.” A few platform traits make it especially attractive for Hermes users:
+
+- **Open source and self-hostable** — Fluxer is AGPL-3.0 and documents self-hosted deployments. That gives privacy-oriented users a path to keep their community/chat infrastructure under their own control.
+- **Installable web app today** — the web client exposes a PWA manifest and can run in a standalone app-like window on mobile/desktop browsers; native mobile clients are still described as coming.
+- **Discord-like community model** — guilds, channels, DMs/group DMs, roles, permissions, audit logs, invites, pins, reactions, webhooks, custom emoji/stickers, and message search are first-class Fluxer concepts.
+- **Strong media/voice foundation** — Fluxer exposes attachments, media proxying, voice/video/call APIs, RTC regions, screen-sharing UX, and entrance sounds. Hermes currently uses the message/media layer, while live call participation is intentionally out of scope for this text gateway adapter.
+- **Automation-friendly APIs** — Fluxer has bot tokens, OAuth2 applications, channel/guild webhooks, GitHub/Slack-compatible webhook endpoints, scheduled messages, read states, and gateway events. The Hermes plugin only implements the pieces needed for safe agent chat, but the platform has room for future deeper automations.
 
 ## What works
 
@@ -205,11 +215,11 @@ Hermes includes Fluxer pin helpers for deployments that expose pin routes:
 
 ```text
 GET    /channels/{channel_id}/messages/pins
-PUT    /channels/{channel_id}/messages/pins/{message_id}
-DELETE /channels/{channel_id}/messages/pins/{message_id}
+PUT    /channels/{channel_id}/pins/{message_id}
+DELETE /channels/{channel_id}/pins/{message_id}
 ```
 
-The hosted Fluxer API has been verified to list pins with `GET /channels/{id}/messages/pins`.
+The hosted Fluxer API has been verified to list pins with `GET /channels/{id}/messages/pins` and documents pin/unpin via `/channels/{id}/pins/{message_id}`.
 
 Fluxer hosted API supports Discord-like reply references via `message_reference`; Hermes uses those for reply context and referenced-message lookup.
 

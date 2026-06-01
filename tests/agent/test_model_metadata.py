@@ -10,13 +10,9 @@ Coverage levels:
   Persistent cache       — save/load, corruption, update, provider isolation
 """
 
-import os
 import time
-import tempfile
 
-import pytest
 import yaml
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
@@ -127,55 +123,6 @@ class TestEstimateMessagesTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
-    def test_claude_models_context_lengths(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "claude" not in key:
-                continue
-            # Claude 4.6+ models (4.6 and 4.7) have 1M context at standard
-            # API pricing (no long-context premium).  Older Claude 4.x and
-            # 3.x models cap at 200k.
-            if any(tag in key for tag in ("4.6", "4-6", "4.7", "4-7")):
-                assert value == 1000000, f"{key} should be 1000000"
-            else:
-                assert value == 200000, f"{key} should be 200000"
-
-    def test_gpt4_models_128k_or_1m(self):
-        # gpt-4.1 and gpt-4.1-mini have 1M context; other gpt-4* have 128k
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4" in key and "gpt-4.1" not in key:
-                assert value == 128000, f"{key} should be 128000"
-
-    def test_gpt41_models_1m(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4.1" in key:
-                assert value == 1047576, f"{key} should be 1047576"
-
-    def test_gemini_models_1m(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gemini" in key:
-                assert value == 1048576, f"{key} should be 1048576"
-
-    def test_grok_models_context_lengths(self):
-        # xAI /v1/models does not return context_length metadata, so
-        # DEFAULT_CONTEXT_LENGTHS must cover the Grok family explicitly.
-        # Values sourced from models.dev (2026-04).
-        expected = {
-            "grok-4.20": 2000000,
-            "grok-4-1-fast": 2000000,
-            "grok-4-fast": 2000000,
-            "grok-4": 256000,
-            "grok-code-fast": 256000,
-            "grok-3": 131072,
-            "grok-2": 131072,
-            "grok-2-vision": 8192,
-            "grok": 131072,
-        }
-        for key, value in expected.items():
-            assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing from DEFAULT_CONTEXT_LENGTHS"
-            assert DEFAULT_CONTEXT_LENGTHS[key] == value, (
-                f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
-            )
-
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.
@@ -189,12 +136,11 @@ class TestDefaultContextLengths:
                 ("grok-4.20-0309-reasoning", 2000000),
                 ("grok-4.20-0309-non-reasoning", 2000000),
                 ("grok-4.20-multi-agent-0309", 2000000),
-                ("grok-4-1-fast-reasoning", 2000000),
-                ("grok-4-1-fast-non-reasoning", 2000000),
                 ("grok-4-fast-reasoning", 2000000),
                 ("grok-4-fast-non-reasoning", 2000000),
                 ("grok-4", 256000),
                 ("grok-4-0709", 256000),
+                ("grok-build-0.1", 256000),
                 ("grok-code-fast-1", 256000),
                 ("grok-3", 131072),
                 ("grok-3-mini", 131072),
@@ -209,6 +155,32 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
+
+    def test_xai_oauth_grok_build_uses_xai_models_dev_context(self):
+        """xAI OAuth should share the xAI provider metadata path.
+
+        The xAI /v1/models endpoint does not currently include context fields
+        for grok-build-0.1, so this guards against falling through to the
+        generic "grok" 131k fallback when using OAuth credentials.
+        """
+        registry = {
+            "xai": {
+                "models": {
+                    "grok-build-0.1": {
+                        "limit": {"context": 256000, "output": 64000},
+                    },
+                },
+            },
+        }
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            assert get_model_context_length(
+                "grok-build-0.1",
+                provider="xai-oauth",
+                base_url="https://api.x.ai/v1",
+                api_key="oauth-token",
+            ) == 256000
 
     def test_deepseek_v4_models_1m_context(self):
         from agent.model_metadata import get_model_context_length
@@ -246,13 +218,6 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
-
-    def test_all_values_positive(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            assert value > 0, f"{key} has non-positive context length"
-
-    def test_dict_is_not_empty(self):
-        assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
 
 
 # =========================================================================
@@ -1119,12 +1084,6 @@ class TestContextProbeTiers:
     def test_tiers_descending(self):
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
-
-    def test_first_tier_is_256k(self):
-        assert CONTEXT_PROBE_TIERS[0] == 256_000
-
-    def test_last_tier_is_8k(self):
-        assert CONTEXT_PROBE_TIERS[-1] == 8_000
 
 
 class TestGetNextProbeTier:

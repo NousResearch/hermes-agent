@@ -8,29 +8,29 @@ import {
 import {
   ChevronDown,
   Pencil,
-  Plus,
   Terminal,
   Trash2,
   Users,
   X,
 } from "lucide-react";
 import spinners from "unicode-animations";
-import { H2 } from "@/components/NouiTypography";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { useToast } from "@/hooks/useToast";
-import { useConfirmDelete } from "@/hooks/useConfirmDelete";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
-import { Toast } from "@/components/Toast";
-import { Card, CardContent } from "@/components/ui/card";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { cn, themedBody } from "@/lib/utils";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -231,8 +231,11 @@ export default function ProfilesPage() {
   // Put "Create" button in page header
   useLayoutEffect(() => {
     setEnd(
-      <Button size="sm" onClick={() => setCreateModalOpen(true)}>
-        <Plus className="h-3 w-3" />
+      <Button
+        className="uppercase"
+        size="sm"
+        onClick={() => setCreateModalOpen(true)}
+      >
         {t.common.create}
       </Button>,
     );
@@ -256,10 +259,7 @@ export default function ProfilesPage() {
   }
 
   return (
-    // Profile names, model slugs, and paths are case-sensitive; opt out of
-    // the app shell's global ``uppercase`` so they render as the user typed.
-    // Children that explicitly opt back in (Badges, etc.) keep their casing.
-    <div className="flex flex-col gap-6 normal-case">
+    <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -287,7 +287,7 @@ export default function ProfilesPage() {
           aria-modal="true"
           aria-labelledby="create-profile-title"
         >
-          <div className="relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col">
+          <div className={cn(themedBody, "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col")}>
             <Button
               ghost
               size="icon"
@@ -301,7 +301,7 @@ export default function ProfilesPage() {
             <header className="p-5 pb-3 border-b border-border">
               <h2
                 id="create-profile-title"
-                className="font-display text-base tracking-wider uppercase"
+                className="font-mondwest text-display text-base tracking-wider"
               >
                 {t.profiles.newProfile}
               </h2>
@@ -339,7 +339,7 @@ export default function ProfilesPage() {
                 />
 
                 <Label
-                  className="font-sans normal-case tracking-normal text-sm cursor-pointer"
+                  className="font-mondwest normal-case tracking-normal text-sm cursor-pointer"
                   htmlFor="clone-from-default"
                 >
                   {t.profiles.cloneFromDefault}
@@ -347,8 +347,12 @@ export default function ProfilesPage() {
               </div>
 
               <div className="flex justify-end">
-                <Button size="sm" onClick={handleCreate} disabled={creating}>
-                  <Plus className="h-3 w-3" />
+                <Button
+                  className="uppercase"
+                  size="sm"
+                  onClick={handleCreate}
+                  disabled={creating}
+                >
                   {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
@@ -523,7 +527,7 @@ export default function ProfilesPage() {
                 <div className="border-t border-border px-4 pb-4 pt-3 flex flex-col gap-2">
                   <Label
                     htmlFor={`soul-editor-${p.name}`}
-                    className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground"
+                    className="flex items-center gap-2 font-mondwest text-display text-xs tracking-wider text-muted-foreground"
                   >
                     {t.profiles.soulSection}
                   </Label>
@@ -537,10 +541,11 @@ export default function ProfilesPage() {
                   <div>
                     <Button
                       size="sm"
+                      className="uppercase"
                       onClick={() => handleSaveSoul(p.name)}
                       disabled={soulSaving}
                     >
-                      {soulSaving ? t.common.saving : t.profiles.saveSoul}
+                      {soulSaving ? t.common.saving : t.common.save}
                     </Button>
                   </div>
                 </div>

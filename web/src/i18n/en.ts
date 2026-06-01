@@ -127,6 +127,8 @@ export const en: Translations = {
 
   sessions: {
     title: "Sessions",
+    history: "History",
+    overview: "Overview",
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
     noMatch: "No sessions match your search",
@@ -269,7 +271,7 @@ export const en: Translations = {
       "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
     identifierLabel: "Git URL or owner/repo",
     inactive: "inactive",
-    installBtn: "Install from Git",
+    installBtn: "Install",
     installHeading: "Install from GitHub / Git URL",
     installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
     memoryProviderLabel: "Memory provider",
@@ -367,6 +369,8 @@ export const en: Translations = {
     description: "Manage API keys and secrets stored in",
     hideAdvanced: "Hide Advanced",
     showAdvanced: "Show Advanced",
+    showLess: "Show less",
+    showMore: "Show more",
     llmProviders: "LLM Providers",
     providersConfigured: "{configured} of {total} providers configured",
     getKey: "Get key",
@@ -392,7 +396,7 @@ export const en: Translations = {
     disconnect: "Disconnect",
     managedExternally: "Managed externally",
     copied: "Copied ✓",
-    cli: "CLI",
+    cli: "Copy",
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
@@ -419,7 +423,7 @@ export const en: Translations = {
   },
 
   language: {
-    switchTo: "Switch to Chinese",
+    switchTo: "Switch language",
   },
 
   theme: {

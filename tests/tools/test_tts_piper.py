@@ -7,7 +7,6 @@ without requiring the ``piper-tts`` package to actually be installed
 """
 
 import json
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch

@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import types
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import pytest
 import yaml
@@ -46,6 +46,18 @@ def matrix_env(tmp_path, monkeypatch):
         fal_calls.append({"endpoint": endpoint, "arguments": arguments})
         return {"video": {"url": f"https://fake-fal/{endpoint.replace('/','_')}.mp4"}}
     fake_fal.subscribe = _subscribe  # type: ignore
+
+    class _FalHandle:
+        def __init__(self, result):
+            self._result = result
+        def get(self):
+            return self._result
+
+    def _submit(endpoint, arguments=None, headers=None):
+        fal_calls.append({"endpoint": endpoint, "arguments": arguments})
+        return _FalHandle({"video": {"url": f"https://fake-fal/{endpoint.replace('/','_')}.mp4"}})
+    fake_fal.submit = _submit  # type: ignore
+
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
 
     # httpx stub for xAI
@@ -95,7 +107,9 @@ def _invoke_tool(home, cfg: dict, args: dict) -> dict:
     if hasattr(cfg_mod, "_invalidate_load_config_cache"):
         cfg_mod._invalidate_load_config_cache()
 
-    from tools.registry import registry
+    from tools.registry import discover_builtin_tools, registry
+    if "video_generate" not in registry._tools:
+        discover_builtin_tools()
     handler = registry._tools["video_generate"].handler
     return json.loads(handler(args))
 

@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _line = load_plugin_adapter("line")
@@ -245,3 +247,21 @@ async def test_verify_code_uses_adapter_platform(monkeypatch):
 
     assert redeem.await_args_list[0].kwargs["platform"] == "line"
     assert redeem.await_args_list[1].kwargs["platform"] == "line_admin"
+
+
+def test_plugin_yaml_declares_admin_env_as_optional():
+    plugin_yaml = Path(__file__).resolve().parents[2] / "plugins/platforms/line/plugin.yaml"
+    manifest = yaml.safe_load(plugin_yaml.read_text())
+    required = {entry["name"] for entry in manifest["requires_env"]}
+    optional = {entry["name"] for entry in manifest["optional_env"]}
+
+    admin_names = {
+        "LINE_ADMIN_CHANNEL_ACCESS_TOKEN",
+        "LINE_ADMIN_CHANNEL_SECRET",
+        "LINE_ADMIN_CHANNEL_ALLOWED_USERS",
+        "LINE_ADMIN_CHANNEL_PORT",
+        "LINE_ADMIN_CHANNEL_HOME",
+    }
+
+    assert admin_names <= optional
+    assert not (admin_names & required)

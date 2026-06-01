@@ -27,6 +27,28 @@ requires_env:
     url: "https://developers.line.biz/console/"
     password: true
 optional_env:
+  - name: LINE_ADMIN_CHANNEL_ACCESS_TOKEN
+    description: "Internal/admin LINE channel long-lived access token (optional second channel)"
+    prompt: "Admin LINE channel access token"
+    url: "https://developers.line.biz/console/"
+    password: true
+  - name: LINE_ADMIN_CHANNEL_SECRET
+    description: "Internal/admin LINE channel secret for webhook signature verification"
+    prompt: "Admin LINE channel secret"
+    url: "https://developers.line.biz/console/"
+    password: true
+  - name: LINE_ADMIN_CHANNEL_ALLOWED_USERS
+    description: "Comma-separated LINE user IDs allowed to DM the internal/admin bot (U-prefixed)"
+    prompt: "Admin allowed user IDs (comma-separated)"
+    password: false
+  - name: LINE_ADMIN_CHANNEL_PORT
+    description: "Internal/admin webhook listen port (default: 8647)"
+    prompt: "Admin webhook port"
+    password: false
+  - name: LINE_ADMIN_CHANNEL_HOME
+    description: "Default internal/admin user/group/room ID for cron / notification delivery"
+    prompt: "Admin home channel ID (or empty)"
+    password: false
   - name: LINE_PORT
     description: "Webhook listen port (default: 8646)"
     prompt: "Webhook port"

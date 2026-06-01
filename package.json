@@ -7,7 +7,8 @@
     "apps/*"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
+    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "validate": "scripts/validate.sh"
   },
   "repository": {
     "type": "git",

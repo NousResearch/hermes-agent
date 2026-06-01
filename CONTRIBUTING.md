@@ -121,12 +121,14 @@ hermes chat -q "Hello"
 ### Run tests
 
 ```bash
-# Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
+# Fast pre-PR gate: ruff plus the Windows footgun scanner
+scripts/validate.sh
+
+# Full suite — per-file subprocess runner, hermetic env; see AGENTS.md
 scripts/run_tests.sh
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+# Scoped tests for fast feedback
+scripts/run_tests.sh tests/hermes_cli/test_tips.py -- -q
 ```
 
 ---
@@ -593,7 +595,7 @@ that touches the OS, assume *any* platform can hit your code path.
 
 > **Before you PR:** run `scripts/check-windows-footguns.py` to catch the
 > common Windows-unsafe patterns in your diff. It's grep-based and cheap;
-> CI runs it on every PR too.
+> CI runs it on every PR too. `scripts/validate.sh` includes this check.
 
 ### Critical rules
 
@@ -857,10 +859,11 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
-2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
-4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+1. **Run validation**: `scripts/validate.sh` (blocking ruff + Windows footgun scanner)
+2. **Run tests**: `scripts/run_tests.sh` for the full suite, or scope to one file with `scripts/run_tests.sh tests/hermes_cli/test_tips.py -- -q`
+3. **Test manually**: Run `hermes` and exercise the code path you changed
+4. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
+5. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
 ### PR description
 

@@ -1038,38 +1038,45 @@ def profile_env(tmp_path, monkeypatch):
 
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
-on a 16+ core developer machine with API keys set diverges from CI in ways
-that have caused multiple "works locally, fails in CI" incidents (and the reverse).
+and PYTHONHASHSEED=0) and delegates to `scripts/run_tests_parallel.py`. That
+runner discovers files, then runs each test file in its own fresh
+`python -m pytest <file>` subprocess with bounded parallelism. Direct `pytest`
+on a developer machine with API keys set diverges from CI in ways that have
+caused multiple "works locally, fails in CI" incidents (and the reverse).
+
+Run the fast pre-PR validation gate before opening a PR:
+
+```bash
+scripts/validate.sh                                # ruff + Windows footguns
+```
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
-scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
-scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
-scripts/run_tests.sh --no-isolate tests/foo/          # disable subprocess isolation (faster, for debugging)
+scripts/run_tests.sh tests/agent/test_foo.py          # one file
+scripts/run_tests.sh tests/agent/test_foo.py -- -q    # one file + pytest args
+scripts/run_tests.sh -- -v --tb=long                  # pytest args only
 ```
 
-### Subprocess-per-test isolation
+### Per-file subprocess isolation
 
-Every test runs in a freshly-spawned Python subprocess via the in-tree plugin
-at `tests/_isolate_plugin.py`. This means module-level dicts/sets and
-ContextVars from one test cannot leak into the next — the historic
-`_reset_module_state` autouse fixture is gone.
+Every test file runs in a freshly-spawned Python subprocess via
+`scripts/run_tests_parallel.py`. This means module-level dicts/sets and
+ContextVars from one file cannot leak into the next — the historic
+`_reset_module_state` autouse fixture and the older per-test isolation plugin
+are gone.
 
 Implementation notes:
 
-- The plugin uses `multiprocessing.get_context("spawn")`, which works on
-  Linux, macOS, and Windows alike (POSIX `fork` is not used).
-- Per-test overhead is ~0.5–1.0s (Python startup + pytest collection). xdist
-  parallelism amortizes this across cores; on a 20-core box the full suite
-  finishes in roughly the same wall time as before, but flake-free.
-- `isolate_timeout` (configured in `pyproject.toml`) caps each test at 30s.
-  Hangs are killed and surfaced as a failure report.
-- Pass `--no-isolate` to disable isolation — useful when debugging a single
-  test interactively, or when you specifically want to verify state leakage.
-- The plugin disables itself in child processes (sentinel envvar
-  `HERMES_ISOLATE_CHILD=1`), so there's no fork-bomb risk.
+- `scripts/run_tests_parallel.py` uses a bounded `subprocess.Popen` pool, not
+  pytest-xdist workers.
+- Per-file overhead is much lower than per-test process spawning while still
+  preventing cross-file module-level state leakage.
+- `pytest-timeout` (configured in `pyproject.toml`) caps individual tests at
+  30s inside each file subprocess. The runner also has an outer per-file wall
+  clock cap.
+- Path arguments before `--` select files or directories. Arguments after
+  `--` pass through to each pytest invocation.
 
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
 
@@ -1081,7 +1088,7 @@ Five real sources of local-vs-CI drift the script closes:
 | HOME / `~/.hermes/` | Your real config+auth.json | Temp dir per test |
 | Timezone | Local TZ (PDT etc.) | UTC |
 | Locale | Whatever is set | C.UTF-8 |
-| xdist workers | `-n auto` = all cores | `-n auto` (safe — subprocess isolation prevents cross-worker flakes) |
+| Test process lifetime | One long-lived pytest process | Fresh subprocess per test file |
 
 `tests/conftest.py` also enforces points 1-4 as an autouse fixture so ANY pytest
 invocation (including IDE integrations) gets hermetic behavior — but the wrapper
@@ -1090,9 +1097,9 @@ is belt-and-suspenders.
 ### Running without the wrapper (only if you must)
 
 If you can't use the wrapper (e.g. inside an IDE that shells pytest directly),
-at minimum activate the venv. The isolation plugin loads automatically from
-`addopts` in `pyproject.toml`, so you get the same per-test process isolation
-either way.
+at minimum activate the venv and mirror the deterministic environment. You do
+not get the per-file fresh-process boundary unless you use `scripts/run_tests.sh`
+or call `scripts/run_tests_parallel.py`.
 
 ```bash
 source .venv/bin/activate   # or: source venv/bin/activate
@@ -1102,7 +1109,7 @@ python -m pytest tests/ -q
 If you need to bypass isolation for fast feedback while debugging:
 
 ```bash
-python -m pytest tests/agent/test_foo.py -q --no-isolate
+python -m pytest tests/agent/test_foo.py -q
 ```
 
 Always run the full suite before pushing changes.

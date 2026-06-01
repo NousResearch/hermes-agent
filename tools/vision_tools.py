@@ -513,6 +513,12 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
             return True
         return False
 
+    # Kimi (Kimi Code + Moonshot Open Platform) — K2.6+ supports native
+    # multimodal input via both Anthropic-compatible and OpenAI-compatible
+    # endpoints. Verified by user testing (2026-06-01).
+    if p in {"kimi-coding", "kimi-coding-cn", "kimi", "moonshot", "moonshot-cn"}:
+        return True
+
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
     # multimodal support empirically.

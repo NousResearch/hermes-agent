@@ -295,13 +295,12 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # it must skip straight to the aggregator chain instead of returning a client
 # that will 404 on every vision request.
 #
-# kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
-# api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
-# describe as having no image_in capability. Vision lives on the separate
-# Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+# kimi-coding / kimi-coding-cn: Kimi K2.6+ supports native multimodal
+# input through the /coding endpoint (Anthropic Messages wire). The old
+# restriction (no image_in) was accurate for pre-K2.6 models but is now
+# obsolete. Verified by user testing (2026-06-01).  See #17076.
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
-    "kimi-coding",
-    "kimi-coding-cn",
+    # Empty — kimi-coding supports vision as of K2.6.
 })
 
 # OpenRouter app attribution headers (base — always sent).
@@ -4036,13 +4035,10 @@ def resolve_vision_provider_client(
                     )
                     return _finalize(main_provider, sync_client, default_model)
             elif main_provider in _PROVIDERS_WITHOUT_VISION:
-                # Kimi Coding Plan's /coding endpoint (Anthropic Messages wire)
-                # does not accept image input — Kimi's own docs say "Current
-                # model does not support image input, switch to a model with
-                # image_in capability" and vision lives on the separate Kimi
-                # Platform (api.moonshot.ai). Skip the main provider and fall
-                # through to the aggregator chain instead of returning a
-                # client that will 404 on every vision request (#17076).
+                # This branch is now dead code — _PROVIDERS_WITHOUT_VISION is
+                # empty since Kimi K2.6+ supports native vision. Kept as a
+                # structural placeholder so the fallback-chain logic remains
+                # readable if a future provider needs blacklisting.
                 logger.debug(
                     "Vision auto-detect: skipping main provider %s (no "
                     "vision support) — falling through to aggregator chain",

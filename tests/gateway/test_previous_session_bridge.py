@@ -264,3 +264,55 @@ def test_build_session_context_prompt_ignores_empty_tail():
     )
     out = build_session_context_prompt(ctx, redact_pii=False, previous_session_tail="")
     assert "## Previous Session Tail" not in out
+
+
+# ---------------------------------------------------------------------------
+# Task 6: End-to-end integration — SessionDB → bridge → context prompt
+# ---------------------------------------------------------------------------
+
+def test_end_to_end_bridge(tmp_path, monkeypatch):
+    """
+    Full path: write messages to SessionDB → rotate the session in SessionStore
+    → render_previous_session_tail surfaces the prior turns.
+    """
+    from datetime import datetime, timedelta
+
+    monkeypatch.setattr("hermes_state.get_hermes_home", lambda: tmp_path)
+
+    from hermes_state import SessionDB
+    from gateway.config import GatewayConfig, SessionResetPolicy
+    from gateway.session import (
+        SessionStore, SessionSource, Platform,
+        render_previous_session_tail,
+    )
+
+    db = SessionDB()
+    cfg = GatewayConfig()
+    cfg.default_reset_policy = SessionResetPolicy(mode="idle", idle_minutes=1)
+
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=cfg)
+    src = SessionSource(
+        platform=Platform.SIGNAL, chat_id="c1", user_id="u1", chat_type="dm",
+    )
+
+    first = store.get_or_create_session(src)
+    db.create_session(session_id=first.session_id, source="signal", user_id="u1")
+    db.append_message(first.session_id, "user", "what's the weather tomorrow?")
+    db.append_message(
+        first.session_id, "assistant", "Should I send the draft? Reply yes/no.",
+    )
+    # Simulate activity + expiry
+    first.total_tokens = 500
+    first.updated_at = datetime.now() - timedelta(hours=2)
+
+    second = store.get_or_create_session(src)
+    assert second.was_auto_reset is True
+    assert second.previous_session_id == first.session_id
+
+    tail = render_previous_session_tail(
+        db.get_messages(first.session_id),
+        max_exchanges=3, max_chars=4000,
+    )
+    assert "## Previous Session Tail" in tail
+    assert "weather tomorrow" in tail
+    assert "Reply yes/no" in tail

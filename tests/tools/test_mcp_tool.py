@@ -4013,62 +4013,107 @@ class TestMCPInvalidContentTypeError:
         assert "application/json" in msg or "text/event-stream" in msg
 
     @pytest.mark.asyncio
-    async def test_html_response_raises_invalid_content_type_error(self):
-        """_detect_non_mcp_content_type hook raises on text/html 200 response."""
+    async def test_html_response_raises_via_httpx_event_hook(self):
+        """_detect_non_mcp_content_type raises on text/html via real httpx event_hooks."""
         import httpx
         from tools.mcp_tool import _MCPInvalidContentTypeError
 
-        # Simulate what the hook does internally
-        async def simulate_hook(content_type: str, status_code: int = 200):
-            from tools.mcp_tool import _MCPInvalidContentTypeError
-            if status_code >= 400:
+        _server_name = "test_server"
+
+        async def _detect_non_mcp_content_type(response):
+            if response.status_code >= 400:
                 return
-            ct_base = content_type.split(";")[0].strip().lower()
-            _VALID = {"application/json", "text/event-stream"}
-            if ct_base and ct_base not in _VALID:
+            ct = response.headers.get("content-type", "")
+            ct_base = ct.split(";")[0].strip().lower()
+            if ct_base and ct_base not in {"application/json", "text/event-stream"}:
                 raise _MCPInvalidContentTypeError(
-                    f"MCP server 'test' returned unexpected content type "
-                    f"'{content_type}' — expected application/json or "
+                    f"MCP server '{_server_name}' returned unexpected "
+                    f"content type '{ct}' — expected application/json or "
                     "text/event-stream. Verify the URL points to an MCP endpoint, "
                     "not a web application root."
                 )
 
-        # text/html should raise
-        with pytest.raises(_MCPInvalidContentTypeError) as exc_info:
-            await simulate_hook("text/html; charset=utf-8")
+        class _HtmlTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                    content=b"<html>not mcp</html>",
+                )
+
+        async with httpx.AsyncClient(
+            transport=_HtmlTransport(),
+            event_hooks={"response": [_detect_non_mcp_content_type]},
+        ) as client:
+            with pytest.raises(_MCPInvalidContentTypeError) as exc_info:
+                await client.post("http://fake-mcp/mcp")
         assert "text/html" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_valid_mcp_content_types_do_not_raise(self):
-        """_detect_non_mcp_content_type hook must not raise for valid MCP content types."""
+    async def test_valid_mcp_content_types_do_not_raise_via_event_hook(self):
+        """Valid MCP content types pass through the event hook without raising."""
+        import httpx
         from tools.mcp_tool import _MCPInvalidContentTypeError
 
-        async def simulate_hook(content_type: str, status_code: int = 200):
-            if status_code >= 400:
+        async def _detect_non_mcp_content_type(response):
+            if response.status_code >= 400:
                 return
-            ct_base = content_type.split(";")[0].strip().lower()
-            _VALID = {"application/json", "text/event-stream"}
-            if ct_base and ct_base not in _VALID:
-                raise _MCPInvalidContentTypeError("unexpected content type")
+            ct = response.headers.get("content-type", "")
+            ct_base = ct.split(";")[0].strip().lower()
+            if ct_base and ct_base not in {"application/json", "text/event-stream"}:
+                raise _MCPInvalidContentTypeError(
+                    f"Unexpected content type: '{ct}'"
+                )
 
-        # Valid types must not raise
-        await simulate_hook("application/json")
-        await simulate_hook("application/json; charset=utf-8")
-        await simulate_hook("text/event-stream")
+        for content_type in ("application/json", "application/json; charset=utf-8", "text/event-stream"):
+            class _ValidTransport(httpx.AsyncBaseTransport):
+                def __init__(self, ct):
+                    self._ct = ct
+                async def handle_async_request(self, request):
+                    return httpx.Response(
+                        200,
+                        headers={"content-type": self._ct},
+                        content=b"{}",
+                    )
+
+            async with httpx.AsyncClient(
+                transport=_ValidTransport(content_type),
+                event_hooks={"response": [_detect_non_mcp_content_type]},
+            ) as client:
+                # Should not raise
+                await client.post("http://fake-mcp/mcp")
 
     @pytest.mark.asyncio
-    async def test_4xx_responses_do_not_raise_content_type_error(self):
-        """Non-MCP content type on 4xx/5xx should not raise — HTTP errors handle those."""
+    async def test_4xx_responses_skip_content_type_check_via_event_hook(self):
+        """4xx/5xx responses bypass content-type checking in the event hook."""
+        import httpx
         from tools.mcp_tool import _MCPInvalidContentTypeError
 
-        async def simulate_hook(content_type: str, status_code: int):
-            if status_code >= 400:
+        async def _detect_non_mcp_content_type(response):
+            if response.status_code >= 400:
                 return
-            ct_base = content_type.split(";")[0].strip().lower()
-            _VALID = {"application/json", "text/event-stream"}
-            if ct_base and ct_base not in _VALID:
-                raise _MCPInvalidContentTypeError("unexpected content type")
+            ct = response.headers.get("content-type", "")
+            ct_base = ct.split(";")[0].strip().lower()
+            if ct_base and ct_base not in {"application/json", "text/event-stream"}:
+                raise _MCPInvalidContentTypeError(
+                    f"Unexpected content type: '{ct}'"
+                )
 
-        # 4xx and 5xx with HTML should NOT raise _MCPInvalidContentTypeError
-        await simulate_hook("text/html", status_code=404)
-        await simulate_hook("text/html", status_code=500)
+        for status_code in (404, 500):
+            class _ErrorTransport(httpx.AsyncBaseTransport):
+                def __init__(self, sc):
+                    self._sc = sc
+                async def handle_async_request(self, request):
+                    return httpx.Response(
+                        self._sc,
+                        headers={"content-type": "text/html"},
+                        content=b"<html>error</html>",
+                    )
+
+            async with httpx.AsyncClient(
+                transport=_ErrorTransport(status_code),
+                event_hooks={"response": [_detect_non_mcp_content_type]},
+            ) as client:
+                # Should not raise _MCPInvalidContentTypeError
+                resp = await client.post("http://fake-mcp/mcp")
+                assert resp.status_code == status_code

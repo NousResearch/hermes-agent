@@ -86,6 +86,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from gateway.metatron_frontdoor import handle_metatron_frontdoor_text
 from utils import atomic_replace
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -5225,6 +5226,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
+            # Metatron front-door: deterministic hub commands (bootstrap THE,
+            # create coding task, what's blocked) are answered directly from
+            # Paperclip and never reach the agent handler. None == not a hub
+            # command → fall through to normal routing.
+            frontdoor_response = await handle_metatron_frontdoor_text(event.text or "")
+            if frontdoor_response is not None:
+                logger.info("[Telegram] Metatron front-door handled batch %s", key)
+                await self.send(getattr(event.source, "chat_id", None), frontdoor_response)
+                return
             await self.handle_message(event)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:

@@ -208,3 +208,55 @@ def test_docker_mount_cwd_to_workspace_is_bridged_everywhere():
     assert "docker_mount_cwd_to_workspace" in _gateway_env_map_keys()
     assert "docker_mount_cwd_to_workspace" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE" in _terminal_tool_env_var_names()
+
+
+def test_docker_env_is_bridged_everywhere():
+    """Regression pin for docker_env config key being silently ignored.
+
+    ``terminal.docker_env`` in config.yaml specifies extra env vars to inject
+    into the Docker container at runtime.  The key was present in
+    _create_environment's container_config consumer (line ~1130) but never
+    bridged from config.yaml to TERMINAL_DOCKER_ENV, so the dict was always
+    empty regardless of what the user set.  Guard all four bridging points so
+    this cannot regress.
+    """
+    assert "docker_env" in _cli_env_map_keys()
+    assert "docker_env" in _gateway_env_map_keys()
+    assert "docker_env" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_persist_across_processes_is_bridged_everywhere():
+    """Regression pin for the cross-process container reuse toggle.
+
+    ``terminal.docker_persist_across_processes`` (issue #20561) controls
+    whether ``DockerEnvironment.__init__`` probes for and reuses an existing
+    labeled container at startup, and whether ``cleanup()`` removes the
+    container on Hermes exit or just stops it (keeping it for the next
+    process).  Same four-bridge invariant as docker_run_as_host_user /
+    docker_env / docker_mount_cwd_to_workspace — drift between any of the
+    four sites means ``terminal.docker_persist_across_processes: false`` in
+    config.yaml silently does nothing for that entry point, leaving the
+    user unable to opt out of the documented "ONE long-lived container
+    shared across sessions" behavior.
+    """
+    assert "docker_persist_across_processes" in _cli_env_map_keys()
+    assert "docker_persist_across_processes" in _gateway_env_map_keys()
+    assert "docker_persist_across_processes" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES" in _terminal_tool_env_var_names()
+
+
+def test_docker_orphan_reaper_is_bridged_everywhere():
+    """Regression pin for the startup orphan reaper toggle (issue #20561).
+
+    ``terminal.docker_orphan_reaper`` controls whether Hermes sweeps stale
+    Exited containers from prior SIGKILL'd processes at startup.  Same
+    four-site bridge invariant — drift means
+    ``terminal.docker_orphan_reaper: false`` silently does nothing for one
+    entry point, and the reaper either runs when the operator disabled it
+    or fails to run when they enabled it.
+    """
+    assert "docker_orphan_reaper" in _cli_env_map_keys()
+    assert "docker_orphan_reaper" in _gateway_env_map_keys()
+    assert "docker_orphan_reaper" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()

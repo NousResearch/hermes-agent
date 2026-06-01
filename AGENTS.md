@@ -2,6 +2,8 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+**Never give up on the right solution.**
+
 ## Development Environment
 
 ```bash
@@ -42,6 +44,7 @@ hermes-agent/
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
 │   ├── context_engine/   # Context-engine plugins
+│   ├── model-providers/  # Inference backend plugins (openrouter, anthropic, gmi, ...)
 │   ├── kanban/           # Multi-agent board dispatcher + worker plugin
 │   ├── hermes-achievements/  # Gamified achievement tracking
 │   ├── observability/    # Metrics / traces / logs plugin
@@ -55,7 +58,6 @@ hermes-agent/
 ├── tui_gateway/          # Python JSON-RPC backend for the TUI
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
-├── environments/         # RL training environments (Atropos)
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 ├── website/              # Docusaurus docs site
 └── tests/                # Pytest suite (~17k tests across ~900 files as of May 2026)
@@ -65,6 +67,29 @@ hermes-agent/
 **Logs:** `~/.hermes/logs/` — `agent.log` (INFO+), `errors.log` (WARNING+),
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
+
+## TypeScript Style
+
+Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.
+
+- Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
+- Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
+- Components that render from an atom should use `useStore`. Non-rendering actions should read with `$atom.get()`.
+- Do not pass state through three components when the leaf can subscribe to the atom.
+- Keep persistence beside the atom that owns it.
+- Keep route roots thin. They compose routes and shell; they should not become controllers.
+- No monolithic hooks. A hook should own one narrow job.
+- Prefer colocated action modules over hidden god hooks.
+- If a callback is pure side effect, use the terse void form:
+  `onState={st => void setGatewayState(st)}`.
+- Async UI handlers should make intent explicit:
+  `onClick={() => void save()}`.
+- Prefer interfaces for public props and shared object shapes. Avoid `type X = { ... }` for object props.
+- Extend React primitives for props: `React.ComponentProps<'button'>`, `React.ComponentProps<typeof Dialog>`, `Omit<...>`, `Pick<...>`.
+- Table-driven beats condition ladders when mapping ids, routes, or views.
+- `src/app` owns routes, pages, and page-specific components.
+- `src/store` owns shared atoms.
+- `src/lib` owns shared pure helpers.
 
 ## File Dependency Chain
 
@@ -308,6 +333,29 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 ---
 
+## Dependency Pinning Policy
+
+All dependencies must have upper bounds to limit supply-chain attack surface.
+This policy was established after the litellm compromise (PR #2796, #2810) and
+reinforced after the Mini Shai-Hulud worm campaign (May 2026).
+
+| Source type | Treatment | Example |
+|---|---|---|
+| PyPI package | `>=floor,<next_major` | `"httpx>=0.28.1,<1"` |
+| Git URL | Commit SHA | `git+https://...@<40-char-sha>` |
+| GitHub Actions | Commit SHA + comment | `uses: actions/checkout@<sha>  # v4` |
+| CI-only pip | `==exact` | `pyyaml==6.0.2` |
+
+**When adding a new dependency to `pyproject.toml`:**
+1. Pin to `>=current_version,<next_major` for post-1.0 (e.g. `>=1.5.0,<2`).
+2. For pre-1.0 packages, use `<0.(current_minor + 2)` (e.g. `>=0.29,<0.32`).
+3. Never commit a bare `>=X.Y.Z` without a ceiling — CI and reviewers will reject it.
+4. Run `uv lock` to regenerate `uv.lock` with hashes.
+
+Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
+
+---
+
 ## Adding Configuration
 
 ### config.yaml options:
@@ -512,12 +560,52 @@ generic plugin surface (new hook, new ctx method) — never hardcode
 plugin-specific logic into core. PR #5295 removed 95 lines of hardcoded
 honcho argparse from `main.py` for exactly this reason.
 
+**No new in-tree memory providers (policy, May 2026):** the set of
+built-in memory providers under `plugins/memory/` is closed. New memory
+backends must ship as **standalone plugin repos** that users install
+into `~/.hermes/plugins/` (or via pip entry points) — they implement
+the same `MemoryProvider` ABC, register through the same discovery
+path, and integrate via `hermes memory setup` / `post_setup()` without
+landing in this tree. PRs that add a new directory under
+`plugins/memory/` will be closed with a pointer to publish the
+provider as its own repo. Existing in-tree providers stay; bug fixes
+to them are welcome.
+
+### Model-provider plugins (`plugins/model-providers/<name>/`)
+
+Every inference backend (openrouter, anthropic, gmi, deepseek, nvidia, …)
+ships as a plugin here. Each plugin's `__init__.py` calls
+`providers.register_provider(ProviderProfile(...))` at module load.
+`providers/__init__.py._discover_providers()` is a **lazy, separate
+discovery system** — scanned on first `get_provider_profile()` or
+`list_providers()` call, NOT by the general PluginManager.
+
+Scan order:
+1. Bundled: `<repo>/plugins/model-providers/<name>/`
+2. User: `$HERMES_HOME/plugins/model-providers/<name>/`
+3. Legacy: `<repo>/providers/<name>.py` (back-compat)
+
+User plugins of the same name override bundled ones — `register_provider()`
+is last-writer-wins. This lets third parties swap out any built-in
+profile without a repo patch.
+
+The general PluginManager records `kind: model-provider` manifests but does
+NOT import them (would double-instantiate `ProviderProfile`). Plugins
+without an explicit `kind:` get auto-coerced via a source-text heuristic
+(`register_provider` + `ProviderProfile` in `__init__.py`).
+
+Full authoring guide: `website/docs/developer-guide/model-provider-plugin.md`.
+
 ### Dashboard / context-engine / image-gen plugin directories
 
-`plugins/context_engine/`, `plugins/image_gen/`, `plugins/example-dashboard/`,
-etc. follow the same pattern (ABC + orchestrator + per-plugin directory).
-Context engines plug into `agent/context_engine.py`; image-gen providers
-into `agent/image_gen_provider.py`.
+`plugins/context_engine/`, `plugins/image_gen/`, etc. follow the same
+pattern (ABC + orchestrator + per-plugin directory). Context engines
+plug into `agent/context_engine.py`; image-gen providers into
+`agent/image_gen_provider.py`. Reference / docs-companion plugins
+(`example-dashboard`, `strike-freedom-cockpit`, `plugin-llm-example`,
+`plugin-llm-async-example`) live in the
+[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
+companion repo, not in this tree.
 
 ---
 
@@ -549,6 +637,86 @@ during setup, injected at load time).
 
 Top-level `tags:` and `category:` are also accepted and mirrored from
 `metadata.hermes.*` by the loader.
+
+### Skill authoring standards (HARDLINE)
+
+Every new or modernized skill — bundled, optional, or contributed —
+must meet these standards before merge. Reviewers reject PRs that
+violate them.
+
+1. **`description` ≤ 60 characters, one sentence, ends with a period.**
+   Long descriptions bloat skill listings and dilute the model's
+   attention when many skills are loaded. State the capability, not
+   the implementation. No marketing words ("powerful",
+   "comprehensive", "seamless", "advanced"). Don't repeat the skill
+   name. Verify with:
+   ```python
+   import re, pathlib
+   m = re.search(r'^description: (.*)$',
+                 pathlib.Path('skills/<cat>/<name>/SKILL.md').read_text(),
+                 re.MULTILINE)
+   assert len(m.group(1)) <= 60, len(m.group(1))
+   ```
+
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or
+   MCP servers the skill explicitly expects.** When the skill needs a
+   capability, point at the proper tool by name in backticks
+   (`` `terminal` ``, `` `web_extract` ``, `` `read_file` ``,
+   `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``,
+   `` `browser_navigate` ``, `` `delegate_task` ``, etc.). Do NOT
+   name shell utilities the agent already has wrapped — `grep` →
+   `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` →
+   `patch`, `find`/`ls` → `search_files target='files'`. If the skill
+   depends on an MCP server, name the MCP server and document the
+   expected setup in `## Prerequisites`. Anything else (third-party
+   CLIs, shell pipelines, etc.) is fair game inside script files but
+   should not be the headline interaction surface in the prose.
+
+3. **`platforms:` gating audited against actual script imports.**
+   Skills that use POSIX-only primitives (`fcntl`, `termios`,
+   `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, `/tmp`
+   hardcoded, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`,
+   `systemctl`) must declare their supported platforms. Default
+   posture: try to fix it cross-platform first — `tempfile.gettempdir`,
+   `pathlib.Path`, `psutil.pid_exists`, Python-level filtering instead
+   of `grep`. Gate to a narrower set only when the dependency is
+   genuinely platform-bound.
+
+4. **`author` credits the human contributor first.** For external
+   contributions, the contributor's real name + GitHub handle goes
+   first; "Hermes Agent" is the secondary collaborator. If the
+   contributor's commit shows "Hermes Agent" as author (because they
+   used Hermes to draft the skill), replace it with their actual name
+   — credit the human, not the tool.
+
+5. **SKILL.md body uses the modern section order.** `# <Skill> Skill`
+   title, 2-3 sentence intro stating what it does and doesn't do,
+   `## When to Use`, `## Prerequisites`, `## How to Run`,
+   `## Quick Reference`, `## Procedure`, `## Pitfalls`,
+   `## Verification`. Target ~200 lines for a complex skill,
+   ~100 lines for a simple one. Cut redundant intro fluff, marketing
+   prose, and re-explanations of env vars already in
+   `## Prerequisites`.
+
+6. **Scripts go in `scripts/`, references in `references/`,
+   templates in `templates/`.** Don't expect the model to inline-write
+   parsers, XML walkers, or non-trivial logic every call — ship a
+   helper script. Reference it from SKILL.md by path relative to the
+   skill directory.
+
+7. **Tests live at `tests/skills/test_<skill>_skill.py`** and use only
+   stdlib + pytest + `unittest.mock`. No live network calls. Run via
+   `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`.
+
+8. **`.env.example` additions are isolated to a clearly delimited
+   block.** Don't touch the surrounding file — contributor-supplied
+   `.env.example` versions are usually stale and edits outside the
+   skill's own block must be dropped during salvage.
+
+The full salvage / modernization checklist for external skill PRs
+lives in the `hermes-agent-dev` skill at
+`references/new-skill-pr-salvage.md` — load it before polishing
+contributor skill PRs.
 
 ---
 
@@ -687,10 +855,11 @@ kanban task.
   `unlink`, `comment`, `complete`, `block`, `unblock`, `archive`,
   `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
   `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
-- **Worker toolset:** `tools/kanban_tools.py` exposes `kanban_show`,
-  `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`,
-  `kanban_create`, `kanban_link` — gated by `HERMES_KANBAN_TASK` so
-  the schema only appears for processes actually running as a worker.
+- **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
+  `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`,
+  `kanban_comment`, `kanban_create`, `kanban_link`; profiles that
+  explicitly enable the `kanban` toolset outside a dispatcher-spawned
+  task also get `kanban_list` and `kanban_unblock` for board routing.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
   assigned profiles. Runs **inside the gateway** by default via
@@ -706,8 +875,9 @@ Isolation model:
 - **Tenant** is a soft namespace *within* a board — one specialist
   fleet can serve multiple businesses with workspace-path + memory-key
   isolation.
-- After ~5 consecutive spawn failures on the same task the dispatcher
-  auto-blocks it to prevent spin loops.
+- After `kanban.failure_limit` consecutive non-success attempts on the
+  same task (default: 2), the dispatcher auto-blocks it to prevent spin
+  loops.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
@@ -868,16 +1038,38 @@ def profile_env(tmp_path, monkeypatch):
 
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-4 xdist workers matching GHA ubuntu-latest). Direct `pytest` on a 16+ core
-developer machine with API keys set diverges from CI in ways that have caused
-multiple "works locally, fails in CI" incidents (and the reverse).
+`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
+on a 16+ core developer machine with API keys set diverges from CI in ways
+that have caused multiple "works locally, fails in CI" incidents (and the reverse).
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+scripts/run_tests.sh --no-isolate tests/foo/          # disable subprocess isolation (faster, for debugging)
 ```
+
+### Subprocess-per-test isolation
+
+Every test runs in a freshly-spawned Python subprocess via the in-tree plugin
+at `tests/_isolate_plugin.py`. This means module-level dicts/sets and
+ContextVars from one test cannot leak into the next — the historic
+`_reset_module_state` autouse fixture is gone.
+
+Implementation notes:
+
+- The plugin uses `multiprocessing.get_context("spawn")`, which works on
+  Linux, macOS, and Windows alike (POSIX `fork` is not used).
+- Per-test overhead is ~0.5–1.0s (Python startup + pytest collection). xdist
+  parallelism amortizes this across cores; on a 20-core box the full suite
+  finishes in roughly the same wall time as before, but flake-free.
+- `isolate_timeout` (configured in `pyproject.toml`) caps each test at 30s.
+  Hangs are killed and surfaced as a failure report.
+- Pass `--no-isolate` to disable isolation — useful when debugging a single
+  test interactively, or when you specifically want to verify state leakage.
+- The plugin disables itself in child processes (sentinel envvar
+  `HERMES_ISOLATE_CHILD=1`), so there's no fork-bomb risk.
 
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
 
@@ -889,7 +1081,7 @@ Five real sources of local-vs-CI drift the script closes:
 | HOME / `~/.hermes/` | Your real config+auth.json | Temp dir per test |
 | Timezone | Local TZ (PDT etc.) | UTC |
 | Locale | Whatever is set | C.UTF-8 |
-| xdist workers | `-n auto` = all cores (20+ on a workstation) | `-n 4` matching CI |
+| xdist workers | `-n auto` = all cores | `-n auto` (safe — subprocess isolation prevents cross-worker flakes) |
 
 `tests/conftest.py` also enforces points 1-4 as an autouse fixture so ANY pytest
 invocation (including IDE integrations) gets hermetic behavior — but the wrapper
@@ -897,15 +1089,21 @@ is belt-and-suspenders.
 
 ### Running without the wrapper (only if you must)
 
-If you can't use the wrapper (e.g. on Windows or inside an IDE that shells
-pytest directly), at minimum activate the venv and pass `-n 4`:
+If you can't use the wrapper (e.g. inside an IDE that shells pytest directly),
+at minimum activate the venv. The isolation plugin loads automatically from
+`addopts` in `pyproject.toml`, so you get the same per-test process isolation
+either way.
 
 ```bash
 source .venv/bin/activate   # or: source venv/bin/activate
-python -m pytest tests/ -q -n 4
+python -m pytest tests/ -q
 ```
 
-Worker count above 4 will surface test-ordering flakes that CI never sees.
+If you need to bypass isolation for fast feedback while debugging:
+
+```bash
+python -m pytest tests/agent/test_foo.py -q --no-isolate
+```
 
 Always run the full suite before pushing changes.
 

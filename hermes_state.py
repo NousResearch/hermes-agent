@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,198 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 14
+
+# ---------------------------------------------------------------------------
+# WAL-compatibility fallback
+# ---------------------------------------------------------------------------
+# SQLite's WAL mode requires shared-memory (mmap) coordination and fcntl
+# byte-range locks that don't reliably work on network filesystems (NFS,
+# SMB/CIFS, some FUSE mounts, WSL1).  Upstream documents this explicitly:
+# https://www.sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode
+#
+# On those filesystems ``PRAGMA journal_mode=WAL`` raises
+# ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
+# propagate that, every feature backed by state.db / kanban.db breaks
+# silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
+#
+# Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
+# works on NFS.  Concurrency drops — concurrent readers are blocked during
+# a write — but the feature works.
+_WAL_INCOMPAT_MARKERS = (
+    "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
+    "not authorized",         # Some FUSE mounts block WAL pragma outright
+)
+
+# Last SessionDB() init error, per-process.  Surfaced in /resume and
+# related slash-command error strings so users know WHY the DB is
+# unavailable instead of getting a bare "Session database not available."
+# Only SessionDB.__init__ writes to this; kanban_db.connect() failures
+# do not update it (by design — kanban failures are reported via their
+# own caller's error handling, not via /resume-style slash commands).
+_last_init_error: Optional[str] = None
+_last_init_error_lock = threading.Lock()
+
+# Paths for which we've already logged a WAL-fallback WARNING.  Without
+# this, kanban_db.connect() (called on every kanban operation — see
+# hermes_cli/kanban_db.py for ~30 call sites) would re-log the same
+# filesystem-incompat warning on every connection, filling errors.log.
+_wal_fallback_warned_paths: set[str] = set()
+_wal_fallback_warned_lock = threading.Lock()
+
+_FTS_TRIGGERS = (
+    "messages_fts_insert",
+    "messages_fts_delete",
+    "messages_fts_update",
+    "messages_fts_trigram_insert",
+    "messages_fts_trigram_delete",
+    "messages_fts_trigram_update",
+)
+
+
+def _set_last_init_error(msg: Optional[str]) -> None:
+    """Record (or clear) the most recent state.db init failure.
+
+    Thread-safe via _last_init_error_lock.  Callers pass a message to
+    record a failure or None to clear.  SessionDB.__init__ only calls
+    this to SET on failure — it deliberately does NOT clear on success,
+    because in a multi-threaded caller (e.g. gateway / web_server per-
+    request SessionDB() instantiation), a concurrent successful open
+    racing past a different thread's failure would erase the cause
+    string that thread's /resume handler is about to format.  Explicit
+    clears (e.g. test fixtures) are still supported by passing None.
+    """
+    global _last_init_error
+    with _last_init_error_lock:
+        _last_init_error = msg
+
+
+def get_last_init_error() -> Optional[str]:
+    """Return the most recent state.db init failure, if any.
+
+    Slash-command handlers (``/resume``, ``/title``, ``/history``, ``/branch``)
+    call this to surface the underlying cause in their error messages when
+    ``_session_db is None``.  Returns ``None`` if SessionDB initialized
+    successfully (or hasn't been attempted).
+    """
+    return _last_init_error
+
+
+def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
+    """Format a user-facing 'session DB unavailable' message with cause.
+
+    When ``SessionDB()`` init fails, callers set ``_session_db = None`` and
+    several slash commands (/resume, /title, /history, /branch) previously
+    responded with a bare ``"Session database not available."`` — no
+    indication of WHY.  This helper includes the captured cause (typically
+    ``"locking protocol"`` from NFS/SMB) and points users at the known
+    culprit so they can fix it themselves.
+
+    Example output:
+        Session database not available: locking protocol (state.db may be
+        on NFS/SMB — see https://www.sqlite.org/wal.html).
+    """
+    cause = get_last_init_error()
+    if not cause:
+        return f"{prefix}."
+    hint = ""
+    if any(marker in cause.lower() for marker in _WAL_INCOMPAT_MARKERS):
+        hint = " (state.db may be on NFS/SMB/FUSE — see https://www.sqlite.org/wal.html)"
+    return f"{prefix}: {cause}{hint}."
+
+
+def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
+    """Read the journal mode from the SQLite DB header on disk.
+
+    Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
+    if the value cannot be determined (new DB, or PRAGMA read failed).
+    """
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    mode = row[0]
+    if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
+        try:
+            mode = mode.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    return str(mode).strip().lower() if mode is not None else None
+
+
+def apply_wal_with_fallback(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str = "state.db",
+) -> str:
+    """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
+
+    Returns the journal mode actually set (``"wal"`` or ``"delete"``).
+
+    On WAL-incompatible filesystems (NFS, SMB, some FUSE), SQLite raises
+    ``OperationalError("locking protocol")`` when setting WAL.  We fall
+    back to DELETE mode — the pre-WAL default, which works on NFS — and
+    log one WARNING explaining why.
+
+    The WARNING is deduplicated per ``db_label``: repeated connections
+    to the same underlying DB (e.g. kanban_db.connect() which is called
+    on every kanban operation) log once per process, not once per call.
+    Different db_labels log independently, so state.db and kanban.db
+    each get one warning on the same NFS mount.
+
+    Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
+    both databases get identical fallback behavior.
+
+    Never downgrades to DELETE if the on-disk DB header reports WAL — see _on_disk_journal_mode.
+    """
+    # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
+    # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
+    try:
+        current_mode = conn.execute("PRAGMA journal_mode").fetchone()
+        if current_mode and current_mode[0] == "wal":
+            return "wal"
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        return "wal"
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
+            # Unrelated OperationalError — don't silently swallow.
+            raise
+        # Don't downgrade if another process already set WAL on disk.
+        existing = _on_disk_journal_mode(conn)
+        if existing == "wal":
+            raise
+        _log_wal_fallback_once(db_label, exc)
+        conn.execute("PRAGMA journal_mode=DELETE")
+        return "delete"
+
+
+def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
+    """Log a single WARNING per (process, db_label) about WAL fallback.
+
+    Without this dedup, NFS users running kanban (which opens a fresh
+    connection on every operation — see hermes_cli/kanban_db.py) would
+    fill errors.log with hundreds of identical warnings per hour.
+    """
+    with _wal_fallback_warned_lock:
+        if db_label in _wal_fallback_warned_paths:
+            return
+        _wal_fallback_warned_paths.add(db_label)
+    logger.warning(
+        "%s: WAL journal_mode unsupported on this filesystem (%s) — "
+        "falling back to journal_mode=DELETE (slower rollback-journal "
+        "mode; reduces concurrency but works on NFS/SMB/FUSE). See "
+        "https://www.sqlite.org/wal.html for details. This warning "
+        "fires once per process per database.",
+        db_label,
+        exc,
+    )
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -58,6 +249,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_read_tokens INTEGER DEFAULT 0,
     cache_write_tokens INTEGER DEFAULT 0,
     reasoning_tokens INTEGER DEFAULT 0,
+    cwd TEXT,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -68,6 +260,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    handoff_state TEXT,
+    handoff_platform TEXT,
+    handoff_error TEXT,
+    rewind_count INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -86,7 +282,10 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    platform_message_id TEXT,
+    observed INTEGER DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -94,10 +293,27 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS compression_locks (
+    session_id TEXT PRIMARY KEY,
+    holder TEXT NOT NULL,
+    acquired_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+"""
+
+# Indexes that reference columns added in later schema versions must be
+# created AFTER _reconcile_columns() has had a chance to ADD them on
+# existing databases. SCHEMA_SQL above is run by sqlite executescript
+# which would otherwise fail on legacy DBs ("no such column: active").
+DEFERRED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_messages_session_active
+    ON messages(session_id, active, timestamp);
 """
 
 FTS_SQL = """
@@ -185,25 +401,148 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
-        self._conn = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=False,
-            # Short timeout — application-level retry with random jitter
-            # handles contention instead of sitting in SQLite's internal
-            # busy handler for up to 30s.
-            timeout=1.0,
-            # Autocommit mode: Python's default isolation_level="" auto-starts
-            # transactions on DML, which conflicts with our explicit
-            # BEGIN IMMEDIATE.  None = we manage transactions ourselves.
-            isolation_level=None,
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._fts_enabled = False
+        self._fts_unavailable_warned = False
+        try:
+            self._conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+                # Short timeout — application-level retry with random jitter
+                # handles contention instead of sitting in SQLite's internal
+                # busy handler for up to 30s.
+                timeout=1.0,
+                # auto-starts transactions on DML, which conflicts with our
+                # explicit BEGIN IMMEDIATE.  None = we manage transactions
+                # ourselves.
+                isolation_level=None,
+            )
+            self._conn.row_factory = sqlite3.Row
+            apply_wal_with_fallback(self._conn, db_label="state.db")
+            self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+            self._init_schema()
+        except Exception as exc:
+            # Capture the cause so /resume and friends can surface WHY the
+            # session DB is unavailable instead of a bare "Session database
+            # not available."  Callers that catch this exception keep their
+            # existing ``self._session_db = None`` degradation path.
+            #
+            # Note: we deliberately do NOT clear _last_init_error on the
+            # success path (no else branch).  In multi-threaded callers
+            # (gateway, web_server per-request SessionDB()), a concurrent
+            # successful open racing past this failure would erase the
+            # cause that another thread's /resume is about to format.
+            # Tests that need to reset the state can call
+            # ``hermes_state._set_last_init_error(None)`` explicitly.
+            _set_last_init_error(f"{type(exc).__name__}: {exc}")
+            raise
 
     # ── Core write helper ──
+
+    @staticmethod
+    def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        err = str(exc).lower()
+        return "no such module" in err and "fts5" in err
+
+    def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
+        self._fts_enabled = False
+        if self._fts_unavailable_warned:
+            return
+        self._fts_unavailable_warned = True
+        logger.warning(
+            "SQLite FTS5 unavailable for %s; full-text session search "
+            "disabled. This usually means Hermes is running on an "
+            "unsupported install (e.g. a pip-installed or pip-managed "
+            "Python whose bundled SQLite lacks FTS5) rather than a "
+            "mainline install. Some features may be missing or behave "
+            "differently. Install the supported way: "
+            "https://hermes-agent.nousresearch.com (underlying error: %s)",
+            self.db_path,
+            exc,
+        )
+
+    def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
+        try:
+            cursor.execute("CREATE VIRTUAL TABLE temp._hermes_fts5_probe USING fts5(x)")
+            cursor.execute("DROP TABLE temp._hermes_fts5_probe")
+            return True
+        except sqlite3.OperationalError as exc:
+            if not self._is_fts5_unavailable_error(exc):
+                raise
+            self._warn_fts5_unavailable(exc)
+            return False
+
+    @staticmethod
+    def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
+        for trigger in _FTS_TRIGGERS:
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.OperationalError:
+                pass
+
+    @staticmethod
+    def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
+        placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
+        row = cursor.execute(
+            f"SELECT COUNT(*) FROM sqlite_master "
+            f"WHERE type = 'trigger' AND name IN ({placeholders})",
+            _FTS_TRIGGERS,
+        ).fetchone()
+        return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
+
+    @staticmethod
+    def _rebuild_fts_indexes(cursor: sqlite3.Cursor) -> None:
+        for table_name in ("messages_fts", "messages_fts_trigram"):
+            cursor.execute(f"DELETE FROM {table_name}")
+        cursor.execute(
+            "INSERT INTO messages_fts(rowid, content) "
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+        cursor.execute(
+            "INSERT INTO messages_fts_trigram(rowid, content) "
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+
+    def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
+        try:
+            cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
+            return True
+        except sqlite3.OperationalError as exc:
+            if self._is_fts5_unavailable_error(exc):
+                self._warn_fts5_unavailable(exc)
+                return None
+            if "no such table" in str(exc).lower():
+                return False
+            raise
+
+    def _ensure_fts_schema(
+        self,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+        ddl: str,
+    ) -> bool:
+        status = self._fts_table_probe(cursor, table_name)
+        if status is None:
+            return False
+        try:
+            # Run even when the virtual table exists so any dropped or missing
+            # triggers are recreated after a previous no-FTS5 runtime disabled
+            # them to keep message writes working.
+            cursor.executescript(ddl)
+            return True
+        except sqlite3.OperationalError as exc:
+            if not self._is_fts5_unavailable_error(exc):
+                raise
+            self._warn_fts5_unavailable(exc)
+            return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
@@ -404,6 +743,33 @@ class SessionDB:
         # column gets created here.
         self._reconcile_columns(cursor)
 
+        # Indexes that reference reconciler-added columns must be created
+        # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
+        # makes the initial executescript fail on legacy DBs (the index's
+        # WHERE clause references a column that doesn't exist yet).
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id "
+                "ON messages(session_id, platform_message_id) "
+                "WHERE platform_message_id IS NOT NULL"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
+
+        # Deferred indexes that reference the reconciler-added ``active``
+        # column (idx_messages_session_active) — same ordering constraint.
+        cursor.executescript(DEFERRED_INDEX_SQL)
+
+        fts5_available = self._sqlite_supports_fts5(cursor)
+        fts_migrations_complete = True
+        if not fts5_available:
+            # Existing FTS triggers can still fire on messages INSERT/UPDATE
+            # even though the current sqlite runtime cannot read the virtual
+            # tables they target. Drop only the triggers so core persistence
+            # continues; if a future runtime has FTS5, _ensure_fts_schema()
+            # recreates them.
+            self._drop_fts_triggers(cursor)
+
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
         # version.  No version-gated column additions remain.
@@ -425,17 +791,24 @@ class SessionDB:
                 # virtual table + triggers are created unconditionally via
                 # FTS_TRIGRAM_SQL below, but existing rows need a one-time
                 # backfill into the FTS index.
-                try:
-                    cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-                    _fts_trigram_exists = True
-                except sqlite3.OperationalError:
-                    _fts_trigram_exists = False
-                if not _fts_trigram_exists:
-                    cursor.executescript(FTS_TRIGRAM_SQL)
-                    cursor.execute(
-                        "INSERT INTO messages_fts_trigram(rowid, content) "
-                        "SELECT id, content FROM messages WHERE content IS NOT NULL"
+                if fts5_available:
+                    _fts_trigram_exists = self._fts_table_probe(
+                        cursor, "messages_fts_trigram"
                     )
+                    if _fts_trigram_exists is False:
+                        if self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        ):
+                            cursor.execute(
+                                "INSERT INTO messages_fts_trigram(rowid, content) "
+                                "SELECT id, content FROM messages WHERE content IS NOT NULL"
+                            )
+                        else:
+                            fts_migrations_complete = False
+                    elif _fts_trigram_exists is None:
+                        fts_migrations_complete = False
+                else:
+                    fts_migrations_complete = False
             if current_version < 11:
                 # v11: re-index FTS5 tables to cover tool_name + tool_calls and
                 # switch from external-content to inline mode. Existing DBs have
@@ -443,45 +816,62 @@ class SessionDB:
                 # overwrite, so we drop them explicitly and let the post-migration
                 # existence checks (below) recreate them from FTS_SQL /
                 # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
-                for _trig in (
-                    "messages_fts_insert",
-                    "messages_fts_delete",
-                    "messages_fts_update",
-                    "messages_fts_trigram_insert",
-                    "messages_fts_trigram_delete",
-                    "messages_fts_trigram_update",
-                ):
-                    try:
-                        cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
-                    except sqlite3.OperationalError:
-                        pass
-                for _tbl in ("messages_fts", "messages_fts_trigram"):
-                    try:
-                        cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
-                    except sqlite3.OperationalError:
-                        pass
-                # Recreate virtual tables + triggers with the new inline-mode
-                # schema that indexes content || tool_name || tool_calls.
-                cursor.executescript(FTS_SQL)
-                cursor.executescript(FTS_TRIGRAM_SQL)
-                # Backfill both indexes from every existing messages row.
-                cursor.execute(
-                    "INSERT INTO messages_fts(rowid, content) "
-                    "SELECT id, "
-                    "COALESCE(content, '') || ' ' || "
-                    "COALESCE(tool_name, '') || ' ' || "
-                    "COALESCE(tool_calls, '') "
-                    "FROM messages"
-                )
-                cursor.execute(
-                    "INSERT INTO messages_fts_trigram(rowid, content) "
-                    "SELECT id, "
-                    "COALESCE(content, '') || ' ' || "
-                    "COALESCE(tool_name, '') || ' ' || "
-                    "COALESCE(tool_calls, '') "
-                    "FROM messages"
-                )
-            if current_version < SCHEMA_VERSION:
+                if fts5_available:
+                    self._drop_fts_triggers(cursor)
+                    for _tbl in ("messages_fts", "messages_fts_trigram"):
+                        try:
+                            cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                        except sqlite3.OperationalError as exc:
+                            if not self._is_fts5_unavailable_error(exc):
+                                raise
+                            self._warn_fts5_unavailable(exc)
+                            fts5_available = False
+                            fts_migrations_complete = False
+                            break
+
+                    if fts5_available:
+                        # Recreate virtual tables + triggers with the new inline-mode
+                        # schema that indexes content || tool_name || tool_calls.
+                        if (
+                            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+                            and self._ensure_fts_schema(
+                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                            )
+                        ):
+                            # Backfill both indexes from every existing messages row.
+                            cursor.execute(
+                                "INSERT INTO messages_fts(rowid, content) "
+                                "SELECT id, "
+                                "COALESCE(content, '') || ' ' || "
+                                "COALESCE(tool_name, '') || ' ' || "
+                                "COALESCE(tool_calls, '') "
+                                "FROM messages"
+                            )
+                            cursor.execute(
+                                "INSERT INTO messages_fts_trigram(rowid, content) "
+                                "SELECT id, "
+                                "COALESCE(content, '') || ' ' || "
+                                "COALESCE(tool_name, '') || ' ' || "
+                                "COALESCE(tool_calls, '') "
+                                "FROM messages"
+                            )
+                        else:
+                            fts_migrations_complete = False
+                else:
+                    fts_migrations_complete = False
+            if current_version < 12:
+                # v12: messages.active flag for rewind/undo soft-deletion.
+                # The declarative reconcile_columns() above adds the
+                # column itself; this UPDATE is belt-and-suspenders to
+                # ensure any rows that pre-existed the ADD COLUMN have
+                # active=1 rather than NULL.
+                try:
+                    cursor.execute(
+                        "UPDATE messages SET active = 1 WHERE active IS NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
                     (SCHEMA_VERSION,),
@@ -496,17 +886,22 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
-        # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
-        try:
-            cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+        if fts5_available:
+            # FTS5 setup. Run the DDL even when the virtual table exists so
+            # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
+            # an earlier no-FTS5 runtime.
+            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
 
-        # Trigram FTS5 for CJK/substring search
-        try:
-            cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+            # Trigram FTS5 for CJK/substring search. This is optional relative
+            # to the main FTS table; if it cannot be created, CJK search falls
+            # back to LIKE.
+            if self._fts_enabled:
+                trigram_enabled = self._ensure_fts_schema(
+                    cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                )
+                if trigram_enabled and triggers_need_repair:
+                    self._rebuild_fts_indexes(cursor)
 
         self._conn.commit()
 
@@ -523,13 +918,14 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        cwd: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, cwd, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -538,6 +934,7 @@ class SessionDB:
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
                     parent_session_id,
+                    cwd,
                     time.time(),
                 ),
             )
@@ -574,12 +971,162 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_cwd(self, session_id: str, cwd: str) -> None:
+        """Persist the session working directory when a frontend knows it."""
+        if not session_id or not cwd:
+            return
+
+        def _do(conn):
+            conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (cwd, session_id))
+
+        self._execute_write(_do)
+    # ──────────────────────────────────────────────────────────────────────
+    # Compression locks
+    # ──────────────────────────────────────────────────────────────────────
+    # Atomic per-session locks that prevent two compression paths from
+    # racing on the same session_id and producing orphan child sessions.
+    #
+    # The race: ``conversation_compression.py`` rotates ``agent.session_id``
+    # as a side effect of a successful compression (end old session, create
+    # new). That mutation is local to the AIAgent instance — but ``state.db``
+    # is shared across all instances. Two AIAgents that share the same
+    # ``session_id`` at the moment they both decide to compress (most
+    # commonly the parent turn's agent + a background-review fork started
+    # right after the turn ended) each end the parent and create their own
+    # NEW session, parented to the same old id. The gateway SessionEntry
+    # only catches one rotation; the other child silently accumulates
+    # writes — Damien's "parent → two orphan children" repro shape.
+    #
+    # The lock is keyed by ``session_id`` and is held for the duration of
+    # the compress() call plus the rotation. ``holder`` identifies the
+    # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
+    # via ``expires_at`` if the holder process crashed without releasing.
+    def try_acquire_compression_lock(
+        self,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Try to atomically acquire the compression lock for ``session_id``.
+
+        Returns ``True`` on success (caller now owns the lock and must
+        release via :meth:`release_compression_lock`).  Returns ``False``
+        if another holder already owns a non-expired lock — the caller
+        MUST NOT proceed with compression in that case (its rotation would
+        race against the holder's, splitting the session lineage).
+
+        Expired locks (``expires_at < now``) are reclaimed transparently:
+        the stale row is deleted and the new holder acquires it. This
+        prevents a crashed compressor from permanently blocking the
+        session.
+
+        Implementation: single-transaction DELETE-expired + INSERT-or-IGNORE,
+        followed by a SELECT to confirm we got the row. SQLite serialises
+        writes, so the whole sequence is atomic against other writers.
+        """
+        if not session_id:
+            return False
+        now = time.time()
+        expires_at = now + ttl_seconds
+
+        def _do(conn):
+            # First: reclaim any expired lock for this session_id.
+            conn.execute(
+                "DELETE FROM compression_locks "
+                "WHERE session_id = ? AND expires_at < ?",
+                (session_id, now),
+            )
+            # Then: try to insert. INSERT OR IGNORE returns no rowcount
+            # difference — verify ownership via SELECT.
+            conn.execute(
+                "INSERT OR IGNORE INTO compression_locks "
+                "(session_id, holder, acquired_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (session_id, holder, now, expires_at),
+            )
+            row = conn.execute(
+                "SELECT holder FROM compression_locks WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return row is not None and (
+                row["holder"] if isinstance(row, sqlite3.Row) else row[0]
+            ) == holder
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "try_acquire_compression_lock(%s) failed: %s",
+                session_id, exc,
+            )
+            # Fail open: returning False makes the caller skip compression,
+            # which is the safe behaviour when the lock subsystem is broken.
+            return False
+
+    def release_compression_lock(self, session_id: str, holder: str) -> None:
+        """Release the compression lock for ``session_id`` iff we own it.
+
+        Idempotent: no-op when the lock has already expired and been
+        reclaimed by a different holder, or when no lock exists. The
+        ``holder`` check prevents a late-returning compressor from
+        clobbering a fresh lock held by someone else.
+        """
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM compression_locks "
+                "WHERE session_id = ? AND holder = ?",
+                (session_id, holder),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "release_compression_lock(%s) failed: %s",
+                session_id, exc,
+            )
+
+    def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
+        """Return the current (non-expired) holder for ``session_id``, or None.
+
+        Diagnostic helper — not used by the locking protocol itself.
+        """
+        if not session_id:
+            return None
+        now = time.time()
+        row = self._conn.execute(
+            "SELECT holder FROM compression_locks "
+            "WHERE session_id = ? AND expires_at >= ?",
+            (session_id, now),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["holder"] if isinstance(row, sqlite3.Row) else row[0]
+
+
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
+            )
+        self._execute_write(_do)
+
+    def update_session_model(self, session_id: str, model: str) -> None:
+        """Update the model for a session after a mid-session switch.
+
+        Unlike ``update_token_counts`` which uses ``COALESCE(model, ?)``
+        (only filling in NULL), this unconditionally sets the model column
+        so that the dashboard reflects the user's latest /model choice.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model = ? WHERE id = ?",
+                (model, session_id),
             )
         self._execute_write(_do)
 
@@ -612,6 +1159,11 @@ class SessionDB:
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
         """
+        # Ensure the session row exists so the UPDATE doesn't silently affect
+        # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
+        # initial create_session() may have failed due to SQLite locking.
+        # INSERT OR IGNORE is cheap and idempotent.
+        self._insert_session_row(session_id, "unknown", model=model)
         if absolute:
             sql = """UPDATE sessions SET
                    input_tokens = ?,
@@ -994,6 +1546,7 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        min_message_count: int = 0,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
     ) -> List[Dict[str, Any]]:
@@ -1048,6 +1601,9 @@ class SessionDB:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
+        if min_message_count > 0:
+            where_clauses.append("s.message_count >= ?")
+            params.append(min_message_count)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         if order_by_last_active:
@@ -1167,7 +1723,7 @@ class SessionDB:
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt",
+                    "model", "system_prompt", "cwd",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
@@ -1273,12 +1829,20 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        platform_message_id: str = None,
+        observed: bool = False,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
 
         Also increments the session's message_count (and tool_call_count
         if role is 'tool' or tool_calls is present).
+
+        ``platform_message_id`` is the external messaging platform's own
+        message ID (e.g. Telegram update_id, Yuanbao msg_id).  It is
+        independent of the SQLite autoincrement primary key and is used by
+        platform-specific flows like yuanbao's recall guard to redact a
+        message by its platform-side identifier.
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
@@ -1308,8 +1872,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1325,6 +1889,8 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    platform_message_id,
+                    1 if observed else 0,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1386,13 +1952,18 @@ class SessionDB:
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                # Accept either `platform_message_id` (new explicit name) or
+                # `message_id` (yuanbao's existing convention on message dicts).
+                platform_msg_id = (
+                    msg.get("platform_message_id") or msg.get("message_id")
+                )
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id, observed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1408,6 +1979,8 @@ class SessionDB:
                         reasoning_details_json,
                         codex_items_json,
                         codex_message_items_json,
+                        platform_msg_id,
+                        1 if msg.get("observed") else 0,
                     ),
                 )
                 total_messages += 1
@@ -1424,11 +1997,24 @@ class SessionDB:
 
         self._execute_write(_do)
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages for a session, ordered by timestamp."""
+    def get_messages(
+        self, session_id: str, include_inactive: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Load messages for a session in insertion order.
+
+        By default only active messages are returned. Pass
+        ``include_inactive=True`` to load soft-deleted rows (e.g. for
+        audit / debug views of rewound history). See
+        :meth:`rewind_to_message` for the soft-delete mechanic.
+
+        Ordered by AUTOINCREMENT id (true insertion order) rather than
+        timestamp — see c03acca50 for the WSL2 clock-regression rationale.
+        """
+        active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, id",
+                "SELECT * FROM messages WHERE session_id = ?"
+                f"{active_clause} ORDER BY id",
                 (session_id,),
             )
             rows = cursor.fetchall()
@@ -1445,6 +2031,204 @@ class SessionDB:
                     msg["tool_calls"] = []
             result.append(msg)
         return result
+
+    def get_messages_around(
+        self,
+        session_id: str,
+        around_message_id: int,
+        window: int = 5,
+    ) -> Dict[str, Any]:
+        """Load a window of messages anchored on a specific message id.
+
+        Returns a dict with:
+          - ``window``: up to ``window`` messages before the anchor, the anchor
+            itself, and up to ``window`` messages after, ordered by id ascending.
+          - ``messages_before``: count of messages strictly before the anchor
+            still in the session (== window unless we hit the start).
+          - ``messages_after``: count of messages strictly after the anchor
+            still in the session (== window unless we hit the end).
+
+        Used by ``session_search`` for both the discovery shape (anchored on the
+        FTS5 match) and the scroll shape (anchored on any message id). The
+        ``messages_before`` / ``messages_after`` counts let the caller detect
+        session boundaries: when either is less than ``window``, the agent has
+        reached one end of the session.
+
+        Returns an empty window when ``around_message_id`` is not a real id in
+        ``session_id`` — callers decide how to surface that.
+        """
+        if window < 0:
+            window = 0
+        with self._lock:
+            # Confirm the anchor exists in this session.
+            anchor_exists = self._conn.execute(
+                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                (around_message_id, session_id),
+            ).fetchone()
+            if not anchor_exists:
+                return {"window": [], "messages_before": 0, "messages_after": 0}
+
+            # Two queries: anchor + before (DESC, take window+1), and after
+            # (ASC, take window). Final order is id ASC.
+            before_rows = self._conn.execute(
+                "SELECT * FROM messages "
+                "WHERE session_id = ? AND id <= ? "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, around_message_id, window + 1),
+            ).fetchall()
+            after_rows = self._conn.execute(
+                "SELECT * FROM messages "
+                "WHERE session_id = ? AND id > ? "
+                "ORDER BY id ASC LIMIT ?",
+                (session_id, around_message_id, window),
+            ).fetchall()
+
+        # before_rows is DESC; reverse so it's ASC, then concatenate after_rows.
+        rows = list(reversed(before_rows)) + list(after_rows)
+        result = []
+        for row in rows:
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_messages_around, falling back to []"
+                    )
+                    msg["tool_calls"] = []
+            result.append(msg)
+
+        # before_rows includes the anchor itself; subtract 1 for the count of
+        # messages strictly before the anchor in the returned slice.
+        messages_before = max(0, len(before_rows) - 1)
+        messages_after = len(after_rows)
+        return {
+            "window": result,
+            "messages_before": messages_before,
+            "messages_after": messages_after,
+        }
+
+    def get_anchored_view(
+        self,
+        session_id: str,
+        around_message_id: int,
+        window: int = 5,
+        bookend: int = 3,
+        keep_roles: Optional[Tuple[str, ...]] = ("user", "assistant"),
+    ) -> Dict[str, Any]:
+        """Return an anchored window plus session bookends.
+
+        Built on top of ``get_messages_around``. Three slices:
+
+          - ``window``: messages immediately surrounding the anchor. Filtered
+            to ``keep_roles`` (tool-response noise dropped by default), EXCEPT
+            the anchor itself is always preserved regardless of role.
+          - ``bookend_start``: first ``bookend`` user/assistant messages of the
+            session — but only those whose id is strictly before the window's
+            first message id. Empty when the window already overlaps the
+            session head. Empty-content messages (tool-call-only assistant
+            turns) are skipped so they don't crowd out actual prose openings.
+          - ``bookend_end``: last ``bookend`` user/assistant messages of the
+            session, same non-overlap rule at the tail.
+
+        Bookends let an FTS5 hit anywhere in a long session yield the goal
+        (opening) and the resolution (closing) on a single call — without
+        loading the whole transcript.
+
+        Returns ``{"window": [], "messages_before": 0, "messages_after": 0,
+        "bookend_start": [], "bookend_end": []}`` when the anchor isn't in
+        the session.
+
+        ``keep_roles=None`` disables role filtering (raw window + raw
+        bookends).
+        """
+        if bookend < 0:
+            bookend = 0
+
+        # Reuse the primitive — handles anchor-existence, content decoding,
+        # tool_calls deserialisation, and boundary counts.
+        primitive = self.get_messages_around(
+            session_id, around_message_id, window=window
+        )
+        window_rows = primitive["window"]
+        if not window_rows:
+            return {
+                "window": [],
+                "messages_before": 0,
+                "messages_after": 0,
+                "bookend_start": [],
+                "bookend_end": [],
+            }
+
+        # Apply role filter to the window, but never drop the anchor itself.
+        if keep_roles is not None:
+            keep_set = set(keep_roles)
+            filtered_window = [
+                m for m in window_rows
+                if m.get("id") == around_message_id or m.get("role") in keep_set
+            ]
+        else:
+            filtered_window = window_rows
+
+        window_min_id = window_rows[0]["id"]
+        window_max_id = window_rows[-1]["id"]
+
+        # Fetch bookends only when there's room outside the window. SQL filters
+        # by id range, role, and non-empty content — tool-call-only assistant
+        # turns (content='' with tool_calls populated) are excluded so they
+        # don't crowd out actual prose openings/closings.
+        bookend_start_rows: List[Any] = []
+        bookend_end_rows: List[Any] = []
+        if bookend > 0:
+            with self._lock:
+                role_clause = ""
+                role_params: list = []
+                if keep_roles is not None:
+                    role_placeholders = ",".join("?" for _ in keep_roles)
+                    role_clause = f" AND role IN ({role_placeholders})"
+                    role_params = list(keep_roles)
+
+                bookend_start_rows = self._conn.execute(
+                    f"SELECT * FROM messages "
+                    f"WHERE session_id = ? AND id < ?{role_clause} "
+                    f"AND length(content) > 0 "
+                    f"ORDER BY id ASC LIMIT ?",
+                    (session_id, window_min_id, *role_params, bookend),
+                ).fetchall()
+
+                bookend_end_rows = self._conn.execute(
+                    f"SELECT * FROM messages "
+                    f"WHERE session_id = ? AND id > ?{role_clause} "
+                    f"AND length(content) > 0 "
+                    f"ORDER BY id DESC LIMIT ?",
+                    (session_id, window_max_id, *role_params, bookend),
+                ).fetchall()
+                # End rows came back DESC for the LIMIT cap; flip to ASC.
+                bookend_end_rows = list(reversed(bookend_end_rows))
+
+        def _hydrate(row) -> Dict[str, Any]:
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
+                    )
+                    msg["tool_calls"] = []
+            return msg
+
+        return {
+            "window": filtered_window,
+            "messages_before": primitive["messages_before"],
+            "messages_after": primitive["messages_after"],
+            "bookend_start": [_hydrate(r) for r in bookend_start_rows],
+            "bookend_end": [_hydrate(r) for r in bookend_end_rows],
+        }
 
     def resolve_resume_session_id(self, session_id: str) -> str:
         """Redirect a resume target to the descendant session that holds the messages.
@@ -1512,23 +2296,32 @@ class SessionDB:
         return session_id
 
     def get_messages_as_conversation(
-        self, session_id: str, include_ancestors: bool = False
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        include_inactive: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
+
+        By default only active messages are returned. Pass
+        ``include_inactive=True`` to load soft-deleted (rewound) rows
+        as well. See :meth:`rewind_to_message`.
         """
         session_ids = [session_id]
         if include_ancestors:
             session_ids = self._session_lineage_root_to_tip(session_id)
 
+        active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items "
-                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
+                f"FROM messages WHERE session_id IN ({placeholders})"
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -1548,6 +2341,15 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
+            # Surface the platform-side message id (e.g. yuanbao msg_id,
+            # telegram update_id) so platform-specific flows like recall
+            # can match by external identifier instead of having to fall
+            # back to content-match heuristics.  Exposed as ``message_id``
+            # for backward compatibility with the JSONL transcript shape.
+            if row["platform_message_id"]:
+                msg["message_id"] = row["platform_message_id"]
+            if row["observed"]:
+                msg["observed"] = True
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -1616,6 +2418,175 @@ class SessionDB:
             if prev.get("role") == "assistant" and (prev.get("content") or prev.get("tool_calls")):
                 return False
         return False
+
+    # =========================================================================
+    # Rewind (soft-delete) — see /rewind slash command + issue #21910
+    # =========================================================================
+
+    def rewind_to_message(
+        self, session_id: str, target_message_id: int
+    ) -> Dict[str, Any]:
+        """Soft-delete all messages with id >= ``target_message_id`` in *session_id*.
+
+        The target message itself becomes inactive as well so the caller
+        can pre-fill it as the next user prompt without it appearing
+        twice in the replayed transcript.  Rewound rows are kept on
+        disk with ``active=0`` for audit / forensic inspection — use
+        :meth:`get_messages` with ``include_inactive=True`` to see them.
+
+        Returns a dict::
+
+            {
+                "rewound_count": int,    # number of rows newly flipped to active=0
+                "target_message": dict,  # full row dict of the target
+                "new_head_id":   int|None  # id of the last still-active row, or None
+            }
+
+        Raises ``ValueError`` if the target message does not exist in
+        *session_id* or if its role is not ``"user"``.
+
+        Always increments ``sessions.rewind_count`` — even when the
+        target is already inactive — so the counter accurately reflects
+        the number of rewind operations performed against the session.
+        Idempotent on the ``active`` flag: re-rewinding past the same
+        target is a no-op on row state but still bumps the counter.
+        """
+
+        # 1) Validate target up-front (read-only, outside the write txn).
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+                (target_message_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"message {target_message_id} not found in session {session_id}"
+            )
+        target_row = dict(row)
+        if target_row.get("role") != "user":
+            raise ValueError(
+                f"rewind target must be a 'user' message (got role="
+                f"{target_row.get('role')!r}, id={target_message_id})"
+            )
+
+        # Decode content for callers (prefill the prompt buffer).
+        target_row["content"] = self._decode_content(target_row.get("content"))
+
+        rewound: List[int] = []
+
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 1",
+                (session_id, target_message_id),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            conn.execute(
+                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            return ids
+
+        rewound = self._execute_write(_do)
+
+        # 2) Compute new head id (largest still-active row id in session).
+        with self._lock:
+            head_row = self._conn.execute(
+                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+
+        return {
+            "rewound_count": len(rewound),
+            "target_message": target_row,
+            "new_head_id": new_head_id,
+        }
+
+    def restore_rewound(self, session_id: str, since_message_id: int) -> int:
+        """Mark inactive messages with id >= *since_message_id* active again.
+
+        Returns the number of rows flipped back to ``active=1``.
+        Intended for undo-of-rewind and test cleanup; not wired to a
+        slash command in v1.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 0",
+                (session_id, since_message_id),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 1 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            return len(ids)
+
+        return self._execute_write(_do)
+
+    def list_recent_user_messages(
+        self,
+        session_id: str,
+        limit: int = 20,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return the *limit* most-recent user messages, newest first.
+
+        Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
+        ``preview`` is the first 80 characters of the message content
+        (with line breaks collapsed to spaces). Used by the /rewind
+        slash command picker.
+
+        By default only active messages are returned.
+        """
+        active_clause = "" if include_inactive else " AND active = 1"
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, timestamp, content FROM messages "
+                "WHERE session_id = ? AND role = 'user'"
+                f"{active_clause} "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, int(limit)),
+            )
+            rows = cursor.fetchall()
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            decoded = self._decode_content(row["content"])
+            if isinstance(decoded, list):
+                # Multimodal — flatten text parts.
+                text_parts = [
+                    p.get("text", "") for p in decoded
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                preview = " ".join(t for t in text_parts if t).strip()
+                if not preview:
+                    preview = "[multimodal content]"
+            elif isinstance(decoded, str):
+                preview = decoded
+            else:
+                preview = ""
+            preview = " ".join(preview.split())  # collapse whitespace
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            result.append(
+                {
+                    "id": row["id"],
+                    "timestamp": row["timestamp"],
+                    "preview": preview,
+                }
+            )
+        return result
 
     # =========================================================================
     # Search
@@ -1713,6 +2684,8 @@ class SessionDB:
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
+        sort: str = None,
+        include_inactive: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -1725,7 +2698,22 @@ class SessionDB:
 
         Returns matching messages with session metadata, content snippet,
         and surrounding context (1 message before and after the match).
+
+        ``sort`` controls temporal ordering:
+          - ``None`` (default): FTS5 BM25 relevance only. Time-neutral.
+          - ``"newest"``: order by message timestamp DESC, then by rank.
+          - ``"oldest"``: order by message timestamp ASC, then by rank.
+
+        The short-CJK LIKE fallback already orders by timestamp DESC and
+        ignores ``sort``. The trigram CJK path honours ``sort`` like the main
+        FTS5 path.
+
+        Rewound (``active=0``) rows are excluded by default. Pass
+        ``include_inactive=True`` to search every row.
         """
+        if not self._fts_enabled:
+            return []
+
         if not query or not query.strip():
             return []
 
@@ -1733,9 +2721,30 @@ class SessionDB:
         if not query:
             return []
 
+        # Normalise sort. Anything not in the allowed set falls back to None
+        # (FTS5 rank-only) so callers can pass through user input without
+        # validation.
+        if isinstance(sort, str):
+            sort_norm = sort.strip().lower()
+            if sort_norm not in ("newest", "oldest"):
+                sort_norm = None
+        else:
+            sort_norm = None
+
+        # ORDER BY shared across the main FTS5 path and trigram CJK path.
+        # With sort set, timestamp is primary and rank is the tiebreaker.
+        if sort_norm == "newest":
+            order_by_sql = "ORDER BY m.timestamp DESC, rank"
+        elif sort_norm == "oldest":
+            order_by_sql = "ORDER BY m.timestamp ASC, rank"
+        else:
+            order_by_sql = "ORDER BY rank"
+
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
+        if not include_inactive:
+            where_clauses.append("m.active = 1")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -1771,7 +2780,7 @@ class SessionDB:
             JOIN messages m ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
             WHERE {where_sql}
-            ORDER BY rank
+            {order_by_sql}
             LIMIT ? OFFSET ?
         """
 
@@ -1789,20 +2798,34 @@ class SessionDB:
             raw_query = query.strip('"').strip()
             cjk_count = self._count_cjk(raw_query)
 
-            if cjk_count >= 3:
+            # Per-token CJK length check (#20494): trigram needs >=3 CJK chars
+            # per token. A query like "广西 OR 桂林 OR 漓江" has cjk_count=6
+            # (>=3) but each individual token is only 2 chars — trigram returns 0.
+            # Route to LIKE when any non-operator CJK token is <3 CJK chars.
+            _tokens_for_check = [
+                t for t in raw_query.split()
+                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
+            ]
+            _any_short_cjk = any(
+                self._count_cjk(t) < 3 for t in _tokens_for_check
+            )
+
+            if cjk_count >= 3 and not _any_short_cjk:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
                 tokens = raw_query.split()
                 parts = []
                 for tok in tokens:
-                    if tok.upper() in ("AND", "OR", "NOT"):
+                    if tok.upper() in {"AND", "OR", "NOT"}:
                         parts.append(tok)
                     else:
                         parts.append('"' + tok.replace('"', '""') + '"')
                 trigram_query = " ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
+                if not include_inactive:
+                    tri_where.append("m.active = 1")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -1828,7 +2851,7 @@ class SessionDB:
                     JOIN messages m ON m.id = messages_fts_trigram.rowid
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(tri_where)}
-                    ORDER BY rank
+                    {order_by_sql}
                     LIMIT ? OFFSET ?
                 """
                 tri_params.extend([limit, offset])
@@ -1840,11 +2863,24 @@ class SessionDB:
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
             else:
-                # Short CJK query (1-2 chars) — trigram needs ≥3 CJK chars.
-                # Fall back to LIKE substring search.
-                escaped = raw_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                like_where = ["(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"]
-                like_params: list = [f"%{escaped}%", f"%{escaped}%", f"%{escaped}%"]
+                # Short / mixed CJK query: trigram cannot match tokens with
+                # <3 CJK chars. Fall back to LIKE substring search.
+                # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
+                # build one LIKE condition per non-operator token so each term
+                # is matched independently (#20494).
+                non_op_tokens = [
+                    t for t in raw_query.split()
+                    if t.upper() not in {"AND", "OR", "NOT"}
+                ] or [raw_query]
+                token_clauses = []
+                like_params: list = []
+                for tok in non_op_tokens:
+                    esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    token_clauses.append(
+                        "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
+                    )
+                    like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
+                like_where = [f"({' OR '.join(token_clauses)})"]
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -1868,8 +2904,8 @@ class SessionDB:
                     LIMIT ? OFFSET ?
                 """
                 like_params.extend([limit, offset])
-                # instr() parameter goes first in the bound list
-                like_params = [raw_query] + like_params
+                # instr() for snippet uses first search token
+                like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]
@@ -1991,15 +3027,22 @@ class SessionDB:
     # Utility
     # =========================================================================
 
-    def session_count(self, source: str = None) -> int:
+    def session_count(self, source: str = None, min_message_count: int = 0) -> int:
         """Count sessions, optionally filtered by source."""
+        where_clauses = []
+        params = []
+
+        if source:
+            where_clauses.append("source = ?")
+            params.append(source)
+        if min_message_count > 0:
+            where_clauses.append("message_count >= ?")
+            params.append(min_message_count)
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
         with self._lock:
-            if source:
-                cursor = self._conn.execute(
-                    "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-                )
-            else:
-                cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions{where_sql}", params)
             return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
@@ -2140,7 +3183,7 @@ class SessionDB:
                     "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
                     (cutoff,),
                 )
-            session_ids = set(row["id"] for row in cursor.fetchall())
+            session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:
                 return 0
@@ -2407,6 +3450,51 @@ class SessionDB:
                 return None
         return dict(row) if row else None
 
+    def list_telegram_topic_bindings_for_chat(
+        self,
+        *,
+        chat_id: str,
+    ) -> List[Dict[str, Any]]:
+        """All Telegram DM topic bindings for one chat, newest first.
+
+        Read-only; returns [] if the bindings table doesn't exist yet
+        (does not trigger the topic-mode migration).
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM telegram_dm_topic_bindings "
+                    "WHERE chat_id = ? ORDER BY updated_at DESC",
+                    (str(chat_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [dict(row) for row in rows]
+
+    def get_telegram_topic_binding_by_session(
+        self,
+        *,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the Telegram DM topic binding for a given session_id, if present.
+
+        Uses the UNIQUE INDEX on telegram_dm_topic_bindings(session_id) for an
+        efficient reverse lookup. Returns None when the session has no binding or
+        the table does not exist yet.
+        """
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM telegram_dm_topic_bindings
+                    WHERE session_id = ?
+                    """,
+                    (str(session_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return dict(row) if row else None
+
     def bind_telegram_topic(
         self,
         *,
@@ -2571,7 +3659,59 @@ class SessionDB:
 
     # ── Space reclamation ──
 
-    def vacuum(self) -> None:
+    # FTS5 virtual tables whose b-tree segments we merge on optimize. The
+    # trigram table is created lazily / may be disabled, so we probe before
+    # touching it (see optimize_fts).
+    _FTS_TABLES = ("messages_fts", "messages_fts_trigram")
+
+    def _fts_table_exists(self, name: str) -> bool:
+        """True if an FTS5 virtual table is queryable in this DB."""
+        try:
+            self._conn.execute(f"SELECT 1 FROM {name} LIMIT 0")
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    def optimize_fts(self) -> int:
+        """Merge fragmented FTS5 b-tree segments into one per index.
+
+        FTS5 indexes grow as a series of incremental segments — one per
+        ``INSERT`` batch driven by the message triggers. Over tens of
+        thousands of messages these segments accumulate, which both bloats
+        the ``*_data`` shadow tables and slows ``MATCH`` queries that must
+        scan every segment. The special ``'optimize'`` command rewrites each
+        index as a single merged segment.
+
+        This is purely a maintenance operation — it changes neither search
+        results nor ``snippet()`` output, only on-disk layout and query
+        speed. It is complementary to VACUUM: ``optimize`` compacts the FTS
+        index internally, then VACUUM returns the freed pages to the OS.
+
+        Skips any FTS table that does not exist (e.g. the trigram index when
+        disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or not yet created), so
+        it is safe to call unconditionally.
+
+        Returns the number of FTS indexes that were optimized.
+        """
+        optimized = 0
+        with self._lock:
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                try:
+                    # The column name in the INSERT must match the table name
+                    # for FTS5 special commands.
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}) VALUES('optimize')"
+                    )
+                    optimized += 1
+                except sqlite3.OperationalError as exc:
+                    logger.warning(
+                        "FTS optimize failed for %s: %s", tbl, exc
+                    )
+        return optimized
+
+    def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.
 
         SQLite does not shrink the database file when rows are deleted —
@@ -2584,7 +3724,21 @@ class SessionDB:
         exclusive lock, so callers must ensure no other writers are
         active. Safe to call at startup before the gateway/CLI starts
         serving traffic.
+
+        FTS5 segments are merged first via :meth:`optimize_fts` so the
+        subsequent VACUUM reclaims the pages freed by the merge. This is a
+        layout-only optimization — search results are unchanged.
+
+        Returns the number of FTS indexes that were optimized (0 if the
+        merge step failed or no FTS tables exist).
         """
+        # Merge FTS5 segments before VACUUM so the freed pages are returned
+        # to the OS in the same pass. optimize_fts() manages its own lock.
+        optimized = 0
+        try:
+            optimized = self.optimize_fts()
+        except Exception as exc:
+            logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
         with self._lock:
             # Best-effort WAL checkpoint first, then VACUUM.
@@ -2593,6 +3747,7 @@ class SessionDB:
             except Exception:
                 pass
             self._conn.execute("VACUUM")
+        return optimized
 
     def maybe_auto_prune_and_vacuum(
         self,
@@ -2667,3 +3822,102 @@ class SessionDB:
 
         return result
 
+    # ── Handoff (cross-platform session transfer) ──────────────────────────
+    #
+    # State machine:
+    #   None       — no handoff in flight
+    #   "pending"  — CLI requested handoff, gateway hasn't picked it up yet
+    #   "running"  — gateway is processing (session switch + synthetic turn)
+    #   "completed"— gateway successfully delivered the synthetic turn
+    #   "failed"   — gateway hit an error; reason in handoff_error
+    #
+    # The CLI writes "pending" then poll-waits for terminal state. The gateway
+    # watcher transitions pending→running→{completed,failed}.
+
+    def request_handoff(self, session_id: str, platform: str) -> bool:
+        """Mark a session as pending handoff to the given platform.
+
+        Returns True if the row was found and not already in flight; False if
+        the session is already in a non-terminal handoff state.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions "
+                "SET handoff_state = 'pending', "
+                "    handoff_platform = ?, "
+                "    handoff_error = NULL "
+                "WHERE id = ? AND (handoff_state IS NULL "
+                "                  OR handoff_state IN ('completed', 'failed'))",
+                (platform, session_id),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def get_handoff_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Read the current handoff state for a session.
+
+        Returns ``{"state", "platform", "error"}`` or None if the session has
+        no handoff record.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT handoff_state, handoff_platform, handoff_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "state": row["handoff_state"],
+                "platform": row["handoff_platform"],
+                "error": row["handoff_error"],
+            }
+        except Exception:
+            return None
+
+    def list_pending_handoffs(self) -> List[Dict[str, Any]]:
+        """Return all sessions in handoff_state='pending', oldest first.
+
+        Used by the gateway's handoff watcher.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM sessions "
+                "WHERE handoff_state = 'pending' "
+                "ORDER BY started_at ASC"
+            )
+            return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def claim_handoff(self, session_id: str) -> bool:
+        """Atomically transition pending → running. Returns True if claimed."""
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET handoff_state = 'running' "
+                "WHERE id = ? AND handoff_state = 'pending'",
+                (session_id,),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def complete_handoff(self, session_id: str) -> None:
+        """Mark a handoff as completed."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'completed', "
+                "handoff_error = NULL WHERE id = ?",
+                (session_id,),
+            )
+        self._execute_write(_do)
+
+    def fail_handoff(self, session_id: str, error: str) -> None:
+        """Mark a handoff as failed and record the reason."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'failed', "
+                "handoff_error = ? WHERE id = ?",
+                (error[:500], session_id),
+            )
+        self._execute_write(_do)

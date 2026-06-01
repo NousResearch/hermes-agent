@@ -1,10 +1,8 @@
 """Tests for ``hermes debug`` CLI command and debug utilities."""
 
 import os
-import sys
 import urllib.error
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -291,9 +289,11 @@ class TestCaptureLogSnapshotRedaction:
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
-        # Critical: ensure the user has NOT opted in to redaction. The whole
-        # point of this PR is that share-time redaction works for users who
-        # never set this env var.
+        # Baseline fixture: no explicit env-var opinion. With the post-#17691
+        # default of ON, the default-path tests below exercise the
+        # secure-default behaviour. The `force=True` regression test
+        # setenvs to "false" inline to prove force=True works even when
+        # the runtime flag is disabled.
         monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
 
         logs_dir = home / "logs"
@@ -324,27 +324,65 @@ class TestCaptureLogSnapshotRedaction:
         assert _REDACT_FIXTURE_TOKEN in snap.tail_text
         assert _REDACT_FIXTURE_TOKEN in (snap.full_text or "")
 
-    def test_force_true_overrides_unset_env_var(self, hermes_home_with_secret):
+    def test_force_true_works_when_redaction_disabled(
+        self, hermes_home_with_secret, monkeypatch
+    ):
         """Regression test: redact_sensitive_text short-circuits without force=True.
 
         If a future refactor drops `force=True` from `_redact_log_text`, this
         test fails immediately. Without `force=True`, the redactor returns the
-        input unchanged when HERMES_REDACT_SECRETS is unset, and the feature
-        ships silently broken for its target audience.
+        input unchanged when HERMES_REDACT_SECRETS=false, and the share-time
+        redaction feature ships silently broken for users who opted out of
+        runtime redaction (e.g. developers working on the redactor itself).
         """
-        import os
+
+        # Force the runtime flag off so we're exercising the force=True path,
+        # not the default-on path.
+        monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
 
         from hermes_cli.debug import _capture_log_snapshot
 
-        # Belt-and-suspenders: confirm the env var is genuinely unset for this
-        # test so we know we're exercising the force=True path.
-        assert os.environ.get("HERMES_REDACT_SECRETS", "") == ""
+        assert os.environ.get("HERMES_REDACT_SECRETS", "") == "false"
 
         snap = _capture_log_snapshot("agent", tail_lines=10)
 
         assert _REDACT_FIXTURE_TOKEN not in snap.tail_text
         assert snap.full_text is not None
         assert _REDACT_FIXTURE_TOKEN not in snap.full_text
+
+    def test_default_redacts_email_addresses_for_public_share(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert "person@example.com" not in snap.tail_text
+        assert "[REDACTED_EMAIL]" in snap.tail_text
+        assert snap.full_text is not None
+        assert "person@example.com" not in snap.full_text
+
+    def test_no_redact_preserves_email_addresses(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
+
+        assert "person@example.com" in snap.tail_text
+        assert "person@example.com" in (snap.full_text or "")
 
     def test_capture_default_log_snapshots_threads_redact(
         self, hermes_home_with_secret

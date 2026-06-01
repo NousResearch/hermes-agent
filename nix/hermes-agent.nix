@@ -1,7 +1,9 @@
 # nix/hermes-agent.nix — Overridable Hermes Agent package
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
-# Users override via: pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+# Users override via:
+#   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "hindsight" ]; }
 {
   lib,
   stdenv,
@@ -9,11 +11,17 @@
   callPackage,
   python312,
   nodejs_22,
+  electron,
   ripgrep,
   git,
   openssh,
   ffmpeg,
   tirith,
+
+  # linux-only deps
+  wl-clipboard,
+  xclip,
+
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
   pyproject-nix,
@@ -25,11 +33,13 @@
   rev ? null,
   # Overridable parameters
   extraPythonPackages ? [ ],
+  extraDependencyGroups ? [ ],
 }:
 let
   nodejs = nodejs_22;
   hermesVenv = callPackage ./python.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
+    dependency-groups = [ "all" ] ++ extraDependencyGroups;
   };
 
   hermesNpmLib = callPackage ./lib.nix {
@@ -64,6 +74,10 @@ let
     openssh
     ffmpeg
     tirith
+  ]
+  ++ lib.optionals stdenv.isLinux [
+    wl-clipboard
+    xclip
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;
@@ -123,7 +137,7 @@ let
     print('No collisions found.')
   '';
 in
-stdenv.mkDerivation {
+stdenv.mkDerivation (finalAttrs: {
   pname = "hermes-agent";
   version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
 
@@ -179,6 +193,18 @@ stdenv.mkDerivation {
       hermesVenv
       ;
 
+    # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
+    # derivation, after all overrides are applied) so the desktop wrapper
+    # can prepend its `/bin` to PATH.  The desktop's resolver step 4
+    # ("existing hermes on PATH") then picks up the fully wrapped
+    # `hermes` binary — venv with all deps, bundled skills/plugins,
+    # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
+    # of the agent resolution in the desktop wrapper.
+    hermesDesktop = callPackage ./desktop.nix {
+      inherit hermesNpmLib electron;
+      hermesAgent = finalAttrs.finalPackage;
+    };
+
     devShellHook = ''
       STAMP=".nix-stamps/hermes-agent"
       STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
@@ -188,7 +214,6 @@ stdenv.mkDerivation {
         source .venv/bin/activate
         uv pip install -e ".[all]"
         [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
-        [ -d tinker-atropos ] && uv pip install -e ./tinker-atropos 2>/dev/null || true
         mkdir -p .nix-stamps
         echo "$STAMP_VALUE" > "$STAMP"
       else
@@ -205,4 +230,4 @@ stdenv.mkDerivation {
     license = licenses.mit;
     platforms = platforms.unix;
   };
-}
+})

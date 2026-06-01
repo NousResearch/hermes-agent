@@ -31,4 +31,66 @@ describe('virtual height estimates', () => {
       estimatedMsgHeight(msg, 80, { compact: false, details: false })
     )
   })
+
+  it('accounts for the response separator when assistant details are visible', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'plan' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
+      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 3
+    )
+  })
+
+  it('does not account for a response separator without visible details', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
+      estimatedMsgHeight(msg, 80, { compact: false, details: false })
+    )
+  })
+
+  it('honors per-section visibility when estimating response separators', () => {
+    const thinkingOnly: Msg = { role: 'assistant', text: 'ok', thinking: 'plan' }
+    const toolsOnly: Msg = { role: 'assistant', text: 'ok', tools: ['Tool A'] }
+
+    expect(
+      estimatedMsgHeight(thinkingOnly, 80, {
+        compact: false,
+        details: true,
+        thinkingVisible: false,
+        toolsVisible: true
+      })
+    ).toBe(estimatedMsgHeight(thinkingOnly, 80, { compact: false, details: false }))
+
+    expect(
+      estimatedMsgHeight(toolsOnly, 80, {
+        compact: false,
+        details: true,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
+  })
+
+  it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {
+    const msg: Msg = { role: 'user', text: 'follow-up question' }
+    const base = estimatedMsgHeight(msg, 80, { compact: false, details: false })
+    const withSep = estimatedMsgHeight(msg, 80, { compact: false, details: false, withSeparator: true })
+
+    expect(withSep).toBe(base + 2)
+  })
+
+  it('caps wrapped-line counting so giant assistant turns do not block offset rebuilds', () => {
+    // wrappedLines is invoked once per uncached message during
+    // useVirtualHistory's offset rebuild. Unbounded counting on a long
+    // assistant response (10k+ chars × every row × every rebuild) blocks
+    // the UI on cold mount. Cap is ~800 rows; post-mount Yoga
+    // measurement converges to the true height regardless.
+    const giant = 'x'.repeat(1_000_000)
+    const t0 = performance.now()
+    const rows = wrappedLines(giant, 80)
+    const elapsed = performance.now() - t0
+
+    expect(rows).toBeLessThanOrEqual(800)
+    expect(elapsed).toBeLessThan(50)
+  })
 })

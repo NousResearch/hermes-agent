@@ -59,7 +59,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
-        self._fallback_ips = [ip for ip in dict.fromkeys(_normalize_fallback_ips(fallback_ips))]
+        self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
@@ -76,6 +76,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
         sticky_ip = self._sticky_ip
         attempt_order: list[Optional[str]] = [sticky_ip] if sticky_ip else [None]
+        if sticky_ip:
+            attempt_order.append(None)  # retry primary DNS after sticky failure
         for ip in self._fallback_ips:
             if ip != sticky_ip:
                 attempt_order.append(ip)
@@ -99,6 +101,14 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
                     raise
+                if ip is not None and ip == self._sticky_ip:
+                    async with self._sticky_lock:
+                        if self._sticky_ip == ip:
+                            self._sticky_ip = None
+                            logger.warning(
+                                "[Telegram] Sticky fallback IP %s failed; resetting to primary DNS path",
+                                ip,
+                            )
                 if ip is None:
                     logger.warning(
                         "[Telegram] Primary api.telegram.org connection failed (%s); trying fallback IPs %s",

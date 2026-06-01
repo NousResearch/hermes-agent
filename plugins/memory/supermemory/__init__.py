@@ -88,9 +88,9 @@ def _as_bool(value: Any, default: bool) -> bool:
         return value
     if isinstance(value, str):
         lowered = value.strip().lower()
-        if lowered in ("true", "1", "yes", "y", "on"):
+        if lowered in {"true", "1", "yes", "y", "on"}:
             return True
-        if lowered in ("false", "0", "no", "n", "off"):
+        if lowered in {"false", "0", "no", "n", "off"}:
             return False
     return default
 
@@ -152,7 +152,8 @@ def _save_supermemory_config(values: dict, hermes_home: str) -> None:
         except Exception:
             existing = {}
     existing.update(values)
-    config_path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    from utils import atomic_json_write
+    atomic_json_write(config_path, existing, mode=0o600, sort_keys=True)
 
 
 def _detect_category(text: str) -> str:
@@ -508,7 +509,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._allowed_containers = [self._container_tag] + list(self._custom_containers)
 
         agent_context = kwargs.get("agent_context", "")
-        self._write_enabled = agent_context not in ("cron", "flush", "subagent")
+        self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
         self._active = bool(self._api_key)
         self._client = None
         if self._active:
@@ -598,7 +599,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         cleaned = []
         for message in messages or []:
             role = message.get("role")
-            if role not in ("user", "assistant"):
+            if role not in {"user", "assistant"}:
                 continue
             content = _clean_text_for_capture(str(message.get("content", "")))
             if content:

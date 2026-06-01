@@ -8,10 +8,9 @@ See: https://github.com/NousResearch/hermes-agent/issues/4426
 """
 
 import os
+import threading
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +67,49 @@ class TestGetSubprocessHome:
         monkeypatch.setenv("HERMES_HOME", str(base / "beta"))
         home_b = get_subprocess_home()
 
+        assert home_a is not None
+        assert home_b is not None
         assert home_a != home_b
         assert home_a.endswith("alpha/home")
         assert home_b.endswith("beta/home")
+
+    def test_context_override_is_thread_local(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        profile = tmp_path / "profile"
+        root.mkdir()
+        profile.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        ready = threading.Event()
+        release = threading.Event()
+        seen: list[str] = []
+
+        def read_from_other_thread():
+            ready.set()
+            release.wait(timeout=5)
+            seen.append(str(get_hermes_home()))
+
+        thread = threading.Thread(target=read_from_other_thread)
+        thread.start()
+        assert ready.wait(timeout=5)
+
+        token = set_hermes_home_override(profile)
+        try:
+            assert get_hermes_home() == profile
+            release.set()
+            thread.join(timeout=5)
+        finally:
+            reset_hermes_home_override(token)
+            release.set()
+
+        assert seen == [str(root)]
+        assert get_hermes_home() == root
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +155,28 @@ class TestMakeRunEnvHomeInjection:
 
         assert result["HOME"] == "/home/user"
 
+    def test_context_override_bridges_to_subprocess_env(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        profile = tmp_path / "profile"
+        root.mkdir()
+        profile.mkdir()
+        (profile / "home").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setenv("HOME", "/root")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.environments.local import _make_run_env
+
+        token = set_hermes_home_override(profile)
+        try:
+            result = _make_run_env({})
+        finally:
+            reset_hermes_home_override(token)
+
+        assert result["HERMES_HOME"] == str(profile)
+        assert result["HOME"] == str(profile / "home")
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_subprocess_env() injection
@@ -146,6 +207,27 @@ class TestSanitizeSubprocessEnvHomeInjection:
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == "/root"
+
+    def test_context_override_bridges_to_background_env(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        profile = tmp_path / "profile"
+        root.mkdir()
+        profile.mkdir()
+        (profile / "home").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        base_env = {"HOME": "/root", "PATH": "/usr/bin"}
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.environments.local import _sanitize_subprocess_env
+
+        token = set_hermes_home_override(profile)
+        try:
+            result = _sanitize_subprocess_env(base_env)
+        finally:
+            reset_hermes_home_override(token)
+
+        assert result["HERMES_HOME"] == str(profile)
+        assert result["HOME"] == str(profile / "home")
 
 
 # ---------------------------------------------------------------------------

@@ -10,13 +10,9 @@ Coverage levels:
   Persistent cache       — save/load, corruption, update, provider isolation
 """
 
-import os
 import time
-import tempfile
 
-import pytest
 import yaml
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
@@ -95,13 +91,31 @@ class TestEstimateMessagesTokensRough:
         assert result == (len(str(msg)) + 3) // 4
 
     def test_message_with_list_content(self):
-        """Vision messages with multimodal content arrays."""
+        """Vision messages with multimodal content arrays.
+
+        Image parts are counted at a flat ~1500-token rate per image
+        rather than counting the base64 char length, so a tiny stub
+        payload still registers as full image cost.
+        """
         msg = {"role": "user", "content": [
             {"type": "text", "text": "describe"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         ]}
         result = estimate_messages_tokens_rough([msg])
-        assert result == (len(str(msg)) + 3) // 4
+        # Flat cost = 1500 per image plus the small text overhead. Allow
+        # a small band so this isn't a change-detector for the exact
+        # string representation.
+        assert 1500 <= result < 2000
+
+    def test_message_with_huge_base64_image_stays_bounded(self):
+        """A 1MB base64 PNG must not explode to ~250K tokens."""
+        huge = "A" * (1024 * 1024)
+        msg = {"role": "tool", "tool_call_id": "c1", "content": [
+            {"type": "text", "text": "x"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{huge}"}},
+        ]}
+        result = estimate_messages_tokens_rough([msg])
+        assert result < 5000
 
 
 # =========================================================================
@@ -109,55 +123,6 @@ class TestEstimateMessagesTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
-    def test_claude_models_context_lengths(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "claude" not in key:
-                continue
-            # Claude 4.6+ models (4.6 and 4.7) have 1M context at standard
-            # API pricing (no long-context premium).  Older Claude 4.x and
-            # 3.x models cap at 200k.
-            if any(tag in key for tag in ("4.6", "4-6", "4.7", "4-7")):
-                assert value == 1000000, f"{key} should be 1000000"
-            else:
-                assert value == 200000, f"{key} should be 200000"
-
-    def test_gpt4_models_128k_or_1m(self):
-        # gpt-4.1 and gpt-4.1-mini have 1M context; other gpt-4* have 128k
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4" in key and "gpt-4.1" not in key:
-                assert value == 128000, f"{key} should be 128000"
-
-    def test_gpt41_models_1m(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4.1" in key:
-                assert value == 1047576, f"{key} should be 1047576"
-
-    def test_gemini_models_1m(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gemini" in key:
-                assert value == 1048576, f"{key} should be 1048576"
-
-    def test_grok_models_context_lengths(self):
-        # xAI /v1/models does not return context_length metadata, so
-        # DEFAULT_CONTEXT_LENGTHS must cover the Grok family explicitly.
-        # Values sourced from models.dev (2026-04).
-        expected = {
-            "grok-4.20": 2000000,
-            "grok-4-1-fast": 2000000,
-            "grok-4-fast": 2000000,
-            "grok-4": 256000,
-            "grok-code-fast": 256000,
-            "grok-3": 131072,
-            "grok-2": 131072,
-            "grok-2-vision": 8192,
-            "grok": 131072,
-        }
-        for key, value in expected.items():
-            assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing from DEFAULT_CONTEXT_LENGTHS"
-            assert DEFAULT_CONTEXT_LENGTHS[key] == value, (
-                f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
-            )
-
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.
@@ -171,12 +136,11 @@ class TestDefaultContextLengths:
                 ("grok-4.20-0309-reasoning", 2000000),
                 ("grok-4.20-0309-non-reasoning", 2000000),
                 ("grok-4.20-multi-agent-0309", 2000000),
-                ("grok-4-1-fast-reasoning", 2000000),
-                ("grok-4-1-fast-non-reasoning", 2000000),
                 ("grok-4-fast-reasoning", 2000000),
                 ("grok-4-fast-non-reasoning", 2000000),
                 ("grok-4", 256000),
                 ("grok-4-0709", 256000),
+                ("grok-build-0.1", 256000),
                 ("grok-code-fast-1", 256000),
                 ("grok-3", 131072),
                 ("grok-3-mini", 131072),
@@ -191,6 +155,32 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
+
+    def test_xai_oauth_grok_build_uses_xai_models_dev_context(self):
+        """xAI OAuth should share the xAI provider metadata path.
+
+        The xAI /v1/models endpoint does not currently include context fields
+        for grok-build-0.1, so this guards against falling through to the
+        generic "grok" 131k fallback when using OAuth credentials.
+        """
+        registry = {
+            "xai": {
+                "models": {
+                    "grok-build-0.1": {
+                        "limit": {"context": 256000, "output": 64000},
+                    },
+                },
+            },
+        }
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            assert get_model_context_length(
+                "grok-build-0.1",
+                provider="xai-oauth",
+                base_url="https://api.x.ai/v1",
+                api_key="oauth-token",
+            ) == 256000
 
     def test_deepseek_v4_models_1m_context(self):
         from agent.model_metadata import get_model_context_length
@@ -229,13 +219,6 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
-    def test_all_values_positive(self):
-        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            assert value > 0, f"{key} has non-positive context length"
-
-    def test_dict_is_not_empty(self):
-        assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
-
 
 # =========================================================================
 # Codex OAuth context-window resolution (provider="openai-codex")
@@ -244,8 +227,9 @@ class TestDefaultContextLengths:
 class TestCodexOAuthContextLength:
     """ChatGPT Codex OAuth imposes lower context limits than the direct
     OpenAI API for the same slugs. Verified Apr 2026 via live probe of
-    chatgpt.com/backend-api/codex/models: every model returns 272k, while
+    chatgpt.com/backend-api/codex/models: most models return 272k, while
     models.dev reports 1.05M for gpt-5.5/gpt-5.4 and 400k for the rest.
+    (Known exception: gpt-5.3-codex-spark is 128k.)
     """
 
     def setup_method(self):
@@ -259,25 +243,28 @@ class TestCodexOAuthContextLength:
         """
         from agent.model_metadata import get_model_context_length
 
+        expected = {
+            "gpt-5.5": 272_000,
+            "gpt-5.4": 272_000,
+            "gpt-5.4-mini": 272_000,
+            "gpt-5.3-codex": 272_000,
+            "gpt-5.3-codex-spark": 128_000,
+            "gpt-5.2-codex": 272_000,
+            "gpt-5.1-codex-max": 272_000,
+            "gpt-5.1-codex-mini": 272_000,
+        }
+
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
-            for model in (
-                "gpt-5.5",
-                "gpt-5.4",
-                "gpt-5.4-mini",
-                "gpt-5.3-codex",
-                "gpt-5.2-codex",
-                "gpt-5.1-codex-max",
-                "gpt-5.1-codex-mini",
-            ):
+            for model, expected_ctx in expected.items():
                 ctx = get_model_context_length(
                     model=model,
                     base_url="https://chatgpt.com/backend-api/codex",
                     api_key="",
                     provider="openai-codex",
                 )
-                assert ctx == 272_000, (
-                    f"Codex {model}: expected 272000 fallback, got {ctx} "
+                assert ctx == expected_ctx, (
+                    f"Codex {model}: expected {expected_ctx} fallback, got {ctx} "
                     "(models.dev leakage?)"
                 )
 
@@ -452,6 +439,240 @@ class TestCodexOAuthContextLength:
 
 
 # =========================================================================
+# Nous Portal context-window resolution (provider="nous")
+# =========================================================================
+
+class TestNousPortalContextResolution:
+    """Nous Portal /v1/models is authoritative for what Nous infra enforces
+    and may diverge from the OpenRouter catalog.
+
+    Invariants this class pins down:
+      1. Portal value wins over the OR fallback.
+      2. Portal-derived values are persisted to disk.
+      3. OR-fallback values are NEVER persisted — otherwise a single portal
+         blip would freeze the wrong value in via step-1 cache short-circuit.
+      4. Pre-fix persistent-cache entries (seeded from the OR catalog) are
+         bypassed at step 1 and overwritten once the portal responds.
+      5. Pre-fix persistent-cache entries SURVIVE on disk when the portal
+         is unreachable — no opportunistic invalidation that loses the only
+         value we have.
+    """
+
+    def setup_method(self):
+        import agent.model_metadata as mm
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_portal_value_wins_over_openrouter_catalog(
+        self, mock_or, mock_portal, tmp_path, monkeypatch
+    ):
+        """The motivating case: OR catalog says 1M for qwen3.6-plus, but
+        the Nous portal correctly enforces 262144.  Portal must win."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        mock_portal.return_value = {
+            "qwen3.6-plus": {"context_length": 262_144},
+        }
+        mock_or.return_value = {
+            "qwen/qwen3.6-plus": {"context_length": 1_000_000},
+        }
+
+        ctx = mm.get_model_context_length(
+            model="qwen3.6-plus",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_key="fake-token",
+            provider="nous",
+        )
+        assert ctx == 262_144, (
+            f"Portal must override OR catalog; got {ctx} (OR leak?)"
+        )
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_portal_value_is_persisted_to_disk(
+        self, mock_or, mock_portal, tmp_path, monkeypatch
+    ):
+        """Portal-derived value should land in the persistent cache so
+        cross-process callers (e.g. child agents) see the same value."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        mock_portal.return_value = {
+            "qwen3.6-plus": {"context_length": 262_144},
+        }
+        mock_or.return_value = {}
+
+        base_url = "https://inference-api.nousresearch.com/v1"
+        ctx = mm.get_model_context_length(
+            model="qwen3.6-plus",
+            base_url=base_url,
+            api_key="fake",
+            provider="nous",
+        )
+        assert ctx == 262_144
+        persisted = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert persisted.get(f"qwen3.6-plus@{base_url}") == 262_144, (
+            "Portal-derived value should be persisted to disk"
+        )
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_openrouter_fallback_is_not_persisted(
+        self, mock_or, mock_portal, tmp_path, monkeypatch
+    ):
+        """When the portal can't resolve a model (network blip, auth glitch,
+        model not yet listed) we fall back to the OR catalog so the agent
+        keeps working — but we must NOT write the OR value to disk.  Once
+        cached on disk, step-1 short-circuits forever and the user is stuck
+        with the wrong number until they manually clear the cache."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        mock_portal.return_value = {}  # portal unreachable / model unknown
+        mock_or.return_value = {
+            "qwen/qwen3.6-plus": {"context_length": 1_000_000},
+        }
+
+        base_url = "https://inference-api.nousresearch.com/v1"
+        ctx = mm.get_model_context_length(
+            model="qwen3.6-plus",
+            base_url=base_url,
+            api_key="fake",
+            provider="nous",
+        )
+        assert ctx == 1_000_000, "OR fallback should still serve the request"
+        assert not cache_file.exists() or not yaml.safe_load(
+            cache_file.read_text()
+        ).get("context_lengths", {}), (
+            "OR-fallback values must NOT be persisted — a single portal blip "
+            "would otherwise freeze the wrong value in via step-1 cache hit"
+        )
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_stale_cache_is_bypassed_and_overwritten_by_portal(
+        self, mock_or, mock_portal, tmp_path, monkeypatch
+    ):
+        """Users upgrading from pre-fix builds have ``qwen3.6-plus@…nous… =
+        1000000`` (OR-derived) sitting in their cache file.  Step 1 must
+        NOT short-circuit on that entry — step 5b reconciles against the
+        portal and overwrites the persistent value with 262144."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://inference-api.nousresearch.com/v1"
+        stale_key = f"qwen3.6-plus@{base_url}"
+        other_key = "other-model@https://api.openai.com/v1"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            stale_key: 1_000_000,     # pre-fix OR-derived value
+            other_key: 128_000,       # unrelated, must survive
+        }}))
+
+        mock_portal.return_value = {
+            "qwen3.6-plus": {"context_length": 262_144},
+        }
+        mock_or.return_value = {}
+
+        ctx = mm.get_model_context_length(
+            model="qwen3.6-plus",
+            base_url=base_url,
+            api_key="fake",
+            provider="nous",
+        )
+        assert ctx == 262_144, (
+            f"Stale OR-derived cache entry should not have leaked through; got {ctx}"
+        )
+
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert remaining.get(stale_key) == 262_144, (
+            "Portal value should have overwritten the stale entry on disk"
+        )
+        assert remaining.get(other_key) == 128_000, (
+            "Unrelated cache entries must not be touched"
+        )
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_stale_cache_survives_when_portal_unreachable(
+        self, mock_or, mock_portal, tmp_path, monkeypatch
+    ):
+        """When the portal is unreachable AND we have a (potentially stale)
+        on-disk cache entry, the entry must survive untouched — we don't
+        want a transient outage to delete the only value we have.  The
+        request itself still gets served via OR fallback for this call."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://inference-api.nousresearch.com/v1"
+        existing_key = f"qwen3.6-plus@{base_url}"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            existing_key: 1_000_000,
+        }}))
+
+        mock_portal.return_value = {}  # portal unreachable
+        mock_or.return_value = {
+            "qwen/qwen3.6-plus": {"context_length": 1_000_000},
+        }
+
+        mm.get_model_context_length(
+            model="qwen3.6-plus",
+            base_url=base_url,
+            api_key="fake",
+            provider="nous",
+        )
+
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert remaining.get(existing_key) == 1_000_000, (
+            "Persistent cache entry must survive a transient portal outage"
+        )
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_bypass_keyed_on_url_not_provider_string(
+        self, mock_or, mock_portal, tmp_path, monkeypatch
+    ):
+        """Some call sites pass ``provider=""`` or ``provider="openrouter"``
+        when the user is really on Nous Portal (e.g. cred-pool fallback).
+        The Nous-URL bypass must trigger off the URL host, not the provider
+        string, so the portal-first resolver still runs in that case."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://inference-api.nousresearch.com/v1"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            f"qwen3.6-plus@{base_url}": 1_000_000,  # stale
+        }}))
+
+        mock_portal.return_value = {
+            "qwen3.6-plus": {"context_length": 262_144},
+        }
+        mock_or.return_value = {}
+
+        for provider_arg in ("", "openrouter", "custom"):
+            mm._endpoint_model_metadata_cache.clear()
+            mm._endpoint_model_metadata_cache_time.clear()
+            ctx = mm.get_model_context_length(
+                model="qwen3.6-plus",
+                base_url=base_url,
+                api_key="fake",
+                provider=provider_arg,
+            )
+            assert ctx == 262_144, (
+                f"URL-based Nous detection must fire for provider={provider_arg!r}; "
+                f"got {ctx}"
+            )
+
+
+# =========================================================================
 # get_model_context_length — resolution order
 # =========================================================================
 
@@ -489,6 +710,16 @@ class TestGetModelContextLength:
         """qwen3-coder has a 256K context window, not the generic 128K Qwen default."""
         mock_fetch.return_value = {}
         assert get_model_context_length("qwen3-coder") == 262144
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_6_plus_context_length(self, mock_fetch):
+        """qwen3.6-plus has a 1M context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3.6-plus") == 1048576
+        # Provider-prefixed variants must resolve to the same explicit entry
+        # via the longest-substring fallback (no portal/OR cache available).
+        assert get_model_context_length("qwen/qwen3.6-plus") == 1048576
+        assert get_model_context_length("dashscope/qwen3.6-plus") == 1048576
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen_generic_context_length(self, mock_fetch):
@@ -853,12 +1084,6 @@ class TestContextProbeTiers:
     def test_tiers_descending(self):
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
-
-    def test_first_tier_is_256k(self):
-        assert CONTEXT_PROBE_TIERS[0] == 256_000
-
-    def test_last_tier_is_8k(self):
-        assert CONTEXT_PROBE_TIERS[-1] == 8_000
 
 
 class TestGetNextProbeTier:

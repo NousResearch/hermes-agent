@@ -12,8 +12,7 @@ affected MCP server failed until the gateway was manually restarted.
 """
 import json
 import threading
-import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -51,6 +50,17 @@ def test_is_session_expired_detects_session_terminated():
     from tools.mcp_tool import _is_session_expired_error
 
     assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+
+
+def test_is_session_expired_detects_stale_pipe_and_closed_transport_variants():
+    """Stdio/AnyIO stale-pipe failures usually surface as closed-resource
+    or broken-pipe text, not an HTTP session-expired JSON-RPC error."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("ClosedResourceError")) is True
+    assert _is_session_expired_error(RuntimeError("closed resource in MCP child")) is True
+    assert _is_session_expired_error(RuntimeError("transport is closed")) is True
+    assert _is_session_expired_error(RuntimeError("Broken pipe while writing request")) is True
+    assert _is_session_expired_error(RuntimeError("End of file from MCP server")) is True
 
 
 def test_is_session_expired_is_case_insensitive():

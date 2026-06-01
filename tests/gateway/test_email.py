@@ -18,8 +18,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from gateway.platforms.base import SendResult
@@ -660,7 +658,6 @@ class TestSendMethods(unittest.TestCase):
     def test_send_image_includes_url(self):
         """send_image should include image URL in email body."""
         import asyncio
-        from unittest.mock import AsyncMock
         adapter = self._make_adapter()
 
         adapter.send = AsyncMock(return_value=SendResult(success=True))
@@ -1129,6 +1126,81 @@ class TestImapConnectionCleanup(unittest.TestCase):
 
         self.assertEqual(results, [])
         mock_imap.logout.assert_called_once()
+
+
+class TestImapIdExtensionForNetEase(unittest.TestCase):
+    """Regression for #22271: 163/NetEase mailbox requires the RFC 2971
+    IMAP ID command after LOGIN, otherwise it returns ``BYE Unsafe Login``
+    on every UID SEARCH.  We send ID best-effort after every login so that
+    163 works while non-supporting servers stay unaffected.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@163.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.163.com",
+            "EMAIL_SMTP_HOST": "smtp.163.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_connect_sends_imap_id_after_login(self):
+        """connect() must call xatom('ID', ...) after LOGIN for 163 support."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.connect())
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+        id_calls = [c for c in mock_imap.xatom.call_args_list if c.args and c.args[0] == "ID"]
+        self.assertTrue(
+            id_calls,
+            "EmailAdapter.connect() must call imap.xatom('ID', ...) after "
+            "LOGIN so 163/NetEase mailbox does not return 'Unsafe Login'.",
+        )
+        payload = id_calls[0].args[1]
+        self.assertIn("hermes-agent", payload)
+
+        names = [c[0] for c in mock_imap.method_calls]
+        self.assertIn("login", names)
+        self.assertLess(names.index("login"), names.index("xatom"))
+
+    def test_fetch_new_messages_sends_imap_id_after_login(self):
+        """_fetch_new_messages must also send ID — it opens its own IMAP session."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        id_calls = [c for c in mock_imap.xatom.call_args_list if c.args and c.args[0] == "ID"]
+        self.assertTrue(
+            id_calls,
+            "_fetch_new_messages() must call imap.xatom('ID', ...) after "
+            "LOGIN — the polling path opens a fresh IMAP connection.",
+        )
+
+    def test_send_imap_id_swallows_errors_for_non_supporting_servers(self):
+        """Servers that reject ID must not break the connection."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.xatom.side_effect = Exception("BAD command unknown: ID")
+
+        _send_imap_id(mock_imap)
+        mock_imap.xatom.assert_called_once()
 
 
 if __name__ == "__main__":

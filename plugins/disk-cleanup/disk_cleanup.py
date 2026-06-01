@@ -90,7 +90,7 @@ def _log(message: str) -> None:
         log_file = get_log_file()
         log_file.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_file, "a") as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
     except OSError:
         # Never let the audit log break the agent loop.
@@ -481,7 +481,14 @@ def guess_category(path: Path) -> Optional[str]:
         }:
             return None
         if top == "cron" or top == "cronjobs":
-            return "cron-output"
+            # Only files under the disposable ``output/`` subtree are
+            # cleanup candidates. Top-level cron control-plane state
+            # (e.g. ``jobs.json``, ``.tick.lock``) must never be
+            # auto-tracked — deleting it wipes the live scheduler
+            # registry. See issue #32164.
+            if len(rel.parts) >= 2 and rel.parts[1] == "output":
+                return "cron-output"
+            return None
         if top == "cache":
             return "temp"
     except ValueError:

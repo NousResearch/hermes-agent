@@ -84,6 +84,47 @@ def _sanitize_single_tool(tool: dict) -> dict:
     # argument coercion (``model_tools._schema_allows_null``) can still
     # map a model-emitted ``"null"`` string to Python ``None``.
     fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
+    # Strip top-level combinators that strict backends (OpenAI's Codex
+    # endpoint at chatgpt.com/backend-api/codex) reject outright. Nested
+    # combinators inside properties are preserved.
+    fn["parameters"] = _strip_top_level_combinators(
+        fn["parameters"], path=fn.get("name", "<tool>")
+    )
+    return out
+
+
+_TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
+
+
+def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
+    """Drop combinator keywords from the top-level of a function parameters schema.
+
+    OpenAI's Codex backend (``chatgpt.com/backend-api/codex``) is stricter
+    than the public Functions API and rejects requests with::
+
+        Invalid schema for function 'X': schema must have type 'object' and
+        not have 'oneOf'/'anyOf'/'allOf'/'enum'/'not' at the top level.
+
+    These keywords are typically used for conditional required-fields hints
+    (``allOf: [{if: ..., then: {required: [...]}}]``). Removing them at the
+    top level discards the hint but does not change which argument *values*
+    are valid — the tool handler always re-validates required fields.
+
+    Only the *top* level is stripped; combinators nested inside a property's
+    schema are preserved (the strict rule only applies to the outermost
+    parameters object).
+    """
+    if not isinstance(params, dict):
+        return params
+    out = dict(params)
+    for key in _TOP_LEVEL_FORBIDDEN_KEYS:
+        if key in out:
+            logger.debug(
+                "schema_sanitizer[%s]: stripped top-level %r combinator "
+                "from tool parameters (strict-backend compat)",
+                path, key,
+            )
+            out.pop(key, None)
     return out
 
 
@@ -314,16 +355,91 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
                 _walk(item)
 
     for tool in tools:
-        fn = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(tool, dict):
+            continue
+        
+        # OpenAI-format: {"function": {"parameters": {...}}}
+        fn = tool.get("function")
         if isinstance(fn, dict):
             params = fn.get("parameters")
             if isinstance(params, dict):
                 _walk(params)
+                continue
+        
+        # Responses-format: {"name": "...", "parameters": {...}}
+        # (used by codex_responses API mode — xAI, OpenAI Codex, etc.)
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk(params)
+            continue
 
     if stripped:
         logger.info(
             "schema_sanitizer: stripped %d pattern/format keyword(s) from "
             "tool schemas (llama.cpp grammar-parse recovery)",
+            stripped,
+        )
+    return tools, stripped
+
+
+def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
+    """Strip ``enum`` keywords whose string values contain a forward slash.
+
+    xAI's ``/v1/responses`` and ``/v1/chat/completions`` endpoints compile
+    tool schemas to a grammar that rejects ``enum`` values containing ``/``
+    (the request fails with HTTP 400 "Invalid arguments passed to the
+    model" before any token is emitted). Most commonly hit by MCP-derived
+    tools whose enum lists HuggingFace model IDs (``Qwen/Qwen3.5-0.8B``,
+    ``openai/gpt-oss-20b``) or owner/name environment IDs. The constraint
+    is purely a prompting hint; dropping it lets the model still see the
+    field description and pick a value, without xAI tripping on the slash.
+
+    Args:
+        tools: OpenAI-format or Responses-format tool list, mutated in
+            place. Callers that need to preserve the original should
+            deep-copy first.
+
+    Returns:
+        ``(tools, stripped_count)`` — same list reference plus a count of
+        how many ``enum`` keywords were removed.
+    """
+    if not tools:
+        return tools, 0
+
+    stripped = 0
+
+    def _walk(node: Any) -> None:
+        nonlocal stripped
+        if isinstance(node, dict):
+            enum_val = node.get("enum")
+            if isinstance(enum_val, list) and any(
+                isinstance(v, str) and "/" in v for v in enum_val
+            ):
+                node.pop("enum", None)
+                stripped += 1
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk(params)
+                continue
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk(params)
+
+    if stripped:
+        logger.info(
+            "schema_sanitizer: stripped %d enum keyword(s) containing '/' "
+            "from tool schemas (xAI Responses grammar-compile recovery)",
             stripped,
         )
     return tools, stripped

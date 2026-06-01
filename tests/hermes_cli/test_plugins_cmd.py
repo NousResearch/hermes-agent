@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,12 +10,13 @@ import pytest
 import yaml
 
 from hermes_cli.plugins_cmd import (
+    PluginOperationError,
     _copy_example_files,
     _read_manifest,
     _repo_name_from_url,
+    _resolve_git_executable,
     _resolve_git_url,
     _sanitize_plugin_name,
-    plugins_command,
 )
 
 
@@ -63,6 +62,36 @@ class TestSanitizePluginName:
         with pytest.raises(ValueError, match="must not be empty"):
             _sanitize_plugin_name("", tmp_path)
 
+    # ── allow_subdir=True ──
+
+    def test_allow_subdir_accepts_single_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "observability/langfuse", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "observability" / "langfuse").resolve()
+
+    def test_allow_subdir_strips_leading_trailing_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "/image_gen/openai/", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "image_gen" / "openai").resolve()
+
+    def test_allow_subdir_still_rejects_dot_dot(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo/../bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_still_rejects_backslash(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo\\bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_rejects_empty_after_strip(self, tmp_path):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _sanitize_plugin_name("///", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_resolves_inside_plugins_dir(self, tmp_path):
+        target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
+        assert target.is_relative_to(tmp_path.resolve())
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 
@@ -97,6 +126,69 @@ class TestResolveGitUrl:
     def test_invalid_three_parts_raises(self):
         with pytest.raises(ValueError, match="Invalid plugin identifier"):
             _resolve_git_url("a/b/c")
+
+
+# ── _resolve_git_executable ─────────────────────────────────────────────────
+
+
+class TestResolveGitExecutable:
+    """Fallback resolution when bare ``git`` is not discoverable via ``PATH``."""
+
+    def teardown_method(self):
+        _resolve_git_executable.cache_clear()
+
+    def test_prefers_shutil_which(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value="/usr/local/bin/git"):
+            assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_fallback_posix_first_matching_path(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+
+        def _isfile(p: str) -> bool:
+            return p == "/usr/local/bin/git"
+
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", side_effect=_isfile):
+                    assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_returns_none_when_unavailable(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", return_value=False):
+                    assert pc._resolve_git_executable() is None
+
+    def test_git_pull_uses_resolved_executable(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(
+            pc,
+            "_resolve_git_executable",
+            return_value="/resolved/git",
+        ):
+            with patch.object(pc.subprocess, "run") as run:
+                run.return_value = MagicMock(returncode=0, stdout="Already up to date\n", stderr="")
+                ok, msg = pc._git_pull_plugin_dir(tmp_path)
+        assert ok is True
+        run.assert_called_once()
+        assert run.call_args[0][0][0] == "/resolved/git"
+
+    def test_install_core_raises_when_git_unresolved(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc, "_resolve_git_executable", return_value=None):
+            with pytest.raises(PluginOperationError, match="git is not installed"):
+                pc._install_plugin_core("owner/repo", force=True)
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
@@ -164,7 +256,6 @@ class TestCmdInstall:
 
     def test_install_requires_identifier(self):
         from hermes_cli.plugins_cmd import cmd_install
-        import argparse
 
         with pytest.raises(SystemExit):
             cmd_install("")
@@ -338,7 +429,6 @@ class TestCopyExampleFiles:
     """Test example file copying."""
 
     def test_copies_example_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -354,7 +444,6 @@ class TestCopyExampleFiles:
         console.print.assert_called()
 
     def test_skips_existing_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -371,7 +460,6 @@ class TestCopyExampleFiles:
         assert real_file.read_text() == "existing: true"
 
     def test_handles_copy_error_gracefully(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock, patch
 
         console = MagicMock()
@@ -457,7 +545,7 @@ class TestPromptPluginEnvVars:
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "langfuse.com" in printed
 
-    def test_secret_uses_getpass(self):
+    def test_secret_uses_masked_prompt(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
 
@@ -468,11 +556,11 @@ class TestPromptPluginEnvVars:
         }
 
         with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("getpass.getpass", return_value="s3cret") as mock_gp, \
+             patch("hermes_cli.plugins_cmd.masked_secret_prompt", return_value="s3cret") as mock_prompt, \
              patch("hermes_cli.config.save_env_value"):
             _prompt_plugin_env_vars(manifest, console)
 
-        mock_gp.assert_called_once()
+        mock_prompt.assert_called_once()
 
     def test_empty_input_skips(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars

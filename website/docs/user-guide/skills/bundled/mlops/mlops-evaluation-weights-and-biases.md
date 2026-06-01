@@ -20,6 +20,7 @@ W&B: log ML experiments, sweeps, model registry, dashboards.
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `wandb` |
+| Platforms | linux, macos, windows |
 | Tags | `MLOps`, `Weights And Biases`, `WandB`, `Experiment Tracking`, `Hyperparameter Tuning`, `Model Registry`, `Collaboration`, `Real-Time Visualization`, `PyTorch`, `TensorFlow`, `HuggingFace` |
 
 ## Reference: full SKILL.md

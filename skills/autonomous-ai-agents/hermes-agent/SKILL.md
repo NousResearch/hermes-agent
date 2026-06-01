@@ -4,6 +4,7 @@ description: "Configure, extend, or contribute to Hermes Agent."
 version: 2.1.0
 author: Hermes Agent + Teknium
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [hermes, setup, configuration, multi-agent, spawning, cli, gateway, development]
@@ -99,8 +100,10 @@ hermes config path          Print config.yaml path
 hermes config env-path      Print .env path
 hermes config check         Check for missing/outdated config
 hermes config migrate       Update config with new options
-hermes login [--provider P] OAuth login (nous, openai-codex)
-hermes logout               Clear stored auth
+hermes auth                 Interactive credential manager
+hermes auth add PROVIDER    Add OAuth or API-key credential (e.g. nous, openai-codex, qwen-oauth)
+hermes auth list            List stored credentials
+hermes auth remove PROVIDER Remove a stored credential
 hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Show component status
 ```
@@ -335,7 +338,8 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 ~/.hermes/config.yaml       Main configuration
 ~/.hermes/.env              API keys and secrets
 $HERMES_HOME/skills/        Installed skills
-~/.hermes/sessions/         Session transcripts
+~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
+~/.hermes/state.db          Canonical session store (SQLite + FTS5)
 ~/.hermes/logs/             Gateway and error logs
 ~/.hermes/auth.json         OAuth tokens and credential pools
 ~/.hermes/hermes-agent/     Source code (if git-installed)
@@ -385,10 +389,9 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | Alibaba / DashScope | API key | `DASHSCOPE_API_KEY` |
 | Xiaomi MiMo | API key | `XIAOMI_API_KEY` |
 | Kilo Code | API key | `KILOCODE_API_KEY` |
-| AI Gateway (Vercel) | API key | `AI_GATEWAY_API_KEY` |
 | OpenCode Zen | API key | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | API key | `OPENCODE_GO_API_KEY` |
-| Qwen OAuth | OAuth | `hermes login --provider qwen-oauth` |
+| Qwen OAuth | OAuth | `hermes auth add qwen-oauth` |
 | Custom endpoint | Config | `model.base_url` + `model.api_key` in config.yaml |
 | GitHub Copilot ACP | External | `COPILOT_CLI_PATH` or Copilot CLI |
 
@@ -443,15 +446,15 @@ Common "why is Hermes doing X to my output / tool calls / commands?" toggles —
 
 ### Secret redaction in tool output
 
-Secret redaction is **off by default** — tool output (terminal stdout, `read_file`, web content, subagent summaries, etc.) passes through unmodified. If the user wants Hermes to auto-mask strings that look like API keys, tokens, and secrets before they enter the conversation context and logs:
+Secret redaction is **on by default** — tool output (terminal stdout, `read_file`, web content, subagent summaries, etc.) is scanned for strings that look like API keys, tokens, and secrets before it enters the conversation context and logs. Leave it enabled for normal use:
 
 ```bash
-hermes config set security.redact_secrets true       # enable globally
+hermes config set security.redact_secrets true       # keep enabled globally
 ```
 
-**Restart required.** `security.redact_secrets` is snapshotted at import time — toggling it mid-session (e.g. via `export HERMES_REDACT_SECRETS=true` from a tool call) will NOT take effect for the running process. Tell the user to run `hermes config set security.redact_secrets true` in a terminal, then start a new session. This is deliberate — it prevents an LLM from flipping the toggle on itself mid-task.
+**Restart required.** `security.redact_secrets` is snapshotted at import time — toggling it mid-session (e.g. via `export HERMES_REDACT_SECRETS=false` from a tool call) will NOT take effect for the running process. Tell the user to change it in config from a terminal, then start a new session. This is deliberate — it prevents an LLM from flipping the toggle on itself mid-task.
 
-Disable again with:
+Disable only when you deliberately need raw credential-like strings for debugging or redactor development:
 ```bash
 hermes config set security.redact_secrets false
 ```
@@ -679,24 +682,120 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curato
 
 Durable SQLite board for multi-profile / multi-worker collaboration.
 Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
-see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK` so the
-schema footprint is zero outside worker processes.
+see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
+orchestrator profiles can opt into the broader `kanban` toolset. Normal
+sessions still have zero `kanban_*` schema footprint unless configured.
 
 - **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
   `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
   `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
   `log`, `dispatch`, `daemon`, `gc`.
-- **Worker toolset:** `kanban_show`, `kanban_complete`, `kanban_block`,
-  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`.
+- **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
+  `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
+  `kanban_link`; profiles that explicitly enable the `kanban` toolset
+  outside a dispatcher-spawned task also get `kanban_list` and
+  `kanban_unblock` for board routing.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after ~5 consecutive spawn failures.
+  Auto-blocks a task after `failure_limit` consecutive spawn failures
+  (default 2; configurable via `kanban.failure_limit` or per-task
+  `max_retries`).
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
 
 User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
+
+---
+
+## Windows-Specific Quirks
+
+Hermes runs natively on Windows (PowerShell, cmd, Windows Terminal, git-bash
+mintty, VS Code integrated terminal). Most of it just works, but a handful
+of differences between Win32 and POSIX have bitten us — document new ones
+here as you hit them so the next person (or the next session) doesn't
+rediscover them from scratch.
+
+### Input / Keybindings
+
+**Alt+Enter doesn't insert a newline.** Windows Terminal intercepts Alt+Enter
+at the terminal layer to toggle fullscreen — the keystroke never reaches
+prompt_toolkit. Use **Ctrl+Enter** instead. Windows Terminal delivers
+Ctrl+Enter as LF (`c-j`), distinct from plain Enter (`c-m` / CR), and the
+CLI binds `c-j` to newline insertion on `win32` only (see
+`_bind_prompt_submit_keys` + the Windows-only `c-j` binding in `cli.py`).
+Side effect: the raw Ctrl+J keystroke also inserts a newline on Windows —
+unavoidable, because Windows Terminal collapses Ctrl+Enter and Ctrl+J to
+the same keycode at the Win32 console API layer. No conflicting binding
+existed for Ctrl+J on Windows, so this is a harmless side effect.
+
+mintty / git-bash behaves the same (fullscreen on Alt+Enter) unless you
+disable Alt+Fn shortcuts in Options → Keys. Easier to just use Ctrl+Enter.
+
+**Diagnosing keybindings.** Run `python scripts/keystroke_diagnostic.py`
+(repo root) to see exactly how prompt_toolkit identifies each keystroke
+in the current terminal. Answers questions like "does Shift+Enter come
+through as a distinct key?" (almost never — most terminals collapse it
+to plain Enter) or "what byte sequence is my terminal sending for
+Ctrl+Enter?" This is how the Ctrl+Enter = c-j fact was established.
+
+### Config / Files
+
+**HTTP 400 "No models provided" on first run.** `config.yaml` was saved
+with a UTF-8 BOM (common when Windows apps write it). Re-save as UTF-8
+without BOM. `hermes config edit` writes without BOM; manual edits in
+Notepad are the usual culprit.
+
+### `execute_code` / Sandbox
+
+**WinError 10106** ("The requested service provider could not be loaded
+or initialized") from the sandbox child process — it can't create an
+`AF_INET` socket, so the loopback-TCP RPC fallback fails before
+`connect()`. Root cause is usually **not** a broken Winsock LSP; it's
+Hermes's own env scrubber dropping `SYSTEMROOT` / `WINDIR` / `COMSPEC`
+from the child env. Python's `socket` module needs `SYSTEMROOT` to locate
+`mswsock.dll`. Fixed via the `_WINDOWS_ESSENTIAL_ENV_VARS` allowlist in
+`tools/code_execution_tool.py`. If you still hit it, echo `os.environ`
+inside an `execute_code` block to confirm `SYSTEMROOT` is set. Full
+diagnostic recipe in `references/execute-code-sandbox-env-windows.md`.
+
+### Testing / Contributing
+
+**`scripts/run_tests.sh` doesn't work as-is on Windows** — it looks for
+POSIX venv layouts (`.venv/bin/activate`). The Hermes-installed venv at
+`venv/Scripts/` has no pip or pytest either (stripped for install size).
+Workaround: install `pytest + pytest-xdist + pyyaml` into a system Python
+3.11 user site, then invoke pytest directly with `PYTHONPATH` set:
+
+```bash
+"/c/Program Files/Python311/python" -m pip install --user pytest pytest-xdist pyyaml
+export PYTHONPATH="$(pwd)"
+"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short -n 0
+```
+
+Use `-n 0`, not `-n 4` — `pyproject.toml`'s default `addopts` already
+includes `-n`, and the wrapper's CI-parity guarantees don't apply off POSIX.
+
+**POSIX-only tests need skip guards.** Common markers already in the codebase:
+- Symlinks — elevated privileges on Windows
+- `0o600` file modes — POSIX mode bits not enforced on NTFS by default
+- `signal.SIGALRM` — Unix-only (see `tests/conftest.py::_enforce_test_timeout`)
+- Winsock / Windows-specific regressions — `@pytest.mark.skipif(sys.platform != "win32", ...)`
+
+Use the existing skip-pattern style (`sys.platform == "win32"` or
+`sys.platform.startswith("win")`) to stay consistent with the rest of the
+suite.
+
+### Path / Filesystem
+
+**Line endings.** Git may warn `LF will be replaced by CRLF the next time
+Git touches it`. Cosmetic — the repo's `.gitattributes` normalizes. Don't
+let editors auto-convert committed POSIX-newline files to CRLF.
+
+**Forward slashes work almost everywhere.** `C:/Users/...` is accepted by
+every Hermes tool and most Windows APIs. Prefer forward slashes in code
+and logs — avoids shell-escaping backslashes in bash.
 
 ---
 
@@ -714,7 +813,7 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
 
 ### Model/provider issues
 1. `hermes doctor` — check config and dependencies
-2. `hermes login` — re-authenticate OAuth providers
+2. `hermes auth` — re-authenticate OAuth providers (or `hermes auth add <provider>`)
 3. Check `.env` has the right API key
 4. **Copilot 403**: `gh auth login` tokens do NOT work for Copilot API. You must use the Copilot-specific OAuth device code flow via `hermes model` → GitHub Copilot.
 
@@ -742,7 +841,7 @@ Common gateway problems:
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.
 - **Slack bot only works in DMs**: Must subscribe to `message.channels` event. Without it, the bot ignores public channels.
-- **Windows HTTP 400 "No models provided"**: Config file encoding issue (BOM). Ensure `config.yaml` is saved as UTF-8 without BOM.
+- **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, test suite, line endings): see the dedicated **Windows-Specific Quirks** section above.
 
 ### Auxiliary models not working
 If `auxiliary` tasks (vision, compression, session_search) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
@@ -770,7 +869,7 @@ hermes config set auxiliary.vision.model <model_name>
 | Env variables | `hermes config env-path` or [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
 | CLI commands | `hermes --help` or [CLI reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) |
 | Gateway logs | `~/.hermes/logs/gateway.log` |
-| Session files | `~/.hermes/sessions/` or `hermes sessions browse` |
+| Session files | `hermes sessions browse` (reads state.db) |
 | Source code | `~/.hermes/hermes-agent/` |
 
 ---
@@ -864,6 +963,44 @@ python -m pytest tests/tools/ -q            # Specific area
 - Tests auto-redirect `HERMES_HOME` to temp dirs — never touch real `~/.hermes/`
 - Run full suite before pushing any change
 - Use `-o 'addopts='` to clear any baked-in pytest flags
+
+**Windows contributors:** `scripts/run_tests.sh` currently looks for POSIX venvs (`.venv/bin/activate` / `venv/bin/activate`) and will error out on Windows where the layout is `venv/Scripts/activate` + `python.exe`. The Hermes-installed venv at `venv/Scripts/` also has no `pip` or `pytest` — it's stripped for end-user install size. Workaround: install pytest + pytest-xdist + pyyaml into a system Python 3.11 user site (`/c/Program Files/Python311/python -m pip install --user pytest pytest-xdist pyyaml`), then run tests directly:
+
+```bash
+export PYTHONPATH="$(pwd)"
+"/c/Program Files/Python311/python" -m pytest tests/tools/test_foo.py -v --tb=short -n 0
+```
+
+Use `-n 0` (not `-n 4`) because `pyproject.toml`'s default `addopts` already includes `-n`, and the wrapper's CI-parity story doesn't apply off-POSIX.
+
+**Cross-platform test guards:** tests that use POSIX-only syscalls need a skip marker. Common ones already in the codebase:
+- Symlink creation → `@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")` (see `tests/cron/test_cron_script.py`)
+- POSIX file modes (0o600, etc.) → `@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")` (see `tests/hermes_cli/test_auth_toctou_file_modes.py`)
+- `signal.SIGALRM` → Unix-only (see `tests/conftest.py::_enforce_test_timeout`)
+- Live Winsock / Windows-specific regression tests → `@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")`
+
+**Monkeypatching `sys.platform` is not enough** when the code under test also calls `platform.system()` / `platform.release()` / `platform.mac_ver()`. Those functions re-read the real OS independently, so a test that sets `sys.platform = "linux"` on a Windows runner will still see `platform.system() == "Windows"` and route through the Windows branch. Patch all three together:
+
+```python
+monkeypatch.setattr(sys, "platform", "linux")
+monkeypatch.setattr(platform, "system", lambda: "Linux")
+monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+```
+
+See `tests/agent/test_prompt_builder.py::TestEnvironmentHints` for a worked example.
+
+### Extending the system prompt's execution-environment block
+
+Factual guidance about the host OS, user home, cwd, terminal backend, and shell (bash vs. PowerShell on Windows) is emitted from `agent/prompt_builder.py::build_environment_hints()`. This is also where the WSL hint and per-backend probe logic live. The convention:
+
+- **Local terminal backend** → emit host info (OS, `$HOME`, cwd) + Windows-specific notes (hostname ≠ username, `terminal` uses bash not PowerShell).
+- **Remote terminal backend** (anything in `_REMOTE_TERMINAL_BACKENDS`: `docker, singularity, modal, daytona, ssh, managed_modal`) → **suppress** host info entirely and describe only the backend. A live `uname`/`whoami`/`pwd` probe runs inside the backend via `tools.environments.get_environment(...).execute(...)`, cached per process in `_BACKEND_PROBE_CACHE`, with a static fallback if the probe times out.
+- **Key fact for prompt authoring:** when `TERMINAL_ENV != "local"`, *every* file tool (`read_file`, `write_file`, `patch`, `search_files`) runs inside the backend container, not on the host. The system prompt must never describe the host in that case — the agent can't touch it.
+
+Full design notes, the exact emitted strings, and testing pitfalls:
+`references/prompt-builder-environment-hints.md`.
+
+**Refactor-safety pattern (POSIX-equivalence guard):** when you extract inline logic into a helper that adds Windows/platform-specific behavior, keep a `_legacy_<name>` oracle function in the test file that's a verbatim copy of the old code, then parametrize-diff against it. Example: `tests/tools/test_code_execution_windows_env.py::TestPosixEquivalence`. This locks in the invariant that POSIX behavior is bit-for-bit identical and makes any future drift fail loudly with a clear diff.
 
 ### Commit Conventions
 

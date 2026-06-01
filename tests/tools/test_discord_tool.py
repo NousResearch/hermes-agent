@@ -1,7 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import os
 import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,6 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _build_schema,
     _channel_type_name,
     _detect_capabilities,
     _discord_request,
@@ -174,6 +172,12 @@ class TestDiscordServerValidation:
         result = json.loads(discord_core(action="fetch_messages"))
         assert "error" in result
         assert "channel_id" in result["error"]
+
+    def test_missing_required_message_id_for_delete(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(action="delete_message", channel_id="11"))
+        assert "error" in result
+        assert "message_id" in result["error"]
 
     def test_missing_multiple_params(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
@@ -407,10 +411,10 @@ class TestListPins:
 
 
 # ---------------------------------------------------------------------------
-# Actions: pin_message / unpin_message
+# Actions: pin_message / unpin_message / delete_message
 # ---------------------------------------------------------------------------
 
-class TestPinUnpin:
+class TestPinUnpinDelete:
     @patch("tools.discord_tool._discord_request")
     def test_pin_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
@@ -425,6 +429,16 @@ class TestPinUnpin:
         mock_req.return_value = None
         result = json.loads(discord_admin_handler(action="unpin_message", channel_id="11", message_id="500"))
         assert result["success"] is True
+        mock_req.assert_called_once_with("DELETE", "/channels/11/pins/500", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_delete_message(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        result = json.loads(discord_admin_handler(action="delete_message", channel_id="11", message_id="500"))
+        assert result["success"] is True
+        assert "deleted" in result["message"]
+        mock_req.assert_called_once_with("DELETE", "/channels/11/messages/500", "test-token")
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +600,7 @@ class TestRegistration:
         desc = entry.schema["description"]
         assert "list_guilds()" in desc
         assert "add_role(guild_id, user_id, role_id)" in desc
+        assert "delete_message(channel_id, message_id)" in desc
         # Core actions should NOT be in admin description
         assert "fetch_messages(" not in desc
         assert "create_thread(" not in desc
@@ -616,7 +631,7 @@ class TestToolsetInclusion:
     def test_discord_tools_not_in_other_toolsets(self):
         from toolsets import TOOLSETS
         for name, ts in TOOLSETS.items():
-            if name in ("hermes-discord", "hermes-gateway", "discord", "discord_admin"):
+            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
                 continue
             tools = ts.get("tools", [])
             assert "discord" not in tools or name == "discord", (
@@ -1072,9 +1087,17 @@ class Test403Enrichment:
 class TestModelToolsIntegration:
     def setup_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     def teardown_method(self):
         _reset_capability_cache()
+        from model_tools import _clear_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
     @patch("tools.discord_tool._discord_request")
     def test_discord_admin_schema_rebuilt_by_get_tool_definitions(

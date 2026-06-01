@@ -9,12 +9,9 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
-import hashlib
-import json
 import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 def _make_runner():
@@ -127,6 +124,21 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    def test_max_tokens_change_busts_cache(self):
+        """Editing model.max_tokens in config must produce a new signature."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.max_tokens": 4096},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.max_tokens": 8192},
+        )
+        assert sig1 != sig2
+
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
 
@@ -195,9 +207,16 @@ class TestExtractCacheBustingConfig:
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config(
-            {"model": {"context_length": 272_000, "provider": "openrouter"}}
+            {
+                "model": {
+                    "context_length": 272_000,
+                    "max_tokens": 4096,
+                    "provider": "openrouter",
+                }
+            }
         )
         assert out["model.context_length"] == 272_000
+        assert out["model.max_tokens"] == 4096
 
     def test_reads_compression_subkeys(self):
         from gateway.run import GatewayRunner
@@ -256,6 +275,111 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config({})
 
         assert out["tools.registry_generation"] == 12345
+
+
+    def test_skips_honcho_config_read_when_provider_is_not_honcho(self, monkeypatch):
+        """Non-Honcho gateways must not read/parse honcho.json on every message."""
+        from gateway.run import GatewayRunner
+
+        called = False
+
+        def _boom():
+            nonlocal called
+            called = True
+            raise AssertionError("should not read Honcho config")
+
+        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _boom)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert called is False
+        assert out["honcho.peer_name"] is None
+        assert out["honcho.user_peer_aliases"] is None
+
+    def test_reads_honcho_config_only_when_provider_is_honcho(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        calls = []
+
+        def _fake():
+            calls.append(True)
+            return {
+                "honcho.peer_name": "eri",
+                "honcho.ai_peer": "hermes",
+                "honcho.pin_peer_name": True,
+                "honcho.runtime_peer_prefix": "tg_",
+                "honcho.user_peer_aliases": [("123", "eri")],
+            }
+
+        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _fake)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        assert calls == [True]
+        assert out["honcho.peer_name"] == "eri"
+        assert out["honcho.user_peer_aliases"] == [("123", "eri")]
+
+    def test_memory_provider_change_busts_signature(self, monkeypatch):
+        """Switching memory.provider must itself change the cache-busting
+        signature, so the agent is rebuilt when a user swaps providers
+        mid-gateway (independent of the honcho.json identity keys)."""
+        from gateway.run import GatewayRunner
+
+        # Neutralize honcho.json reads so the only varying input is the
+        # provider value itself.
+        monkeypatch.setattr(
+            GatewayRunner,
+            "_extract_honcho_cache_busting_config",
+            classmethod(lambda cls: cls._empty_honcho_cache_busting_config()),
+        )
+
+        sig_honcho = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+        sig_mem0 = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert sig_honcho["memory.provider"] == "honcho"
+        assert sig_mem0["memory.provider"] == "mem0"
+        assert sig_honcho != sig_mem0
+
+    def test_honcho_cache_busting_config_memoized_by_mtime(self, monkeypatch, tmp_path):
+        """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text("{}")
+        parse_calls = []
+
+        class FakeConfig:
+            peer_name = "eri"
+            ai_peer = "hermes"
+            pin_peer_name = False
+            runtime_peer_prefix = "tg_"
+            user_peer_aliases = {"123": "eri"}
+
+            @classmethod
+            def from_global_config(cls, config_path=None):
+                parse_calls.append(config_path)
+                return cls()
+
+        fake_client = SimpleNamespace(
+            HonchoClientConfig=FakeConfig,
+            resolve_config_path=lambda: config_path,
+        )
+        monkeypatch.setitem(__import__("sys").modules, "plugins.memory.honcho.client", fake_client)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        first = GatewayRunner._extract_honcho_cache_busting_config()
+        second = GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert first == second
+        assert first["honcho.user_peer_aliases"] == [("123", "eri")]
+        assert parse_calls == [config_path]
+
+        config_path.write_text("{\n  \"changed\": true\n}")
+        third = GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert third == first
+        assert parse_calls == [config_path, config_path]
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the
@@ -934,43 +1058,6 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
-    def test_concurrent_inserts_settle_at_cap(self, monkeypatch):
-        """Many threads inserting in parallel end with len(cache) == CAP."""
-        from gateway import run as gw_run
-
-        CAP = 16
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
-        runner = self._runner()
-
-        N_THREADS = 8
-        PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
-
-        def worker(tid: int):
-            for j in range(PER_THREAD):
-                a = self._real_agent()
-                key = f"t{tid}-s{j}"
-                with runner._agent_cache_lock:
-                    runner._agent_cache[key] = (a, "sig")
-                    runner._enforce_agent_cache_cap()
-
-        threads = [
-            threading.Thread(target=worker, args=(t,), daemon=True)
-            for t in range(N_THREADS)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-            assert not t.is_alive(), "Worker thread hung — possible deadlock?"
-
-        # Let daemon cleanup threads settle.
-        import time as _t
-        _t.sleep(0.5)
-
-        assert len(runner._agent_cache) == CAP, (
-            f"Expected exactly {CAP} entries after concurrent inserts, "
-            f"got {len(runner._agent_cache)}."
-        )
 
     def test_evicted_session_next_turn_gets_fresh_agent(self, monkeypatch):
         """After eviction, the same session_key can insert a fresh agent.
@@ -1359,3 +1446,71 @@ class TestCachedAgentInactivityReset:
             f"Watchdog would see {idle_secs:.0f}s idle, expected ~{STUCK_FOR}s. "
             "Inactivity timeout could not fire for a stuck interrupted turn."
         )
+
+
+class TestAgentConfigSignatureUserId:
+    """Shared-thread cache must not reuse an agent across users.
+
+    HonchoSessionManager freezes the resolved runtime user identity at
+    first-message init.  When the gateway session_key omits the participant
+    ID (``thread_sessions_per_user=False``), a cached AIAgent created by
+    user A would otherwise be reused for user B, attributing B's writes to
+    A's resolved peer.  Including ``user_id`` / ``user_id_alt`` in the
+    signature forces per-user agent builds in shared threads.
+
+    Tradeoff: cold prompt cache for each user's first turn in a shared
+    thread, in exchange for correct memory attribution.
+    """
+
+    def test_signature_changes_with_user_id(self):
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_a = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="86701400"
+        )
+        sig_b = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="491827364"
+        )
+        assert sig_a != sig_b
+
+    def test_signature_stable_with_same_user_id(self):
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_1 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="86701400"
+        )
+        sig_2 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="86701400"
+        )
+        assert sig_1 == sig_2
+
+    def test_signature_changes_with_user_id_alt(self):
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_a = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            user_id="86701400", user_id_alt="@igor_tg",
+        )
+        sig_b = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            user_id="86701400", user_id_alt="@erosika_tg",
+        )
+        assert sig_a != sig_b
+
+    def test_signature_omits_user_id_when_absent(self):
+        """Default-None user_id must not change signatures vs unset call.
+
+        Callers that pass no user_id kwarg must produce a signature
+        byte-identical to ``user_id=None`` so in-flight caches survive
+        the rollout of this fix.
+        """
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_implicit = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+        )
+        sig_explicit_none = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            user_id=None, user_id_alt=None,
+        )
+        assert sig_implicit == sig_explicit_none

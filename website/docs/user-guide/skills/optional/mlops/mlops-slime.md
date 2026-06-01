@@ -20,6 +20,7 @@ Provides guidance for LLM post-training with RL using slime, a Megatron+SGLang f
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `sglang-router>=0.2.3`, `ray`, `torch>=2.0.0`, `transformers>=4.40.0` |
+| Platforms | linux, macos |
 | Tags | `Reinforcement Learning`, `Megatron-LM`, `SGLang`, `GRPO`, `Post-Training`, `GLM` |
 
 ## Reference: full SKILL.md

@@ -195,6 +195,8 @@ block in `config.yaml` that `hermes mcp` reads from.
 - **Remove** — delete a server from the config
 - Secret-shaped env values are redacted in the list view
 
+![MCP servers admin page](/img/dashboard/admin-mcp.png)
+
 ### Webhooks
 
 Manage dynamic [webhook subscriptions](/user-guide/messaging/webhooks). The
@@ -205,6 +207,8 @@ hint when it isn't.
 - **List** — each subscription shows its URL, events, and delivery target
 - **Delete** — remove a subscription (hot-reloaded by the gateway, no restart needed)
 
+![Webhooks admin page](/img/dashboard/admin-webhooks.png)
+
 ### Pairing
 
 Approve and revoke messaging users without the CLI — how a remote admin
@@ -213,6 +217,8 @@ onboards Telegram/Discord/etc. users to a paired gateway.
 - **Pending requests** — each shows platform, code, user, and age, with an Approve button
 - **Approved users** — each shows platform and user, with a Revoke button
 - **Clear pending** — drop all outstanding pairing codes
+
+![Pairing admin page](/img/dashboard/admin-pairing.png)
 
 ### System
 
@@ -224,6 +230,10 @@ A consolidated administration panel for installation-wide operations:
 - **Operations** — run `doctor`, a security audit, a backup, restore from a backup archive, or update skills. Each spawns a background action whose live log streams into the page.
 - **Checkpoints** — see the `/rollback` shadow store size and prune it
 - **Shell hooks** — read-only list of configured hooks with their consent-allowlist status
+
+![System admin page — gateway, memory, and credential pool](/img/dashboard/admin-system-top.png)
+
+![System admin page — operations, checkpoints, and shell hooks](/img/dashboard/admin-system-ops.png)
 
 :::warning Security
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.

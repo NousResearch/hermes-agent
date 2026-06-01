@@ -3253,14 +3253,34 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        chat_id = getattr(message, "chat_id", "") or ""
+        chat_info = await self.get_chat_info(chat_id)
+        source_chat_type = self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type)
+
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None)
             or None
         )
+        thread_id = self._resolve_inbound_thread_id(
+            message,
+            source_chat_type=source_chat_type,
+        )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_media_urls: List[str] = []
+        reply_media_types: List[str] = []
+        if reply_to_message_id:
+            reply_media_urls, reply_media_types = await self._fetch_message_media(reply_to_message_id)
+            if reply_media_urls:
+                attachment_note = f"[Replied-to message has {len(reply_media_urls)} media attachment(s)]"
+                reply_to_text = f"{reply_to_text}\n{attachment_note}" if reply_to_text else attachment_note
+                # Feishu reply events only carry the new message body; when a user replies
+                # to an image/file and @mentions the bot, the quoted media lives on the
+                # parent message. Attach the parent's media to the normalized event so the
+                # agent can actually see what the user is referring to.
+                media_urls.extend(reply_media_urls)
+                media_types.extend(reply_media_types)
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3269,7 +3289,7 @@ class FeishuAdapter(BasePlatformAdapter):
             or "<unknown>"
         )
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d reply_media=%d",
             "dm" if chat_type == "p2p" else "group",
             message_id,
             inbound_type.value,
@@ -3278,15 +3298,14 @@ class FeishuAdapter(BasePlatformAdapter):
             sender_primary,
             text[:120],
             len(media_urls),
+            len(reply_media_urls),
         )
 
-        chat_id = getattr(message, "chat_id", "") or ""
-        chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=source_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
@@ -4033,6 +4052,25 @@ class FeishuAdapter(BasePlatformAdapter):
             return "dm"
         return "group"
 
+    @staticmethod
+    def _resolve_inbound_thread_id(message: Any, *, source_chat_type: str) -> Optional[str]:
+        """Return the Hermes session/thread route for a Feishu inbound message.
+
+        Feishu/Lark uses several message-id fields with different semantics:
+        ``thread_id`` is the explicit topic/thread route, while ``root_id``,
+        ``parent_id``, and ``upper_message_id`` are also present on ordinary
+        quote/reply events. Treating ``root_id`` as a universal thread fallback
+        makes normal replies in DMs or groups fork into side topics. Forum chats
+        are the exception: older Feishu payloads may omit ``thread_id`` there,
+        so ``root_id`` remains a compatibility fallback for that chat surface.
+        """
+        explicit_thread_id = getattr(message, "thread_id", None) or None
+        if explicit_thread_id:
+            return explicit_thread_id
+        if source_chat_type == "forum":
+            return getattr(message, "root_id", None) or None
+        return None
+
     async def _resolve_sender_profile(
         self,
         sender_id: Any,
@@ -4170,15 +4208,9 @@ class FeishuAdapter(BasePlatformAdapter):
             self._message_text_cache.move_to_end(message_id)
             return self._message_text_cache[message_id]
         try:
-            request = self._build_get_message_request(message_id)
-            response = await self._run_blocking(self._client.im.v1.message.get, request)
-            if not response or getattr(response, "success", lambda: False)() is False:
-                code = getattr(response, "code", "unknown")
-                msg = getattr(response, "msg", "message lookup failed")
-                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
+            parent = await self._fetch_message_item(message_id)
+            if parent is None:
                 return None
-            items = getattr(getattr(response, "data", None), "items", None) or []
-            parent = items[0] if items else None
             body = getattr(parent, "body", None)
             msg_type = getattr(parent, "msg_type", "") or ""
             raw_content = getattr(body, "content", "") or ""
@@ -4192,6 +4224,47 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                 self._message_text_cache.popitem(last=False)
             return text
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            return None
+
+    async def _fetch_message_media(self, message_id: str) -> tuple[List[str], List[str]]:
+        if not self._client or not message_id:
+            return [], []
+        try:
+            parent = await self._fetch_message_item(message_id)
+            if parent is None:
+                return [], []
+            body = getattr(parent, "body", None)
+            msg_type = getattr(parent, "msg_type", "") or ""
+            raw_content = getattr(body, "content", "") or ""
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
+                raw_content=raw_content,
+                mentions=getattr(parent, "mentions", None),
+                bot=self._bot_identity(),
+            )
+            return await self._download_feishu_message_resources(
+                message_id=message_id,
+                normalized=normalized,
+            )
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch parent message media %s", message_id, exc_info=True)
+            return [], []
+
+    async def _fetch_message_item(self, message_id: str) -> Optional[Any]:
+        if not self._client or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            return items[0] if items else None
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None

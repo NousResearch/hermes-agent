@@ -19,7 +19,11 @@ The integration supports both connection modes:
 |---------|----------|
 | Direct messages | Hermes responds to every message. |
 | Group chats | Hermes responds only when the bot is @mentioned in the chat. |
+| Message replies | Hermes keeps the quoted parent as context, but ordinary replies stay in the main DM or group chat. |
+| Feishu topics / threads | Hermes preserves explicit Feishu/Lark topic routing so replies made inside a topic stay inside that topic. |
 | Shared group chats | By default, session history is isolated per user inside a shared chat. |
+
+Feishu/Lark message events include several IDs with different meanings. Hermes treats `thread_id` as the topic/session route, while `root_id`, `parent_id`, and `upper_message_id` are quote/reply context for ordinary messages. This prevents a normal quote-reply from accidentally creating a side topic while still preserving real topic conversations.
 
 This shared-chat behavior is controlled by `config.yaml`:
 

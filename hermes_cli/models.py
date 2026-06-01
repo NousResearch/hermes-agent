@@ -295,16 +295,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
     "minimax-oauth": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
     ],
     "minimax-cn": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",

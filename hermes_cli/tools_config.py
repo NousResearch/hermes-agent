@@ -1926,6 +1926,18 @@ def _visible_providers(
     *activates* the gateway once paid access is confirmed.
     """
     features = get_nous_subscription_features(config, force_fresh=force_fresh)
+    acct = features.account_info
+    # Pool-only users (entitled to managed tools via the free tool pool but with
+    # no paid access) get image gen but NOT video gen — the pool doesn't fund
+    # `fal-video`. Rather than advertise a managed video row that would be denied
+    # on select, hide it for them. Logged-out users still see it (advertising)
+    # and paid users are entitled to it.
+    pool_only = bool(
+        acct
+        and acct.logged_in
+        and acct.paid_service_access is not True
+        and acct.tool_gateway_entitled
+    )
     visible = []
     for provider in cat.get("providers", []):
         # Nous-managed Tool Gateway rows stay visible regardless of auth —
@@ -1936,6 +1948,14 @@ def _visible_providers(
             provider.get("requires_nous_auth")
             and not provider.get("managed_nous_feature")
             and not features.nous_auth_present
+        ):
+            continue
+        # Hide the managed video-gen row from pool-only users — their free tool
+        # pool doesn't cover video, so showing it would only lead to a denial.
+        if (
+            pool_only
+            and provider.get("managed_nous_feature") == "video_gen"
+            and not (acct and acct.tool_gateway_entitled_for("fal-video"))
         ):
             continue
         visible.append(provider)
@@ -2711,13 +2731,17 @@ def _configure_provider(
     # auth + entitlement only, no inference-provider switch and no bulk
     # "enable all tools" prompt (that lives in `hermes model`).
     if managed_feature:
-        from hermes_cli.nous_subscription import ensure_nous_portal_access
+        from hermes_cli.nous_subscription import (
+            MANAGED_FEATURE_COVERAGE_CATEGORY,
+            ensure_nous_portal_access,
+        )
 
         if not ensure_nous_portal_access(
-            capability=f"{provider.get('name', 'the Nous Tool Gateway')}"
+            capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
+            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature),
         ):
             _print_warning(
-                "  Not enabled — Nous Portal paid access is required for this backend."
+                "  Not enabled — Nous Portal access is required for this backend."
             )
             return
 
@@ -3075,13 +3099,17 @@ def _reconfigure_provider(
     # Same inline Nous Portal login + entitlement gate as _configure_provider:
     # managed Tool Gateway backends only activate with paid Portal access.
     if managed_feature:
-        from hermes_cli.nous_subscription import ensure_nous_portal_access
+        from hermes_cli.nous_subscription import (
+            MANAGED_FEATURE_COVERAGE_CATEGORY,
+            ensure_nous_portal_access,
+        )
 
         if not ensure_nous_portal_access(
-            capability=f"{provider.get('name', 'the Nous Tool Gateway')}"
+            capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
+            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature),
         ):
             _print_warning(
-                "  Not enabled — Nous Portal paid access is required for this backend."
+                "  Not enabled — Nous Portal access is required for this backend."
             )
             return
 

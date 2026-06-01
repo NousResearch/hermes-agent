@@ -29,6 +29,20 @@ _DEFAULT_PLATFORM_TOOLSETS = {
     "cli": "hermes-cli",
 }
 
+# Maps a tools_config provider's ``managed_nous_feature`` to the tool-pool
+# coverage category (hermes_cli.nous_account.TOOL_COVERAGE_CATEGORIES). Lets the
+# `hermes tools` picker scope its entitlement gate to the selected backend, so a
+# free-tool-pool user is allowed image gen but denied video gen at select time —
+# consistent with the per-category feature gates in get_nous_subscription_features.
+MANAGED_FEATURE_COVERAGE_CATEGORY: Dict[str, str] = {
+    "web": "firecrawl",
+    "image_gen": "fal",
+    "video_gen": "fal-video",
+    "tts": "openai-audio",
+    "browser": "browser-use",
+    "modal": "modal",
+}
+
 
 def _uses_gateway(section: object) -> bool:
     """Return True when a config section explicitly opts into the gateway."""
@@ -253,12 +267,18 @@ def get_nous_subscription_features(
     except Exception:
         account_info = None
 
+    # Coarse "entitled to any managed tool" gate: paid access OR a live free
+    # tool pool. Per-backend availability is then narrowed by coverage below
+    # (the pool funds image but not video, etc.).
     managed_tools_flag = bool(
         account_info
         and account_info.logged_in
-        and account_info.paid_service_access is True
+        and account_info.tool_gateway_entitled
     )
     nous_auth_present = bool(account_info and account_info.logged_in)
+
+    def _entitled_for(category: str) -> bool:
+        return bool(account_info and account_info.tool_gateway_entitled_for(category))
     subscribed = provider_is_nous or nous_auth_present
 
     web_tool_enabled = _toolset_enabled(config, "web")
@@ -332,13 +352,45 @@ def get_nous_subscription_features(
         direct_browser_use = False
         direct_browserbase = False
 
-    managed_web_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
-    managed_image_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
-    # Video gen uses the same fal-queue gateway as image gen.
-    managed_video_available = managed_image_available
-    managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
-    managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browser-use")
-    managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
+    managed_web_available = (
+        managed_tools_flag
+        and nous_auth_present
+        and is_managed_tool_gateway_ready("firecrawl")
+        and _entitled_for("firecrawl")
+    )
+    managed_image_available = (
+        managed_tools_flag
+        and nous_auth_present
+        and is_managed_tool_gateway_ready("fal-queue")
+        and _entitled_for("fal")
+    )
+    # Video gen rides the same fal-queue gateway as image gen, but the free tool
+    # pool funds image and NOT video — so gate it on its own coverage category
+    # rather than aliasing it to image. (Paid users are entitled to both.)
+    managed_video_available = (
+        managed_tools_flag
+        and nous_auth_present
+        and is_managed_tool_gateway_ready("fal-queue")
+        and _entitled_for("fal-video")
+    )
+    managed_tts_available = (
+        managed_tools_flag
+        and nous_auth_present
+        and is_managed_tool_gateway_ready("openai-audio")
+        and _entitled_for("openai-audio")
+    )
+    managed_browser_available = (
+        managed_tools_flag
+        and nous_auth_present
+        and is_managed_tool_gateway_ready("browser-use")
+        and _entitled_for("browser-use")
+    )
+    managed_modal_available = (
+        managed_tools_flag
+        and nous_auth_present
+        and is_managed_tool_gateway_ready("modal")
+        and _entitled_for("modal")
+    )
     modal_state = resolve_modal_backend_state(
         modal_mode,
         has_direct=direct_modal,
@@ -543,7 +595,7 @@ def apply_nous_managed_defaults(
     if not (
         features.account_info
         and features.account_info.logged_in
-        and features.account_info.paid_service_access is True
+        and features.account_info.tool_gateway_entitled
     ):
         return set()
     if not features.provider_is_nous:
@@ -598,7 +650,13 @@ def apply_nous_managed_defaults(
         image_cfg["use_gateway"] = True
         changed.add("image_gen")
 
-    if "video_gen" in selected_toolsets and not fal_key_is_configured():
+    # Video gen is not funded by the free tool pool, so only wire managed video
+    # defaults for users entitled to it (paid). Pool-only users keep video off.
+    if (
+        "video_gen" in selected_toolsets
+        and not fal_key_is_configured()
+        and features.account_info.tool_gateway_entitled_for("fal-video")
+    ):
         video_cfg = config.get("video_gen")
         if not isinstance(video_cfg, dict):
             video_cfg = {}
@@ -672,11 +730,14 @@ def get_gateway_eligible_tools(
     All lists are empty when the user is not a paid Nous subscriber or
     is not using Nous as their provider.
     """
-    if force_fresh:
-        managed_enabled = managed_nous_tools_enabled(force_fresh=True)
-    else:
-        managed_enabled = managed_nous_tools_enabled()
-    if not managed_enabled:
+    # Fetch entitlement once: it gates the offer (paid access OR a live free tool
+    # pool) AND tells us which categories are covered (the pool funds image but
+    # not video, etc.). Fails closed on any error.
+    try:
+        account_info = get_nous_portal_account_info(force_fresh=force_fresh)
+    except Exception:
+        return [], [], []
+    if not (account_info and account_info.logged_in and account_info.tool_gateway_entitled):
         return [], [], []
 
     if config is None:
@@ -705,6 +766,13 @@ def get_gateway_eligible_tools(
     has_direct: list[str] = []
     already_managed: list[str] = []
     for key in _ALL_GATEWAY_KEYS:
+        # Only offer tools the user's entitlement actually covers. For a free
+        # tool pool that means image but not video; paid users are covered for
+        # everything.
+        if not account_info.tool_gateway_entitled_for(
+            MANAGED_FEATURE_COVERAGE_CATEGORY[key]
+        ):
+            continue
         if opted_in.get(key):
             already_managed.append(key)
         elif direct.get(key):
@@ -782,10 +850,14 @@ def prompt_enable_tool_gateway(
     *,
     force_fresh: bool = True,
 ) -> set[str]:
-    """If eligible tools exist, prompt the user to enable the Tool Gateway.
+    """If eligible tools exist, prompt the user (per tool) to enable the Tool
+    Gateway.
 
-    Uses prompt_choice() with a description parameter so the curses TUI
-    shows the tool context alongside the choices.
+    "Pool enabled" is the trigger: a user with a live free tool pool (or paid
+    access) is shown a per-tool checklist of the covered managed backends and
+    picks which to route through the gateway. The free pool funds web/image/
+    tts/browser but not video, so the checklist only lists covered tools (the
+    coverage filter lives in get_gateway_eligible_tools).
 
     Returns the set of tools that were enabled, or empty set if the user
     declined or no tools were eligible.
@@ -798,93 +870,60 @@ def prompt_enable_tool_gateway(
         return set()
 
     try:
-        from hermes_cli.setup import prompt_choice
+        from hermes_cli.setup import prompt_checklist
     except Exception:
         return set()
 
-    # Build description lines showing full status of all gateway tools
-    desc_parts: list[str] = [
-        "",
-        "  The Tool Gateway gives you access to web search, image generation,",
-        "  text-to-speech, and browser automation through your Nous subscription.",
-        "  No need to sign up for separate API keys — just pick the tools you want.",
-        "",
+    # Frame the offer by entitlement: a $0 free-tool-pool user is not on a paid
+    # plan, so don't call it "your subscription".
+    try:
+        account_info = get_nous_portal_account_info(force_fresh=False)
+    except Exception:
+        account_info = None
+    pool_only = bool(
+        account_info
+        and account_info.paid_service_access is not True
+        and account_info.tool_access is not None
+        and account_info.tool_access.enabled
+    )
+    source_label = "free tool pool" if pool_only else "Nous subscription"
+
+    # Per-tool checklist: unconfigured tools first (pre-checked for new users),
+    # then tools where the user already has their own key (left unchecked so we
+    # don't override their own setup unless they ask).
+    offer_keys: list[str] = list(unconfigured) + list(has_direct)
+    labels: list[str] = [_GATEWAY_TOOL_LABELS[k] for k in unconfigured]
+    labels += [
+        f"{_GATEWAY_TOOL_LABELS[k]} — keep using your {_GATEWAY_DIRECT_LABELS[k]}"
+        for k in has_direct
     ]
-    if already_managed:
-        for k in already_managed:
-            desc_parts.append(f"  ✓ {_GATEWAY_TOOL_LABELS[k]} — using Tool Gateway")
-    if unconfigured:
-        for k in unconfigured:
-            desc_parts.append(f"  ○ {_GATEWAY_TOOL_LABELS[k]} — not configured")
-    if has_direct:
-        for k in has_direct:
-            desc_parts.append(f"  ○ {_GATEWAY_TOOL_LABELS[k]} — using {_GATEWAY_DIRECT_LABELS[k]}")
+    pre_selected = list(range(len(unconfigured)))
 
-    # Build short choice labels — detail is in the description above
-    choices: list[str] = []
-    choice_keys: list[str] = []  # maps choice index -> action
-
-    if unconfigured and has_direct:
-        choices.append("Enable for all tools (existing keys kept, not used)")
-        choice_keys.append("all")
-
-        choices.append("Enable only for tools without existing keys")
-        choice_keys.append("unconfigured")
-
-        choices.append("Skip")
-        choice_keys.append("skip")
-
-    elif unconfigured:
-        choices.append("Enable Tool Gateway")
-        choice_keys.append("unconfigured")
-
-        choices.append("Skip")
-        choice_keys.append("skip")
-
+    if pool_only:
+        title = "Your free Nous tool pool — pick the tools to enable:"
     else:
-        choices.append("Enable Tool Gateway (existing keys kept, not used)")
-        choice_keys.append("all")
-
-        choices.append("Skip")
-        choice_keys.append("skip")
-
-    description = "\n".join(desc_parts) if desc_parts else None
-    # Default to "Enable" when user has no direct keys (new user),
-    # default to "Skip" when they have existing keys to preserve.
-    default_idx = 0 if not has_direct else len(choices) - 1
+        title = (
+            "Your Nous subscription includes the Tool Gateway — "
+            "pick the tools to enable:"
+        )
 
     try:
-        idx = prompt_choice(
-            "Your Nous subscription includes the Tool Gateway.",
-            choices,
-            default_idx,
-            description=description,
-        )
+        chosen_idx = prompt_checklist(title, labels, pre_selected)
     except (KeyboardInterrupt, EOFError, OSError, SystemExit):
         return set()
 
-    action = choice_keys[idx]
-    if action == "skip":
+    chosen_keys = [offer_keys[i] for i in chosen_idx if 0 <= i < len(offer_keys)]
+    if not chosen_keys:
         return set()
 
-    if action == "all":
-        # Apply to switchable tools + ensure already-managed tools also
-        # have use_gateway persisted in config for consistency.
-        to_apply = list(_ALL_GATEWAY_KEYS)
-    else:
-        to_apply = unconfigured
-
-    changed = apply_gateway_defaults(config, to_apply)
+    changed = apply_gateway_defaults(config, chosen_keys)
     if changed:
         from hermes_cli.config import save_config
+
         save_config(config)
-        # Only report the tools that actually switched (not already-managed ones)
-        newly_switched = changed - set(already_managed)
-        for key in sorted(newly_switched):
+        for key in sorted(changed):
             label = _GATEWAY_TOOL_LABELS.get(key, key)
-            print(f"  ✓ {label}: enabled via Nous subscription")
-        if already_managed and not newly_switched:
-            print("  (all tools already using Tool Gateway)")
+            print(f"  ✓ {label}: enabled via {source_label}")
     return changed
 
 
@@ -893,8 +932,13 @@ def prompt_enable_tool_gateway(
 # ---------------------------------------------------------------------------
 
 
-def ensure_nous_portal_access(*, capability: str = "the Nous Tool Gateway") -> bool:
-    """Make sure the user has paid Nous Portal access, logging in if needed.
+def ensure_nous_portal_access(
+    *,
+    capability: str = "the Nous Tool Gateway",
+    coverage_category: Optional[str] = None,
+) -> bool:
+    """Make sure the user is entitled to the Nous Tool Gateway, logging in if
+    needed.
 
     Used by ``hermes tools`` when a user selects a Nous-managed Tool Gateway
     backend (e.g. "Firecrawl (Nous Portal)").  Unlike ``hermes model``'s Nous
@@ -908,15 +952,28 @@ def ensure_nous_portal_access(*, capability: str = "the Nous Tool Gateway") -> b
     already logged in) and refreshes entitlement, so the caller can enable the
     single tool the user picked.
 
-    Returns ``True`` when the account has paid service access after the flow,
-    ``False`` otherwise (declined login, login failed, or no paid entitlement).
+    Entitlement is satisfied by paid service access OR a live free tool pool.
+    When ``coverage_category`` is given (e.g. ``"fal"`` for image gen), the pool
+    must cover that category specifically — so a pool user selecting video
+    (``"fal-video"``, not pool-funded) is correctly denied.
+
+    Returns ``True`` when the account is entitled after the flow, ``False``
+    otherwise (declined login, login failed, or no entitlement).
     """
+
+    def _entitled(account) -> bool:
+        if account is None:
+            return False
+        if coverage_category is not None:
+            return account.tool_gateway_entitled_for(coverage_category)
+        return account.tool_gateway_entitled
+
     # Fast path: already entitled.
     try:
         info = get_nous_portal_account_info(force_fresh=True)
     except Exception:
         info = None
-    if info is not None and info.paid_service_access is True:
+    if _entitled(info):
         return True
 
     # If not logged in at all, run the device-code login (auth only).
@@ -928,11 +985,15 @@ def ensure_nous_portal_access(*, capability: str = "the Nous Tool Gateway") -> b
         except Exception:
             info = None
 
-    if info is not None and info.paid_service_access is True:
+    if _entitled(info):
         return True
 
-    # Logged in but no paid access — surface billing guidance, do not enable.
-    message = format_nous_portal_entitlement_message(info, capability=capability)
+    # Logged in but not entitled for this capability — surface neutral billing
+    # guidance, do not enable. coverage_category keeps a pool user who lacks this
+    # one category from being told their credits are exhausted.
+    message = format_nous_portal_entitlement_message(
+        info, capability=capability, coverage_category=coverage_category
+    )
     if message:
         for line in message.splitlines():
             print(f"  {line}")

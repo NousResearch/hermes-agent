@@ -139,7 +139,14 @@ kanban_complete(
 
 ### Step 5 — Report back to the user
 
-Tell them what you created in plain prose, naming the actual profiles you used:
+Tell them what you created in plain prose, naming the actual profiles you used.
+
+**Self/Lineage status requirement for project notifications to Yunuen:** project-structured profile responses should include both generic status lines:
+
+- `Self status: WORKING|WAITING|BLOCKED|DORMANT — <status of the speaking profile itself>`
+- `Lineage status: WORKING|WAITING|BLOCKED|DORMANT — <aggregate status of structural descendants>`
+
+Use `BLOCKED` only for a concrete human-action blocker. Non-human waits are `WAITING`; no active task/no instruction is `DORMANT`. Do not use role-specific status labels for coordinator, PA, or responsible profiles, and do not use blocker-only/negated-blocker wording. Prefer deterministic output from `scripts/hermes-maintenance-status.py` (or the installed equivalent) instead of recomputing status by LLM reasoning.
 
 > I've queued 4 tasks:
 > - **T1** (`<profile-A>`): cost comparison

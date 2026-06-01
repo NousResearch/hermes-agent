@@ -1,0 +1,50 @@
+{
+  "project": "hermes-maintenance",
+  "updated_at": "2026-06-01T00:00:00Z",
+  "profiles": {
+    "pa_yunuen": {
+      "role": "pa",
+      "parent": null,
+      "children": ["coordinator_hermes_maintenance"]
+    },
+    "coordinator_hermes_maintenance": {
+      "role": "coordinator",
+      "parent": "pa_yunuen",
+      "children": [
+        "responsible_board_safety",
+        "responsible_kanban_semantics",
+        "responsible_matrix_hardening",
+        "responsible_memory_rollout",
+        "responsible_project_autonomy"
+      ]
+    },
+    "responsible_board_safety": {
+      "role": "responsible",
+      "parent": "coordinator_hermes_maintenance",
+      "children": []
+    },
+    "responsible_kanban_semantics": {
+      "role": "responsible",
+      "parent": "coordinator_hermes_maintenance",
+      "children": []
+    },
+    "responsible_matrix_hardening": {
+      "role": "responsible",
+      "parent": "coordinator_hermes_maintenance",
+      "children": []
+    },
+    "responsible_memory_rollout": {
+      "role": "responsible",
+      "parent": "coordinator_hermes_maintenance",
+      "children": []
+    },
+    "responsible_project_autonomy": {
+      "role": "responsible",
+      "parent": "coordinator_hermes_maintenance",
+      "children": []
+    }
+  },
+  "dependencies": {
+    "tasks": {}
+  }
+}

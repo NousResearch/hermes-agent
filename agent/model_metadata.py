@@ -1128,6 +1128,18 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
+def _model_name_suggests_minimax_m3(model: str) -> bool:
+    """Return True if the model name looks like MiniMax M3.
+
+    Catches ``MiniMax-M3``, ``minimax/minimax-m3``, and similar variants
+    across surfaces (native MiniMax-M3, OpenRouter/Nous minimax/minimax-m3).
+    Used as a guard against stale cache entries seeded by pre-catalog builds
+    that resolved M3 via the generic ``minimax`` catch-all (204,800) before
+    the ``minimax-m3`` (1M) entry existed in DEFAULT_CONTEXT_LENGTHS.
+    """
+    return "minimax-m3" in model.lower()
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1535,6 +1547,19 @@ def get_model_context_length(
             elif cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
                     "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            # Invalidate stale ≤204,800 cache entries for MiniMax-M3.  Pre-catalog
+            # builds resolved M3 via the generic ``minimax`` catch-all (204,800)
+            # and persisted it before the ``minimax-m3`` (1M) entry existed; that
+            # stale value would otherwise stick forever here at step 1.  M3 is 1M,
+            # so any sub-256K cached value for an M3 slug is a leftover — drop it
+            # and fall through to the hardcoded default.
+            elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):
+                logger.info(
+                    "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-catalog value); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )

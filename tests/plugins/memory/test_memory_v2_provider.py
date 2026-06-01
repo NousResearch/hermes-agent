@@ -191,6 +191,45 @@ def test_sync_turn_creates_pending_candidate_for_explicit_remember_request(tmp_p
     assert status["counts"]["indexed_memories"] == 2
 
 
+def test_sync_turn_dedupes_repeat_pending_candidates_but_keeps_raw_evidence(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+
+    provider.sync_turn("Remember that Dylan prefers source backed memory.", "Queued.")
+    provider.sync_turn("remember that Dylan prefers source backed memory", "Queued again.")
+
+    events = provider.store.read_raw_events()
+    candidates = provider.store.list_candidates()
+    status = json.loads(provider.handle_tool_call("memory_v2_status", {}))
+
+    assert len(events) == 2
+    assert len(candidates) == 1
+    assert candidates[0].gate_decision.value == "pending"
+    assert candidates[0].source_refs == [events[0]["id"]]
+    assert status["counts"]["pending_candidates"] == 1
+
+
+def test_sync_turn_auto_archives_obvious_redacted_secret_candidates(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+
+    provider.sync_turn("Remember that the production api_key is ***", "Queued.")
+
+    candidates = provider.store.list_candidates()
+    raw_json = json.dumps(provider.store.read_raw_events())
+    candidate_json = json.dumps([candidate.to_dict() for candidate in candidates])
+    search_result = provider.index.search("redacted secret", limit=5)[0]
+
+    assert "***" not in raw_json
+    assert "***" not in candidate_json
+    assert len(candidates) == 1
+    assert candidates[0].gate_decision.value == "archived_only"
+    assert "redacted secret" in candidates[0].decision_reason.lower()
+    assert provider.store.count_pending_candidates() == 0
+    assert search_result["id"] == candidates[0].id
+    assert search_result["status"] == "archived_only"
+
+
 def test_sync_turn_write_gate_routes_procedures_to_procedure_ref_candidate(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")

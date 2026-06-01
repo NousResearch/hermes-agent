@@ -211,6 +211,7 @@ def run_dogfood_scenario_tests(
         candidate_dump = json.dumps(redacted_candidate, sort_keys=True)
         check("sensitive_raw_archive_redacted", SECRET_SENTINEL not in raw_dump and "[REDACTED]" in raw_dump, raw_dump)
         check("sensitive_candidate_redacted", SECRET_SENTINEL not in candidate_dump and "[REDACTED]" in candidate_dump, candidate_dump)
+        check("sensitive_candidate_auto_archived", redacted_candidate["gate_decision"] == "archived_only", redacted_candidate)
 
         provider.on_session_end([
             {"role": "user", "content": "Dogfood Memory v2."},

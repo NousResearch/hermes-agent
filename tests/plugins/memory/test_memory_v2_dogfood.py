@@ -106,7 +106,7 @@ def test_fresh_dogfood_scenario_runs_start_from_clean_state_each_time(tmp_path: 
     }
     assert first["final_counts"] == second["final_counts"] == {
         "raw_events": 4,
-        "pending_candidates": 2,
+        "pending_candidates": 1,
         "open_loops": 1,
         "memory_items": 1,
     }

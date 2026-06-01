@@ -274,8 +274,17 @@ class MemoryV2Provider(MemoryProvider):
 
         candidate = self._candidate_from_turn(user_text, event_id=str(event["id"]))
         if candidate is not None:
-            self.store.append_candidate(candidate)
-            self.index.index_candidate(candidate)
+            if self._candidate_is_obvious_redacted_secret(candidate):
+                candidate = self._candidate_with_decision(
+                    candidate,
+                    GateDecision.ARCHIVED_ONLY,
+                    "Archived automatically: obvious redacted secret candidate; raw evidence retained without pending promotion.",
+                )
+            if self._find_duplicate_candidate(candidate) is None:
+                self.store.append_candidate(candidate)
+                self.index.index_candidate(candidate)
+            else:
+                candidate = None
         self._update_working_after_turn(user_text, assistant_text, event_id=str(event["id"]), candidate=candidate)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -377,6 +386,41 @@ class MemoryV2Provider(MemoryProvider):
             promotion_reason=f"{decision.outcome.value}: {decision.reason}",
             source_refs=[event_id],
         )
+
+    @staticmethod
+    def _candidate_dedupe_key(candidate: CandidateMemory) -> tuple[str, str, str]:
+        normalized_claim = re.sub(r"[^a-z0-9\[\] ]+", " ", candidate.claim.lower())
+        normalized_claim = re.sub(r"\s+", " ", normalized_claim).strip()
+        candidate_type = getattr(candidate.type, "value", str(candidate.type))
+        return (candidate_type, candidate.proposed_destination.strip().lower(), normalized_claim)
+
+    def _find_duplicate_candidate(self, candidate: CandidateMemory) -> CandidateMemory | None:
+        candidate_key = self._candidate_dedupe_key(candidate)
+        for existing in self.store.list_candidates():
+            if existing.gate_decision in {GateDecision.REJECTED, GateDecision.SUPERSEDED}:
+                continue
+            if self._candidate_dedupe_key(existing) == candidate_key:
+                return existing
+        return None
+
+    @staticmethod
+    def _candidate_is_obvious_redacted_secret(candidate: CandidateMemory) -> bool:
+        claim = candidate.claim.lower()
+        if "[redacted]" not in claim:
+            return False
+        secret_terms = (
+            "password",
+            "passwd",
+            "token",
+            "secret",
+            "api key",
+            "api_key",
+            "api-key",
+            "authorization",
+            "bearer",
+            "credential",
+        )
+        return any(term in claim for term in secret_terms)
 
     @staticmethod
     def _looks_like_environment_claim(claim: str) -> bool:

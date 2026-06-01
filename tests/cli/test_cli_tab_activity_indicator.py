@@ -15,6 +15,14 @@ class _NonTtyStringIO(io.StringIO):
         return False
 
 
+class _EscapingStdoutProxy(io.StringIO):
+    def isatty(self):
+        return True
+
+    def write(self, data):
+        return super().write(data.replace("\033", "?"))
+
+
 def _make_cli(stream=None):
     cli = HermesCLI.__new__(HermesCLI)
     cli._tab_activity_indicator = True
@@ -66,6 +74,20 @@ def test_tab_title_indicator_skips_non_tty_streams():
     cli._set_tab_title_state("done", force=True)
 
     assert stream.getvalue() == ""
+
+
+def test_tab_title_writer_bypasses_patch_stdout_proxy(monkeypatch):
+    patched_stdout = _EscapingStdoutProxy()
+    raw_stdout = _TtyStringIO()
+    cli = _make_cli()
+    delattr(cli, "_tab_title_stream")
+    monkeypatch.setattr(cli_module.sys, "stdout", patched_stdout)
+    monkeypatch.setattr(cli_module.sys, "__stdout__", raw_stdout)
+
+    cli._set_tab_title_state("done", force=True)
+
+    assert patched_stdout.getvalue() == ""
+    assert raw_stdout.getvalue() == "\033]0;Project\a"
 
 
 def test_tab_title_sanitizes_control_characters():

@@ -3806,7 +3806,12 @@ class HermesCLI:
         title = self._sanitize_tab_title(title)
         if title == getattr(self, "_tab_title_last", None):
             return
-        stream = getattr(self, "_tab_title_stream", None) or sys.stdout
+        stream = getattr(self, "_tab_title_stream", None)
+        if stream is None:
+            # prompt_toolkit.patch_stdout() replaces sys.stdout with a proxy whose
+            # normal write path escapes VT/OSC control bytes. Use the original
+            # terminal stream so tab-title OSC sequences stay raw.
+            stream = getattr(sys, "__stdout__", None) or sys.stdout
         try:
             if not (hasattr(stream, "isatty") and stream.isatty()):
                 return

@@ -159,15 +159,16 @@ def _strip_cron_safe_constructs(prompt: str) -> str:
     Allows the bundled GitHub skill fallback without opening a blanket
     exemption for arbitrary Authorization-header exfiltration.
     """
-    github_auth_header = re.search(
+    # re.sub scrubs every matching api.github.com auth-header curl, not just
+    # the first — bundled skills (e.g. github-issues) carry several, and a
+    # single-match scrub left later ones to trip exfil_curl_auth_header.
+    return re.sub(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)',
+        r'\s+["\']?https://api\.github\.com(?:/|\b)[^\n]*',
+        "curl https://api.github.com/user",
         prompt,
-        re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
-    if github_auth_header:
-        return prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
-    return prompt
 
 
 def _check_invisible_unicode(prompt: str) -> str:

@@ -395,3 +395,96 @@ class WorkerPacket(StrictModel):
     stopConditions: list[dict[str, Any]] = Field(default_factory=list)
     outputRequirements: list[NonEmptyStr]
     reviewPolicy: ReviewPolicy | None = None
+
+
+EvidenceProvenance = Literal[
+    "worker_authored",
+    "control_plane_captured",
+    "pm_rerun",
+    "git_derived",
+    "sqlite_derived",
+    "supervisor_authored",
+]
+WarningClass = Literal[
+    "informational",
+    "deferred_non_blocking",
+    "requires_next_sprint_ticket",
+    "requires_benjamin_acceptance",
+]
+WorkerCloseoutStatus = Literal["completed", "completed_with_warnings", "failed", "action_required"]
+
+
+class VerificationEvidenceRecord(StrictModel):
+    id: NonEmptyStr
+    type: VerificationType
+    provenance: EvidenceProvenance
+    passed: bool
+    commandId: str | None = None
+    command: str | None = None
+    path: str | None = None
+    exitCode: int | None = None
+    observedAt: str | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_typed_payload(self) -> "VerificationEvidenceRecord":
+        if self.type == "command":
+            if not self.commandId or not self.command:
+                raise ValueError("command evidence requires commandId and command")
+        if self.type == "file_exists" and not self.path:
+            raise ValueError("file_exists evidence requires path")
+        return self
+
+
+class CloseoutWarning(StrictModel):
+    id: NonEmptyStr
+    warningClass: WarningClass
+    message: NonEmptyStr
+    provenance: EvidenceProvenance
+    commandId: str | None = None
+    blocker: bool = False
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactRecord(StrictModel):
+    path: NonEmptyStr
+    kind: NonEmptyStr = "artifact"
+    sha256: str | None = None
+    provenance: EvidenceProvenance = "worker_authored"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class NoLiveDbMutationProof(StrictModel):
+    provenance: EvidenceProvenance
+    observedAt: NonEmptyStr
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkerCloseoutEnvelope(StrictModel):
+    schemaVersion: Literal["worker-closeout/v1"] = "worker-closeout/v1"
+    sprintId: NonEmptyStr
+    workerPacketSha256: NonEmptyStr
+    resultStatus: WorkerCloseoutStatus
+    verificationEvidence: list[VerificationEvidenceRecord] = Field(default_factory=list)
+    warnings: list[CloseoutWarning] = Field(default_factory=list)
+    artifacts: list[ArtifactRecord] = Field(default_factory=list)
+    noLiveDbMutationProof: NoLiveDbMutationProof | None = None
+    handoffArtifact: ArtifactRecord | None = None
+    sourceCompletedAt: str | None = None
+    summary: str | None = None
+
+    @model_validator(mode="after")
+    def enforce_terminal_success_semantics(self) -> "WorkerCloseoutEnvelope":
+        if self.resultStatus in {"completed", "completed_with_warnings"}:
+            if self.noLiveDbMutationProof is None:
+                raise ValueError("terminal-success closeout requires noLiveDbMutationProof")
+            blockers = [warning.id for warning in self.warnings if warning.blocker]
+            if blockers:
+                raise ValueError(f"terminal-success closeout cannot contain blockers: {', '.join(blockers)}")
+            benjamin = [warning.id for warning in self.warnings if warning.warningClass == "requires_benjamin_acceptance"]
+            if benjamin:
+                raise ValueError(
+                    "requires_benjamin_acceptance warnings cannot be imported as terminal success without separate acceptance: "
+                    + ", ".join(benjamin)
+                )
+        return self

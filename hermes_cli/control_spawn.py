@@ -18,6 +18,7 @@ def spawn_statute_worker(
     *,
     live: bool = False,
     handler: str = "agent",
+    timeout_s: float | None = None,
 ) -> int:
     instance_id = f"statute-worker:{uuid.uuid4().hex}"
     control_root = cp.control_db_path(root).parent.parent if live else Path(root or os.environ.get("HERMES_CONTROL_ROOT") or ".").resolve()
@@ -38,6 +39,8 @@ def spawn_statute_worker(
     else:
         cmd.extend(["--root", str(control_root)])
     cmd.extend(["--profile-id", "statute-worker", "--instance-id", instance_id, "--handler", handler])
+    if timeout_s is not None:
+        cmd.extend(["--timeout-s", str(float(timeout_s))])
     env = os.environ.copy()
     env.update(
         {

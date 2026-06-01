@@ -24,11 +24,11 @@ def test_spawn_statute_worker_command_env_and_log(monkeypatch, tmp_path):
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     payload = {"repo_root": str(tmp_path / "repo"), "allowed_paths": [str(tmp_path / "repo")]}
-    pid = spawn_statute_worker("disp_child", payload, tmp_path / ".hermes", "disp_parent")
+    pid = spawn_statute_worker("disp_child", payload, tmp_path / ".hermes", "disp_parent", timeout_s=7200)
     assert pid == 777
     assert calls["cmd"][:6] == ["hermes", "-p", "statute-worker", "control", "worker", "run"]
     assert "--accept-hooks" not in calls["cmd"]
-    assert calls["cmd"][-2:] == ["--handler", "agent"]
+    assert calls["cmd"][-4:] == ["--handler", "agent", "--timeout-s", "7200.0"]
     assert "disp_child" in calls["cmd"]
     assert "--root" in calls["cmd"]
     assert calls["env"]["HERMES_PROFILE_ID"] == "statute-worker"

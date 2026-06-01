@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
+import sqlite3
+
 from tests.test_autonomous_contracts import sample_contract
 
 from autonomous_contracts import (
     LedgerError,
     compile_ledger_seed,
     export_state,
+    import_worker_closeout,
     initialize_ledger,
+    ledger_check,
     ready_sprints,
     record_cleanup_entry,
     resolve_gate,
@@ -14,8 +21,9 @@ from autonomous_contracts import (
     update_cleanup_state,
     verify_contract_lock,
     write_projection_files,
+    write_schema_files,
 )
-from autonomous_contracts.models import CleanupRecord
+from autonomous_contracts.models import CleanupRecord, WorkerCloseoutEnvelope
 from autonomous_contracts.cli import main as contract_cli_main
 
 
@@ -162,3 +170,158 @@ def test_cleanup_api_can_unblock_terminal_closeout(tmp_path) -> None:
         raise AssertionError("open cleanup should block closeout")
     update_cleanup_state(db, "cleanup-api-1", "closed", actor="pm", notes="removed")
     transition_sprint(db, "PRE.1", "completed", actor="pm")
+
+
+
+def _packet_and_db(tmp_path):
+    db = tmp_path / "state.sqlite"
+    seed = compile_ledger_seed(sample_contract(), approved_by="galt")
+    initialize_ledger(db, seed, actor="galt")
+    packet = __import__("autonomous_contracts").generate_worker_packet(
+        sample_contract(),
+        "PRE.1",
+        worker_role="implementer",
+        assigned_worker="codex",
+        session_id="session-test",
+    )
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(json.dumps(packet.model_dump(mode="json"), sort_keys=True) + "\n", encoding="utf-8")
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute("UPDATE sprints SET worker_packet=? WHERE sprint_id=?", (str(packet_path), "PRE.1"))
+        conn.commit()
+    packet_hash = hashlib.sha256(packet_path.read_bytes()).hexdigest()
+    return db, packet_path, packet_hash
+
+
+def _valid_closeout(packet_hash: str, **overrides):
+    payload = {
+        "schemaVersion": "worker-closeout/v1",
+        "sprintId": "PRE.1",
+        "workerPacketSha256": packet_hash,
+        "resultStatus": "completed",
+        "verificationEvidence": [
+            {
+                "id": "evidence-command-1",
+                "type": "command",
+                "commandId": "PRE.1.AC1",
+                "command": "python3 --version",
+                "provenance": "control_plane_captured",
+                "passed": True,
+                "exitCode": 0,
+                "evidence": {"stdout": "Python 3.11.15"},
+            }
+        ],
+        "warnings": [],
+        "artifacts": [],
+        "noLiveDbMutationProof": {
+            "provenance": "sqlite_derived",
+            "observedAt": "2026-01-01T00:00:00+00:00",
+            "evidence": {"dbPath": "temp-test-db", "liveMutationRows": 0},
+        },
+        "summary": "done",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_worker_closeout_schema_exported(tmp_path) -> None:
+    written = write_schema_files(tmp_path / "schemas")
+    assert "worker-closeout-envelope.schema.json" in {path.name for path in written}
+
+
+def test_import_worker_closeout_dry_run_and_apply_records_structured_evidence(tmp_path) -> None:
+    db, _packet_path, packet_hash = _packet_and_db(tmp_path)
+    resolve_gate(db, "G.APPROVED", actor="galt", evidence=["approval-record:test"])
+    transition_sprint(db, "PRE.1", "in_progress", actor="pm")
+    report = import_worker_closeout(db, "PRE.1", _valid_closeout(packet_hash), actor="pm", apply=False)
+    assert report["ok"] is True
+    state_before = export_state(db)
+    assert state_before["sprints"][0]["state"] == "in_progress"
+
+    applied = import_worker_closeout(db, "PRE.1", _valid_closeout(packet_hash), actor="pm", apply=True)
+    assert applied["ok"] is True
+    state = export_state(db)
+    assert state["sprints"][0]["state"] == "completed"
+    assert state["sprints"][0]["completedBy"] == "pm"
+    assert ledger_check(db, strict=True)["ok"] is True
+
+
+def test_import_worker_closeout_rejects_worker_authored_no_live_db_proof(tmp_path) -> None:
+    db, _packet_path, packet_hash = _packet_and_db(tmp_path)
+    payload = _valid_closeout(
+        packet_hash,
+        noLiveDbMutationProof={
+            "provenance": "worker_authored",
+            "observedAt": "2026-01-01T00:00:00+00:00",
+            "evidence": {"claim": "trust me"},
+        },
+    )
+    report = import_worker_closeout(db, "PRE.1", payload, actor="pm", apply=False)
+    assert report["ok"] is False
+    assert any(issue["code"] == "untrusted_no_live_db_mutation_proof" for issue in report["issues"])
+
+
+def test_import_worker_closeout_rejects_benjamin_acceptance_warning_terminal_success(tmp_path) -> None:
+    db, _packet_path, packet_hash = _packet_and_db(tmp_path)
+    payload = _valid_closeout(
+        packet_hash,
+        resultStatus="completed_with_warnings",
+        warnings=[
+            {
+                "id": "warn-benjamin",
+                "warningClass": "requires_benjamin_acceptance",
+                "message": "Needs Benjamin acceptance.",
+                "provenance": "supervisor_authored",
+            }
+        ],
+    )
+    try:
+        WorkerCloseoutEnvelope.model_validate(payload)
+    except ValueError as exc:
+        assert "requires_benjamin_acceptance" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Benjamin-acceptance warning should not validate as terminal success")
+
+
+def test_import_worker_closeout_requires_exact_trusted_command_evidence(tmp_path) -> None:
+    db, _packet_path, packet_hash = _packet_and_db(tmp_path)
+    payload = _valid_closeout(packet_hash)
+    payload["verificationEvidence"][0]["command"] = "python --version"
+    report = import_worker_closeout(db, "PRE.1", payload, actor="pm", apply=False)
+    assert report["ok"] is False
+    assert any(issue["code"] == "missing_command_evidence" for issue in report["issues"])
+
+    payload = _valid_closeout(packet_hash)
+    payload["verificationEvidence"][0]["provenance"] = "worker_authored"
+    report = import_worker_closeout(db, "PRE.1", payload, actor="pm", apply=False)
+    assert report["ok"] is False
+    assert any(issue["code"] == "untrusted_command_evidence" for issue in report["issues"])
+
+
+def test_import_worker_closeout_apply_failure_is_atomic(tmp_path) -> None:
+    db, _packet_path, packet_hash = _packet_and_db(tmp_path)
+    resolve_gate(db, "G.APPROVED", actor="galt", evidence=["approval-record:test"])
+    transition_sprint(db, "PRE.1", "in_progress", actor="pm")
+    bad = _valid_closeout(packet_hash)
+    bad["workerPacketSha256"] = "0" * 64
+    try:
+        import_worker_closeout(db, "PRE.1", bad, actor="pm", apply=True)
+    except LedgerError as exc:
+        assert "worker closeout validation failed" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("invalid closeout should not apply")
+    state = export_state(db)
+    assert state["sprints"][0]["state"] == "in_progress"
+    assert state["sprints"][0]["completedBy"] is None
+
+
+def test_import_closeout_cli_and_ledger_check_strict(tmp_path) -> None:
+    db, _packet_path, packet_hash = _packet_and_db(tmp_path)
+    resolve_gate(db, "G.APPROVED", actor="galt", evidence=["approval-record:test"])
+    transition_sprint(db, "PRE.1", "in_progress", actor="pm")
+    envelope_path = tmp_path / "closeout.json"
+    envelope_path.write_text(json.dumps(_valid_closeout(packet_hash)), encoding="utf-8")
+
+    assert contract_cli_main(["ledger-check", "--db", str(db), "--strict"]) == 0
+    assert contract_cli_main(["import-closeout", "--db", str(db), "--sprint", "PRE.1", "--envelope", str(envelope_path), "--actor", "pm", "--apply"]) == 0
+    assert contract_cli_main(["ledger-check", "--db", str(db), "--strict"]) == 0

@@ -105,3 +105,94 @@ def test_statutepm_rejects_child_success_without_valid_result_contract(tmp_path)
         assert latest["blockers"]
     finally:
         conn.close()
+
+
+def _create_parent(root: Path, repo: Path) -> str:
+    conn = cp.connect(root=root)
+    try:
+        boot = cp.bootstrap_statutepm_policies(conn, seed_instances=True)
+        return cp.create_dispatch_from_instance(
+            conn,
+            sender_instance_id=boot["instances"]["default"],
+            receiver_profile="statutepm",
+            payload=_sample_payload(repo),
+        )
+    finally:
+        conn.close()
+
+
+def _complete_child_with_result(child_id: str, child_root: Path | None, result: dict) -> None:
+    conn = cp.connect(root=child_root)
+    try:
+        cp.register_instance(conn, "statute-worker", instance_id="statute-worker:custom")
+        ok, epoch = cp.claim_dispatch_by_id(conn, dispatch_id=child_id, instance_id="statute-worker:custom")
+        assert ok and epoch is not None
+        cp.advance_dispatch(conn, child_id, instance_id="statute-worker:custom", lease_epoch=epoch, status="running")
+        cp.record_result(conn, dispatch_id=child_id, instance_id="statute-worker:custom", lease_epoch=epoch, result=result)
+        cp.advance_dispatch(conn, child_id, instance_id="statute-worker:custom", lease_epoch=epoch, status="completed")
+    finally:
+        conn.close()
+
+
+def test_statutepm_child_completed_with_warnings_preserves_warning_status_on_parent(tmp_path):
+    root = tmp_path / ".hermes"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = _create_parent(root, repo)
+    result = {
+        "schema": "control_result_v1",
+        "status": "completed_with_warnings",
+        "summary": "child done with warnings",
+        "artifacts": [],
+        "tests": [],
+        "blockers": [],
+    }
+
+    def spawn(child_id: str, payload: dict, child_root: Path | None, parent_id: str) -> int:
+        _complete_child_with_result(child_id, child_root, result)
+        return 7
+
+    outcome = StatutePMFlow(root=root, pm_instance_id="statutepm:warn-child", spawn_child=spawn, poll_interval_s=0, child_timeout_s=2).run_dispatch(parent)
+    assert outcome["status"] == "completed"
+
+    conn = cp.connect(root=root)
+    try:
+        row = conn.execute("SELECT status FROM cp_dispatches WHERE dispatch_id=?", (parent,)).fetchone()
+        assert row["status"] == "completed"
+        latest = cp.get_latest_dispatch_result(conn, parent)["result"]
+        assert latest["status"] == "completed_with_warnings"
+        assert latest["summary"] == "child done with warnings"
+    finally:
+        conn.close()
+
+
+def test_statutepm_child_completed_with_blockers_does_not_silently_complete_parent(tmp_path):
+    root = tmp_path / ".hermes"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = _create_parent(root, repo)
+    result = {
+        "schema": "control_result_v1",
+        "status": "completed",
+        "summary": "contradictory child result",
+        "artifacts": [],
+        "tests": [],
+        "blockers": [{"kind": "runtime_error", "message": "still blocked"}],
+    }
+
+    def spawn(child_id: str, payload: dict, child_root: Path | None, parent_id: str) -> int:
+        _complete_child_with_result(child_id, child_root, result)
+        return 8
+
+    outcome = StatutePMFlow(root=root, pm_instance_id="statutepm:block-child", spawn_child=spawn, poll_interval_s=0, child_timeout_s=2).run_dispatch(parent)
+    assert outcome["status"] == "failed"
+
+    conn = cp.connect(root=root)
+    try:
+        row = conn.execute("SELECT status, last_error FROM cp_dispatches WHERE dispatch_id=?", (parent,)).fetchone()
+        assert row["status"] == "failed"
+        assert "invalid child result contract" in row["last_error"]
+        latest = cp.get_latest_dispatch_result(conn, parent)["result"]
+        assert latest["status"] == "action_required"
+    finally:
+        conn.close()

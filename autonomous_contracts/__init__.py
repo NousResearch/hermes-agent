@@ -17,6 +17,8 @@ from .ledger import (
     resolve_gate,
     transition_sprint,
     update_cleanup_state,
+    import_worker_closeout,
+    ledger_check,
     verify_contract_lock,
     write_projection_files,
 )
@@ -40,6 +42,11 @@ from .models import (
     ProjectSpec,
     Section,
     Sprint,
+    ArtifactRecord,
+    CloseoutWarning,
+    NoLiveDbMutationProof,
+    VerificationEvidenceRecord,
+    WorkerCloseoutEnvelope,
     WorkerPacket,
 )
 from .validation import ContractValidationError, validate_contract
@@ -65,6 +72,11 @@ __all__ = [
     "ProjectSpec",
     "Section",
     "Sprint",
+    "ArtifactRecord",
+    "CloseoutWarning",
+    "NoLiveDbMutationProof",
+    "VerificationEvidenceRecord",
+    "WorkerCloseoutEnvelope",
     "WorkerPacket",
     "LedgerError",
     "schema_map",
@@ -83,5 +95,7 @@ __all__ = [
     "ready_sprints",
     "export_state",
     "write_projection_files",
+    "import_worker_closeout",
+    "ledger_check",
     "verify_contract_lock",
 ]

@@ -15,6 +15,10 @@ from hermes_cli import control_db as cp
 from hermes_cli.control_contracts import validate_statute_dispatch_v1
 
 
+CONTROL_RESULT_STATUSES = {"completed", "completed_with_warnings", "failed", "action_required"}
+CONTROL_RESULT_SUCCESS_STATUSES = {"completed", "completed_with_warnings"}
+
+
 @dataclass
 class DispatchWorkItem:
     dispatch_id: str
@@ -125,8 +129,8 @@ class ControlDispatchWorker:
         finally:
             conn.close()
 
-    def fail(self, item: DispatchWorkItem, error: str) -> bool:
-        result = {
+    def fail(self, item: DispatchWorkItem, error: str, result: dict[str, Any] | None = None) -> bool:
+        failure_result = result or {
             "schema": "control_result_v1",
             "status": "failed",
             "summary": error,
@@ -136,7 +140,7 @@ class ControlDispatchWorker:
         }
         conn = self._connect()
         try:
-            cp.record_result(conn, dispatch_id=item.dispatch_id, instance_id=self.instance_id, lease_epoch=item.lease_epoch, result=result)
+            cp.record_result(conn, dispatch_id=item.dispatch_id, instance_id=self.instance_id, lease_epoch=item.lease_epoch, result=failure_result)
             ok = cp.advance_dispatch(conn, item.dispatch_id, instance_id=self.instance_id, lease_epoch=item.lease_epoch, status="failed", last_error=error)
             if ok:
                 cp.emit_status(conn, instance_id=self.instance_id, dispatch_id=item.dispatch_id, status="failed", summary=error)
@@ -222,13 +226,16 @@ def _agent_command(profile_id: str) -> list[str]:
     return [*base, "-p", profile_id, "chat", "--quiet", "--source", "control-worker", "--query", "-"]
 
 
-def _parse_control_result(stdout: str) -> dict[str, Any]:
+def _extract_control_result(stdout: str) -> dict[str, Any]:
     match = re.search(r"CONTROL_RESULT_JSON:\s*(\{.*\})", stdout, flags=re.DOTALL)
     if not match:
         raise ValueError("missing CONTROL_RESULT_JSON block")
-    result = json.loads(match.group(1))
-    validate_control_result(result)
-    return result
+    return json.loads(match.group(1))
+
+
+def _parse_control_result(stdout: str) -> dict[str, Any]:
+    result = _extract_control_result(stdout)
+    return validate_control_result(result)
 
 
 def validate_control_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -236,13 +243,15 @@ def validate_control_result(result: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("control result must be object")
     if result.get("schema") != "control_result_v1":
         raise ValueError("control result schema must be control_result_v1")
-    if result.get("status") not in {"completed", "failed", "action_required"}:
+    if result.get("status") not in CONTROL_RESULT_STATUSES:
         raise ValueError("control result status invalid")
     if not isinstance(result.get("summary"), str) or not result.get("summary"):
         raise ValueError("control result summary required")
     for key in ("artifacts", "tests", "blockers"):
         if key not in result or not isinstance(result[key], list):
             raise ValueError(f"control result {key} list required")
+    if result.get("status") in CONTROL_RESULT_SUCCESS_STATUSES and result.get("blockers"):
+        raise ValueError("successful control result cannot include blockers")
     return result
 
 
@@ -300,15 +309,24 @@ def run_agent_dispatch(
                 "lease_epoch": item.lease_epoch,
                 "command": [shlex.quote(str(c)) for c in cmd],
                 "returncode": returncode,
-                "stdout_tail": stdout[-4000:],
-                "stderr_tail": stderr[-4000:],
+                "stdout_tail": cp.redact_text(stdout[-4000:]),
+                "stderr_tail": cp.redact_text(stderr[-4000:]),
             }
             runtime_path = _runtime_artifact_path(item, root)
             runtime_path.write_text(json.dumps(run_artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             runtime_path.chmod(0o600)
             if returncode != 0:
                 raise RuntimeError(f"agent subprocess exited {returncode}: {stderr[-500:] or stdout[-500:]}")
-            result = _parse_control_result(stdout)
+            try:
+                result = _parse_control_result(stdout)
+            except Exception as exc:
+                try:
+                    run_artifact["invalid_control_result"] = cp.redact_jsonable(_extract_control_result(stdout))
+                    run_artifact["stdout_tail"] = "[redacted: invalid CONTROL_RESULT_JSON captured separately]"
+                    runtime_path.write_text(json.dumps(run_artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                except Exception:
+                    pass
+                raise exc
             result.setdefault("artifacts", [])
             result["artifacts"] = [*result["artifacts"], {"path": str(runtime_path), "summary": "agent subprocess run log"}]
         except Exception as exc:
@@ -321,18 +339,10 @@ def run_agent_dispatch(
                 "blockers": [{"kind": "runtime_error", "message": str(exc)}],
             }
         worker.record_artifacts(item, result.get("artifacts", []))
-        if result.get("status") == "completed":
+        if result.get("status") in CONTROL_RESULT_SUCCESS_STATUSES:
             worker.complete(item, result)
         else:
-            worker.fail(item, result.get("summary") or "agent worker failed")
-            # Preserve the richer parsed/malformed-result evidence after fail() writes its status-only failure.
-            conn = worker._connect()
-            try:
-                cp.record_result(conn, dispatch_id=item.dispatch_id, instance_id=worker.instance_id, lease_epoch=item.lease_epoch, result=result)
-            except cp.ControlPlaneError:
-                pass
-            finally:
-                conn.close()
+            worker.fail(item, result.get("summary") or "agent worker failed", result=result)
         return {"dispatch_id": dispatch_id, "lease_epoch": item.lease_epoch, "result": result}
     finally:
         conn = worker._connect()

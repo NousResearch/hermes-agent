@@ -7,6 +7,7 @@ audit artifacts. This module keeps state transitions mechanical and inspectable.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal, get_args
 
 from .compiler import compute_contract_sha256
-from .models import CleanupRecord, CleanupState, CleanupType, Contract, LedgerSeed, SprintState
+from .models import CleanupRecord, CleanupState, CleanupType, Contract, LedgerSeed, SprintState, WorkerCloseoutEnvelope
 
 SCHEMA_VERSION = 1
 VALID_SPRINT_STATES = set(get_args(SprintState))
@@ -26,6 +27,7 @@ SprintEventType = Literal[
     "gate_resolved",
     "cleanup_recorded",
     "checkpoint_recorded",
+    "worker_closeout_imported",
 ]
 
 
@@ -48,6 +50,94 @@ def _connect(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).expanduser().open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _redact_jsonable(value: Any) -> Any:
+    try:
+        from hermes_cli.control_db import redact_jsonable
+
+        return redact_jsonable(value)
+    except Exception:
+        return value
+
+
+def _resolve_artifact_path(db_path: str | Path, artifact: str | Path) -> Path:
+    candidate = Path(artifact).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    db_parent = Path(db_path).expanduser().resolve().parent
+    return (db_parent / candidate).resolve()
+
+
+def _assert_transition_allowed(conn: sqlite3.Connection, row: sqlite3.Row, sprint_id: str, new_state: SprintState) -> None:
+    dispatch_states = {"packet_generated", "dispatched", "in_progress", "review_required", "verification_required", "completed", "completed_with_warnings"}
+    terminal_success = {"completed", "completed_with_warnings"}
+    if new_state in dispatch_states:
+        deps = json.loads(row["depends_on_json"])
+        incomplete = [
+            dep
+            for dep in deps
+            if not conn.execute(
+                "SELECT 1 FROM sprints WHERE sprint_id=? AND state IN ('completed', 'completed_with_warnings', 'skipped_by_galt_decision')",
+                (dep,),
+            ).fetchone()
+        ]
+        if incomplete:
+            raise LedgerError(f"sprint {sprint_id} has incomplete dependencies: {', '.join(incomplete)}")
+        blockers = unresolved_blocking_gates_for_sprint(conn, sprint_id)
+        if blockers:
+            raise LedgerError(f"sprint {sprint_id} has unresolved blocking gates: {', '.join(blockers)}")
+    if new_state in terminal_success:
+        open_cleanup = list(
+            conn.execute(
+                "SELECT id FROM cleanup WHERE sprint_id=? AND state IN ('active_needed', 'open', 'orphaned_blocker')",
+                (sprint_id,),
+            )
+        )
+        if open_cleanup:
+            raise LedgerError(f"sprint {sprint_id} has unresolved cleanup records: {', '.join(r['id'] for r in open_cleanup)}")
+
+
+def _transition_sprint_row(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    sprint_id: str,
+    new_state: SprintState,
+    *,
+    actor: str,
+    evidence: dict[str, Any] | None = None,
+    artifact_path: str | None = None,
+) -> None:
+    old_state = row["state"]
+    _assert_transition_allowed(conn, row, sprint_id, new_state)
+    now = _now()
+    started_at = row["started_at"]
+    completed_at = row["completed_at"]
+    if new_state == "in_progress" and not started_at:
+        started_at = now
+    if new_state in {"completed", "completed_with_warnings", "failed", "skipped_by_galt_decision", "superseded"}:
+        completed_at = now
+    conn.execute(
+        "UPDATE sprints SET state=?, started_at=?, completed_at=?, updated_at=? WHERE sprint_id=?",
+        (new_state, started_at, completed_at, now, sprint_id),
+    )
+    append_event(
+        conn,
+        actor=actor,
+        event_type="sprint_state_changed",
+        sprint_id=sprint_id,
+        payload={"oldState": old_state, "newState": new_state, "evidence": evidence or {}},
+        artifact_path=artifact_path,
+    )
+
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
@@ -329,59 +419,13 @@ def transition_sprint(
 ) -> None:
     """Transition a sprint state with gate/dependency checks for dispatch states."""
 
-    dispatch_states = {"packet_generated", "dispatched", "in_progress", "review_required", "verification_required", "completed", "completed_with_warnings"}
-    terminal_success = {"completed", "completed_with_warnings"}
     if new_state not in VALID_SPRINT_STATES:
         raise LedgerError(f"invalid sprint state: {new_state}")
     with _connect(path) as conn:
         row = conn.execute("SELECT * FROM sprints WHERE sprint_id=?", (sprint_id,)).fetchone()
         if row is None:
             raise LedgerError(f"unknown sprint id: {sprint_id}")
-        old_state = row["state"]
-        if new_state in dispatch_states:
-            deps = json.loads(row["depends_on_json"])
-            incomplete = [
-                dep
-                for dep in deps
-                if not conn.execute(
-                    "SELECT 1 FROM sprints WHERE sprint_id=? AND state IN ('completed', 'completed_with_warnings', 'skipped_by_galt_decision')",
-                    (dep,),
-                ).fetchone()
-            ]
-            if incomplete:
-                raise LedgerError(f"sprint {sprint_id} has incomplete dependencies: {', '.join(incomplete)}")
-            blockers = unresolved_blocking_gates_for_sprint(conn, sprint_id)
-            if blockers:
-                raise LedgerError(f"sprint {sprint_id} has unresolved blocking gates: {', '.join(blockers)}")
-        if new_state in terminal_success:
-            open_cleanup = list(
-                conn.execute(
-                    "SELECT id FROM cleanup WHERE sprint_id=? AND state IN ('active_needed', 'open', 'orphaned_blocker')",
-                    (sprint_id,),
-                )
-            )
-            if open_cleanup:
-                raise LedgerError(f"sprint {sprint_id} has unresolved cleanup records: {', '.join(r['id'] for r in open_cleanup)}")
-
-        now = _now()
-        started_at = row["started_at"]
-        completed_at = row["completed_at"]
-        if new_state == "in_progress" and not started_at:
-            started_at = now
-        if new_state in terminal_success or new_state in {"failed", "skipped_by_galt_decision", "superseded"}:
-            completed_at = now
-        conn.execute(
-            "UPDATE sprints SET state=?, started_at=?, completed_at=?, updated_at=? WHERE sprint_id=?",
-            (new_state, started_at, completed_at, now, sprint_id),
-        )
-        append_event(
-            conn,
-            actor=actor,
-            event_type="sprint_state_changed",
-            sprint_id=sprint_id,
-            payload={"oldState": old_state, "newState": new_state, "evidence": evidence or {}},
-            artifact_path=artifact_path,
-        )
+        _transition_sprint_row(conn, row, sprint_id, new_state, actor=actor, evidence=evidence, artifact_path=artifact_path)
         conn.commit()
 
 
@@ -516,6 +560,201 @@ def export_state(path: str | Path) -> dict[str, Any]:
         cleanup = [dict(row) for row in conn.execute("SELECT * FROM cleanup ORDER BY sprint_id, id")]
         events = [dict(row) | {"payload": json.loads(row["payload_json"])} for row in conn.execute("SELECT * FROM events ORDER BY id")]
         return {"meta": meta, "readySprints": ready_sprints(path), "sprints": sprints, "gates": gates, "cleanup": cleanup, "events": events}
+
+
+
+TRUSTED_NO_LIVE_DB_PROOF_PROVENANCE = {"control_plane_captured", "sqlite_derived", "git_derived"}
+TRUSTED_COMMAND_EVIDENCE_PROVENANCE = {"control_plane_captured", "pm_rerun"}
+WAIVER_WARNING_CLASSES = {"deferred_non_blocking", "requires_next_sprint_ticket"}
+
+
+def _load_packet_from_row(db_path: str | Path, row: sqlite3.Row, issues: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+    packet_ref = row["worker_packet"]
+    if not packet_ref:
+        issues.append({"severity": "error", "code": "missing_worker_packet", "sprintId": row["sprint_id"]})
+        return None, None
+    packet_path = _resolve_artifact_path(db_path, packet_ref)
+    if not packet_path.exists():
+        issues.append({"severity": "error", "code": "missing_worker_packet_file", "sprintId": row["sprint_id"], "path": str(packet_path)})
+        return None, None
+    try:
+        packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        issues.append({"severity": "error", "code": "invalid_worker_packet_json", "sprintId": row["sprint_id"], "path": str(packet_path), "error": str(exc)})
+        return None, None
+    return packet, sha256_file(packet_path)
+
+
+def _packet_command_requirements(packet: dict[str, Any]) -> list[dict[str, str]]:
+    acceptance = packet.get("acceptanceCriteria") or []
+    commands = packet.get("verificationCommands") or []
+    requirements: list[dict[str, str]] = []
+    for index, command in enumerate(commands):
+        matches = [item.get("id") for item in acceptance if item.get("verification") == "command" and item.get("command") == command and item.get("id")]
+        command_id = matches[0] if len(matches) == 1 else f"verificationCommands[{index}]"
+        requirements.append({"commandId": command_id, "command": command})
+    return requirements
+
+
+def _artifact_issue(db_path: str | Path, artifact: Any, sprint_id: str) -> dict[str, Any] | None:
+    if not artifact:
+        return None
+    path_value = artifact.get("path") if isinstance(artifact, dict) else None
+    if not path_value:
+        return {"severity": "error", "code": "handoff_artifact_missing_path", "sprintId": sprint_id}
+    artifact_path = _resolve_artifact_path(db_path, path_value)
+    if not artifact_path.exists():
+        return {"severity": "error", "code": "missing_handoff_artifact", "sprintId": sprint_id, "path": str(artifact_path)}
+    expected_hash = artifact.get("sha256") if isinstance(artifact, dict) else None
+    if expected_hash:
+        observed = sha256_file(artifact_path)
+        if observed != expected_hash:
+            return {"severity": "error", "code": "handoff_artifact_hash_mismatch", "sprintId": sprint_id, "path": str(artifact_path), "expected": expected_hash, "observed": observed}
+    return None
+
+
+def validate_worker_closeout(
+    db_path: str | Path,
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    envelope: WorkerCloseoutEnvelope,
+) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    sprint_id = row["sprint_id"]
+    if envelope.sprintId != sprint_id:
+        issues.append({"severity": "error", "code": "sprint_id_mismatch", "expected": sprint_id, "observed": envelope.sprintId})
+    packet, packet_hash = _load_packet_from_row(db_path, row, issues)
+    if packet_hash and packet_hash != envelope.workerPacketSha256:
+        issues.append({"severity": "error", "code": "worker_packet_hash_mismatch", "sprintId": sprint_id, "expected": packet_hash, "observed": envelope.workerPacketSha256})
+    if envelope.resultStatus in {"completed", "completed_with_warnings"}:
+        proof = envelope.noLiveDbMutationProof
+        if proof is None:
+            issues.append({"severity": "error", "code": "missing_no_live_db_mutation_proof", "sprintId": sprint_id})
+        elif proof.provenance not in TRUSTED_NO_LIVE_DB_PROOF_PROVENANCE:
+            issues.append({"severity": "error", "code": "untrusted_no_live_db_mutation_proof", "sprintId": sprint_id, "provenance": proof.provenance})
+        for warning in envelope.warnings:
+            if warning.blocker:
+                issues.append({"severity": "error", "code": "terminal_success_with_blocker", "sprintId": sprint_id, "warningId": warning.id})
+            if warning.warningClass == "requires_benjamin_acceptance":
+                issues.append({"severity": "error", "code": "benjamin_acceptance_warning_blocks_terminal_success", "sprintId": sprint_id, "warningId": warning.id})
+    if packet:
+        evidence_by_key = {
+            (item.commandId, item.command): item
+            for item in envelope.verificationEvidence
+            if item.type == "command" and item.commandId and item.command
+        }
+        waived_command_ids = {warning.commandId for warning in envelope.warnings if warning.commandId and warning.warningClass in WAIVER_WARNING_CLASSES}
+        for requirement in _packet_command_requirements(packet):
+            key = (requirement["commandId"], requirement["command"])
+            evidence = evidence_by_key.get(key)
+            if evidence is None:
+                if requirement["commandId"] in waived_command_ids:
+                    continue
+                issues.append({"severity": "error", "code": "missing_command_evidence", "sprintId": sprint_id, **requirement})
+                continue
+            if not evidence.passed:
+                issues.append({"severity": "error", "code": "command_evidence_failed", "sprintId": sprint_id, **requirement})
+            if evidence.provenance not in TRUSTED_COMMAND_EVIDENCE_PROVENANCE:
+                issues.append({"severity": "error", "code": "untrusted_command_evidence", "sprintId": sprint_id, **requirement, "provenance": evidence.provenance})
+    handoff_issue = _artifact_issue(db_path, envelope.handoffArtifact.model_dump(mode="json") if envelope.handoffArtifact else None, sprint_id)
+    if handoff_issue:
+        issues.append(handoff_issue)
+    return {"ok": not any(issue["severity"] == "error" for issue in issues), "sprintId": sprint_id, "issues": issues}
+
+
+def import_worker_closeout(
+    path: str | Path,
+    sprint_id: str,
+    envelope: WorkerCloseoutEnvelope | dict[str, Any],
+    *,
+    actor: str,
+    apply: bool = False,
+    artifact_path: str | None = None,
+) -> dict[str, Any]:
+    parsed = envelope if isinstance(envelope, WorkerCloseoutEnvelope) else WorkerCloseoutEnvelope.model_validate(envelope)
+    with _connect(path) as conn:
+        row = conn.execute("SELECT * FROM sprints WHERE sprint_id=?", (sprint_id,)).fetchone()
+        if row is None:
+            raise LedgerError(f"unknown sprint id: {sprint_id}")
+        report = validate_worker_closeout(path, conn, row, parsed)
+        report["apply"] = apply
+        if not apply:
+            return report
+        if not report["ok"]:
+            raise LedgerError("worker closeout validation failed: " + ", ".join(issue["code"] for issue in report["issues"] if issue["severity"] == "error"))
+        target_state: SprintState
+        if parsed.resultStatus == "completed":
+            target_state = "completed"
+        elif parsed.resultStatus == "completed_with_warnings":
+            target_state = "completed_with_warnings"
+        elif parsed.resultStatus == "failed":
+            target_state = "failed"
+        else:
+            target_state = "blocked_galt"
+        redacted_closeout = _redact_jsonable(parsed.model_dump(mode="json", exclude_none=True))
+        redacted_evidence = _redact_jsonable([item.model_dump(mode="json", exclude_none=True) for item in parsed.verificationEvidence])
+        _transition_sprint_row(
+            conn,
+            row,
+            sprint_id,
+            target_state,
+            actor=actor,
+            evidence={"workerCloseout": {"schemaVersion": parsed.schemaVersion, "resultStatus": parsed.resultStatus}},
+            artifact_path=artifact_path,
+        )
+        conn.execute(
+            """
+            UPDATE sprints
+            SET verification_evidence_json=?, handoff_artifact=?, completed_by=?, source_completed_at=?, closeout_json=?, updated_at=?
+            WHERE sprint_id=?
+            """,
+            (
+                _json(redacted_evidence),
+                parsed.handoffArtifact.path if parsed.handoffArtifact else row["handoff_artifact"],
+                actor,
+                parsed.sourceCompletedAt or _now(),
+                _json(redacted_closeout),
+                _now(),
+                sprint_id,
+            ),
+        )
+        append_event(
+            conn,
+            actor=actor,
+            event_type="worker_closeout_imported",
+            sprint_id=sprint_id,
+            payload={"resultStatus": parsed.resultStatus, "issues": report["issues"]},
+            artifact_path=artifact_path,
+        )
+        conn.commit()
+        return report | {"targetState": target_state}
+
+
+def ledger_check(path: str | Path, *, strict: bool = False) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    with _connect(path) as conn:
+        create_schema(conn)
+        for row in conn.execute("SELECT * FROM sprints ORDER BY order_index, sprint_id"):
+            sprint_id = row["sprint_id"]
+            packet, packet_hash = _load_packet_from_row(path, row, issues) if row["worker_packet"] else (None, None)
+            closeout_raw = json.loads(row["closeout_json"] or "{}")
+            terminal_success = row["state"] in {"completed", "completed_with_warnings"}
+            if terminal_success:
+                if closeout_raw.get("schemaVersion") != "worker-closeout/v1":
+                    issues.append({"severity": "error", "code": "terminal_sprint_missing_structured_closeout", "sprintId": sprint_id})
+                else:
+                    try:
+                        envelope = WorkerCloseoutEnvelope.model_validate(closeout_raw)
+                        issues.extend(validate_worker_closeout(path, conn, row, envelope)["issues"])
+                        if packet_hash and envelope.workerPacketSha256 != packet_hash:
+                            issues.append({"severity": "error", "code": "worker_packet_db_file_hash_drift", "sprintId": sprint_id})
+                    except Exception as exc:
+                        issues.append({"severity": "error", "code": "invalid_structured_closeout", "sprintId": sprint_id, "error": str(exc)})
+                open_cleanup = [r["id"] for r in conn.execute("SELECT id FROM cleanup WHERE sprint_id=? AND state IN ('active_needed', 'open', 'orphaned_blocker')", (sprint_id,))]
+                if open_cleanup:
+                    issues.append({"severity": "error", "code": "terminal_sprint_open_cleanup", "sprintId": sprint_id, "cleanupIds": open_cleanup})
+    ok = not any(issue["severity"] == "error" for issue in issues)
+    return {"ok": ok, "strict": strict, "issues": issues}
 
 
 def write_projection_files(path: str | Path, output_dir: str | Path) -> list[Path]:

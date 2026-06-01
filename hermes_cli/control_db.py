@@ -62,6 +62,9 @@ _TEXT_COLUMNS = {
 _ADMIN_ACTOR_TYPES = {"admin", "bootstrap"}
 _DISPATCH_ADVANCE_STATUSES = {"running", "completed", "failed"}
 _CLAIMABLE_DISPATCH_STATUSES = {"pending", "retry_ready"}
+ACTIVE_MESSAGE_STATUSES = {"pending", "delivered"}
+TERMINAL_MESSAGE_STATUSES = {"acknowledged", "resolved", "superseded", "cancelled"}
+MESSAGE_STATUSES = ACTIVE_MESSAGE_STATUSES | TERMINAL_MESSAGE_STATUSES
 BOOTSTRAP_INSTANCE_LEASE_MS = 3_600_000
 
 
@@ -860,6 +863,105 @@ def create_message_from_instance(conn: sqlite3.Connection, *, sender_instance_id
         )
         _enqueue_outbox(conn, subject_type="message", subject_id=mid, subject_version=1, event_id=evt, payload={"event": "message.created", "message_id": mid, "kind": kind})
     return mid
+
+
+def _is_live_default_root(conn: sqlite3.Connection) -> bool:
+    root = _conn_root(conn)
+    if root is None:
+        return False
+    try:
+        return root.resolve() == get_default_hermes_root().resolve()
+    except OSError:
+        return False
+
+
+def _require_message_transition_actor(
+    conn: sqlite3.Connection,
+    *,
+    message: sqlite3.Row,
+    actor_type: str,
+    actor_profile: str | None,
+    actor_instance_id: str | None,
+    now: int,
+) -> None:
+    if actor_type == "bootstrap":
+        if _is_live_default_root(conn):
+            raise PermissionError("bootstrap message transitions are refused against the live control DB")
+        return
+    if actor_type == "admin":
+        _require_admin_actor(conn, actor_profile=actor_profile, actor_instance_id=actor_instance_id, actor_type="admin")
+        return
+    if actor_type != "receiver":
+        raise PermissionError("message transition actor_type must be receiver, admin, or bootstrap")
+    if not actor_instance_id:
+        raise PermissionError("receiver message transitions require actor_instance_id")
+    _require_live_instance(conn, actor_instance_id, expected_profile=message["receiver_profile"], now=now)
+
+
+def transition_message_status(
+    conn: sqlite3.Connection,
+    message_id: str,
+    *,
+    status: str,
+    actor_instance_id: str | None = None,
+    actor_profile: str | None = None,
+    actor_type: str = "receiver",
+    reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """Move a message to a terminal status with append-only audit.
+
+    `superseded` is also an audited archival override for stale terminal
+    messages; other terminal-to-different-terminal rewrites are rejected.
+    """
+    if status not in TERMINAL_MESSAGE_STATUSES:
+        raise ControlPlaneError(f"invalid terminal message status: {status}")
+    ts = _ts(now_ms)
+    with transaction(conn):
+        row = conn.execute("SELECT * FROM cp_messages WHERE message_id=?", (message_id,)).fetchone()
+        if not row:
+            raise ControlPlaneError(f"unknown message: {message_id}")
+        _require_message_transition_actor(
+            conn,
+            message=row,
+            actor_type=actor_type,
+            actor_profile=actor_profile,
+            actor_instance_id=actor_instance_id,
+            now=ts,
+        )
+        old_status = str(row["status"])
+        if old_status in TERMINAL_MESSAGE_STATUSES and old_status != status and status != "superseded":
+            raise ControlPlaneError(f"message {message_id} is already terminal: {old_status}")
+        if old_status not in MESSAGE_STATUSES:
+            raise ControlPlaneError(f"message {message_id} has unknown status: {old_status}")
+        changed = old_status != status
+        if changed:
+            conn.execute("UPDATE cp_messages SET status=?, updated_at_ms=? WHERE message_id=?", (status, ts, message_id))
+        event_id = _event_id()
+        event = {
+            "old_status": old_status,
+            "new_status": status,
+            "changed": changed,
+            "actor_type": actor_type,
+            "actor_profile": actor_profile,
+            "actor_instance_id": actor_instance_id,
+            "reason": redact_text(reason) if reason else None,
+            "metadata": metadata or {},
+        }
+        conn.execute(
+            "INSERT INTO cp_message_events(event_id,message_id,event_type,event_json,created_at_ms) VALUES(?,?,?,?,?)",
+            (event_id, message_id, "status_transition", dumps_redacted(event), ts),
+        )
+        _enqueue_outbox(
+            conn,
+            subject_type="message",
+            subject_id=message_id,
+            subject_version=2,
+            event_id=event_id,
+            payload={"event": "message.status_transition", "message_id": message_id, "status": status, "changed": changed},
+        )
+        return {"message_id": message_id, "old_status": old_status, "status": status, "changed": changed, "event_id": event_id}
 
 
 def create_dispatch(conn: sqlite3.Connection, *, sender_profile: str, receiver_profile: str, payload: dict[str, Any], capability: str = "dispatch", message_id: str | None = None, idempotency_key: str | None = None, max_attempts: int = 3, parent_dispatch_id: str | None = None, dispatch_schema: str | None = None, max_wall_time_ms: int | None = None) -> str:

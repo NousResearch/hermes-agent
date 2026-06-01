@@ -68,3 +68,26 @@ def test_strict_control_db_blocks_missing_approval_state(monkeypatch, tmp_path):
     finally:
         conn.close()
     assert approval._control_approval_create("strict-missing", "rm -rf /tmp/x", "delete files", ttl_seconds=60) is None
+
+
+def test_control_plane_message_tool_uses_db_authorization(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_CONTROL_INSTANCE_ID", "worker:live")
+    from hermes_cli import control_db as cp
+    from tools import control_plane
+
+    conn = cp.connect(root=tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="status", capability="message")
+        cp.register_instance(conn, "worker", instance_id="worker:live")
+        cp.register_instance(conn, "other", instance_id="other:live")
+        mid = cp.create_message(conn, sender_profile="default", receiver_profile="worker", kind="status", body="close me")
+    finally:
+        conn.close()
+
+    missing = control_plane._handle_control_plane_message({"root": str(tmp_path), "action": "resolve", "actor_instance_id": "worker:live"})
+    assert "message_id" in missing
+    denied = control_plane._handle_control_plane_message({"root": str(tmp_path), "action": "resolve", "message_id": mid, "actor_instance_id": "other:live"})
+    assert "error" in denied and "does not belong" in denied
+    resolved = control_plane._handle_control_plane_message({"root": str(tmp_path), "action": "resolve", "message_id": mid, "actor_instance_id": "worker:live"})
+    assert '"status": "resolved"' in resolved

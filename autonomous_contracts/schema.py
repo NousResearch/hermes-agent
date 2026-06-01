@@ -8,13 +8,14 @@ from typing import Type
 
 from pydantic import BaseModel
 
-from .models import CleanupRecord, Contract, ContractLock, LedgerSeed, WorkerPacket
+from .models import CleanupRecord, Contract, ContractLock, LedgerSeed, WorkerCloseoutEnvelope, WorkerPacket
 
 _SCHEMA_MODELS: dict[str, Type[BaseModel]] = {
     "contract.schema.json": Contract,
     "contract-lock.schema.json": ContractLock,
     "ledger-seed.schema.json": LedgerSeed,
     "worker-packet.schema.json": WorkerPacket,
+    "worker-closeout-envelope.schema.json": WorkerCloseoutEnvelope,
     "cleanup-record.schema.json": CleanupRecord,
 }
 

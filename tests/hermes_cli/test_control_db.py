@@ -730,3 +730,56 @@ def test_approval_context_binds_dispatch_and_lease_epoch(tmp_path):
         assert cp.consume_approval(conn, aid, requester_instance_id=worker, requester_profile="worker", dispatch_id="disp_1", lease_epoch=4) is True
     finally:
         conn.close()
+
+
+def test_message_terminal_status_transition_is_authorized_audited_and_idempotent(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="status", capability="message", priority=1)
+        worker = cp.register_instance(conn, "worker", instance_id="worker:live")
+        other = cp.register_instance(conn, "other", instance_id="other:live")
+        mid = cp.create_message(conn, sender_profile="default", receiver_profile="worker", kind="status", body="needs closure")
+        with pytest.raises(PermissionError):
+            cp.transition_message_status(conn, mid, status="resolved", actor_instance_id=other)
+        result = cp.transition_message_status(
+            conn,
+            mid,
+            status="resolved",
+            actor_instance_id=worker,
+            reason="token=supersecretvalue",
+            metadata={"api_key": "supersecretvalue", "safe": "ok"},
+        )
+        assert result["changed"] is True
+        assert conn.execute("SELECT status FROM cp_messages WHERE message_id=?", (mid,)).fetchone()["status"] == "resolved"
+        again = cp.transition_message_status(conn, mid, status="resolved", actor_instance_id=worker)
+        assert again["changed"] is False
+        with pytest.raises(cp.ControlPlaneError):
+            cp.transition_message_status(conn, mid, status="cancelled", actor_instance_id=worker)
+        superseded = cp.transition_message_status(conn, mid, status="superseded", actor_instance_id=worker)
+        assert superseded["changed"] is True
+        events = conn.execute("SELECT event_json FROM cp_message_events WHERE message_id=? AND event_type='status_transition' ORDER BY created_at_ms", (mid,)).fetchall()
+        assert len(events) == 3
+        joined = "\n".join(e["event_json"] for e in events)
+        assert "supersecretvalue" not in joined
+        assert '"safe":"ok"' in joined
+        assert conn.execute("SELECT COUNT(*) FROM cp_outbox WHERE subject_type='message' AND subject_id=?", (mid,)).fetchone()[0] == 4
+    finally:
+        conn.close()
+
+
+def test_message_transition_admin_and_bootstrap_guards(tmp_path):
+    conn = db(tmp_path)
+    try:
+        cp.add_route_policy(conn, effect="allow", created_by_type="bootstrap", sender_profile="default", receiver_profile="worker", kind="status", capability="message", priority=1)
+        cp.register_profile(conn, "default", role="admin", actor_type="bootstrap")
+        admin = cp.register_instance(conn, "default", instance_id="default:admin", actor_type="bootstrap")
+        mid = cp.create_message(conn, sender_profile="default", receiver_profile="worker", kind="status", body="x")
+        res = cp.transition_message_status(conn, mid, status="cancelled", actor_type="admin", actor_profile="default", actor_instance_id=admin)
+        assert res["status"] == "cancelled"
+        mid2 = cp.create_message(conn, sender_profile="default", receiver_profile="worker", kind="status", body="y")
+        res2 = cp.transition_message_status(conn, mid2, status="superseded", actor_type="bootstrap")
+        assert res2["status"] == "superseded"
+        with pytest.raises(cp.ControlPlaneError):
+            cp.transition_message_status(conn, mid2, status="bogus", actor_type="bootstrap")
+    finally:
+        conn.close()

@@ -72,6 +72,13 @@ def test_dispatch_and_message_cli_use_sender_instance(tmp_path):
     assert created["dispatch_id"].startswith("disp_")
     msg = json.loads(run_cli("message", "create", "--root", str(root), "--sender-instance-id", "default:bootstrap", "--receiver", "statutepm", "--kind", "instruction", "--body", "go").stdout)
     assert msg["message_id"].startswith("msg_")
+    ack = json.loads(run_cli("message", "ack", msg["message_id"], "--root", str(root), "--actor-instance-id", "statutepm:bootstrap", "--reason", "seen").stdout)
+    assert ack["status"] == "acknowledged"
+    assert ack["changed"] is True
+    ack2 = json.loads(run_cli("message", "ack", msg["message_id"], "--root", str(root), "--actor-instance-id", "statutepm:bootstrap").stdout)
+    assert ack2["changed"] is False
+    refused = run_cli("message", "cancel", msg["message_id"], "--root", str(root), "--actor-instance-id", "statutepm:bootstrap", check=False)
+    assert refused.returncode != 0
 
 
 def test_mode_requires_live_admin_actor_for_control_db(tmp_path):
@@ -120,9 +127,17 @@ def test_live_smoke_requires_live_before_touching_db(tmp_path):
     assert "refusing to mutate live control DB without --live" in result.stderr
 
 
+def test_message_transition_requires_live_flag_for_live_root(tmp_path):
+    env = _profile_env(tmp_path)
+    result = run_cli("message", "ack", "msg_missing", "--actor-instance-id", "default:bootstrap", env=env, check=False)
+    assert result.returncode != 0
+    assert "refusing to mutate live control DB without --live" in result.stderr
+
+
 def test_new_control_help_surfaces_parse():
     assert run_cli("pm", "run", "--help").returncode == 0
     assert run_cli("live-smoke", "--help").returncode == 0
+    assert run_cli("wave", "dispatch-statutepm", "--help").returncode == 0
 
 
 def test_v3_cli_status_blocker_supervision_and_runtime_mapping(tmp_path):

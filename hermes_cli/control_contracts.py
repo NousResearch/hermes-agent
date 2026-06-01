@@ -7,7 +7,7 @@ from typing import Any
 
 ALLOWED_TASK_TYPES = {"inspect_repo", "run_tests", "parse_sections", "review_diff", "generic"}
 ALLOWED_TASK_PERMISSIONS = {"read", "write", "test", "git"}
-STRICT_CONSTRAINTS = {"no_live_db_mutation", "no_push"}
+STRICT_CONSTRAINTS = {"no_live_db_mutation"}
 
 
 class ContractError(ValueError):
@@ -70,6 +70,8 @@ def validate_statute_dispatch_v1(payload: dict[str, Any], *, parent: dict[str, A
     for key in STRICT_CONSTRAINTS:
         if constraints.get(key) is not True:
             raise ContractError(f"constraint {key} must be true")
+    if constraints.get("no_push") is not True and constraints.get("push_at_successful_wave_closeout") is not True:
+        raise ContractError("constraint no_push must be true unless push_at_successful_wave_closeout is true")
 
     parent_dispatch_id = payload.get("parent_dispatch_id")
     if require_parent and not parent_dispatch_id:

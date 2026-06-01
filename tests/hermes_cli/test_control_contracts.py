@@ -49,6 +49,13 @@ def test_child_scope_is_monotonic(tmp_path):
         validate_statute_dispatch_v1(payload(root, constraints={"no_live_db_mutation": True, "no_push": False}, parent_dispatch_id="disp_parent"), parent=parent, require_parent=True)
 
 
+def test_push_at_successful_wave_closeout_can_replace_no_push(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    wave = validate_statute_dispatch_v1(payload(root, constraints={"no_live_db_mutation": True, "push_at_successful_wave_closeout": True}))
+    assert wave["constraints"]["push_at_successful_wave_closeout"] is True
+
+
 def test_invalid_task_type_and_permissions_rejected(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()

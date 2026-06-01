@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -42,9 +43,14 @@ MUTATING = {
     "runtime:map",
     "watchdog:run",
     "message:create",
+    "message:ack",
+    "message:resolve",
+    "message:supersede",
+    "message:cancel",
     "pm:run",
     "worker:run",
     "live-smoke",
+    "wave:dispatch-statutepm",
 }
 
 
@@ -292,6 +298,21 @@ def cmd_control(args) -> None:
                 mid = cp.create_message_from_instance(conn, sender_instance_id=args.sender_instance_id, receiver_profile=args.receiver, kind=args.kind, body=args.body, capability=args.capability, metadata=_json_arg(args.metadata_json, {}))
                 _print_json({"db_path": str(target.db_path), "message_id": mid})
                 return
+            if sub in {"ack", "resolve", "supersede", "cancel"}:
+                status = {"ack": "acknowledged", "resolve": "resolved", "supersede": "superseded", "cancel": "cancelled"}[sub]
+                result = cp.transition_message_status(
+                    conn,
+                    args.message_id,
+                    status=status,
+                    actor_instance_id=args.actor_instance_id,
+                    actor_profile=args.actor_profile,
+                    actor_type=args.actor_type,
+                    reason=args.reason,
+                    metadata=_json_arg(args.metadata_json, {}),
+                )
+                result["db_path"] = str(target.db_path)
+                _print_json(result)
+                return
             if sub == "list":
                 clauses = []
                 params: list[Any] = []
@@ -354,6 +375,12 @@ def cmd_control(args) -> None:
             )
             _print_json(result)
             if not result.get("ok"):
+                raise SystemExit(1)
+            return
+        if command == "wave" and sub == "dispatch-statutepm":
+            result = _dispatch_statutepm_wave(args, target)
+            _print_json(result)
+            if result.get("status") in {"invalid_payload", "failed"}:
                 raise SystemExit(1)
             return
         if command == "readiness":
@@ -426,6 +453,124 @@ def _run_pm_events(args, target, *, runtime_profile: str):
 def _safe_smoke_tag(tag: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in tag.strip())
     return cleaned[:120] or "statutepm-smoke"
+
+
+def _wave_instance_suffix(idempotency_key: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in idempotency_key.strip())[:80]
+    return safe or hashlib.sha256(idempotency_key.encode()).hexdigest()[:12]
+
+
+def _reject_bootstrap_instance(instance_id: str, *, field: str) -> None:
+    if instance_id.endswith(":bootstrap"):
+        raise SystemExit(f"{field} must not use a seeded bootstrap instance: {instance_id}")
+
+
+def _dispatch_statutepm_wave(args, target, *, spawn_child=None) -> dict[str, Any]:
+    from hermes_cli.statutepm_flow import StatutePMFlow
+
+    runtime_profile = validate_pm_runtime_mapping(args.pm_profile_id, args.pm_runtime_profile)
+    payload = _json_arg(args.payload_json, {})
+    suffix = _wave_instance_suffix(args.idempotency_key)
+    supervisor_instance_id = args.supervisor_instance_id or f"{args.admin_profile}:wave:{suffix}"
+    pm_instance_id = args.pm_instance_id or f"{args.pm_profile_id}:wave:{suffix}"
+    _reject_bootstrap_instance(supervisor_instance_id, field="--supervisor-instance-id")
+    _reject_bootstrap_instance(pm_instance_id, field="--pm-instance-id")
+
+    supervisor_registered = False
+    supervisor_offline = False
+    outcome: dict[str, Any] | None = None
+    dispatch_id: str | None = None
+    parent_status = "not_created"
+    result: dict[str, Any]
+    try:
+        conn = cp.connect(root=target.root)
+        try:
+            cp.bootstrap_statutepm_policies(
+                conn,
+                admin_profile=args.admin_profile,
+                pm_profile=args.pm_profile_id,
+                worker_profile=args.worker_profile,
+                seed_instances=False,
+            )
+            cp.register_instance(
+                conn,
+                args.admin_profile,
+                instance_id=supervisor_instance_id,
+                lease_ms=args.supervisor_lease_ms,
+                actor_type="bootstrap",
+                metadata={"wave_lifecycle_owner": True, "seeded_by_bootstrap": False, "idempotency_key": args.idempotency_key},
+            )
+            supervisor_registered = True
+            try:
+                validate_statute_dispatch_v1(payload)
+            except ContractError as exc:
+                result = {
+                    "db_path": str(target.db_path),
+                    "live": target.live,
+                    "status": "invalid_payload",
+                    "error": str(exc),
+                    "parent_dispatch_id": None,
+                    "parent_status": parent_status,
+                    "supervisor_instance_id": supervisor_instance_id,
+                    "pm_instance_id": pm_instance_id,
+                    "pm_runtime_profile": runtime_profile,
+                    "supervision": None,
+                }
+            else:
+                dispatch_id = cp.create_dispatch_from_instance(
+                    conn,
+                    sender_instance_id=supervisor_instance_id,
+                    receiver_profile=args.pm_profile_id,
+                    payload=payload,
+                    idempotency_key=args.idempotency_key,
+                    dispatch_schema=payload.get("schema"),
+                )
+                row = conn.execute("SELECT status FROM cp_dispatches WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+                parent_status = row["status"] if row else "missing"
+                result = {}
+        finally:
+            conn.close()
+
+        if dispatch_id and args.supervise:
+            flow = StatutePMFlow(
+                root=target.root,
+                pm_instance_id=pm_instance_id,
+                admin_profile=args.admin_profile,
+                pm_profile=args.pm_profile_id,
+                worker_profile=args.worker_profile,
+                spawn_child=spawn_child,
+                poll_interval_s=args.poll_interval_s,
+                child_timeout_s=args.child_timeout_s,
+            )
+            outcome = flow.run_dispatch(dispatch_id)
+            conn = cp.connect(root=target.root)
+            try:
+                row = conn.execute("SELECT status FROM cp_dispatches WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+                parent_status = row["status"] if row else "missing"
+            finally:
+                conn.close()
+
+        if not result:
+            result = {
+                "db_path": str(target.db_path),
+                "live": target.live,
+                "status": "supervised" if args.supervise else "created",
+                "parent_dispatch_id": dispatch_id,
+                "parent_status": parent_status,
+                "supervisor_instance_id": supervisor_instance_id,
+                "pm_instance_id": pm_instance_id,
+                "pm_runtime_profile": runtime_profile,
+                "supervision": outcome,
+            }
+    finally:
+        if supervisor_registered:
+            conn = cp.connect(root=target.root)
+            try:
+                supervisor_offline = cp.mark_instance_offline(conn, supervisor_instance_id)
+            finally:
+                conn.close()
+    result["supervisor_offline"] = supervisor_offline
+    return result
 
 
 def _run_statutepm_live_smoke(
@@ -679,19 +824,15 @@ def _readiness(args, target) -> dict[str, Any]:
         for route_name, ok in checks["routes"].items():
             if not ok:
                 reasons.append(f"route missing/denied: {route_name}")
-        for instance_id, live in checks["seeded_instances_live"].items():
-            if not live:
-                reasons.append(f"bootstrap lease not live: {instance_id}")
+        checks["bootstrap_lease_note"] = "seeded bootstrap instances are diagnostic only; finite wave dispatch owns operative supervisor/PM leases"
         checks["live_ready"] = (
             checks["authority_mode"] != "legacy"
             and not missing_profiles
             and all(checks["routes"].values())
-            and all(checks["seeded_instances_live"].values())
             and runtime_profiles.get(pm_runtime) == "present"
             and runtime_profiles.get(worker_profile) == "present"
             and spawnability_detail["status"] == "dry_run_ok"
         )
-        checks["bootstrap_command"] = "hermes control bootstrap-statutepm --live --seed-instances --pm-profile-id statutepm --worker-profile statute-worker"
     else:
         checks["live_ready"] = False
     checks["deterministic_operational_ready"] = bool(checks.get("implementation_ready") and checks.get("live_ready"))
@@ -925,6 +1066,15 @@ def register_subparser(subparsers) -> None:
     _add_target_flags(mlist)
     mlist.add_argument("--receiver", default=None)
     mlist.add_argument("--status", default=None)
+    for verb in ("ack", "resolve", "supersede", "cancel"):
+        mverb = msp.add_parser(verb)
+        _add_target_flags(mverb)
+        mverb.add_argument("message_id")
+        mverb.add_argument("--actor-instance-id", required=True)
+        mverb.add_argument("--actor-profile", default=None)
+        mverb.add_argument("--actor-type", choices=["receiver", "admin", "bootstrap"], default="receiver")
+        mverb.add_argument("--reason", default=None)
+        mverb.add_argument("--metadata-json", default=None)
 
     artifacts = sp.add_parser("artifacts")
     _add_target_flags(artifacts)
@@ -943,6 +1093,24 @@ def register_subparser(subparsers) -> None:
     wrun.add_argument("--instance-id", required=True)
     wrun.add_argument("--handler", default="deterministic", choices=["deterministic", "agent"])
     wrun.add_argument("--timeout-s", type=float, default=3600.0)
+
+    wave = sp.add_parser("wave", help="Create and optionally supervise finite wave lifecycles")
+    _add_target_flags(wave)
+    wavsp = wave.add_subparsers(dest="wave_command")
+    wdisp = wavsp.add_parser("dispatch-statutepm", help="Create and optionally supervise one statute PM wave dispatch")
+    _add_target_flags(wdisp)
+    wdisp.add_argument("--payload-json", required=True)
+    wdisp.add_argument("--idempotency-key", required=True)
+    wdisp.add_argument("--supervise", action="store_true")
+    wdisp.add_argument("--admin-profile", default="default")
+    wdisp.add_argument("--pm-profile-id", default="statutepm")
+    wdisp.add_argument("--pm-runtime-profile", default=None)
+    wdisp.add_argument("--worker-profile", default="statute-worker")
+    wdisp.add_argument("--supervisor-instance-id", default=None)
+    wdisp.add_argument("--pm-instance-id", default=None)
+    wdisp.add_argument("--supervisor-lease-ms", type=int, default=3_600_000)
+    wdisp.add_argument("--poll-interval-s", type=float, default=1.0)
+    wdisp.add_argument("--child-timeout-s", type=float, default=600.0)
 
     pm = sp.add_parser("pm", help="Run PM control-plane consumers")
     _add_target_flags(pm)

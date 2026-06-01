@@ -13,7 +13,9 @@ from .compiler import compile_ledger_seed, generate_worker_packet, load_contract
 from .ledger import (
     LedgerError,
     export_state,
+    import_worker_closeout,
     initialize_ledger,
+    ledger_check,
     ready_sprints,
     record_cleanup_entry,
     resolve_gate,
@@ -137,6 +139,19 @@ def build_parser() -> argparse.ArgumentParser:
     project.add_argument("--db", required=True)
     project.add_argument("--output-dir", required=True)
 
+    import_closeout = sub.add_parser("import-closeout", help="validate or apply a structured worker closeout envelope")
+    import_closeout.add_argument("--db", required=True)
+    import_closeout.add_argument("--sprint", required=True)
+    import_closeout.add_argument("--envelope", required=True)
+    import_closeout.add_argument("--actor", required=True)
+    import_closeout.add_argument("--apply", action="store_true")
+    import_closeout.add_argument("--artifact-path")
+    import_closeout.add_argument("--projection-dir")
+
+    check = sub.add_parser("ledger-check", help="check runtime ledger for structured-closeout and projection defects")
+    check.add_argument("--db", required=True)
+    check.add_argument("--strict", action="store_true")
+
     return parser
 
 
@@ -247,6 +262,24 @@ def main(argv: list[str] | None = None) -> int:
             for path in write_projection_files(args.db, args.output_dir):
                 print(path)
             return 0
+        if args.command == "import-closeout":
+            envelope = json.loads(Path(args.envelope).read_text(encoding="utf-8"))
+            report = import_worker_closeout(
+                args.db,
+                args.sprint,
+                envelope,
+                actor=args.actor,
+                apply=args.apply,
+                artifact_path=args.artifact_path,
+            )
+            if args.apply and args.projection_dir:
+                write_projection_files(args.db, args.projection_dir)
+            print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False))
+            return 0 if report.get("ok") else 2
+        if args.command == "ledger-check":
+            report = ledger_check(args.db, strict=args.strict)
+            print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False))
+            return 0 if report.get("ok") or not args.strict else 2
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

@@ -28,7 +28,8 @@ def _check_control_plane_mode() -> bool:
 
 def _connect(args: dict[str, Any]):
     root = args.get("root")
-    return cp.connect(root=root)
+    from pathlib import Path
+    return cp.connect(root=Path(root) if root else None)
 
 
 def _handle_control_plane_status(args: dict[str, Any], **_: Any) -> str:
@@ -79,6 +80,51 @@ def _handle_control_plane_blocker(args: dict[str, Any], **_: Any) -> str:
         return tool_error(str(exc), tool_name="control_plane_blocker")
 
 
+def _handle_control_plane_message(args: dict[str, Any], **_: Any) -> str:
+    try:
+        conn = _connect(args)
+        try:
+            action = args.get("action") or "list"
+            if action == "list":
+                clauses = []
+                params: list[Any] = []
+                if args.get("receiver"):
+                    clauses.append("receiver_profile=?")
+                    params.append(args["receiver"])
+                if args.get("status"):
+                    clauses.append("status=?")
+                    params.append(args["status"])
+                if args.get("kind"):
+                    clauses.append("kind=?")
+                    params.append(args["kind"])
+                where = "WHERE " + " AND ".join(clauses) if clauses else ""
+                limit = int(args.get("limit") or 50)
+                rows = conn.execute(f"SELECT * FROM cp_messages {where} ORDER BY created_at_ms DESC LIMIT ?", (*params, limit)).fetchall()
+                return json.dumps({"messages": [dict(r) for r in rows]})
+            status_map = {"ack": "acknowledged", "resolve": "resolved", "supersede": "superseded", "cancel": "cancelled"}
+            if action not in status_map:
+                raise ValueError(f"unknown message action: {action}")
+            if not args.get("actor_instance_id"):
+                raise PermissionError("message mutation requires actor_instance_id")
+            if not args.get("message_id"):
+                raise ValueError("message mutation requires message_id")
+            result = cp.transition_message_status(
+                conn,
+                args["message_id"],
+                status=status_map[action],
+                actor_instance_id=args.get("actor_instance_id"),
+                actor_profile=args.get("actor_profile"),
+                actor_type=args.get("actor_type") or "receiver",
+                reason=args.get("reason"),
+                metadata=args.get("metadata") or {},
+            )
+            return json.dumps(result)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return tool_error(str(exc), tool_name="control_plane_message")
+
+
 CONTROL_PLANE_STATUS_SCHEMA = {
     "name": "control_plane_status",
     "description": "Emit or list structured Hermes control-plane status events in the local DB.",
@@ -124,5 +170,29 @@ CONTROL_PLANE_BLOCKER_SCHEMA = {
     },
 }
 
+CONTROL_PLANE_MESSAGE_SCHEMA = {
+    "name": "control_plane_message",
+    "description": "List or terminally close Hermes control-plane messages with audited receiver/admin authorization.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "ack", "resolve", "supersede", "cancel"], "default": "list"},
+            "root": {"type": "string"},
+            "message_id": {"type": "string"},
+            "receiver": {"type": "string"},
+            "kind": {"type": "string"},
+            "status": {"type": "string"},
+            "actor_instance_id": {"type": "string"},
+            "actor_profile": {"type": "string"},
+            "actor_type": {"type": "string", "enum": ["receiver", "admin", "bootstrap"], "default": "receiver"},
+            "reason": {"type": "string"},
+            "metadata": {"type": "object"},
+            "limit": {"type": "integer", "default": 50},
+        },
+        "required": ["action"],
+    },
+}
+
 registry.register(name="control_plane_status", toolset="control_plane", schema=CONTROL_PLANE_STATUS_SCHEMA, handler=_handle_control_plane_status, check_fn=_check_control_plane_mode, emoji="🛂")
 registry.register(name="control_plane_blocker", toolset="control_plane", schema=CONTROL_PLANE_BLOCKER_SCHEMA, handler=_handle_control_plane_blocker, check_fn=_check_control_plane_mode, emoji="🚧")
+registry.register(name="control_plane_message", toolset="control_plane", schema=CONTROL_PLANE_MESSAGE_SCHEMA, handler=_handle_control_plane_message, check_fn=_check_control_plane_mode, emoji="✉️")

@@ -1310,6 +1310,98 @@ class TestSpawnWarningDedup:
 
 
 # ---------------------------------------------------------------------------
+# Private / mesh raw IP suppression
+# ---------------------------------------------------------------------------
+
+
+class TestPrivateRawIpSuppression:
+    """Internal raw IPs (Tailscale, Docker bridge, loopback, LAN) are not user prompts."""
+
+    @pytest.mark.parametrize("ip", [
+        "100.78.61.117",  # Tailscale CGNAT
+        "172.17.0.1",     # Docker bridge
+        "192.168.1.42",   # LAN
+        "10.0.0.5",       # RFC1918
+        "127.0.0.1",      # loopback
+        "fd7a:115c:a1e0::1",  # Tailscale IPv6/ULA-style internal
+    ])
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_internal_raw_ip_only_block_downgraded_to_allow(self, mock_cfg, mock_run, ip):
+        mock_cfg.return_value = _CFG
+        findings = [{
+            "rule_id": "raw_ip_url",
+            "severity": "MEDIUM",
+            "title": "URL uses raw IP address",
+            "description": f"URL points to IP address {ip} instead of a domain name",
+            "evidence": [{"type": "url", "raw": ip}],
+        }]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "raw IP"))
+        result = check_command_security(f"ssh korky@{ip} 'echo ok'")
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_public_raw_ip_still_blocks(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        findings = [{
+            "rule_id": "raw_ip_url",
+            "severity": "MEDIUM",
+            "title": "URL uses raw IP address",
+            "description": "URL points to IP address 45.94.209.153 instead of a domain name",
+            "evidence": [{"type": "url", "raw": "45.94.209.153"}],
+        }]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "raw IP"))
+        result = check_command_security("ssh achauvin@45.94.209.153 'echo ok'")
+        assert result["action"] == "block"
+        assert len(result["findings"]) == 1
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_internal_raw_ip_and_plain_http_all_downgraded_to_allow(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        findings = [
+            {
+                "rule_id": "raw_ip_url",
+                "description": "URL points to IP address 100.78.61.117 instead of a domain name",
+                "evidence": [{"type": "url", "raw": "100.78.61.117"}],
+            },
+            {
+                "rule_id": "plain_http_to_sink",
+                "severity": "HIGH",
+                "description": "URL 'http://100.78.61.117:9222/json/version' uses unencrypted HTTP",
+                "evidence": [{"type": "url", "raw": "http://100.78.61.117:9222/json/version"}],
+            },
+        ]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "raw IP + http"))
+        result = check_command_security("curl http://100.78.61.117:9222/json/version")
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_public_raw_ip_plain_http_still_blocks(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        findings = [
+            {
+                "rule_id": "raw_ip_url",
+                "description": "URL points to IP address 45.94.209.153 instead of a domain name",
+                "evidence": [{"type": "url", "raw": "45.94.209.153"}],
+            },
+            {
+                "rule_id": "plain_http_to_sink",
+                "description": "URL 'http://45.94.209.153/' uses unencrypted HTTP",
+                "evidence": [{"type": "url", "raw": "http://45.94.209.153/"}],
+            },
+        ]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "raw IP + http"))
+        result = check_command_security("curl http://45.94.209.153/")
+        assert result["action"] == "block"
+        assert [f["rule_id"] for f in result["findings"]] == ["raw_ip_url", "plain_http_to_sink"]
+
+
+# ---------------------------------------------------------------------------
 # .app TLD suppression (issue #24461)
 # ---------------------------------------------------------------------------
 

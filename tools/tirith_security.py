@@ -21,10 +21,12 @@ never blocks.
 """
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -32,6 +34,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 from hermes_constants import get_hermes_home
@@ -791,16 +794,141 @@ def check_command_security(command: str) -> dict:
     # Suppress warn verdicts that consist solely of a lookalike_tld finding for
     # the .app TLD.  .app is a legitimate gTLD used by many production services
     # and the "can be confused with file extensions" heuristic generates false
-    # positives for normal API calls.  Any other finding (including other
-    # lookalike_tld entries for non-.app TLDs) preserves the warn action.
+    # positives for normal API calls.  Any mixed finding preserves the full
+    # warning context, matching Tirith's original output.
     if action == "warn" and findings:
-        non_suppressible = [f for f in findings if not _is_app_tld_finding(f)]
-        if not non_suppressible:
+        non_app_findings = [f for f in findings if not _is_app_tld_finding(f)]
+        if not non_app_findings:
             action = "allow"
             findings = []
             summary = ""
 
+    # Suppress raw private/mesh IP URL findings and their paired HTTP warning
+    # when the HTTP URL also targets loopback, Docker bridge, LAN, or
+    # Tailscale/CGNAT hosts. Tirith is right to flag public raw IPs/plain HTTP,
+    # but internal mesh URLs are a normal Hermes control-plane path.
+    if findings:
+        non_suppressible = [
+            f for f in findings
+            if not (_is_private_raw_ip_finding(f) or _is_internal_plain_http_finding(f))
+        ]
+        if not non_suppressible:
+            action = "allow"
+            findings = []
+            summary = ""
+        elif len(non_suppressible) != len(findings):
+            findings = non_suppressible
+            summary = _summary_without_suppressed_noise(summary)
+
     return {"action": action, "findings": findings, "summary": summary}
+
+
+def _summary_without_suppressed_noise(summary: str) -> str:
+    """Clear summary if it only describes findings we filtered out.
+
+    Tirith summaries are free-form; preserving a stale "raw IP" summary after
+    filtering the raw_ip_url finding would confuse approval prompts.  Mixed
+    findings still carry their per-finding descriptions, which are authoritative.
+    """
+    if not summary:
+        return ""
+    lowered = summary.lower()
+    noisy_bits = ("raw ip", "ip address", ".app", "lookalike_tld")
+    if any(bit in lowered for bit in noisy_bits):
+        return ""
+    return summary
+
+
+def _is_private_raw_ip_finding(finding: dict) -> bool:
+    """Suppress raw_ip_url findings for non-public infrastructure addresses.
+
+    Includes RFC1918/loopback/link-local/unique-local ranges plus Tailscale's
+    CGNAT allocation (100.64.0.0/10).  Public raw IPs remain visible.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("rule_id") != "raw_ip_url":
+        return False
+
+    ips = _extract_ip_addresses_from_finding(finding)
+    return bool(ips) and all(_is_allowed_internal_ip(ip) for ip in ips)
+
+
+def _is_internal_plain_http_finding(finding: dict) -> bool:
+    """Suppress plain_http_to_sink only for internal IP URL targets.
+
+    Tailscale already encrypts transport between peers, and local/Docker/LAN
+    service control endpoints often only speak HTTP. Public HTTP stays flagged.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("rule_id") != "plain_http_to_sink":
+        return False
+
+    ips = _extract_ip_addresses_from_finding(finding)
+    return bool(ips) and all(_is_allowed_internal_ip(ip) for ip in ips)
+
+
+def _extract_ip_addresses_from_finding(finding: dict) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    candidates: list[str] = []
+
+    evidence = finding.get("evidence") or []
+    if isinstance(evidence, list):
+        for item in evidence:
+            if isinstance(item, dict):
+                raw = item.get("raw") or item.get("value") or item.get("url")
+                if raw:
+                    candidates.append(str(raw))
+            elif item is not None:
+                candidates.append(str(item))
+
+    for field in ("value", "url", "raw", "description", "message", "detail"):
+        val = finding.get(field)
+        if val is not None:
+            candidates.append(str(val))
+
+    ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        for token in _ip_tokens_from_text(candidate):
+            try:
+                ip = ipaddress.ip_address(token)
+            except ValueError:
+                continue
+            key = str(ip)
+            if key not in seen:
+                seen.add(key)
+                ips.append(ip)
+    return ips
+
+
+def _ip_tokens_from_text(text: str) -> list[str]:
+    tokens: list[str] = []
+
+    parsed = urllib.parse.urlparse(text if "://" in text else f"//{text}")
+    if parsed.hostname:
+        tokens.append(parsed.hostname.strip("[]"))
+
+    tokens.extend(re.findall(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])", text))
+    tokens.extend(
+        part.strip("[](){}<>,;'")
+        for part in re.findall(r"\[[0-9a-fA-F:.]+\]|\b[0-9a-fA-F:]{2,}\b", text)
+        if ":" in part
+    )
+    return tokens
+
+
+def _is_allowed_internal_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    tailscale_cgnat = ipaddress.ip_network("100.64.0.0/10")
+    unique_local_v6 = ipaddress.ip_network("fc00::/7")
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip in tailscale_cgnat
+        or ip in unique_local_v6
+    )
 
 
 def _is_app_tld_finding(finding: dict) -> bool:

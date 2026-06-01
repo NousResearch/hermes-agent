@@ -118,6 +118,37 @@ def resolve_vertex_auth_source() -> Optional[str]:
 # Token management (lazy google-auth import)
 # ---------------------------------------------------------------------------
 
+# Module-level cache for google-auth once imported — allows tests to mock
+# via agent.vertex_adapter._ga_service_account, etc.
+_ga_auth = None
+_ga_transport = None
+_ga_service_account = None
+
+
+def _import_google_auth() -> bool:
+    """Import google-auth modules once. Returns True on success.
+
+    Stores references at module scope so tests can mock them via
+    ``agent.vertex_adapter._ga_service_account`` etc.
+    """
+    global _ga_auth, _ga_transport, _ga_service_account
+    if _ga_auth is not None:
+        return True
+    try:
+        import google.auth as _a
+        import google.auth.transport.requests as _t
+        from google.oauth2 import service_account as _sa
+
+        _ga_auth = _a
+        _ga_transport = _t
+        _ga_service_account = _sa
+        return True
+    except ImportError:
+        logger.warning(
+            "google-auth not installed. Install with: pip install google-auth"
+        )
+        return False
+
 
 def _resolve_vertex_token() -> Optional[str]:
     """Return a valid OAuth2 access token for Vertex AI.
@@ -129,30 +160,23 @@ def _resolve_vertex_token() -> Optional[str]:
     if _token_cache and _token_cache.get("expires_at", 0) - now > 60:
         return _token_cache["token"]
 
-    try:
-        import google.auth
-        import google.auth.transport.requests
-        from google.oauth2 import service_account
-    except ImportError:
-        logger.warning(
-            "google-auth not installed. Install with: pip install google-auth"
-        )
+    if not _import_google_auth():
         return None
 
     credentials_path = _resolve_credentials_path()
 
     try:
         if credentials_path:
-            creds = service_account.Credentials.from_service_account_file(
+            creds = _ga_service_account.Credentials.from_service_account_file(
                 credentials_path,
                 scopes=["https://www.googleapis.com/auth/cloud-platform"],
             )
         else:
-            creds, _ = google.auth.default(
+            creds, _ = _ga_auth.default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
 
-        auth_req = google.auth.transport.requests.Request()
+        auth_req = _ga_transport.Request()
         creds.refresh(auth_req)
 
         _token_cache["token"] = creds.token

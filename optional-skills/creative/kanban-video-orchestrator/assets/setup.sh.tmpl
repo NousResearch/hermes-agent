@@ -10,9 +10,9 @@
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-PROJECT_SLUG="{{SLUG}}"
+PROJECT_SLUG={{SLUG_SH}}
 WORKSPACE="$HOME/projects/video-pipeline/${PROJECT_SLUG}"
-TENANT="{{TENANT}}"
+TENANT={{TENANT_SH}}
 
 # ─────────────────────────────────────────────────────────────────────
 # 1. Verify required API keys
@@ -136,13 +136,9 @@ echo "═══ Writing profile personalities ═══"
 # ─────────────────────────────────────────────────────────────────────
 echo "═══ Writing brief + taste ═══"
 
-cat > "$WORKSPACE/brief.md" <<'BRIEF_EOF'
-{{BRIEF_CONTENTS}}
-BRIEF_EOF
+{{BRIEF_WRITE}}
 
-cat > "$WORKSPACE/TEAM.md" <<'TEAM_EOF'
-{{TEAM_CONTENTS}}
-TEAM_EOF
+{{TEAM_WRITE}}
 
 {{TASTE_WRITES}}
 
@@ -153,7 +149,7 @@ TEAM_EOF
 # ─────────────────────────────────────────────────────────────────────
 echo "═══ Firing initial kanban task ═══"
 
-hermes kanban create "Direct production of {{TITLE}}" \
+hermes kanban create {{TITLE_ARG}} \
     --assignee director \
     --workspace dir:"$WORKSPACE" \
     --tenant "$TENANT" \

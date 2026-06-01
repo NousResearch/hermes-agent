@@ -33,7 +33,6 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
-from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -389,9 +388,8 @@ CURATOR_REVIEW_PROMPT = (
     "copied and modified\n"
     "      • `scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification scripts, fixture generators, probes)\n"
-    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
-    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
-    "references/<topic>.md` (or templates/ / scripts/).\n"
+    "      Then archive the old sibling with `skill_manage action=delete` "
+    "after preserving any needed content with `skill_manage action=write_file`.\n"
     "4. Also flag skills whose NAME is too narrow (contains a PR number, "
     "a feature codename, a specific error string, an 'audit' / "
     "'diagnosis' / 'salvage' session artifact). These almost always "
@@ -411,8 +409,9 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
+    "Do not use terminal, file, network, browser, messaging, delegation, "
+    "or cron tools; the curator review is intentionally restricted to "
+    "the skills toolset.\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -466,51 +465,11 @@ def _reports_root() -> Path:
     """
     root = get_hermes_home() / "logs" / "curator"
     try:
-        _secure_report_dir(root)
+        root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         logger.debug("Curator reports dir create failed: %s", e)
     return root
 
-
-
-def _secure_report_dir(path: Path, *, exist_ok: bool = True) -> None:
-    """Create a curator report directory with owner-only permissions."""
-    path.mkdir(parents=True, mode=0o700, exist_ok=exist_ok)
-    try:
-        path.chmod(0o700)
-    except OSError as e:
-        logger.debug("Curator report chmod failed for %s: %s", path, e)
-
-
-def _redact_report_value(value: Any) -> Any:
-    """Redact secret-looking strings before persisting curator telemetry."""
-    if isinstance(value, str):
-        return redact_sensitive_text(value, force=True)
-    if isinstance(value, list):
-        return [_redact_report_value(v) for v in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_report_value(v) for v in value)
-    if isinstance(value, dict):
-        return {k: _redact_report_value(v) for k, v in value.items()}
-    return value
-
-
-def _write_private_text(path: Path, text: str) -> None:
-    """Write text with 0600 permissions, independent of process umask.
-
-    Uses a sibling temp file + ``os.replace`` so concurrent readers never
-    observe a partially-written file.
-    """
-    tmp_path = path.parent / (path.name + ".tmp")
-    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            fd = -1
-            f.write(text)
-    finally:
-        if fd != -1:
-            os.close(fd)
-    os.replace(str(tmp_path), str(path))
 
 def _needle_in_path_component(needle: str, path: str) -> bool:
     """Check if *needle* is a complete filename stem or directory name in *path*.
@@ -1026,7 +985,7 @@ def _write_run_report(
     """
     root = _reports_root()
     try:
-        _secure_report_dir(root)
+        root.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         logger.debug("Curator report dir create failed: %s", e)
         return None
@@ -1039,7 +998,7 @@ def _write_run_report(
         suffix += 1
         run_dir = root / f"{stamp}-{suffix}"
     try:
-        _secure_report_dir(run_dir, exist_ok=False)
+        run_dir.mkdir(parents=True, exist_ok=False)
     except Exception as e:
         logger.debug("Curator run dir create failed: %s", e)
         return None
@@ -1138,7 +1097,7 @@ def _write_run_report(
             "error": str(e),
         }
 
-    payload = _redact_report_value({
+    payload = {
         "started_at": started_at.isoformat(),
         "duration_seconds": round(elapsed_seconds, 2),
         "model": llm_meta.get("model", ""),
@@ -1168,13 +1127,13 @@ def _write_run_report(
         "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"),
         "tool_calls": llm_meta.get("tool_calls", []),
-    })
+    }
 
     # run.json — machine-readable, full fidelity
     try:
-        _write_private_text(
-            run_dir / "run.json",
+        (run_dir / "run.json").write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
     except Exception as e:
         logger.debug("Curator run.json write failed: %s", e)
@@ -1182,7 +1141,7 @@ def _write_run_report(
     # REPORT.md — human-readable
     try:
         md = _render_report_markdown(payload)
-        _write_private_text(run_dir / "REPORT.md", md)
+        (run_dir / "REPORT.md").write_text(md, encoding="utf-8")
     except Exception as e:
         logger.debug("Curator REPORT.md write failed: %s", e)
 
@@ -1190,12 +1149,9 @@ def _write_run_report(
     # keep run dirs uncluttered for the common no-op case.
     try:
         if int(cron_rewrites.get("jobs_updated", 0)) > 0:
-            _write_private_text(
-                run_dir / "cron_rewrites.json",
-                (
-                    json.dumps(_redact_report_value(cron_rewrites), indent=2, ensure_ascii=False)
-                    + "\n"
-                ),
+            (run_dir / "cron_rewrites.json").write_text(
+                json.dumps(cron_rewrites, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
             )
     except Exception as e:
         logger.debug("Curator cron_rewrites.json write failed: %s", e)
@@ -1732,6 +1688,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
+        dry_run = prompt.startswith(CURATOR_DRY_RUN_BANNER)
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
@@ -1744,6 +1701,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             # single-session review path caps itself at a much smaller
             # number because it's not doing a curation sweep.
             max_iterations=9999,
+            enabled_toolsets=["curator_readonly" if dry_run else "curator"],
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

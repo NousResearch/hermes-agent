@@ -173,6 +173,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
+    "HERMES_CRON_SESSION",
     "HERMES_GATEWAY_SESSION",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
@@ -419,7 +420,7 @@ def _reset_module_state():
     except Exception:
         pass
 
-    # --- gateway.session_context — 9 ContextVars that represent
+    # --- gateway.session_context — ContextVars that represent
     #     the active gateway session. If set in one test and not reset,
     #     the next test's get_session_env() reads stale values.
     try:
@@ -432,9 +433,11 @@ def _reset_module_state():
             _sc_mod._SESSION_USER_ID,
             _sc_mod._SESSION_USER_NAME,
             _sc_mod._SESSION_KEY,
+            _sc_mod._CRON_SESSION,
             _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
             _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
             _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,
+            _sc_mod._TERMINAL_CWD,
         ):
             _cv.set(_sc_mod._UNSET)
     except Exception:
@@ -525,7 +528,7 @@ def mock_config():
     }
 
 
-# ── Global test timeout ─────────────────────────────────────────────────────
+# ── Global test timeout ───────────────────────────────────────────────────
 # Kill any individual test that takes longer than 30 seconds.
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
 # entire test suite.

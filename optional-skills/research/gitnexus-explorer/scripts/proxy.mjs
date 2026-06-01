@@ -8,14 +8,17 @@
  *
  * Environment:
  *   API_PORT: GitNexus serve backend port (default: 4747)
+ *   HOST: listen host (default: 127.0.0.1; use 0.0.0.0 only for trusted networks)
  */
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 
 const API_PORT = parseInt(process.env.API_PORT || '4747');
-const DIST_DIR = process.argv[2] || './dist';
+const DIST_DIR = path.resolve(process.argv[2] || './dist');
 const PORT = parseInt(process.argv[3] || '8888');
+const HOST = process.env.HOST || '127.0.0.1';
+const DIST_PREFIX = DIST_DIR.endsWith(path.sep) ? DIST_DIR : `${DIST_DIR}${path.sep}`;
 
 const MIME = {
   '.html': 'text/html',
@@ -51,9 +54,36 @@ function proxyToApi(req, res) {
   req.pipe(proxy, { end: true });
 }
 
+function resolveStaticPath(req) {
+  const rawPath = req.url.split('?')[0].split('#')[0];
+  let urlPath;
+
+  try {
+    urlPath = decodeURIComponent(rawPath);
+  } catch {
+    return { error: 400, message: 'Bad request' };
+  }
+
+  const relativePath = urlPath === '/' ? 'index.html' : urlPath.replace(/^[/\\]+/, '');
+  const filePath = path.resolve(DIST_DIR, relativePath);
+
+  if (filePath !== DIST_DIR && !filePath.startsWith(DIST_PREFIX)) {
+    return { error: 403, message: 'Forbidden' };
+  }
+
+  return { filePath };
+}
+
 function serveStatic(req, res) {
-  const urlPath = req.url.split('?')[0];
-  let filePath = path.join(DIST_DIR, urlPath === '/' ? 'index.html' : urlPath);
+  const resolved = resolveStaticPath(req);
+
+  if (resolved.error) {
+    res.writeHead(resolved.error, { 'Content-Type': 'text/plain' });
+    res.end(resolved.message);
+    return;
+  }
+
+  let { filePath } = resolved;
 
   // SPA fallback: if file doesn't exist and isn't a static asset, serve index.html
   if (!fs.existsSync(filePath) && !path.extname(filePath)) {
@@ -84,9 +114,9 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`GitNexus proxy listening on http://localhost:${PORT}`);
-  console.log(`  Web UI: http://localhost:${PORT}/`);
-  console.log(`  API:    http://localhost:${PORT}/api/repos`);
+server.listen(PORT, HOST, () => {
+  console.log(`GitNexus proxy listening on http://${HOST}:${PORT}`);
+  console.log(`  Web UI: http://${HOST}:${PORT}/`);
+  console.log(`  API:    http://${HOST}:${PORT}/api/repos`);
   console.log(`  Backend: http://127.0.0.1:${API_PORT}`);
 });

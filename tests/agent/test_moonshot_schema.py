@@ -183,6 +183,19 @@ class TestAnyOfParentType:
 class TestTopLevelGuarantees:
     """The returned top-level schema is always a well-formed object."""
 
+
+
+    def test_union_type_array_does_not_crash(self):
+        """Valid JSON Schema union type arrays should be preserved."""
+        params = {
+            "type": "object",
+            "properties": {
+                "x": {"type": ["string", "null"]},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["x"]["type"] == ["string", "null"]
+
     def test_non_dict_input_returns_empty_object(self):
         assert sanitize_moonshot_tool_parameters(None) == {"type": "object", "properties": {}}
         assert sanitize_moonshot_tool_parameters("garbage") == {"type": "object", "properties": {}}

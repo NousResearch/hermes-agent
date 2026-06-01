@@ -15,7 +15,7 @@ metadata:
 
 This skill assumes **headless openpyxl** — you are producing an .xlsx file on disk.
 Follow the `excel-author` skill's conventions for cell coloring, formulas, named ranges, and sensitivity tables.
-Recalculate before delivery: first resolve the installed `excel-author` skill directory with `skill_view`; then run `python <excel_author_skill_dir>/scripts/recalc.py ./out/model.xlsx`. Never run a bare `recalc.py` from the current working directory.
+Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./out/model.xlsx`.
 
 # DCF Model Builder
 
@@ -68,8 +68,7 @@ These constraints apply throughout all DCF model building. Review before startin
 - Test formulas immediately after creation
 
 **Formula Recalculation:**
-- Resolve the installed `excel-author` skill directory with `skill_view`, then run `python <excel_author_skill_dir>/scripts/recalc.py model.xlsx 30` before delivery
-- Never run a bare `recalc.py` script name from the current working directory
+- Run `python recalc.py model.xlsx 30` before delivery
 - Fix ALL errors until status is "success"
 - Zero formula errors required (#REF!, #DIV/0!, #VALUE!, etc.)
 
@@ -790,15 +789,15 @@ Create **two sheets**:
 
 ### Formula Recalculation (MANDATORY)
 
-After creating or modifying the Excel model, **recalculate all formulas** using the installed `excel-author` skill's bundled script. First call `skill_view` for `excel-author` and use the returned `skill_dir` to build the script path. Never run a bare `recalc.py` from the current working directory.
+After creating or modifying the Excel model, **recalculate all formulas** using the `recalc.py` script from the `excel-author` skill:
 
 ```bash
-python <excel_author_skill_dir>/scripts/recalc.py [path_to_excel_file] [timeout_seconds]
+python recalc.py [path_to_excel_file] [timeout_seconds]
 ```
 
 Example:
 ```bash
-python <excel_author_skill_dir>/scripts/recalc.py AAPL_DCF_Model_2025-10-12.xlsx 30
+python recalc.py AAPL_DCF_Model_2025-10-12.xlsx 30
 ```
 
 The script will:
@@ -831,7 +830,7 @@ The script will:
 }
 ```
 
-**Fix all errors** and re-run the resolved `<excel_author_skill_dir>/scripts/recalc.py` helper until status is "success" before delivering the model.
+**Fix all errors** and re-run recalc.py until status is "success" before delivering the model.
 
 ### Formatting Standards
 
@@ -1213,13 +1212,13 @@ This approach centralizes scenario logic, making the model easier to audit and m
    - Cell comments on ALL hardcoded inputs
    - Professional borders around major sections
 
-2. **Recalculate formulas**: Resolve `excel-author` with `skill_view`, then run `python <excel_author_skill_dir>/scripts/recalc.py model.xlsx 30`
+2. **Recalculate formulas**: Run `python recalc.py model.xlsx 30`
 
 3. **Check output**:
    - If `status` is `"success"` → Continue to step 4
    - If `status` is `"errors_found"` → Check `error_summary` and read [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) for debugging guidance
 
-4. **Fix errors and re-run the resolved `<excel_author_skill_dir>/scripts/recalc.py` helper** until status is "success"
+4. **Fix errors and re-run recalc.py** until status is "success"
 
 5. **Spot-check formulas**:
    - Test one FCF formula - does it reference the correct assumption rows?
@@ -1240,7 +1239,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
 Before delivering DCF model:
 
 **Required:**
-- Resolve `excel-author` with `skill_view`, then run `python <excel_author_skill_dir>/scripts/recalc.py model.xlsx 30` until status is "success" (zero formula errors)
+- Run `python recalc.py model.xlsx 30` until status is "success" (zero formula errors)
 - Two sheets: DCF (with sensitivity at bottom), WACC
 - Font colors: Blue=inputs, Black=formulas, Green=sheet links
 - Cell comments on ALL hardcoded inputs

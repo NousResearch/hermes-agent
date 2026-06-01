@@ -556,6 +556,53 @@ class TestSwitchModelDirectAliasOverride:
         assert result.api_key == "no-key-required"
         assert result.base_url == "http://localhost:11434/v1"
 
+    def test_switch_model_alias_base_url_change_drops_env_key(self, monkeypatch):
+        """Direct alias endpoint changes should not inherit custom env credentials."""
+        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.model_switch as ms
+
+        test_aliases = {
+            "local": DirectAlias("local-model", "custom", "http://localhost:11434/v1"),
+        }
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(
+            ms,
+            "resolve_alias",
+            lambda raw, prov: ("custom", "local-model", "local"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: {
+                "api_key": "env-provider-secret",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "openai_compat",
+                "provider": "custom",
+            },
+        )
+
+        captured = {}
+
+        def mock_validate(*args, **kwargs):
+            captured.update(kwargs)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+
+        monkeypatch.setattr("hermes_cli.models.validate_requested_model", mock_validate)
+        monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
+            lambda *a, **kw: "openai_compat")
+
+        result = ms.switch_model("local", "custom", "old-model")
+
+        assert result.success
+        assert result.api_key == "no-key-required"
+        assert result.base_url == "http://localhost:11434/v1"
+        assert captured["api_key"] == "no-key-required"
+        assert captured["base_url"] == "http://localhost:11434/v1"
+
 
 # ---------------------------------------------------------------------------
 # CLI state update: requested_provider persistence

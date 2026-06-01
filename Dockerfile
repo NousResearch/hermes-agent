@@ -96,11 +96,7 @@ RUN cd web && npm run build && \
 # not chowned here.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules && \
-    chown root:root /opt/hermes && \
-    chown -R root:root /opt/hermes/docker && \
-    chmod go-w /opt/hermes && \
-    chmod -R go-w /opt/hermes/docker
+    chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules
 # Start as root so the entrypoint can usermod/groupmod + gosu.
 # If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
 

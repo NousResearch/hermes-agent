@@ -654,6 +654,7 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         else:
             _popen_kwargs["start_new_session"] = True
         subprocess.Popen(cmd, env=os.environ.copy(), **_popen_kwargs)
+        subprocess.Popen(cmd, **_popen_kwargs)
         """
     ).strip()
 

@@ -523,6 +523,41 @@ class TestWeixinOutboundMedia:
         assert media["aes_key"] == expected_aes_key
 
 
+
+class _FakeGetResponse:
+    def __init__(self, url, *, status=200, headers=None, body=b"ok"):
+        self.url = url
+        self.status = status
+        self.headers = headers or {}
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise RuntimeError(f"HTTP {self.status}")
+
+    async def read(self):
+        return self._body
+
+
+class _RedirectingGetSession:
+    def __init__(self, redirect_to):
+        self.redirect_to = redirect_to
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        assert kwargs.get("allow_redirects") is False
+        self.calls.append(url)
+        if len(self.calls) == 1:
+            return _FakeGetResponse(url, status=302, headers={"Location": self.redirect_to}, body=b"")
+        return _FakeGetResponse(url, body=b"downloaded")
+
+
 class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()
@@ -534,6 +569,34 @@ class TestWeixinRemoteMediaSafety:
                 assert "Blocked unsafe URL" in str(exc)
             else:
                 raise AssertionError("expected ValueError for unsafe URL")
+
+    def test_download_remote_media_blocks_unsafe_redirects(self):
+        adapter = _make_adapter()
+        session = _RedirectingGetSession("http://127.0.0.1/private.png")
+        adapter._send_session = session
+
+        with patch("tools.url_safety.is_safe_url", side_effect=lambda url: "127.0.0.1" not in url):
+            with pytest.raises(ValueError, match="Blocked unsafe URL"):
+                asyncio.run(adapter._download_remote_media("https://example.com/public.png"))
+
+        assert session.calls == ["https://example.com/public.png"]
+
+    def test_inbound_media_download_blocks_redirects_outside_weixin_cdn(self):
+        session = _RedirectingGetSession("http://127.0.0.1/private.jpg")
+
+        with pytest.raises(ValueError, match="not in the WeChat CDN allowlist"):
+            asyncio.run(
+                weixin._download_and_decrypt_media(
+                    session,
+                    cdn_base_url=weixin.WEIXIN_CDN_BASE_URL,
+                    encrypted_query_param=None,
+                    aes_key_b64=None,
+                    full_url="https://novac2c.cdn.weixin.qq.com/c2c/photo.jpg",
+                    timeout_seconds=1,
+                )
+            )
+
+        assert session.calls == ["https://novac2c.cdn.weixin.qq.com/c2c/photo.jpg"]
 
 
 class TestWeixinMarkdownLinks:

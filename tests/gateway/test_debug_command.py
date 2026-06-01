@@ -21,6 +21,7 @@ def _make_event(text="/debug", platform=Platform.TELEGRAM,
 
 
 def _make_runner():
+    from unittest.mock import AsyncMock, MagicMock
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)

@@ -1044,13 +1044,7 @@ def _save_session_history(key: str, messages: List[Dict[str, Any]]) -> None:
         logger.info("[Feishu-Comment] Session saved: %s (%d messages)", key, len(cleaned))
 
 
-def _run_comment_agent(
-    prompt: str,
-    client: Any,
-    session_key: str = "",
-    file_type: str = "",
-    file_token: str = "",
-) -> str:
+def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     """Create an AIAgent with feishu tools and run the prompt.
 
     If *session_key* is provided, loads/saves conversation history for
@@ -1063,8 +1057,8 @@ def _run_comment_agent(
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
     from tools.feishu_doc_tool import set_client as set_doc_client
     from tools.feishu_drive_tool import set_client as set_drive_client
-    set_doc_client(client, allowed_file_type=file_type, allowed_file_token=file_token)
-    set_drive_client(client, allowed_file_type=file_type, allowed_file_token=file_token)
+    set_doc_client(client)
+    set_drive_client(client)
 
     try:
         model, runtime_kwargs = _resolve_model_and_runtime()
@@ -1357,7 +1351,7 @@ async def handle_drive_comment_event(
     sess_key = _session_key(file_type, file_token)
     loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(
-        None, _run_comment_agent, prompt, client, sess_key, file_type, file_token,
+        None, _run_comment_agent, prompt, client, sess_key,
     )
 
     if not response or _NO_REPLY_SENTINEL in response:

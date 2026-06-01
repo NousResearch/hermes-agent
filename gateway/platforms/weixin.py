@@ -28,8 +28,8 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote, urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    safe_url_for_log,
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -568,18 +569,49 @@ async def _upload_ciphertext(
     return await asyncio.wait_for(_do_upload(), timeout=120)
 
 
+_MEDIA_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_MEDIA_REDIRECTS = 10
+
+
+def _validate_public_media_url(url: str) -> None:
+    from tools.url_safety import is_safe_url
+
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
+
+
+def _run_url_validator(url: str, validator: Callable[[str], object]) -> None:
+    result = validator(url)
+    if result is False:
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
+
+
 async def _download_bytes(
     session: "aiohttp.ClientSession",
     *,
     url: str,
     timeout_seconds: float = 60.0,
+    url_validator: Callable[[str], object] = _validate_public_media_url,
 ) -> bytes:
     # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
     # "Timeout context manager should be used inside a task" errors.
     async def _do_download() -> bytes:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            return await response.read()
+        current_url = url
+        for _ in range(_MAX_MEDIA_REDIRECTS + 1):
+            _run_url_validator(current_url, url_validator)
+            async with session.get(current_url, allow_redirects=False) as response:
+                if response.status in _MEDIA_REDIRECT_STATUSES:
+                    location = response.headers.get("Location")
+                    if not location:
+                        response.raise_for_status()
+                    current_url = urljoin(str(response.url), location)
+                    _run_url_validator(current_url, url_validator)
+                    await response.read()
+                    continue
+                response.raise_for_status()
+                return await response.read()
+        raise ValueError("Too many redirects while downloading Weixin media")
+
     return await asyncio.wait_for(_do_download(), timeout=timeout_seconds)
 
 
@@ -634,10 +666,15 @@ async def _download_and_decrypt_media(
             session,
             url=_cdn_download_url(cdn_base_url, encrypted_query_param),
             timeout_seconds=timeout_seconds,
+            url_validator=_assert_weixin_cdn_url,
         )
     elif full_url:
-        _assert_weixin_cdn_url(full_url)
-        raw = await _download_bytes(session, url=full_url, timeout_seconds=timeout_seconds)
+        raw = await _download_bytes(
+            session,
+            url=full_url,
+            timeout_seconds=timeout_seconds,
+            url_validator=_assert_weixin_cdn_url,
+        )
     else:
         raise RuntimeError("media item had neither encrypt_query_param nor full_url")
     if aes_key_b64:
@@ -1873,19 +1910,14 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def _download_remote_media(self, url: str) -> str:
-        from tools.url_safety import is_safe_url
-
-        if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
-
+        _validate_public_media_url(url)
         assert self._send_session is not None
-        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
-        # "Timeout context manager should be used inside a task" errors.
-        async def _do_fetch():
-            async with self._send_session.get(url) as response:
-                response.raise_for_status()
-                return await response.read()
-        data = await asyncio.wait_for(_do_fetch(), timeout=30)
+        data = await _download_bytes(
+            self._send_session,
+            url=url,
+            timeout_seconds=30,
+            url_validator=_validate_public_media_url,
+        )
         suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
             handle.write(data)

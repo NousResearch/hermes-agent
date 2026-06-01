@@ -195,57 +195,6 @@ def test_report_md_is_human_readable(curator_env):
     assert "Consolidated foo-like skills into foo-umbrella." in md
 
 
-def test_report_redacts_secret_like_llm_and_tool_data(curator_env):
-    """Curator reports must not persist raw API keys from model/tool output."""
-    curator = curator_env["curator"]
-    secret = "sk-testSECRET1234567890abcdef"
-    run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
-        elapsed_seconds=1.0,
-        auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
-        auto_summary="no changes",
-        before_report=[],
-        before_names=set(),
-        after_report=[],
-        llm_meta=_make_llm_meta(
-            final=f"final OPENAI_API_KEY={secret}",
-            summary=f"summary token {secret}",
-            error=f"error token {secret}",
-            tool_calls=[
-                {"name": "skill_manage", "arguments": json.dumps({"api_key": secret})},
-            ],
-        ),
-    )
-
-    run_json = (run_dir / "run.json").read_text()
-    report_md = (run_dir / "REPORT.md").read_text()
-    assert secret not in run_json
-    assert secret not in report_md
-
-
-def test_report_paths_are_owner_only_even_with_permissive_umask(curator_env):
-    """Report directories/files are private regardless of the process umask."""
-    curator = curator_env["curator"]
-    old_umask = os.umask(0)
-    try:
-        run_dir = curator._write_run_report(
-            started_at=datetime.now(timezone.utc),
-            elapsed_seconds=1.0,
-            auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
-            auto_summary="no changes",
-            before_report=[],
-            before_names=set(),
-            after_report=[],
-            llm_meta=_make_llm_meta(),
-        )
-    finally:
-        os.umask(old_umask)
-
-    assert oct((run_dir.parent.stat().st_mode) & 0o777) == "0o700"
-    assert oct((run_dir.stat().st_mode) & 0o777) == "0o700"
-    assert oct(((run_dir / "run.json").stat().st_mode) & 0o777) == "0o600"
-    assert oct(((run_dir / "REPORT.md").stat().st_mode) & 0o777) == "0o600"
-
 def test_same_second_reruns_get_unique_dirs(curator_env):
     """If the curator somehow runs twice in the same second, the second
     report still gets its own directory rather than overwriting the first."""

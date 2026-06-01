@@ -1,8 +1,9 @@
 """Kanban tools — structured tool-call surface for worker + orchestrator agents.
 
-These tools are only registered into the model's schema when the agent is
-running under the dispatcher (env var ``HERMES_KANBAN_TASK`` set). A
-normal ``hermes chat`` session sees **zero** kanban tools in its schema.
+These tools are registered into the model's schema when the agent is either
+running under the dispatcher (env var ``HERMES_KANBAN_TASK`` set) or using a
+profile that explicitly enables the ``kanban`` toolset. A normal
+``hermes chat`` session sees **zero** kanban tools in its schema.
 
 Why tools instead of just shelling out to ``hermes kanban``?
 
@@ -20,8 +21,8 @@ Why tools instead of just shelling out to ``hermes kanban``?
 
 Humans continue to use the CLI (``hermes kanban …``), the dashboard
 (``hermes dashboard``), and the slash command (``/kanban …``) — all
-three bypass the agent entirely. The tools are ONLY for the worker
-agent's handoff back to the kernel.
+three bypass the agent entirely. The tools are for worker agents' handoffs
+back to the kernel and for explicitly configured orchestrator profiles.
 """
 from __future__ import annotations
 
@@ -43,17 +44,79 @@ KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
 
+def _load_kanban_config() -> dict[str, Any]:
+    """Return the active config dict, or an empty dict on load failure."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
 def _profile_has_kanban_toolset() -> bool:
     # Uses load_config() which has mtime-based caching, so this adds
     # negligible overhead. The check_fn results are further TTL-cached
     # (~30s) by the tool registry.
+    toolsets = _load_kanban_config().get("toolsets", [])
+    return "kanban" in toolsets
+
+
+def _current_profile_name() -> str:
+    """Best-effort profile identity for non-worker authorization checks."""
+    env_profile = _normalize_profile(os.environ.get("HERMES_PROFILE"))
+    if env_profile:
+        return env_profile.lower()
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name()
     except Exception:
-        return False
+        return "default"
+
+
+def _configured_kanban_assignees(profile: str) -> set[str]:
+    """Configured cross-profile assignees this profile may spawn."""
+    kanban_cfg = _load_kanban_config().get("kanban", {})
+    if not isinstance(kanban_cfg, dict):
+        return set()
+    policy = kanban_cfg.get("allowed_assignees", {})
+    entries: Any
+    if isinstance(policy, dict):
+        policy_lower = {str(k).lower(): v for k, v in policy.items()}
+        entries = policy_lower.get(profile.lower(), [])
+    else:
+        # Accept a flat list for deployments that want one profile-local rule.
+        entries = policy
+    if isinstance(entries, str):
+        entries = [entries]
+    if not isinstance(entries, (list, tuple, set)):
+        return set()
+    allowed = {item.lower() for item in (_normalize_profile(i) for i in entries) if item}
+    return {item for item in allowed if item}
+
+
+def _kanban_create_assignee_error(assignee: str) -> Optional[str]:
+    """Reject unauthorized cross-profile dispatch.
+
+    The check applies to both profile-global orchestrators and dispatcher-
+    spawned workers. ``HERMES_KANBAN_TASK`` scopes a worker to one assigned
+    task, but it is not an authorization grant for arbitrary cross-profile
+    fan-out because task bodies are model-controlled prompt content.
+    """
+    caller = _current_profile_name()
+    assignee_key = assignee.lower()
+    if assignee_key == caller.lower():
+        return None
+    allowed = _configured_kanban_assignees(caller)
+    if "*" in allowed or assignee_key in allowed:
+        return None
+    return tool_error(
+        f"kanban_create: profile '{caller}' is not authorized to assign "
+        f"tasks to profile '{assignee}'. Add it under "
+        f"kanban.allowed_assignees.{caller} to permit cross-profile dispatch."
+    )
 
 
 def _check_kanban_mode() -> bool:
@@ -560,12 +623,15 @@ def _handle_create(args: dict, **kw) -> str:
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
-    assignee = args.get("assignee")
+    assignee = _normalize_profile(args.get("assignee"))
     if not assignee:
         return tool_error(
             "assignee is required — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
+    assignee_err = _kanban_create_assignee_error(assignee)
+    if assignee_err:
+        return assignee_err
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -598,7 +664,7 @@ def _handle_create(args: dict, **kw) -> str:
                 conn,
                 title=str(title).strip(),
                 body=body,
-                assignee=str(assignee),
+                assignee=assignee,
                 parents=tuple(parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,

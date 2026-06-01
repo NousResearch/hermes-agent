@@ -262,57 +262,17 @@ async def _summarize_session(
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations (Paperclip agents, etc.) tag their sessions with
 # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
-#
-# ACP sessions are also hidden by default, unless the caller source is ACP.
-_HIDDEN_SESSION_SOURCES = ("tool", "acp")
+_HIDDEN_SESSION_SOURCES = ("tool",)
 
 
-def _excluded_sources_for(current_source: str = None) -> List[str]:
-    """Return hidden sources, allowing a source to search its own sessions."""
-    if not current_source:
-        return list(_HIDDEN_SESSION_SOURCES)
-    return [source for source in _HIDDEN_SESSION_SOURCES if source != current_source]
-
-
-def _resolve_session_source(db, current_session_id: str = None) -> Optional[str]:
-    """Return the current session source when available."""
-    if not current_session_id:
-        return None
+def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+    """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        session = db.get_session(current_session_id)
-    except Exception:
-        logging.debug(
-            "Unable to resolve session_search source for %s",
-            current_session_id,
-            exc_info=True,
-        )
-        return None
-    if not isinstance(session, dict):
-        return None
-    source = session.get("source")
-    return source if isinstance(source, str) and source else None
-
-
-def _list_recent_sessions(
-    db,
-    limit: int,
-    current_session_id: str = None,
-    current_source: str = None,
-    session_source: str = None,
-) -> str:
-    """Return same-source recent session metadata without LLM calls."""
-    effective_source = current_source or session_source
-    if not effective_source:
-        effective_source = _resolve_session_source(db, current_session_id)
-    try:
-        list_kwargs = {
-            "limit": limit + 5,
-            "exclude_sources": _excluded_sources_for(effective_source),
-            "order_by_last_active": True,
-        }
-        if effective_source:
-            list_kwargs["source"] = effective_source
-        sessions = db.list_sessions_rich(**list_kwargs)  # fetch extra to skip current
+        sessions = db.list_sessions_rich(
+            limit=limit + 5,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            order_by_last_active=True,
+        )  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -368,8 +328,6 @@ def session_search(
     limit: int = 3,
     db=None,
     current_session_id: str = None,
-    current_source: str = None,
-    session_source: str = None,
 ) -> str:
     """
     Search past sessions and return focused summaries of matching conversations.
@@ -398,19 +356,10 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 5))  # Clamp to [1, 5]
 
-    effective_source = current_source or session_source
-    if not effective_source:
-        effective_source = _resolve_session_source(db, current_session_id)
-
     # Recent sessions mode: when query is empty, return metadata for recent sessions.
     # No LLM calls — just DB queries for titles, previews, timestamps.
     if not query or not query.strip():
-        return _list_recent_sessions(
-            db,
-            limit,
-            current_session_id,
-            current_source=effective_source,
-        )
+        return _list_recent_sessions(db, limit, current_session_id)
 
     query = query.strip()
 
@@ -421,17 +370,13 @@ def session_search(
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
         # FTS5 search -- get matches ranked by relevance
-        search_kwargs = {
-            "query": query,
-            "role_filter": role_list,
-            "exclude_sources": _excluded_sources_for(effective_source),
-            "limit": 50,  # Get more matches to find unique sessions
-            "offset": 0,
-        }
-        if effective_source:
-            search_kwargs["source_filter"] = [effective_source]
-
-        raw_results = db.search_messages(**search_kwargs)
+        raw_results = db.search_messages(
+            query=query,
+            role_filter=role_list,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            limit=50,  # Get more matches to find unique sessions
+            offset=0,
+        )
 
         if not raw_results:
             return json.dumps({
@@ -661,10 +606,7 @@ registry.register(
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
         db=kw.get("db"),
-        current_session_id=kw.get("current_session_id"),
-        current_source=kw.get("current_source"),
-        session_source=kw.get("session_source"),
-    ),
+        current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,
     emoji="🔍",
 )

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json as jsonlib
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -110,6 +111,67 @@ def test_specify_task_happy_path(kanban_home):
     assert task.status == "ready"
     assert task.title == "Refined rough"
     assert "**Goal**" in (task.body or "")
+
+
+def test_specify_task_explicit_board_ignores_active_board_env(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    with kb.connect(board="alpha") as conn:
+        alpha_id = kb.create_task(conn, title="alpha rough", triage=True)
+    with kb.connect(board="beta") as conn:
+        beta_id = kb.create_task(conn, title="beta rough", triage=True)
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+    content = jsonlib.dumps({"title": "alpha specified", "body": "alpha body"})
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(alpha_id, author="ace", board="alpha")
+
+    assert outcome.ok is True
+    assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+    with kb.connect(board="alpha") as conn:
+        alpha_task = kb.get_task(conn, alpha_id)
+    with kb.connect(board="beta") as conn:
+        beta_task = kb.get_task(conn, beta_id)
+    assert alpha_task.status == "ready"
+    assert alpha_task.title == "alpha specified"
+    assert beta_task.status == "triage"
+    assert beta_task.title == "beta rough"
+
+
+def test_specify_task_implicit_board_is_pinned_for_read_and_write(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    with kb.connect(board="alpha") as conn:
+        alpha_id = kb.create_task(conn, title="alpha rough", triage=True)
+    with kb.connect(board="beta") as conn:
+        beta_id = kb.create_task(conn, title="beta rough", triage=True)
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "alpha")
+    response = jsonlib.dumps({"title": "alpha specified", "body": "alpha body"})
+
+    def _create_and_flip_board(*args, **kwargs):
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+        return _fake_aux_response(response)
+
+    client = MagicMock()
+    client.chat.completions.create = MagicMock(side_effect=_create_and_flip_board)
+    with patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        return_value=(client, "test-model"),
+    ):
+        outcome = spec.specify_task(alpha_id, author="ace")
+
+    assert outcome.ok is True
+    assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+    with kb.connect(board="alpha") as conn:
+        alpha_task = kb.get_task(conn, alpha_id)
+    with kb.connect(board="beta") as conn:
+        beta_task = kb.get_task(conn, beta_id)
+    assert alpha_task.status == "ready"
+    assert alpha_task.title == "alpha specified"
+    assert beta_task.status == "triage"
+    assert beta_task.title == "beta rough"
 
 
 def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):

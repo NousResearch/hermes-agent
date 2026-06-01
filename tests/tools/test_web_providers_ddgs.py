@@ -257,6 +257,7 @@ class TestDDGSSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
         monkeypatch.setattr(web_tools, "_ddgs_package_available", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
         monkeypatch.setattr(
             "tools.interrupt.is_interrupted", lambda: False, raising=False
         )
@@ -279,6 +280,7 @@ class TestDDGSSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_ddgs_package_available", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
         monkeypatch.setattr(
             "tools.interrupt.is_interrupted", lambda: False, raising=False
         )

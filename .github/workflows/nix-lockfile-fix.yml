@@ -14,9 +14,11 @@ on:
         description: 'PR number to fix (leave empty to run on the selected branch)'
         required: false
         type: string
+  issue_comment:
+    types: [edited]
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 concurrency:
@@ -49,7 +51,7 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -119,9 +121,16 @@ jobs:
           echo "::error::Failed to push after 3 rebase attempts"
           exit 1
 
-  # ── PR fix (manual dispatch) ─────────────────────────────────────
+  # ── PR fix (manual / checkbox) ─────────────────────────────────────
+  # Existing behavior: run on manual dispatch OR when a task-list
+  # checkbox in the sticky lockfile-check comment flips from [ ] to [x].
   fix:
-    if: github.event_name == 'workflow_dispatch'
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment'
+       && github.event.issue.pull_request != null
+       && contains(github.event.comment.body, '[x] **Apply lockfile fix**')
+       && !contains(github.event.changes.body.from, '[x] **Apply lockfile fix**'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -146,7 +155,12 @@ jobs:
             }
 
             // 2. Resolve which ref to check out.
-            const prNumber = context.payload.inputs.pr_number || '';
+            let prNumber = '';
+            if (context.eventName === 'issue_comment') {
+              prNumber = String(context.payload.issue.number);
+            } else if (context.eventName === 'workflow_dispatch') {
+              prNumber = context.payload.inputs.pr_number || '';
+            }
 
             if (!prNumber) {
               core.setOutput('ref', context.ref.replace(/^refs\/heads\//, ''));
@@ -189,7 +203,8 @@ jobs:
 
       - uses: ./.github/actions/nix-setup
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: hermes-agent
+        continue-on-error: true
 
       - name: Apply lockfile hashes
         id: apply

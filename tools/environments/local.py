@@ -84,6 +84,16 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
+        "AUXILIARY_VISION_API_KEY",
+        "AUXILIARY_WEB_EXTRACT_API_KEY",
+        "AUXILIARY_COMPRESSION_API_KEY",
+        "AUXILIARY_SESSION_SEARCH_API_KEY",
+        "AUXILIARY_SKILLS_HUB_API_KEY",
+        "AUXILIARY_APPROVAL_API_KEY",
+        "AUXILIARY_MCP_API_KEY",
+        "AUXILIARY_TITLE_GENERATION_API_KEY",
+        "AUXILIARY_TRIAGE_SPECIFIER_API_KEY",
+        "AUXILIARY_CURATOR_API_KEY",
         "GOOGLE_API_KEY",
         "DEEPSEEK_API_KEY",
         "MISTRAL_API_KEY",
@@ -232,10 +242,11 @@ def _find_bash() -> str:
 _find_shell = _find_bash
 
 
-# Standard PATH entries for environments with minimal PATH. User-writable
-# package-manager prefixes such as Homebrew are intentionally not injected when
-# absent from the operator-provided PATH.
-_SANE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+# Standard PATH entries for environments with minimal PATH.
+_SANE_PATH = (
+    "/opt/homebrew/bin:/opt/homebrew/sbin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 
 
 def _make_run_env(env: dict) -> dict:

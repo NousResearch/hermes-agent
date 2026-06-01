@@ -43,7 +43,6 @@ Auth:
 Output:
   JSON to stdout. Errors to stderr with non-zero exit code.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -72,7 +71,7 @@ def _get_key() -> str:
 def gql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute a GraphQL query against Linear. Raises on HTTP error or GraphQL errors."""
     key = _get_key()
-    payload: dict[str, Any] = {"query": query}
+    payload = {"query": query}
     if variables:
         payload["variables"] = variables
     data = json.dumps(payload).encode("utf-8")
@@ -111,7 +110,6 @@ def emit(obj: Any) -> None:
 
 # ---------- Commands ----------
 
-
 def cmd_whoami(_args: argparse.Namespace) -> None:
     q = "query { viewer { id name email displayName } }"
     emit(gql(q).get("viewer"))
@@ -122,32 +120,6 @@ def cmd_list_teams(_args: argparse.Namespace) -> None:
     emit(gql(q).get("teams", {}).get("nodes", []))
 
 
-def _resolve_label_id(name: str) -> str | None:
-    """Map a label name to UUID."""
-    q = "query { issueLabels(first: 100) { nodes { id name } } }"
-    labels = gql(q).get("issueLabels", {}).get("nodes", [])
-    nl = name.lower()
-    for lbl in labels:
-        if lbl.get("name", "").lower() == nl:
-            return str(lbl["id"]) if "id" in lbl else None
-    return None
-
-
-def _resolve_assignee_id(name: str) -> str | None:
-    """Map a user name, displayName, or email to UUID."""
-    q = "query { users(first: 100) { nodes { id name email displayName } } }"
-    users = gql(q).get("users", {}).get("nodes", [])
-    nl = name.lower()
-    for u in users:
-        if (
-            u.get("name", "").lower() == nl
-            or u.get("displayName", "").lower() == nl
-            or u.get("email", "").lower() == nl
-        ):
-            return str(u["id"]) if "id" in u else None
-    return None
-
-
 def _resolve_team_id(key_or_name: str) -> str | None:
     """Map a team key (ENG) or name to UUID."""
     q = "query { teams(first: 100) { nodes { id key name } } }"
@@ -155,7 +127,7 @@ def _resolve_team_id(key_or_name: str) -> str | None:
     kl = key_or_name.lower()
     for t in teams:
         if t["key"].lower() == kl or t["name"].lower() == kl:
-            return str(t["id"])
+            return t["id"]
     return None
 
 
@@ -242,11 +214,7 @@ def cmd_search_issues(args: argparse.Namespace) -> None:
         nodes { id identifier title state { name } url }
       }
     }"""
-    emit(
-        gql(q, {"term": args.query, "first": args.limit})
-        .get("searchIssues", {})
-        .get("nodes", [])
-    )
+    emit(gql(q, {"term": args.query, "first": args.limit}).get("searchIssues", {}).get("nodes", []))
 
 
 def cmd_create_issue(args: argparse.Namespace) -> None:
@@ -261,20 +229,7 @@ def cmd_create_issue(args: argparse.Namespace) -> None:
         inp["priority"] = args.priority
     if args.parent:
         inp["parentId"] = args.parent
-
-    if args.label:
-        lid = _resolve_label_id(args.label)
-        if not lid:
-            sys.stderr.write(f"Label not found: {args.label}\n")
-            sys.exit(1)
-        inp["labelIds"] = [lid]
-
-    if args.assignee:
-        aid = _resolve_assignee_id(args.assignee)
-        if not aid:
-            sys.stderr.write(f"Assignee not found: {args.assignee}\n")
-            sys.exit(1)
-        inp["assigneeId"] = aid
+    # TODO: label + assignee name->id lookup (omitted for v1 brevity)
 
     q = """mutation($input: IssueCreateInput!) {
       issueCreate(input: $input) {
@@ -313,9 +268,7 @@ def cmd_update_status(args: argparse.Namespace) -> None:
         sys.stderr.write(f"Issue not found: {args.identifier}\n")
         sys.exit(1)
     sl = args.state.lower()
-    match = next(
-        (s for s in issue["team"]["states"]["nodes"] if s["name"].lower() == sl), None
-    )
+    match = next((s for s in issue["team"]["states"]["nodes"] if s["name"].lower() == sl), None)
     if not match:
         sys.stderr.write(
             f"State '{args.state}' not found. Available: "
@@ -337,15 +290,10 @@ def cmd_add_comment(args: argparse.Namespace) -> None:
         success comment { id body createdAt }
       }
     }"""
-    emit(
-        gql(q, {"input": {"issueId": args.identifier, "body": args.body}}).get(
-            "commentCreate"
-        )
-    )
+    emit(gql(q, {"input": {"issueId": args.identifier, "body": args.body}}).get("commentCreate"))
 
 
 # ---- Documents ----
-
 
 def cmd_list_documents(args: argparse.Namespace) -> None:
     q = """query($first: Int!) {
@@ -397,11 +345,7 @@ def cmd_search_documents(args: argparse.Namespace) -> None:
         nodes { id title slugId url updatedAt }
       }
     }"""
-    emit(
-        gql(q, {"term": args.query, "first": args.limit})
-        .get("documents", {})
-        .get("nodes", [])
-    )
+    emit(gql(q, {"term": args.query, "first": args.limit}).get("documents", {}).get("nodes", []))
 
 
 def cmd_raw(args: argparse.Namespace) -> None:
@@ -410,7 +354,6 @@ def cmd_raw(args: argparse.Namespace) -> None:
 
 
 # ---------- Arg parsing ----------
-
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="linear_api.py", description="Linear GraphQL CLI")

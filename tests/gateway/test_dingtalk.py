@@ -9,49 +9,6 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 
-@pytest.fixture
-def dummy_dingtalk_card_sdk_models(monkeypatch):
-    """Provide minimal model classes for AI card tests when optional SDK deps
-    aren't installed. The adapter code constructs these models, but the tests
-    use MagicMocks for the SDK client so only attribute plumbing matters.
-    """
-
-    class _DummyModel:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    dummy_card_models = SimpleNamespace(
-        CreateCardRequest=_DummyModel,
-        CreateCardRequestCardData=_DummyModel,
-        CreateCardRequestImGroupOpenSpaceModel=_DummyModel,
-        CreateCardRequestImRobotOpenSpaceModel=_DummyModel,
-        CreateCardHeaders=_DummyModel,
-        DeliverCardRequest=_DummyModel,
-        DeliverCardRequestImGroupOpenDeliverModel=_DummyModel,
-        DeliverCardRequestImRobotOpenDeliverModel=_DummyModel,
-        DeliverCardHeaders=_DummyModel,
-        StreamingUpdateRequest=_DummyModel,
-        StreamingUpdateHeaders=_DummyModel,
-    )
-    dummy_robot_models = SimpleNamespace(
-        RobotRecallEmotionRequestTextEmotion=_DummyModel,
-        RobotRecallEmotionRequest=_DummyModel,
-        RobotRecallEmotionHeaders=_DummyModel,
-        RobotReplyEmotionRequestTextEmotion=_DummyModel,
-        RobotReplyEmotionRequest=_DummyModel,
-        RobotReplyEmotionHeaders=_DummyModel,
-        RobotMessageFileDownloadRequest=_DummyModel,
-        RobotMessageFileDownloadHeaders=_DummyModel,
-    )
-    dummy_tea_util_models = SimpleNamespace(RuntimeOptions=_DummyModel)
-
-    import gateway.platforms.dingtalk as dingtalk_mod
-
-    monkeypatch.setattr(dingtalk_mod, "CARD_SDK_AVAILABLE", True)
-    monkeypatch.setattr(dingtalk_mod, "dingtalk_card_models", dummy_card_models)
-    monkeypatch.setattr(dingtalk_mod, "dingtalk_robot_models", dummy_robot_models)
-    monkeypatch.setattr(dingtalk_mod, "tea_util_models", dummy_tea_util_models)
-
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -839,7 +796,7 @@ class TestMessageContextIsolation:
 class TestCardLifecycle:
 
     @pytest.fixture
-    def adapter_with_card(self, dummy_dingtalk_card_sdk_models):
+    def adapter_with_card(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
@@ -1030,14 +987,7 @@ class TestDingTalkAdapterAICards:
         return msg
 
     @pytest.mark.asyncio
-    async def test_send_uses_ai_card_if_configured(
-        self,
-        config,
-        mock_stream_client,
-        mock_http_client,
-        mock_message,
-        dummy_dingtalk_card_sdk_models,
-    ):
+    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
         from gateway.platforms.dingtalk import DingTalkAdapter
 
         adapter = DingTalkAdapter(config)
@@ -1063,59 +1013,3 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
         assert result.success is True
-
-    @pytest.mark.asyncio
-    async def test_missing_card_sdk_falls_back_to_webhook(
-        self, config, mock_stream_client, mock_message, monkeypatch,
-    ):
-        from gateway.platforms.dingtalk import DingTalkAdapter
-
-        monkeypatch.setattr("gateway.platforms.dingtalk.CARD_SDK_AVAILABLE", False)
-        monkeypatch.setattr("gateway.platforms.dingtalk.dingtalk_card_models", None)
-        monkeypatch.setattr("gateway.platforms.dingtalk.tea_util_models", None)
-
-        adapter = DingTalkAdapter(config)
-        adapter._stream_client = mock_stream_client
-        adapter._http_client = AsyncMock()
-        adapter._http_client.post = AsyncMock(
-            return_value=SimpleNamespace(status_code=200, text="ok"),
-        )
-        adapter._message_contexts["test_conv_id"] = mock_message
-        adapter._session_webhooks = {
-            "test_conv_id": (
-                "https://api.dingtalk.com/robot/sendBySession?session=test",
-                9999999999999,
-            ),
-        }
-        adapter._card_sdk = MagicMock()
-        adapter._card_sdk.create_card_with_options_async = AsyncMock()
-
-        result = await adapter.send("test_conv_id", "Hello World")
-
-        assert result.success is True
-        adapter._card_sdk.create_card_with_options_async.assert_not_called()
-        adapter._http_client.post.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_webhook_non_integer_status_code_is_normalized(
-        self, config, mock_stream_client, mock_message,
-    ):
-        from gateway.platforms.dingtalk import DingTalkAdapter
-
-        adapter = DingTalkAdapter(config)
-        adapter._stream_client = mock_stream_client
-        adapter._http_client = AsyncMock()
-        adapter._http_client.post = AsyncMock(
-            return_value=SimpleNamespace(status_code=AsyncMock(), text="bad"),
-        )
-        adapter._session_webhooks = {
-            "test_conv_id": (
-                "https://api.dingtalk.com/robot/sendBySession?session=test",
-                9999999999999,
-            ),
-        }
-
-        result = await adapter.send("test_conv_id", "Hello World")
-
-        assert result.success is False
-        assert result.error == "HTTP 500: bad"

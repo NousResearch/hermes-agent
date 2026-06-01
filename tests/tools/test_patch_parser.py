@@ -403,10 +403,10 @@ class TestValidationPhase:
 
 
 class TestApplyDelete:
-    """Tests for _apply_delete producing a real unified diff."""
+    """Tests for _apply_delete not disclosing deleted file contents."""
 
-    def test_delete_diff_contains_removed_lines(self):
-        """_apply_delete must embed the actual file content in the diff, not a placeholder."""
+    def test_delete_diff_uses_placeholder_without_reading_file(self):
+        """Delete results must not include removed file content or read raw bytes."""
         patch = """\
 *** Begin Patch
 *** Delete File: old/stuff.py
@@ -416,8 +416,10 @@ class TestApplyDelete:
 
         class FakeFileOps:
             deleted = False
+            raw_reads = 0
 
             def read_file_raw(self, path):
+                self.raw_reads += 1
                 return SimpleNamespace(
                     content="def old_func():\n    return 42\n",
                     error=None,
@@ -432,31 +434,31 @@ class TestApplyDelete:
 
         assert result.success is True
         assert file_ops.deleted is True
-        # Diff must contain the actual removed lines, not a bare comment
-        assert "-def old_func():" in result.diff
-        assert "-    return 42" in result.diff
-        assert "/dev/null" in result.diff
+        assert file_ops.raw_reads == 1  # validation only; apply must not re-read content
+        assert result.diff == "# Deleted: old/stuff.py"
+        assert "old_func" not in result.diff
+        assert "return 42" not in result.diff
 
-    def test_delete_diff_fallback_on_empty_file(self):
-        """An empty file should produce the fallback comment diff."""
+    def test_delete_validation_error_is_returned(self):
+        """Missing files should still be reported before delete is attempted."""
         patch = """\
 *** Begin Patch
-*** Delete File: empty.py
+*** Delete File: missing.py
 *** End Patch"""
         ops, err = parse_v4a_patch(patch)
         assert err is None
 
         class FakeFileOps:
             def read_file_raw(self, path):
-                return SimpleNamespace(content="", error=None)
+                return SimpleNamespace(content="", error="not found")
 
             def delete_file(self, path):
-                return SimpleNamespace(error=None)
+                raise AssertionError("delete should not run after validation fails")
 
         result = apply_v4a_operations(ops, FakeFileOps())
-        assert result.success is True
-        # unified_diff produces nothing for two empty inputs — fallback comment expected
-        assert "Deleted" in result.diff or result.diff.strip() == ""
+
+        assert result.success is False
+        assert "file not found for deletion" in result.error
 
 
 class TestCountOccurrences:

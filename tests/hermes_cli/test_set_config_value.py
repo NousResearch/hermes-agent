@@ -51,6 +51,7 @@ class TestExplicitAllowlist:
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
+        "API_SERVER_KEY",
     ])
     def test_explicit_key_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "test-value-123")

@@ -134,6 +134,7 @@ composio link strava
 
 - Do not fabricate tool slugs. Search or inspect first.
 - Do not ask users to manually create auth configs for normal user-level actions; use `composio link <toolkit>`.
+- `composio login` and `composio link` open an interactive browser/OAuth flow that needs a live user. In headless contexts (gateway, cron), don't block on them or wait on the user's app choice — report the setup step and stop.
 - `composio run` throws when an inner `execute()` returns `successful: false`; read the CLI error and fix the connection or arguments.
 - `--skip-connection-check` is useful with `--dry-run` during outages or when validating schemas, but do not use it to pretend a real action succeeded.
 - Missing required fields fail locally with `ToolInputValidationError` and point at the schema path.

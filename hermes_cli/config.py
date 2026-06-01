@@ -1294,6 +1294,14 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Opt-in terminal tab title updates while the CLI is busy/done/idle.
+        # Templates support {label}, {spinner}, {title}/{session}, {session_id},
+        # and {short_session_id}.
+        "tab_activity_indicator": False,
+        "tab_title_idle": "{title}",
+        "tab_title_busy": "{spinner} Hermes",
+        "tab_title_done": "{title}",
+        "tab_title_spinner_frames": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
         "show_reasoning": False,
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels

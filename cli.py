@@ -2962,6 +2962,7 @@ class HermesCLI:
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        self._configure_tab_activity_indicator()
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         _configure_output_history(
@@ -3732,6 +3733,126 @@ class HermesCLI:
                 elapsed_str = f"{elapsed:5.1f}s"
             return f"  {txt}  ({elapsed_str})"
         return f"  {txt}"
+
+    def _configure_tab_activity_indicator(self) -> None:
+        """Load opt-in terminal tab title indicator settings."""
+        display = CLI_CONFIG.get("display", {}) if isinstance(CLI_CONFIG, dict) else {}
+        self._tab_activity_indicator = bool(display.get("tab_activity_indicator", False))
+        self._tab_title_idle = str(display.get("tab_title_idle", "{title}") or "")
+        self._tab_title_busy = str(display.get("tab_title_busy", "{spinner} Hermes") or "")
+        self._tab_title_done = str(display.get("tab_title_done", "{title}") or "")
+        frames = display.get("tab_title_spinner_frames") or [
+            "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+        ]
+        if isinstance(frames, str):
+            frames = list(frames)
+        elif not isinstance(frames, (list, tuple)):
+            frames = ["*"]
+        self._tab_title_spinner_frames = [str(frame) for frame in frames if str(frame)]
+        if not self._tab_title_spinner_frames:
+            self._tab_title_spinner_frames = ["*"]
+        self._tab_title_frame_idx = 0
+        self._tab_title_last = None
+        self._tab_title_next_update = 0.0
+
+    def _tab_title_context(
+        self,
+        template: str,
+        spinner: str = "",
+        *,
+        allow_db_lookup: bool = True,
+    ) -> dict[str, str]:
+        label = "Hermes"
+        session_title = ""
+        if "{title" in template or "{session" in template:
+            session_title = str(getattr(self, "_pending_title", "") or "")
+            if (
+                allow_db_lookup
+                and not session_title
+                and getattr(self, "_session_db", None)
+                and getattr(self, "session_id", None)
+            ):
+                try:
+                    session_title = self._session_db.get_session_title(self.session_id) or ""
+                except Exception:
+                    session_title = ""
+        title = session_title or label
+        session_id = str(getattr(self, "session_id", "") or "")
+        return {
+            "label": label,
+            "spinner": spinner,
+            "title": title,
+            "session": title,
+            "session_id": session_id,
+            "short_session_id": session_id[:8],
+        }
+
+    @staticmethod
+    def _sanitize_tab_title(title: str) -> str:
+        sanitized = []
+        for char in str(title):
+            codepoint = ord(char)
+            if char in {"\r", "\n", "\t"}:
+                sanitized.append(" ")
+            elif codepoint < 32 or 127 <= codepoint <= 159:
+                continue
+            else:
+                sanitized.append(char)
+        return "".join(sanitized)[:255]
+
+    def _write_tab_title(self, title: str) -> None:
+        if not getattr(self, "_tab_activity_indicator", False) or not title:
+            return
+        title = self._sanitize_tab_title(title)
+        if title == getattr(self, "_tab_title_last", None):
+            return
+        stream = getattr(self, "_tab_title_stream", None) or sys.stdout
+        try:
+            if not (hasattr(stream, "isatty") and stream.isatty()):
+                return
+            stream.write(f"\033]0;{title}\a")
+            stream.flush()
+            self._tab_title_last = title
+        except Exception:
+            pass
+
+    def _set_tab_title_state(self, state: str, *, force: bool = False) -> None:
+        if not getattr(self, "_tab_activity_indicator", False):
+            return
+        if state == "busy":
+            frames = getattr(self, "_tab_title_spinner_frames", ["*"])
+            idx = getattr(self, "_tab_title_frame_idx", 0)
+            spinner = frames[idx % len(frames)]
+            self._tab_title_frame_idx = idx + 1
+            template = getattr(self, "_tab_title_busy", "{spinner} Hermes")
+        elif state == "done":
+            spinner = ""
+            template = getattr(self, "_tab_title_done", "{title}")
+        else:
+            spinner = ""
+            template = getattr(self, "_tab_title_idle", "{title}")
+        try:
+            title = template.format(
+                **self._tab_title_context(
+                    template,
+                    spinner=spinner,
+                    allow_db_lookup=(state != "busy"),
+                )
+            )
+        except Exception:
+            title = template
+        if force:
+            self._tab_title_last = None
+        self._write_tab_title(title)
+
+    def _tick_tab_activity_indicator(self) -> None:
+        if not getattr(self, "_tab_activity_indicator", False):
+            return
+        now = time.monotonic()
+        if now < getattr(self, "_tab_title_next_update", 0.0):
+            return
+        self._tab_title_next_update = now + 0.25
+        self._set_tab_title_state("busy")
 
     def _voice_record_key_label(self) -> str:
         """Return the configured voice push-to-talk key formatted for UI.
@@ -4610,6 +4731,7 @@ class HermesCLI:
         """Expose a temporary busy state in the TUI while a slash command runs."""
         self._command_running = True
         self._command_status = status
+        self._set_tab_title_state("busy", force=True)
         self._invalidate(min_interval=0.0)
         try:
             print(f"⏳ {status}")
@@ -4617,6 +4739,7 @@ class HermesCLI:
         finally:
             self._command_running = False
             self._command_status = ""
+            self._set_tab_title_state("idle", force=True)
             self._invalidate(min_interval=0.0)
 
     def _open_external_editor(self, buffer=None) -> bool:
@@ -12058,6 +12181,7 @@ class HermesCLI:
             self._prompt_start_time = time.time()
             self._prompt_duration = 0.0
             agent_thread = threading.Thread(target=run_agent, daemon=True)
+            self._set_tab_title_state("busy", force=True)
             agent_thread.start()
 
             # Monitor the dedicated interrupt queue while the agent runs.
@@ -12068,6 +12192,7 @@ class HermesCLI:
             # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
             while agent_thread.is_alive():
+                self._tick_tab_activity_indicator()
                 if hasattr(self, '_interrupt_queue'):
                     try:
                         interrupt_msg = self._interrupt_queue.get(timeout=0.1)
@@ -12304,6 +12429,7 @@ class HermesCLI:
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
+            self._set_tab_title_state("done", force=True)
             if self.bell_on_complete:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
@@ -12767,7 +12893,8 @@ class HermesCLI:
             )
             self._startup_skills_line_shown = True
         self._console_print()
-        
+        self._set_tab_title_state("idle", force=True)
+
         # State for async operation
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)

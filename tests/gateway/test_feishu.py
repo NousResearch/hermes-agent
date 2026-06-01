@@ -1405,6 +1405,65 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(media_types, ["video/mp4"])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_video_message_downloads_as_video(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._download_feishu_message_resource = AsyncMock(
+            return_value=("/tmp/feishu-video.mp4", "video/mp4")
+        )
+        message = SimpleNamespace(
+            message_type="video",
+            content='{"file_key":"file_video","file_name":"clip.mp4"}',
+            message_id="om_video",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertEqual(text, "")
+        self.assertEqual(msg_type.value, "video")
+        self.assertEqual(media_urls, ["/tmp/feishu-video.mp4"])
+        self.assertEqual(media_types, ["video/mp4"])
+        adapter._download_feishu_message_resource.assert_awaited_once_with(
+            message_id="om_video",
+            file_key="file_video",
+            resource_type="video",
+            fallback_filename="clip.mp4",
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_download_video_resource_uses_video_cache(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        response = SimpleNamespace(
+            success=lambda: True,
+            file=SimpleNamespace(getvalue=lambda: b"video-bytes"),
+            file_name="clip.mov",
+            raw=SimpleNamespace(headers={"Content-Type": "video/quicktime"}),
+        )
+        client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message_resource=SimpleNamespace(get=Mock(return_value=response))))
+        )
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = client
+
+        with patch("gateway.platforms.feishu.cache_video_from_bytes", return_value="/tmp/video.mov") as cache_video:
+            cached_path, media_type = asyncio.run(
+                adapter._download_feishu_message_resource(
+                    message_id="om_video",
+                    file_key="file_video",
+                    resource_type="video",
+                    fallback_filename="clip.mov",
+                )
+            )
+
+        self.assertEqual(cached_path, "/tmp/video.mov")
+        self.assertEqual(media_type, "video/quicktime")
+        cache_video.assert_called_once_with(b"video-bytes", ext=".mov")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_from_raw_content_uses_relation_message_fallbacks(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

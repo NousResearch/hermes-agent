@@ -49,7 +49,16 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
     if not thread_id:
         return base_name
 
-    topic_label = origin.get("chat_topic") or f"topic {thread_id}"
+    topic_label = origin.get("chat_topic")
+    if not topic_label:
+        # Telegram's General forum topic always has thread_id == 1 and never
+        # fires a ``forum_topic_created`` service message we can cache, so
+        # it falls through to here with no chat_topic.  Label it explicitly
+        # instead of leaving the agent staring at "topic 1".
+        if origin.get("platform") == "telegram" and str(thread_id) == "1":
+            topic_label = "General"
+        else:
+            topic_label = f"topic {thread_id}"
     return f"{base_name} / {topic_label}"
 
 

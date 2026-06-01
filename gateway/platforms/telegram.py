@@ -468,6 +468,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
         )
+        # Group/supergroup forum topics: auto-discovered cache.
+        # Shape: {chat_id_str: {thread_id_str: topic_name}}.
+        # Populated from forum_topic_created service messages on incoming
+        # traffic (#22423 follow-up). Persists across restarts via a small
+        # JSON sidecar in the Hermes home directory. The static
+        # config.extra['group_topics'] mapping still wins on conflict.
+        self._group_topics_cache: Dict[str, Dict[str, str]] = {}
+        self._group_topics_cache_path: Optional[_Path] = None
+        self._load_group_topics_cache()
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -5751,6 +5760,120 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    # ── Group/supergroup forum topic auto-discovery ───────────────────────
+    #
+    # Telegram's Bot API has no endpoint to enumerate existing forum topics,
+    # so we listen for ``forum_topic_created`` (and ``forum_topic_edited``)
+    # service messages on incoming traffic, cache the resulting
+    # ``{chat_id: {thread_id: name}}`` map, and persist it to a small JSON
+    # sidecar.  This lets the agent see human-readable topic names like
+    # "Rustbelt" or "Job Hunt" in its session context instead of bare
+    # ``thread: 5`` IDs.  Topics created before the gateway started up are
+    # picked up the first time anyone posts in them (the message carries
+    # the service-message reference) and after that survive restarts.
+
+    def _resolve_group_topics_cache_path(self) -> Optional[_Path]:
+        """Return the on-disk path for the group-topics cache (lazy)."""
+        if getattr(self, "_group_topics_cache_path", None) is not None:
+            return self._group_topics_cache_path
+        try:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        except Exception:
+            return None
+        try:
+            home.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        # Per-adapter file so multiple Telegram adapters (different bot
+        # tokens) don't stomp each other's caches.
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.name or "telegram")
+        self._group_topics_cache_path = home / f"telegram_group_topics.{safe_name}.json"
+        return self._group_topics_cache_path
+
+    def _load_group_topics_cache(self) -> None:
+        """Load persisted {chat_id: {thread_id: name}} mapping from disk."""
+        path = self._resolve_group_topics_cache_path()
+        if not path or not path.exists():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                clean: Dict[str, Dict[str, str]] = {}
+                for chat_id, topics in data.items():
+                    if not isinstance(topics, dict):
+                        continue
+                    clean[str(chat_id)] = {
+                        str(tid): str(name)
+                        for tid, name in topics.items()
+                        if name
+                    }
+                self._group_topics_cache = clean
+                logger.info(
+                    "[%s] Loaded group-topics cache: %d chat(s), %d topic(s) total",
+                    self.name,
+                    len(clean),
+                    sum(len(v) for v in clean.values()),
+                )
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to load group-topics cache from %s: %s",
+                self.name, path, e,
+            )
+
+    def _save_group_topics_cache(self) -> None:
+        """Atomically persist the group-topics cache to disk."""
+        path = self._resolve_group_topics_cache_path()
+        if not path:
+            return
+        cache = getattr(self, "_group_topics_cache", None) or {}
+        try:
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(path.parent),
+                prefix=path.name + ".",
+                suffix=".tmp",
+            )
+            with tmp:
+                json.dump(cache, tmp, indent=2, sort_keys=True)
+            atomic_replace(tmp.name, str(path))
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to save group-topics cache to %s: %s",
+                self.name, path, e,
+            )
+
+    def _cache_group_topic(self, chat_id: str, thread_id: str, topic_name: str) -> None:
+        """Insert/update a discovered group-forum topic name and persist."""
+        if not topic_name:
+            return
+        if not hasattr(self, "_group_topics_cache"):
+            self._group_topics_cache = {}
+        chat_key = str(chat_id)
+        tid_key = str(thread_id)
+        existing = self._group_topics_cache.get(chat_key, {}).get(tid_key)
+        if existing == topic_name:
+            return
+        self._group_topics_cache.setdefault(chat_key, {})[tid_key] = topic_name
+        logger.info(
+            "[%s] Cached group topic: chat=%s thread=%s name=%r",
+            self.name, chat_key, tid_key, topic_name,
+        )
+        self._save_group_topics_cache()
+
+    def _lookup_group_topic_name(self, chat_id: str, thread_id: str) -> Optional[str]:
+        """Look up a group-forum topic name from the runtime cache.
+
+        Returns ``None`` if unknown.  Callers should also consult the
+        static ``config.extra['group_topics']`` mapping (which wins on
+        conflict).
+        """
+        cache = getattr(self, "_group_topics_cache", None) or {}
+        return cache.get(str(chat_id), {}).get(str(thread_id))
+
     def _build_message_event(
         self,
         message: Message,
@@ -5818,7 +5941,40 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
+            # Group/supergroup forum topic resolution.
+            # Order of precedence (highest → lowest):
+            #   1. Static config in extra['group_topics'] (carries skill
+            #      bindings; opt-in name override).
+            #   2. Runtime cache populated from forum_topic_created /
+            #      forum_topic_edited service messages (auto-discovery).
+            #   3. Implicit "General" name for the forum's General topic
+            #      (thread_id == _GENERAL_TOPIC_THREAD_ID).
+
+            # (a) Sniff service messages for topic-name discovery so the
+            # cache is updated even when this turn ends up matching a
+            # static-config name. ``forum_topic_created`` lands on the
+            # service message itself; ``forum_topic_edited`` carries
+            # rename events; topic ids equal the message_id of the
+            # original creation message, so a ``reply_to_message`` chain
+            # also surfaces the original name on follow-up posts.
+            for candidate in (
+                message,
+                getattr(message, "reply_to_message", None),
+            ):
+                if candidate is None:
+                    continue
+                created = getattr(candidate, "forum_topic_created", None)
+                if created and getattr(created, "name", None):
+                    self._cache_group_topic(
+                        str(chat.id), thread_id_str, created.name
+                    )
+                edited = getattr(candidate, "forum_topic_edited", None)
+                if edited and getattr(edited, "name", None):
+                    self._cache_group_topic(
+                        str(chat.id), thread_id_str, edited.name
+                    )
+
+            # (1) Static config — also pulls topic_skill.
             group_topics_config: list = self.config.extra.get("group_topics", [])
             for chat_entry in group_topics_config:
                 if str(chat_entry.get("chat_id", "")) == str(chat.id):
@@ -5829,6 +5985,18 @@ class TelegramAdapter(BasePlatformAdapter):
                             topic_skill = topic.get("skill")
                             break
                     break
+
+            # (2) Runtime cache fallback.
+            if not chat_topic:
+                cached_name = self._lookup_group_topic_name(
+                    str(chat.id), thread_id_str
+                )
+                if cached_name:
+                    chat_topic = cached_name
+
+            # (3) Implicit General-topic name.
+            if not chat_topic and thread_id_str == self._GENERAL_TOPIC_THREAD_ID:
+                chat_topic = "General"
 
         # Build source
         source = self.build_source(

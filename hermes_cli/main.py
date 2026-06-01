@@ -10375,6 +10375,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 find_gateway_pids,
                 find_profile_gateway_processes,
                 launch_detached_profile_gateway_restart,
+                refresh_systemd_unit_if_needed,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
                 _wait_for_gateway_exit,
@@ -10602,6 +10603,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             )
                             if check.stdout.strip() != "active":
                                 continue
+
+                            # Refresh exactly the unit this discovery loop is
+                            # about to signal/restart. Named profiles carry
+                            # their own pinned HERMES_HOME; the refresh helper
+                            # scopes that environment while regenerating. Keep
+                            # this best-effort so a stale/unwritable unit never
+                            # prevents the existing restart path.
+                            try:
+                                if refresh_systemd_unit_if_needed(
+                                    system=scope == "system",
+                                    service_name=svc_name,
+                                ):
+                                    print(f"  ✓ Refreshed gateway systemd unit: {svc_name}")
+                            except Exception as exc:
+                                logger.debug(
+                                    "Could not refresh %s gateway unit before update restart: %s",
+                                    svc_name,
+                                    exc,
+                                )
 
                             # Resolve how we may run manage-units verbs
                             # (reset-failed/start/restart) for this scope.

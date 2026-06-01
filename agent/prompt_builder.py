@@ -1070,6 +1070,21 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+
+    # Index mode is read up-front so it participates in the cache key — otherwise
+    # flipping `skills.index_mode` in config would be masked by a cached prompt
+    # built under the previous mode. "full" (default) = every skill listed;
+    # "categories" = category headers only (agent drills in via skills_list).
+    index_mode = "full"
+    try:
+        from hermes_cli.config import load_config
+
+        index_mode = str(
+            (load_config().get("skills", {}) or {}).get("index_mode", "full")
+        ).strip().lower() or "full"
+    except Exception as e:
+        logger.debug("Could not read skills.index_mode from config: %s", e)
+
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1077,6 +1092,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        index_mode,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1213,23 +1229,49 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # index_mode was resolved up-front (see cache_key) so it participates in
+        # caching. "full" lists every skill; "categories" lists headers only and
+        # the agent drills in via skills_list(category=...). Category mode cuts
+        # the always-on skills prompt by ~70% (17.5K → ~5K with 158 skills).
         index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+        if index_mode == "categories":
+            for category in sorted(skills_by_category.keys()):
+                # Deduplicate skills within the category for an accurate count
+                names = {n for n, _ in skills_by_category[category]}
+                count = len(names)
+                cat_desc = category_descriptions.get(category, "")
+                label = f"{count} skill{'s' if count != 1 else ''}"
+                if cat_desc:
+                    index_lines.append(f"  {category} ({label}): {cat_desc}")
                 else:
-                    index_lines.append(f"    - {name}")
+                    index_lines.append(f"  {category} ({label})")
+        else:
+            for category in sorted(skills_by_category.keys()):
+                cat_desc = category_descriptions.get(category, "")
+                if cat_desc:
+                    index_lines.append(f"  {category}: {cat_desc}")
+                else:
+                    index_lines.append(f"  {category}:")
+                # Deduplicate and sort skills within each category
+                seen = set()
+                for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    if desc:
+                        index_lines.append(f"    - {name}: {desc}")
+                    else:
+                        index_lines.append(f"    - {name}")
+
+        # In category mode, tell the agent how to drill into a category.
+        drilldown = (
+            "This is a CATEGORY index — individual skills are not listed here to "
+            "save context. When a category looks relevant to your task, call "
+            "skills_list(category='<name>') to see its skills, then skill_view(name) "
+            "to load one.\n"
+            if index_mode == "categories"
+            else ""
+        )
 
         result = (
             "## Skills (mandatory)\n"
@@ -1252,7 +1294,8 @@ def build_skills_system_prompt(
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
-            "\n"
+            + drilldown
+            + "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"

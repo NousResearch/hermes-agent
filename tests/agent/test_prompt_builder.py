@@ -265,6 +265,59 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_default_index_mode_lists_individual_skills(self, monkeypatch, tmp_path):
+        """Default (full) mode lists each skill under its category."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "- python-debug" in result
+        assert "CATEGORY index" not in result
+
+    def test_categories_index_mode_lists_only_headers(self, monkeypatch, tmp_path):
+        """categories mode lists category headers + counts, not individual skills."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"skills": {"index_mode": "categories"}},
+        )
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+        result = build_skills_system_prompt()
+        # Category header with count is present...
+        assert "coding (1 skill)" in result
+        # ...but the individual skill is NOT listed inline.
+        assert "- python-debug" not in result
+        # Drilldown guidance tells the agent how to expand a category.
+        assert "CATEGORY index" in result
+        assert "skills_list(category=" in result
+
+    def test_index_mode_change_invalidates_cache(self, monkeypatch, tmp_path):
+        """Flipping index_mode in config must produce a different prompt (cache key)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        full = build_skills_system_prompt()
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"skills": {"index_mode": "categories"}},
+        )
+        categories = build_skills_system_prompt()
+        assert "- python-debug" in full
+        assert "- python-debug" not in categories
+        assert full != categories
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

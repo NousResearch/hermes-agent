@@ -546,6 +546,14 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # How the always-on skills index is rendered in the system prompt.
+  #   full       (default) — list every skill under its category. Best
+  #              discoverability; costs the most context (grows with skill count).
+  #   categories — list only category headers with skill counts. The agent
+  #              drills into a category on demand via skills_list(category=...).
+  #              Cuts the skills prompt by ~70% when many skills are installed.
+  # index_mode: full
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

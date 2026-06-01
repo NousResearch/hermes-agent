@@ -116,6 +116,30 @@ CONCLUDE_SCHEMA = {
     },
 }
 
+TIMELINE_SCHEMA = {
+    "name": "mem0_timeline",
+    "description": (
+        "Return a chronological sequence of memories about a topic. Use this when "
+        "you need to understand how a project, preference, or decision evolved."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "Topic to build a timeline for."},
+            "top_k": {"type": "integer", "description": "Max semantic candidates to inspect (default: 25, max: 50)."},
+        },
+        "required": ["topic"],
+    },
+}
+
+EXTRACTION_PROMPT = (
+    'Extract durable facts from this conversation about the user, their preferences, '
+    'environment, projects, decisions, and stable operating context. '
+    'Return ONLY valid JSON: {"memory": [{"text": "fact as a sentence", "event": "ADD"}]}. '
+    'Extract only explicitly stated facts. Never invent, infer beyond the text, or store transient task progress. '
+    'If nothing durable is extractable, return {"memory": []}.'
+)
+
 
 class _LocalMem0Client:
     """Tiny client for a local Mem0-compatible HTTP server.
@@ -287,12 +311,27 @@ class Mem0MemoryProvider(MemoryProvider):
             return response
         return []
 
+    @staticmethod
+    def _memory_text(item: dict) -> str:
+        """Return memory text across cloud/local response shapes."""
+        return item.get("memory") or item.get("data") or item.get("text") or ""
+
+    @staticmethod
+    def _memory_timestamp(item: dict) -> str:
+        """Best-effort chronological key for timeline output."""
+        metadata = item.get("metadata") or {}
+        if isinstance(metadata, dict):
+            for key in ("session_date", "created_at", "timestamp"):
+                if metadata.get(key):
+                    return str(metadata[key])
+        return str(item.get("created_at") or item.get("updated_at") or "")
+
     def system_prompt_block(self) -> str:
         return (
             "# Mem0 Memory\n"
             f"Active. User: {self._user_id}.\n"
-            "Use mem0_search to find memories, mem0_conclude to store facts, "
-            "mem0_profile for a full overview."
+            "Use mem0_search to find memories, mem0_timeline for chronological recall, "
+            "mem0_conclude to store facts, mem0_profile for a full overview."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -319,7 +358,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     top_k=5,
                 ))
                 if results:
-                    lines = [r.get("memory", "") for r in results if r.get("memory")]
+                    lines = [self._memory_text(r) for r in results if self._memory_text(r)]
                     with self._prefetch_lock:
                         self._prefetch_result = "\n".join(f"- {l}" for l in lines)
                 self._record_success()
@@ -342,7 +381,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, **self._write_filters())
+                client.add(messages, **self._write_filters(), prompt=EXTRACTION_PROMPT)
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -356,7 +395,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA, TIMELINE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
@@ -375,7 +414,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
-                lines = [m.get("memory", "") for m in memories if m.get("memory")]
+                lines = [self._memory_text(m) for m in memories if self._memory_text(m)]
                 return json.dumps({"result": "\n".join(lines), "count": len(lines)})
             except Exception as e:
                 self._record_failure()
@@ -397,11 +436,46 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
-                items = [{"memory": r.get("memory", ""), "score": r.get("score", 0)} for r in results]
+                items = [{
+                    "memory": self._memory_text(r),
+                    "score": r.get("score", 0),
+                    "timestamp": self._memory_timestamp(r),
+                } for r in results if self._memory_text(r)]
                 return json.dumps({"results": items, "count": len(items)})
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Search failed: {e}")
+
+        elif tool_name == "mem0_timeline":
+            topic = args.get("topic", "") or args.get("query", "")
+            if not topic:
+                return tool_error("Missing required parameter: topic")
+            top_k = min(int(args.get("top_k", 25)), 50)
+            try:
+                results = self._unwrap_results(client.search(
+                    query=topic,
+                    filters=self._read_filters(),
+                    rerank=True,
+                    top_k=top_k,
+                ))
+                items = []
+                for r in results:
+                    text = self._memory_text(r)
+                    if not text:
+                        continue
+                    items.append({
+                        "timestamp": self._memory_timestamp(r),
+                        "memory": text,
+                        "score": r.get("score", 0),
+                    })
+                items.sort(key=lambda x: x.get("timestamp") or "")
+                self._record_success()
+                if not items:
+                    return json.dumps({"result": "No timeline memories found."})
+                return json.dumps({"topic": topic, "timeline": items, "count": len(items)})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Timeline failed: {e}")
 
         elif tool_name == "mem0_conclude":
             conclusion = args.get("conclusion", "")

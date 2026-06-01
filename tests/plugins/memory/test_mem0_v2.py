@@ -9,7 +9,7 @@ import stat
 
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider, _LocalMem0Client
+from plugins.memory.mem0 import EXTRACTION_PROMPT, Mem0MemoryProvider, _LocalMem0Client
 
 
 class FakeClientV2:
@@ -94,6 +94,7 @@ class TestMem0FiltersV2:
         call = client.captured_add[0]
         assert call["user_id"] == "u123"
         assert call["agent_id"] == "hermes"
+        assert call["prompt"] == EXTRACTION_PROMPT
 
     def test_conclude_uses_write_filters(self, monkeypatch):
         client = FakeClientV2()
@@ -177,6 +178,38 @@ class TestMem0ResponseUnwrapping:
             "mem0_search", {"query": "test"}
         ))
         assert result["count"] == 1
+
+    def test_search_accepts_data_field_from_qdrant_shape(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [{"data": "payload text", "score": 0.6, "metadata": {"session_date": "2026-05-31T00:00:00+00:00"}}]
+        })
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "payload"}))
+
+        assert result["results"][0]["memory"] == "payload text"
+        assert result["results"][0]["timestamp"] == "2026-05-31T00:00:00+00:00"
+
+    def test_timeline_sorts_by_session_date(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [
+                {"memory": "new", "metadata": {"session_date": "2026-05-31T00:00:00+00:00"}, "score": 0.8},
+                {"memory": "old", "metadata": {"session_date": "2026-03-18T00:00:00+00:00"}, "score": 0.7},
+            ]
+        })
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_timeline", {"topic": "project"}))
+
+        assert client.captured_search["query"] == "project"
+        assert client.captured_search["rerank"] is True
+        assert result["count"] == 2
+        assert [item["memory"] for item in result["timeline"]] == ["old", "new"]
+
+    def test_tool_schemas_include_timeline(self):
+        provider = Mem0MemoryProvider()
+        names = {schema["name"] for schema in provider.get_tool_schemas()}
+        assert "mem0_timeline" in names
 
     def test_unwrap_results_edge_cases(self):
         """_unwrap_results handles all shapes gracefully."""

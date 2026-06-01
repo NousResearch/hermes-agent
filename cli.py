@@ -3264,6 +3264,7 @@ class HermesCLI:
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
+        self._moa_picker_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
         # Holds the exact list used for index resolution; one-shot (cleared on
@@ -3847,7 +3848,7 @@ class HermesCLI:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
-        if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
+        if not self._status_bar_visible or getattr(self, '_model_picker_state', None) or getattr(self, '_moa_picker_state', None):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
@@ -7599,6 +7600,165 @@ class HermesCLI:
         self._restore_modal_input_snapshot()
         self._invalidate(min_interval=0.0)
 
+    # ── MoA Council Picker ──────────────────────────────────────────────
+
+    def _open_moa_picker(self) -> None:
+        """Open the MoA council picker — provider → model → add to council."""
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+        try:
+            ctx = load_picker_context().with_overrides(
+                current_provider=self.provider or "",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+            )
+            providers = build_models_payload(ctx, max_models=50)["providers"]
+        except Exception:
+            providers = []
+        if not providers:
+            _cprint("  No authenticated providers found.")
+            return
+
+        # Load current council from config
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            moa_cfg = cfg.get("moa") or {}
+            council_refs = moa_cfg.get("reference_models") or []
+            council_agg = moa_cfg.get("aggregator") or {}
+        except Exception:
+            council_refs = []
+            council_agg = {}
+
+        self._capture_modal_input_snapshot()
+        self._moa_picker_state = {
+            "stage": "overview",
+            "providers": providers,
+            "selected": 0,
+            "council_refs": list(council_refs),
+            "council_agg": dict(council_agg) if council_agg else None,
+            "editing_agg": False,  # True when setting aggregator vs reference
+        }
+        self._invalidate(min_interval=0.0)
+
+    def _close_moa_picker(self) -> None:
+        self._moa_picker_state = None
+        self._restore_modal_input_snapshot()
+        self._invalidate(min_interval=0.0)
+
+    def _save_moa_council(self, refs: list, agg: dict) -> None:
+        """Persist council to config.yaml."""
+        from hermes_cli.config import load_config, save_config as _save_cfg
+        cfg = load_config()
+        cfg["moa"] = {"reference_models": refs, "aggregator": agg}
+        _save_cfg(cfg)
+
+    def _handle_moa_picker_selection(self) -> None:
+        """Handle Enter key in the MoA council picker."""
+        state = self._moa_picker_state
+        if not state:
+            return
+        selected = state.get("selected", 0)
+        stage = state.get("stage")
+
+        # ── Overview stage: show council + action menu ──
+        if stage == "overview":
+            # Actions: [0] Add Reference  [1] Set Aggregator  [2] Remove Last Ref  [3] Done  [4] Cancel
+            if selected == 0:
+                # Add Reference → open provider list
+                state["stage"] = "provider"
+                state["editing_agg"] = False
+                state["selected"] = 0
+            elif selected == 1:
+                # Set Aggregator → open provider list
+                state["stage"] = "provider"
+                state["editing_agg"] = True
+                state["selected"] = 0
+            elif selected == 2:
+                # Remove last reference
+                refs = state.get("council_refs") or []
+                if refs:
+                    refs.pop()
+                    state["council_refs"] = refs
+            elif selected == 3:
+                # Done → save and close
+                refs = state.get("council_refs") or []
+                agg = state.get("council_agg")
+                if not refs:
+                    _cprint("  ✗ Need at least 1 reference model.")
+                    return
+                if not agg:
+                    agg = refs[0]  # default aggregator to first ref
+                try:
+                    self._save_moa_council(refs, agg)
+                    labels = [f"{s['provider']}/{s['model']}" for s in refs]
+                    agg_label = f"{agg['provider']}/{agg['model']}"
+                    _cprint(f"  ✓ MoA council saved: {', '.join(labels)} | agg={agg_label}")
+                except Exception as e:
+                    _cprint(f"  ✗ Failed to save: {e}")
+                self._close_moa_picker()
+            else:
+                # Cancel
+                self._close_moa_picker()
+            self._invalidate(min_interval=0.0)
+            return
+
+        # ── Provider stage: pick a provider ──
+        if stage == "provider":
+            providers = state.get("providers") or []
+            if selected >= len(providers):
+                # Cancel
+                self._close_moa_picker()
+                return
+            provider_data = providers[selected]
+            model_list = provider_data.get("models", [])
+            if not model_list:
+                try:
+                    from hermes_cli.models import provider_model_ids
+                    live = provider_model_ids(provider_data["slug"])
+                    if live:
+                        model_list = live
+                except Exception:
+                    pass
+            state["stage"] = "model"
+            state["provider_data"] = provider_data
+            state["model_list"] = model_list
+            state["selected"] = 0
+            self._invalidate(min_interval=0.0)
+            return
+
+        # ── Model stage: pick a model → add to council ──
+        if stage == "model":
+            provider_data = state.get("provider_data") or {}
+            model_list = state.get("model_list") or []
+            back_idx = len(model_list)
+            cancel_idx = len(model_list) + 1
+            if selected == back_idx:
+                state["stage"] = "provider"
+                state["selected"] = next(
+                    (i for i, p in enumerate(state.get("providers") or [])
+                     if p.get("slug") == provider_data.get("slug")), 0
+                )
+                self._invalidate(min_interval=0.0)
+                return
+            if selected >= cancel_idx:
+                self._close_moa_picker()
+                return
+            if selected < len(model_list):
+                chosen = model_list[selected]
+                spec = {"provider": provider_data.get("slug", ""), "model": chosen}
+                if state.get("editing_agg"):
+                    state["council_agg"] = spec
+                    _cprint(f"  ✓ Aggregator set: {spec['provider']}/{spec['model']}")
+                else:
+                    state.setdefault("council_refs", []).append(spec)
+                    _cprint(f"  ✓ Added reference: {spec['provider']}/{spec['model']}")
+                # Return to overview
+                state["stage"] = "overview"
+                state["selected"] = 0
+                self._invalidate(min_interval=0.0)
+                return
+            self._close_moa_picker()
+
     @staticmethod
     def _compute_model_picker_viewport(
         selected: int,
@@ -8000,15 +8160,91 @@ class HermesCLI:
         if result.success and result.requires_new_session:
             _cprint("    Tip: `/reset` starts a new session immediately.")
 
+    def _handle_moac_command(self, cmd_original: str):
+        """Handle /moac command — interactive picker or explicit council update.
+
+          /moac                                    — open current council picker
+          /moac set provider/model ... --agg provider/model
+        """
+        args = cmd_original.split(None, 1)
+        raw_args = args[1].strip() if len(args) > 1 else ""
+
+        if not raw_args or raw_args == "show":
+            self._open_moa_picker()
+            return
+
+        if raw_args.startswith("set "):
+            from hermes_cli.moa_config import resolve_moac_spec
+
+            set_args = raw_args[4:].strip()
+            agg_model = None
+            if " --agg " in set_args:
+                parts = set_args.split(" --agg ", 1)
+                set_args = parts[0].strip()
+                agg_model = parts[1].strip()
+            elif set_args.endswith(" --agg"):
+                set_args = set_args[:-6].strip()
+
+            ref_models_str = set_args
+            if not ref_models_str:
+                _cprint("  ✗ Usage: /moac set provider/model provider/model ... --agg provider/model")
+                return
+
+            ref_parts = ref_models_str.split()
+            if len(ref_parts) < 1:
+                _cprint("  ✗ Need at least 1 reference model")
+                return
+
+            resolved_refs = []
+            for pm_str in ref_parts:
+                spec = resolve_moac_spec(pm_str)
+                if spec is None:
+                    _cprint(f"  ✗ Could not resolve: {pm_str}")
+                    _cprint("     Use format: provider/model (e.g. opencode-go/kimi-k2.6)")
+                    _cprint("     Run /moac without args to see available providers and models.")
+                    return
+                resolved_refs.append(spec)
+
+            resolved_agg = None
+            if agg_model:
+                resolved_agg = resolve_moac_spec(agg_model)
+                if resolved_agg is None:
+                    _cprint(f"  ✗ Could not resolve aggregator: {agg_model}")
+                    return
+
+            try:
+                from hermes_cli.config import load_config, save_config as _save_cfg
+                cfg = load_config()
+                cfg['moa'] = {
+                    'reference_models': resolved_refs,
+                    'aggregator': resolved_agg or resolved_refs[0],
+                }
+                _save_cfg(cfg)
+            except Exception as e:
+                _cprint(f"  ✗ Failed to save config: {e}")
+                return
+
+            labels = [f"{spec['provider']}/{spec['model']}" for spec in resolved_refs]
+            agg = resolved_agg or resolved_refs[0]
+            agg_label = f"{agg['provider']}/{agg['model']}"
+            _cprint("  ✓ MoA council updated:")
+            _cprint(f"     Refs: {', '.join(labels)}")
+            _cprint(f"     Agg:  {agg_label}")
+            _cprint("  Gateway restart required: systemctl restart hermes-gateway.service")
+            return
+
+        _cprint("  Usage: /moac [show|set provider/model ... --agg provider/model]")
+
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True when /model should be handled immediately on the UI thread."""
+        """Return True when /model or /moac should be handled immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         try:
             from hermes_cli.commands import resolve_command
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
-            return bool(cmd and cmd.name == "model")
+            return bool(cmd and cmd.name in ("model", "moac"))
         except Exception:
             return False
 
@@ -12750,6 +12986,7 @@ class HermesCLI:
         slash_confirm_widget=None,
         clarify_widget,
         model_picker_widget=None,
+        moa_picker_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -12775,6 +13012,7 @@ class HermesCLI:
                 slash_confirm_widget,
                 clarify_widget,
                 model_picker_widget,
+                moa_picker_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -13050,6 +13288,17 @@ class HermesCLI:
                 except Exception as _exc:
                     _cprint(f"  ✗ Model selection failed: {_exc}")
                     self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # --- /moac picker modal ---
+            if self._moa_picker_state:
+                try:
+                    self._handle_moa_picker_selection()
+                except Exception as _exc:
+                    _cprint(f"  ✗ MoA selection failed: {_exc}")
+                    self._close_moa_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -13357,6 +13606,35 @@ class HermesCLI:
             event.app.current_buffer.reset()
             event.app.invalidate()
 
+        # --- /moac picker: arrow-key navigation ---
+        @kb.add('up', filter=Condition(lambda: bool(self._moa_picker_state)))
+        def moa_picker_up(event):
+            if self._moa_picker_state:
+                self._moa_picker_state["selected"] = max(0, self._moa_picker_state.get("selected", 0) - 1)
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: bool(self._moa_picker_state)))
+        def moa_picker_down(event):
+            state = self._moa_picker_state
+            if not state:
+                return
+            stage = state.get("stage")
+            if stage == "overview":
+                max_idx = 4  # 5 actions: Add Ref, Set Agg, Remove, Done, Cancel
+            elif stage == "provider":
+                max_idx = len(state.get("providers") or [])
+            else:  # model
+                max_idx = len(state.get("model_list") or []) + 1
+            state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._moa_picker_state)), eager=True)
+        def moa_picker_escape(event):
+            """ESC closes the /moac picker."""
+            self._close_moa_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
             def handler(event):
@@ -13390,7 +13668,7 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._moa_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -13476,6 +13754,13 @@ class HermesCLI:
             # Cancel /model picker
             if self._model_picker_state:
                 self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel /moac picker
+            if self._moa_picker_state:
+                self._close_moa_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -13576,6 +13861,13 @@ class HermesCLI:
             # Cancel /model picker
             if self._model_picker_state:
                 self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel /moac picker
+            if self._moa_picker_state:
+                self._close_moa_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -14500,6 +14792,112 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._model_picker_state is not None),
         )
 
+        # --- /moac picker: display widget ---
+        def _get_moa_picker_display():
+            state = cli_ref._moa_picker_state
+            if not state:
+                return []
+            stage = state.get("stage", "overview")
+            selected = state.get("selected", 0)
+            refs = state.get("council_refs") or []
+            agg = state.get("council_agg")
+
+            if stage == "overview":
+                title = "🧠 MoA Council"
+                lines = []
+                lines.append(('class:clarify-border', '╭─ '))
+                lines.append(('class:clarify-title', title))
+                lines.append(('class:clarify-border', ' ' + ('─' * max(0, 52 - len(title))) + '╮\n'))
+                _append_blank_panel_line(lines, 'class:clarify-border', 56)
+
+                # Show current council
+                if refs:
+                    ref_labels = [f"{r['provider']}/{r['model']}" for r in refs]
+                    _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint',
+                        f"References ({len(refs)}): {', '.join(ref_labels)}", 56)
+                else:
+                    _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint',
+                        "References: (none)", 56)
+                if agg:
+                    _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint',
+                        f"Aggregator: {agg['provider']}/{agg['model']}", 56)
+                else:
+                    _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint',
+                        "Aggregator: (defaults to first ref)", 56)
+                _append_blank_panel_line(lines, 'class:clarify-border', 56)
+
+                # Actions
+                actions = [
+                    "+ Add Reference",
+                    "⚙ Set Aggregator",
+                    "− Remove Last Reference" if refs else "− Remove Last Reference (none to remove)",
+                    "✓ Done (save & close)",
+                    "✗ Cancel",
+                ]
+                for idx, action in enumerate(actions):
+                    marker = '❯ ' if idx == selected else '  '
+                    style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
+                    _append_panel_line(lines, 'class:clarify-border', style, marker + action, 56)
+                _append_blank_panel_line(lines, 'class:clarify-border', 56)
+                lines.append(('class:clarify-border', '╰' + ('─' * 56) + '╯\n'))
+                return lines
+
+            if stage == "provider":
+                providers = state.get("providers") or []
+                title = "🧠 MoA — Select Provider"
+                choices = []
+                for p in providers:
+                    count = p.get("total_models", len(p.get("models", [])))
+                    label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
+                    choices.append(label)
+                choices.append("Cancel")
+                hint = f"{'Adding reference' if not state.get('editing_agg') else 'Setting aggregator'} — pick a provider"
+
+            else:  # model
+                provider_data = state.get("provider_data") or {}
+                model_list = state.get("model_list") or []
+                title = f"🧠 MoA — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                choices = list(model_list) + ["← Back", "Cancel"]
+                hint = f"{'Adding reference' if not state.get('editing_agg') else 'Setting aggregator'} — pick a model"
+
+            box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
+            inner_text_width = max(8, box_width - 6)
+
+            try:
+                from prompt_toolkit.application import get_app
+                term_rows = get_app().output.get_size().rows
+            except Exception:
+                term_rows = shutil.get_terminal_size((100, 24)).lines
+            scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
+                selected, state.get("_scroll_offset", 0), len(choices), term_rows,
+            )
+            state["_scroll_offset"] = scroll_offset
+
+            result_lines = []
+            result_lines.append(('class:clarify-border', '╭─ '))
+            result_lines.append(('class:clarify-title', title))
+            result_lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(result_lines, 'class:clarify-border', box_width)
+            _append_panel_line(result_lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            _append_blank_panel_line(result_lines, 'class:clarify-border', box_width)
+            for idx in range(scroll_offset, scroll_offset + visible):
+                choice = choices[idx]
+                style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
+                prefix = '❯ ' if idx == selected else '  '
+                for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
+                    _append_panel_line(result_lines, 'class:clarify-border', style, wrapped, box_width)
+            _append_blank_panel_line(result_lines, 'class:clarify-border', box_width)
+            result_lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+            return result_lines
+
+        moa_picker_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_moa_picker_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._moa_picker_state is not None),
+        )
+
         # Horizontal rules above and below the input.
         # On narrow/mobile terminals we keep the top separator for structure but
         # hide the bottom one to recover a full row for conversation content.
@@ -14580,6 +14978,7 @@ class HermesCLI:
                     slash_confirm_widget=slash_confirm_widget,
                     clarify_widget=clarify_widget,
                     model_picker_widget=model_picker_widget,
+                    moa_picker_widget=moa_picker_widget,
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,

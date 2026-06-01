@@ -105,3 +105,41 @@ def test_lone_message_dispatched_alone():
 
     asyncio.run(_drive())
     assert dispatched == ["solo"]
+
+
+def test_slash_command_bypasses_text_batch_delay():
+    """Control commands like /approve must not wait behind WhatsApp debounce."""
+    adapter = _make_adapter(text_batch_delay_seconds=5.0)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event.text)
+
+    adapter.handle_message = _capture
+
+    async def _drive():
+        adapter._enqueue_text_event(_event("/approve"))
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_drive())
+    assert dispatched == ["/approve"]
+
+
+def test_slash_command_discards_pending_text_batch():
+    """A quick clarification followed by /approve must not merge into non-command text."""
+    adapter = _make_adapter(text_batch_delay_seconds=5.0)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event.text)
+
+    adapter.handle_message = _capture
+
+    async def _drive():
+        adapter._enqueue_text_event(_event("ok do it"))
+        adapter._enqueue_text_event(_event("/approve"))
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_drive())
+    assert dispatched == ["/approve"]
+    assert adapter._pending_text_batches == {}

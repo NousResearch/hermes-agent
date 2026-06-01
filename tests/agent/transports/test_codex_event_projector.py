@@ -116,6 +116,22 @@ class TestCommandExecutionProjection:
         assert "[exit 2]" in msgs[1]["content"]
         assert "boom" in msgs[1]["content"]
 
+    def test_large_diff_output_is_summarized(self) -> None:
+        raw = "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80
+        item = {**COMMAND_EXEC_COMPLETED["params"]["item"], "aggregatedOutput": raw}
+        notif = {
+            "method": "item/completed",
+            "params": {**COMMAND_EXEC_COMPLETED["params"], "item": item},
+        }
+
+        msgs = CodexEventProjector().project(notif).messages
+        content = msgs[1]["content"]
+
+        assert "Codex command aggregatedOutput suppressed for context safety" in content
+        assert "stdout_chars=" in content
+        assert "diff_flood_detected=True" in content
+        assert "SECRET_SOURCE_LINE" not in content
+
     def test_deterministic_call_id_across_replay(self) -> None:
         # Same item id → same call_id (prefix cache must stay valid).
         p1 = CodexEventProjector()

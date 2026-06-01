@@ -80,6 +80,99 @@ _COMPRESSION_CIRCUIT_BREAKER_MESSAGE = (
     "请新开会话或回复“继续下一阶段”后再继续。"
 )
 
+_PROVIDER_ERROR_COMPRESSION_INCLUDE_STRINGS = (
+    "an error occurred while processing your request",
+    "you can retry your request",
+    "please include the request id",
+    "ttfb cutoff",
+    "codex stream produced no bytes",
+    "connection error",
+    "eof",
+    "broken pipe",
+    "http 520",
+    "http 524",
+    "internal server error",
+    "stream produced no bytes",
+)
+
+_PROVIDER_ERROR_COMPRESSION_EXCLUDE_STRINGS = (
+    "auth_unavailable",
+    "incorrect api key",
+    "unauthorized",
+    "not authorized",
+    "permission denied",
+    "not permitted",
+    "quota",
+    "usage limit",
+    "rate limit",
+    "cooling down",
+    "model not found",
+    "soft stable limit",
+)
+
+_PROVIDER_ERROR_COMPRESSION_EXCLUDED_REASONS = {
+    FailoverReason.auth,
+    FailoverReason.auth_permanent,
+    FailoverReason.billing,
+    FailoverReason.rate_limit,
+    FailoverReason.model_not_found,
+}
+
+
+def _provider_error_text_for_compression(error: Exception) -> str:
+    """Best-effort text surface for conservative provider-error matching."""
+    parts: list[str] = []
+    for value in (
+        error,
+        getattr(error, "message", None),
+        getattr(error, "body", None),
+        getattr(error, "response", None),
+    ):
+        if value is None:
+            continue
+        try:
+            if hasattr(value, "text"):
+                parts.append(str(value.text))
+            else:
+                parts.append(str(value))
+        except Exception:
+            pass
+    status_code = getattr(error, "status_code", None)
+    if status_code is not None:
+        parts.append(f"http {status_code}")
+    return " ".join(parts).lower()
+
+
+def _looks_like_provider_error_for_compression(
+    error: Exception,
+    classified: Any,
+) -> bool:
+    """Return True for generic provider/gateway transient failures only."""
+    if getattr(classified, "reason", None) in _PROVIDER_ERROR_COMPRESSION_EXCLUDED_REASONS:
+        return False
+
+    status_code = getattr(classified, "status_code", None)
+    if status_code is None:
+        status_code = getattr(error, "status_code", None)
+    try:
+        status_int = int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        status_int = None
+    if status_int in {401, 402, 403, 404, 429}:
+        return False
+
+    text = _provider_error_text_for_compression(error)
+    if any(p in text for p in _PROVIDER_ERROR_COMPRESSION_EXCLUDE_STRINGS):
+        return False
+    if any(p in text for p in _PROVIDER_ERROR_COMPRESSION_INCLUDE_STRINGS):
+        return True
+
+    return bool(
+        status_int in {500, 502, 503, 520, 524}
+        and getattr(classified, "reason", None)
+        in {FailoverReason.server_error, FailoverReason.overloaded, FailoverReason.timeout, FailoverReason.unknown}
+    )
+
 
 def _compression_circuit_breaker_enabled(agent: Any) -> bool:
     """Return True when automatic compression should halt gateway turns.
@@ -1128,6 +1221,7 @@ def run_conversation(
         multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
         llama_cpp_grammar_retry_attempted = False
+        provider_error_compression_attempted = False
         has_retried_429 = False
         restart_with_compressed_messages = False
         restart_with_length_continuation = False
@@ -2994,6 +3088,62 @@ def run_conversation(
                             "failed": True,
                             "compression_exhausted": True,
                         }
+
+                soft_request_limit = getattr(agent, "compression_soft_request_limit", 0) or 0
+                try:
+                    soft_request_limit = int(soft_request_limit)
+                except (TypeError, ValueError):
+                    soft_request_limit = 0
+
+                if (
+                    getattr(agent, "compression_enabled", False)
+                    and getattr(agent, "retry_compress_on_provider_error", False)
+                    and soft_request_limit > 0
+                    and approx_request_tokens >= soft_request_limit
+                    and not provider_error_compression_attempted
+                    and _looks_like_provider_error_for_compression(api_error, classified)
+                ):
+                    provider_error_compression_attempted = True
+                    original_len = len(messages)
+                    agent._emit_status(
+                        f"🗜️ Provider error on large request (~{approx_request_tokens:,} tokens) — "
+                        "compressing once before retry..."
+                    )
+                    messages, active_system_prompt = agent._compress_context(
+                        messages,
+                        system_message,
+                        approx_tokens=approx_request_tokens,
+                        task_id=effective_task_id,
+                    )
+                    # Compression creates a new session; clear the old
+                    # history reference so persistence writes the compressed
+                    # transcript instead of skipping it by length.
+                    conversation_history = None
+                    if len(messages) < original_len:
+                        if _should_halt_after_auto_compression(
+                            agent,
+                            original_len=original_len,
+                            context_reduced=True,
+                        ):
+                            return _halt_after_compression_circuit_breaker(
+                                agent,
+                                messages,
+                                conversation_history,
+                                api_call_count,
+                                effective_task_id,
+                            )
+                        agent._emit_status(
+                            f"🗜️ Compressed {original_len} → {len(messages)} messages after provider error, retrying..."
+                        )
+                        restart_with_compressed_messages = True
+                        break
+                    logger.info(
+                        "Provider-error compression did not reduce messages; falling through to normal retry. "
+                        "session=%s tokens=~%s limit=%s",
+                        getattr(agent, "session_id", None) or "none",
+                        f"{approx_request_tokens:,}",
+                        soft_request_limit,
+                    )
 
                 # Check for non-retryable client errors.  The classifier
                 # already accounts for 413, 429, 529 (transient), context

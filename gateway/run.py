@@ -15579,14 +15579,13 @@ class GatewayRunner:
             if session.exited:
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/poll/log
-                from tools.process_registry import process_registry as _pr_check
+                from tools.process_registry import process_registry as _pr_check, format_process_notification
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
                     _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
+                    # Truncate at line boundaries so non-Codex notifications never
+                    # start mid-line (fixes #23284). Codex commands are formatted
+                    # by format_process_notification() as a context-safe summary.
                     _LIMIT = 2000
                     if len(_raw) > _LIMIT:
                         _tail = _raw[-_LIMIT:]
@@ -15595,12 +15594,20 @@ class GatewayRunner:
                         _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
                     else:
                         _out = _raw
-                    synth_text = (
-                        f"[IMPORTANT: Background process {session_id} completed "
-                        f"(exit code {session.exit_code}).\n"
-                        f"Command: {session.command}\n"
-                        f"Output:\n{_out}]"
-                    )
+                    _evt = {
+                        "type": "completion",
+                        "session_id": session_id,
+                        "command": session.command,
+                        "exit_code": session.exit_code,
+                        "output": _out,
+                        "source": "rolling_buffer",
+                    }
+                    try:
+                        _evt.update(_pr_check._process_state_metadata(session))
+                        _evt.update(_pr_check._output_metadata(session, _out))
+                    except Exception:
+                        pass
+                    synth_text = format_process_notification(_evt)
                     source = self._build_process_event_source({
                         "session_id": session_id,
                         "session_key": session_key,

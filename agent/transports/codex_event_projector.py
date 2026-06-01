@@ -52,6 +52,44 @@ def _format_tool_args(d: dict) -> str:
     return json.dumps(d, ensure_ascii=False, sort_keys=True)
 
 
+def _looks_like_diff_flood(text: str) -> bool:
+    lines = text.splitlines()
+    if len(lines) < 40:
+        return False
+    sample = lines[-1000:]
+    diff_like = 0
+    structure = 0
+    patch_lines = 0
+    for line in sample:
+        if line.startswith(("diff --git ", "@@", "index ", "--- a/", "+++ b/")):
+            diff_like += 1
+            structure += 1
+        elif line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+            diff_like += 1
+            patch_lines += 1
+    score = diff_like / len(sample) if sample else 0.0
+    return score >= 0.45 and structure > 0 and patch_lines >= 20
+
+
+def _context_safe_command_output(output: str, exit_code: Any) -> str:
+    """Bound Codex commandExecution aggregatedOutput before message projection."""
+    text = output or ""
+    too_large = len(text) > 4000 or text.count("\n") > 120
+    diff_flood = _looks_like_diff_flood(text)
+    if not too_large and not diff_flood:
+        return text
+    lines = text.splitlines()
+    summary = (
+        "Codex command aggregatedOutput suppressed for context safety.\n"
+        f"exit_code={exit_code}\n"
+        f"stdout_chars={len(text)}\n"
+        f"stdout_lines={len(lines)}\n"
+        f"diff_flood_detected={diff_flood}\n"
+        "Inspect the command source/worktree directly instead of injecting raw stdout."
+    )
+    return summary
+
+
 @dataclass
 class ProjectionResult:
     """Output of projecting one Codex item.
@@ -162,8 +200,8 @@ class CodexEventProjector:
         if self._pending_reasoning:
             assistant_msg["reasoning"] = "\n".join(self._pending_reasoning)
             self._pending_reasoning = []
-        output = item.get("aggregatedOutput") or ""
         exit_code = item.get("exitCode")
+        output = _context_safe_command_output(item.get("aggregatedOutput") or "", exit_code)
         if exit_code is not None and exit_code != 0:
             output = f"[exit {exit_code}]\n{output}"
         tool_msg = {

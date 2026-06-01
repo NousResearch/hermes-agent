@@ -1,0 +1,5 @@
+name: cursor-composer-provider
+kind: model-provider
+version: 1.0.0
+description: Cursor Composer via API for Cursor with Agent mode forced
+author: Nous Research

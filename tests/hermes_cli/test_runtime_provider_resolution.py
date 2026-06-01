@@ -337,6 +337,35 @@ def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypa
     assert resolved["api_key"] == "dummy-lm-api-key"
 
 
+
+def test_resolve_runtime_provider_cursor_composer_ignores_stale_responses_api_mode(monkeypatch):
+    """Cursor Composer must stay on Chat Completions to use the forced Agent-mode route."""
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-test-key")
+    monkeypatch.delenv("CURSOR_COMPOSER_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "cursor-composer")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "cursor-composer",
+            "default": "composer-2.5",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="cursor-composer")
+
+    assert resolved["provider"] == "cursor-composer"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://cursor-api.standardagents.ai/opencode/v1"
+    assert resolved["api_key"] == "cursor-test-key"
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

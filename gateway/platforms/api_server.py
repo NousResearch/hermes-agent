@@ -711,6 +711,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        # Active Responses API agents for mid-run /steer support. Values are
+        # one-element agent_ref lists populated by _run_agent before the loop starts.
+        self._active_response_agents: Dict[str, list] = {}
+        self._active_response_agents_by_session: Dict[str, list] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
@@ -962,6 +966,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        request_model_override: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -982,9 +987,22 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+        except Exception:
+            if not request_model_override:
+                raise
+            runtime_kwargs = {}
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+        if request_model_override:
+            model = request_model_override.get("model") or model
+            override_runtime = request_model_override.get("runtime") or {}
+            for key in ("provider", "api_key", "base_url", "api_mode", "command", "credential_pool"):
+                if key in override_runtime:
+                    runtime_kwargs[key] = override_runtime.get(key)
+            if "args" in override_runtime:
+                runtime_kwargs["args"] = list(override_runtime.get("args") or [])
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1015,6 +1033,108 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    def _resolve_request_model_override(
+        self,
+        body: Dict[str, Any],
+    ) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        """Resolve request-scoped provider/model selection.
+
+        OpenAI-compatible clients already send ``model`` as a frontend routing
+        or display identifier, so Hermes only treats it as a backend selection
+        when the request also supplies a Hermes ``provider`` field.
+        """
+        requested_provider = body.get("provider")
+        if requested_provider is None:
+            hermes_ext = body.get("hermes")
+            if isinstance(hermes_ext, dict):
+                requested_provider = hermes_ext.get("provider")
+
+        if requested_provider is None or str(requested_provider).strip() == "":
+            return None, None
+        if not isinstance(requested_provider, str):
+            return None, web.json_response(
+                _openai_error("'provider' must be a string", param="provider"),
+                status=400,
+            )
+
+        requested_model = body.get("model")
+        if not isinstance(requested_model, str) or not requested_model.strip():
+            return None, web.json_response(
+                _openai_error("'model' is required when 'provider' is supplied", param="model"),
+                status=400,
+            )
+
+        try:
+            from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+            from hermes_cli.config import get_compatible_custom_providers
+            from hermes_cli.model_switch import switch_model
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            user_config = _load_gateway_config()
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
+            except Exception as exc:
+                logger.debug(
+                    "Configured gateway runtime unavailable while resolving request override: %s",
+                    exc,
+                )
+                runtime_kwargs = {}
+            current_model = _resolve_gateway_model(user_config)
+            runtime_model = runtime_kwargs.get("model")
+            if runtime_model:
+                current_model = runtime_model
+
+            provider = requested_provider.strip()
+            model = requested_model.strip()
+            switch_result = switch_model(
+                raw_input=model,
+                current_provider=runtime_kwargs.get("provider") or "",
+                current_model=current_model or "",
+                current_base_url=runtime_kwargs.get("base_url") or "",
+                current_api_key=runtime_kwargs.get("api_key") or "",
+                explicit_provider=provider,
+                user_providers=user_config.get("providers") if isinstance(user_config, dict) else None,
+                custom_providers=get_compatible_custom_providers(user_config),
+            )
+            if not switch_result.success:
+                return None, web.json_response(
+                    _openai_error(
+                        switch_result.error_message or "Invalid provider/model selection",
+                        param="model",
+                    ),
+                    status=400,
+                )
+
+            resolved_runtime = resolve_runtime_provider(
+                requested=switch_result.target_provider,
+                target_model=switch_result.new_model,
+            )
+            override_runtime = {
+                "provider": switch_result.target_provider,
+                "api_key": switch_result.api_key or resolved_runtime.get("api_key"),
+                "base_url": switch_result.base_url or resolved_runtime.get("base_url"),
+                "api_mode": switch_result.api_mode or resolved_runtime.get("api_mode"),
+                "command": resolved_runtime.get("command"),
+                "args": list(resolved_runtime.get("args") or []),
+                "credential_pool": resolved_runtime.get("credential_pool"),
+            }
+            return {
+                "model": switch_result.new_model,
+                "provider": switch_result.target_provider,
+                "runtime": override_runtime,
+            }, None
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve request model override provider=%r model=%r: %s",
+                requested_provider,
+                requested_model,
+                exc,
+            )
+            return None, web.json_response(
+                _openai_error(f"Could not resolve provider/model selection: {exc}", param="provider"),
+                status=400,
+            )
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -1687,6 +1807,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        request_model_override, model_override_err = self._resolve_request_model_override(body)
+        if model_override_err is not None:
+            return model_override_err
+        response_model_name = (
+            request_model_override.get("model")
+            if request_model_override
+            else body.get("model", self._model_name)
+        )
+        response_provider_name = request_model_override.get("provider") if request_model_override else None
+
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
@@ -1783,7 +1913,6 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
         created = int(time.time())
 
         if stream:
@@ -1868,13 +1997,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             return await self._write_sse_chat_completion(
-                request, completion_id, model_name, created, _stream_q,
+                request, completion_id, response_model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
             )
@@ -1887,11 +2017,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(body, keys=["model", "provider", "messages", "tools", "tool_choice", "stream"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -1957,7 +2088,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": model_name,
+            "model": response_model_name,
             "choices": [
                 {
                     "index": 0,
@@ -1982,10 +2113,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 "error": err_msg,
                 "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
             }
+            if response_provider_name:
+                response_data["hermes"]["provider"] = response_provider_name
+                response_data["hermes"]["model"] = response_model_name
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg:
                 response_headers["X-Hermes-Error"] = err_msg[:200]
+        elif response_provider_name:
+            response_data["hermes"] = {
+                "provider": response_provider_name,
+                "model": response_model_name,
+            }
 
         return web.json_response(response_data, headers=response_headers)
 
@@ -2632,11 +2771,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = final_items
                 failed_env["error"] = {"message": agent_error, "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                failed_env["usage"] = self._responses_usage_payload(usage)
                 _failed_history = list(conversation_history)
                 _failed_history.append({"role": "user", "content": user_message})
                 if final_response_text or agent_error:
@@ -2656,11 +2791,7 @@ class APIServerAdapter(BasePlatformAdapter):
             else:
                 completed_env = _envelope("completed")
                 completed_env["output"] = final_items
-                completed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                completed_env["usage"] = self._responses_usage_payload(usage)
                 full_history = self._build_response_conversation_history(
                     conversation_history,
                     user_message,
@@ -2758,13 +2889,36 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         raw_input = body.get("input")
-        if raw_input is None:
+        force_compaction = bool(body.get("force_compaction") or body.get("compact"))
+        if raw_input is None and not force_compaction:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
+        if raw_input is None:
+            raw_input = []
+
+        request_model_override, model_override_err = self._resolve_request_model_override(body)
+        if model_override_err is not None:
+            return model_override_err
+        response_model_name = (
+            request_model_override.get("model")
+            if request_model_override
+            else body.get("model", self._model_name)
+        )
+        response_provider_name = request_model_override.get("provider") if request_model_override else None
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
+        requested_session_id = body.get("session_id")
+        if requested_session_id is not None:
+            if not isinstance(requested_session_id, str) or not requested_session_id.strip():
+                return web.json_response(_openai_error("'session_id' must be a non-empty string"), status=400)
+            requested_session_id = requested_session_id.strip()
+            if re.search(r'[\r\n\x00]', requested_session_id):
+                return web.json_response(
+                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                    status=400,
+                )
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
@@ -2830,6 +2984,68 @@ class APIServerAdapter(BasePlatformAdapter):
             if instructions is None:
                 instructions = stored.get("instructions")
 
+        # Reuse session from previous_response_id chain so the dashboard
+        # groups the entire conversation under one session entry.
+        session_id = stored_session_id or requested_session_id or str(uuid.uuid4())
+
+        # Append new input messages to history.  A force compaction request is
+        # a maintenance command rather than a user turn, so any supplied input
+        # is folded into the compacted history and no assistant response is run.
+        if force_compaction:
+            conversation_history.extend(input_messages)
+            if len(conversation_history) < 1:
+                return web.json_response(_openai_error("No conversation history to compact"), status=400)
+            try:
+                compacted_history, usage, effective_session_id = await self._compact_response_context(
+                    conversation_history=conversation_history,
+                    ephemeral_system_prompt=instructions,
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                    request_model_override=request_model_override,
+                    focus_topic=body.get("compaction_focus") or body.get("compact_focus"),
+                )
+            except Exception as e:
+                logger.error("Error compacting responses context: %s", e, exc_info=True)
+                return web.json_response(
+                    _openai_error(f"Compaction failed: {e}", err_type="server_error"),
+                    status=500,
+                )
+            response_id = f"resp_{uuid.uuid4().hex[:28]}"
+            created_at = int(time.time())
+            compacted_count = max(0, len(conversation_history) - len(compacted_history))
+            final_response = (
+                f"[CONTEXT COMPACTION]\n"
+                f"Compacted conversation context ({len(conversation_history)} → {len(compacted_history)} messages"
+                f"{f', removed {compacted_count}' if compacted_count else ''})."
+            )
+            output_items = [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": final_response}],
+            }]
+            response_data = {
+                "id": response_id,
+                "object": "response",
+                "status": "completed",
+                "created_at": created_at,
+                "model": body.get("model", self._model_name),
+                "output": output_items,
+                "usage": self._responses_usage_payload(usage),
+            }
+            if store:
+                self._response_store.put(response_id, {
+                    "response": response_data,
+                    "conversation_history": compacted_history,
+                    "instructions": instructions,
+                    "session_id": session_id,
+                })
+                if conversation:
+                    self._response_store.set_conversation(conversation, response_id)
+            response_headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
+            if gateway_session_key:
+                response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            return web.json_response(response_data, headers=response_headers)
+
         # Append new input messages to history (all but the last become history)
         for msg in input_messages[:-1]:
             conversation_history.append(msg)
@@ -2845,7 +3061,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
-        session_id = stored_session_id or str(uuid.uuid4())
+        session_id = stored_session_id or requested_session_id or str(uuid.uuid4())
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
@@ -2900,31 +3116,39 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
-            model_name = body.get("model", self._model_name)
             created_at = int(time.time())
+            self._active_response_agents[response_id] = agent_ref
+            if session_id:
+                self._active_response_agents_by_session[session_id] = agent_ref
 
-            return await self._write_sse_responses(
-                request=request,
-                response_id=response_id,
-                model=model_name,
-                created_at=created_at,
-                stream_q=_stream_q,
-                agent_task=agent_task,
-                agent_ref=agent_ref,
-                conversation_history=conversation_history,
-                user_message=user_message,
-                instructions=instructions,
-                conversation=conversation,
-                store=store,
-                session_id=session_id,
-                gateway_session_key=gateway_session_key,
-            )
+            try:
+                return await self._write_sse_responses(
+                    request=request,
+                    response_id=response_id,
+                    model=response_model_name,
+                    created_at=created_at,
+                    stream_q=_stream_q,
+                    agent_task=agent_task,
+                    agent_ref=agent_ref,
+                    conversation_history=conversation_history,
+                    user_message=user_message,
+                    instructions=instructions,
+                    conversation=conversation,
+                    store=store,
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                )
+            finally:
+                self._active_response_agents.pop(response_id, None)
+                if session_id and self._active_response_agents_by_session.get(session_id) is agent_ref:
+                    self._active_response_agents_by_session.pop(session_id, None)
 
         async def _compute_response():
             return await self._run_agent(
@@ -2933,13 +3157,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "tools"],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -2990,14 +3215,15 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", self._model_name),
+            "model": response_model_name,
             "output": output_items,
-            "usage": {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": self._responses_usage_payload(usage),
         }
+        if response_provider_name:
+            response_data["hermes"] = {
+                "provider": response_provider_name,
+                "model": response_model_name,
+            }
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
@@ -3018,8 +3244,74 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------
-    # GET / DELETE response endpoints
+    # Responses steer / GET / DELETE endpoints
     # ------------------------------------------------------------------
+
+    async def _resolve_active_response_agent(self, agent_ref: Optional[list]) -> Optional[Any]:
+        """Return a live AIAgent from an active Responses API ref, waiting briefly."""
+        if agent_ref is None:
+            return None
+        for _ in range(20):
+            agent = agent_ref[0] if agent_ref else None
+            if agent is not None:
+                return agent
+            await asyncio.sleep(0.025)
+        return None
+
+    async def _handle_steer_response(self, request: "web.Request") -> "web.Response":
+        """POST /v1/responses/{response_id}/steer — call AIAgent.steer()."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        response_id = request.match_info["response_id"]
+        agent = await self._resolve_active_response_agent(self._active_response_agents.get(response_id))
+        if agent is None or not hasattr(agent, "steer"):
+            return web.json_response(_openai_error(f"Active response not found: {response_id}"), status=404)
+        return await self._handle_steer_active_agent(request, agent, {"response_id": response_id})
+
+    async def _handle_steer_session(self, request: "web.Request") -> "web.Response":
+        """POST /v1/sessions/{session_id}/steer — steer active response by session id."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        agent = await self._resolve_active_response_agent(
+            self._active_response_agents_by_session.get(session_id)
+        )
+        if agent is None or not hasattr(agent, "steer"):
+            return web.json_response(
+                _openai_error(f"No active response for session: {session_id}"),
+                status=404,
+            )
+        return await self._handle_steer_active_agent(request, agent, {"session_id": session_id})
+
+    async def _handle_steer_active_agent(
+        self,
+        request: "web.Request",
+        agent: Any,
+        extra: Dict[str, str],
+    ) -> "web.Response":
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(
+                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
+                status=400,
+            )
+        text = body.get("input") or body.get("prompt") or body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(_openai_error("Missing non-empty steer text"), status=400)
+        try:
+            accepted = bool(agent.steer(text))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Responses steer failed: %s", exc, exc_info=True)
+            return web.json_response(
+                _openai_error(f"Steer failed: {exc}", err_type="server_error"),
+                status=500,
+            )
+        if not accepted:
+            return web.json_response(_openai_error("Steer rejected"), status=400)
+        return web.json_response({"object": "response.steer", "accepted": True, **extra})
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
         """GET /v1/responses/{response_id} — retrieve a stored response."""
@@ -3423,6 +3715,57 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent execution
     # ------------------------------------------------------------------
 
+    async def _compact_response_context(
+        self,
+        conversation_history: List[Dict[str, Any]],
+        ephemeral_system_prompt: Optional[str] = None,
+        session_id: Optional[str] = None,
+        gateway_session_key: Optional[str] = None,
+        request_model_override: Optional[Dict[str, Any]] = None,
+        focus_topic: Optional[str] = None,
+    ) -> tuple:
+        """Force a context compaction without running a user-visible assistant turn."""
+        loop = asyncio.get_running_loop()
+
+        def _run():
+            agent = self._create_agent(
+                ephemeral_system_prompt=ephemeral_system_prompt,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
+            )
+            if not getattr(agent, "compression_enabled", False):
+                raise RuntimeError("Compression is disabled in config.")
+            history = list(conversation_history)
+            if len(history) < 4:
+                usage = self._agent_usage_snapshot(agent)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                return history, usage, _eff_sid
+            try:
+                from agent.model_metadata import estimate_request_tokens_rough
+
+                system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+                tools = getattr(agent, "tools", None) or None
+                approx_tokens = estimate_request_tokens_rough(
+                    history,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                )
+            except Exception:
+                approx_tokens = None
+            compacted, _ = agent._compress_context(
+                history,
+                ephemeral_system_prompt,
+                approx_tokens=approx_tokens,
+                task_id=session_id or "api_server_compact",
+                focus_topic=focus_topic,
+            )
+            usage = self._agent_usage_snapshot(agent)
+            _eff_sid = getattr(agent, "session_id", session_id)
+            return compacted, usage, _eff_sid
+
+        return await loop.run_in_executor(None, _run)
+
     async def _run_agent(
         self,
         user_message: str,
@@ -3435,6 +3778,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        request_model_override: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3458,6 +3802,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -3467,11 +3812,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 task_id=effective_task_id,
             )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
+            usage = self._agent_usage_snapshot(agent)
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-
             # triggered session rotations. (#16938)
@@ -3481,6 +3822,76 @@ class APIServerAdapter(BasePlatformAdapter):
             return result, usage
 
         return await loop.run_in_executor(None, _run)
+
+    @staticmethod
+    def _responses_usage_payload(usage: Dict[str, Any]) -> Dict[str, Any]:
+        """Return Responses API usage with Hermes context-compressor fields preserved."""
+        def _number(value: Any) -> int | float:
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+        payload = {
+            "input_tokens": _number(usage.get("input_tokens", 0)),
+            "output_tokens": _number(usage.get("output_tokens", 0)),
+            "total_tokens": _number(usage.get("total_tokens", 0)),
+        }
+        optional_aliases = (
+            "cached_input_tokens",
+            "api_calls",
+            "current_context_tokens",
+            "context_tokens",
+            "last_prompt_tokens",
+            "context_length",
+            "context_percent",
+            "compression_count",
+            "compressions",
+        )
+        for key in optional_aliases:
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _agent_usage_snapshot(agent) -> Dict[str, Any]:
+        """Return token/context usage fields matching Hermes /usage as closely as possible."""
+        def _number(value: Any) -> int | float:
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+        def _optional_number(value: Any) -> int | float | None:
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+        usage = {
+            "input_tokens": _number(getattr(agent, "session_prompt_tokens", 0)),
+            "output_tokens": _number(getattr(agent, "session_completion_tokens", 0)),
+            "total_tokens": _number(getattr(agent, "session_total_tokens", 0)),
+        }
+        api_calls = _optional_number(getattr(agent, "session_api_calls", None))
+        if api_calls is not None:
+            usage["api_calls"] = api_calls
+
+        cache_read_tokens = _optional_number(getattr(agent, "session_cache_read_tokens", None))
+        cache_write_tokens = _optional_number(getattr(agent, "session_cache_write_tokens", None))
+        cache_total = (cache_read_tokens or 0) + (cache_write_tokens or 0)
+        if cache_total:
+            usage["cached_input_tokens"] = cache_total
+
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor:
+            context_tokens = _optional_number(getattr(compressor, "last_prompt_tokens", None))
+            context_length = _optional_number(getattr(compressor, "context_length", None))
+            compression_count = _optional_number(getattr(compressor, "compression_count", None))
+            if context_tokens is not None:
+                usage["current_context_tokens"] = context_tokens
+                usage["context_tokens"] = context_tokens
+                usage["last_prompt_tokens"] = context_tokens
+            if compression_count is not None:
+                usage["compression_count"] = compression_count
+                usage["compressions"] = compression_count
+            if context_length:
+                usage["context_length"] = context_length
+                if context_tokens is not None:
+                    usage["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+        return usage
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -3673,6 +4084,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    requested_model=body.get("model"),
+                    requested_provider=body.get("provider"),
                 )
                 self._active_run_agents[run_id] = agent
 
@@ -3735,11 +4148,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                     clear_session_vars(session_tokens)
                                 except Exception:
                                     pass
-                    u = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                    }
+                    u = self._agent_usage_snapshot(agent)
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
@@ -4108,6 +4517,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
+            self._app.router.add_post("/v1/responses/{response_id}/steer", self._handle_steer_response)
+            self._app.router.add_post("/v1/sessions/{session_id}/steer", self._handle_steer_session)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
             # Cron jobs management API

@@ -68,6 +68,19 @@ class ImageGenProvider(abc.ABC):
         """Human-readable label shown in ``hermes tools``. Defaults to ``name.title()``."""
         return self.name.title()
 
+    @property
+    def prefer_local_execution(self) -> bool:
+        """Return True when this provider should execute generation in a local
+        subprocess rather than in-process on the agent host.
+
+        This is needed for providers whose outbound HTTP targets are blocked
+        from the cloud agent host (Cloudflare WAF, IP geofencing, etc.) but
+        reachable from the user's local machine.
+
+        Default: False (execute in-process).
+        """
+        return False
+
     def is_available(self) -> bool:
         """Return True when this provider can service calls.
 

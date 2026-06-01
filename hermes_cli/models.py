@@ -350,6 +350,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
+    "cursor-composer": [
+        "composer-2.5",
+        "composer-2.5-fast",
+        "composer-2",
+        "composer-latest",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",

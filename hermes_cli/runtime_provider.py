@@ -1180,6 +1180,13 @@ def _resolve_explicit_runtime(
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider == "cursor-composer":
+            # Standard Agents documents that the legacy /opencode/v1 route
+            # forces Cursor Composer Agent mode, but only for Chat
+            # Completions.  A stale persisted ``model.api_mode:
+            # codex_responses`` would route Hermes through /responses, where
+            # the adapter intentionally prepares Ask mode and rejects tools.
+            api_mode = "chat_completions"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -1620,6 +1627,11 @@ def resolve_runtime_provider(
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider == "cursor-composer":
+            # The documented forced-Agent route is /opencode/v1 chat/completions;
+            # do not let a stale persisted Responses mode send Composer back
+            # through the generic Ask-mode Responses adapter.
+            api_mode = "chat_completions"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

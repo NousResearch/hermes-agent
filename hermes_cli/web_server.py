@@ -168,6 +168,9 @@ class VoiceTranscriptEvent(BaseModel):
     event_type: str = "transcript"
     user: Optional[str] = None
     timestamp: Optional[str] = None
+    sequence: Optional[int] = None
+    elapsed_ms: Optional[int] = None
+    metadata: Dict[str, Any] = {}
 
 
 def _voice_api_key() -> str:
@@ -207,7 +210,7 @@ def _voice_transcript_path(call_id: str) -> Path:
 
 def _save_voice_transcript_event(event: VoiceTranscriptEvent, request: Request) -> Path:
     user = event.user or _voice_auth_context(request) or "unknown dashboard user"
-    record = {
+    record: Dict[str, Any] = {
         "timestamp": event.timestamp or datetime.now(timezone.utc).isoformat(),
         "call_id": event.call_id,
         "user": user,
@@ -215,6 +218,12 @@ def _save_voice_transcript_event(event: VoiceTranscriptEvent, request: Request) 
         "event_type": event.event_type,
         "text": event.text,
     }
+    if event.sequence is not None:
+        record["sequence"] = event.sequence
+    if event.elapsed_ms is not None:
+        record["elapsed_ms"] = event.elapsed_ms
+    if event.metadata:
+        record["metadata"] = event.metadata
     path = _voice_transcript_path(event.call_id)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -232,6 +241,7 @@ def _voice_session_config(user: str | None = None) -> Dict[str, Any]:
             "You are Rolly, the concise AI ops and dev colleague for MIX/Suelio. "
             f"You are speaking with dashboard user: {speaker}. Use that identity for context and attribution. "
             "This is a live phone-call style conversation: speak naturally, briefly, and do not mention implementation details. "
+            "Call transcript events, tool calls/results, timestamps, elapsed time, and an end-call marker are saved to local JSONL for later improvement. "
             "You have no useful long-term/project context inside the realtime model itself. "
             "When the user asks about Rolly state, past work, files, code, web/current facts, or wants an action, call the rolly tool with a short exact request. "
             "Summarize tool results conversationally and ask at most one brief follow-up."

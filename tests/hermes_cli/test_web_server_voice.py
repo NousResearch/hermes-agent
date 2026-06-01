@@ -119,7 +119,15 @@ def test_voice_transcript_persists_jsonl(voice_client):
 
     resp = client.post(
         "/api/voice/transcript",
-        json={"call_id": "call/1", "role": "user", "text": "hello", "user": "deniz"},
+        json={
+            "call_id": "call/1",
+            "role": "user",
+            "text": "hello",
+            "user": "deniz",
+            "sequence": 3,
+            "elapsed_ms": 1200,
+            "metadata": {"source": "test"},
+        },
     )
 
     assert resp.status_code == 200
@@ -129,6 +137,9 @@ def test_voice_transcript_persists_jsonl(voice_client):
         body = fh.read()
     assert '"user": "deniz"' in body
     assert '"text": "hello"' in body
+    assert '"sequence": 3' in body
+    assert '"elapsed_ms": 1200' in body
+    assert '"source": "test"' in body
 
 
 def test_run_voice_research_uses_cli_bridge(monkeypatch, voice_client):

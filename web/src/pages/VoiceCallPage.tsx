@@ -11,6 +11,8 @@ interface LogEntry {
   id: string;
   kind: LogKind;
   text: string;
+  timestamp: string;
+  elapsedMs: number | null;
 }
 
 function logId(): string {
@@ -22,6 +24,15 @@ function eventText(event: unknown): string | null {
   const obj = event as Record<string, unknown>;
   const direct = obj.transcript ?? obj.text ?? obj.delta;
   return typeof direct === "string" && direct.trim() ? direct.trim() : null;
+}
+
+function formatClock(timestamp: string): string {
+  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatElapsed(ms: number | null): string {
+  if (ms === null) return "+0.0s";
+  return `+${(ms / 1000).toFixed(1)}s`;
 }
 
 export default function VoiceCallPage() {
@@ -38,6 +49,8 @@ export default function VoiceCallPage() {
       id: logId(),
       kind: "system",
       text: "Prototype: browser WebRTC to realtime voice, with backend tool bridge for research.",
+      timestamp: new Date().toISOString(),
+      elapsedMs: null,
     },
   ]);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -47,28 +60,57 @@ export default function VoiceCallPage() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const micMonitorRafRef = useRef<number | null>(null);
   const callIdRef = useRef(`voice-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const callStartedAtRef = useRef<number | null>(null);
+  const eventSeqRef = useRef(0);
+  const pendingTranscriptSavesRef = useRef<Promise<unknown>[]>([]);
   const callSeqRef = useRef(0);
+  const [saveStatus, setSaveStatus] = useState("Not saving yet");
+  const [lastSavePath, setLastSavePath] = useState<string | null>(null);
+  const [activeTool, setActiveTool] = useState<string | null>(null);
 
   const addLog = useCallback((kind: LogKind, text: string) => {
-    setLogs((prev) => [...prev.slice(-80), { id: logId(), kind, text }]);
+    const now = Date.now();
+    const startedAt = callStartedAtRef.current;
+    setLogs((prev) => [
+      ...prev.slice(-120),
+      { id: logId(), kind, text, timestamp: new Date(now).toISOString(), elapsedMs: startedAt === null ? null : now - startedAt },
+    ]);
   }, []);
 
   const persistTranscript = useCallback(
-    (role: string, text: string, eventType = "transcript") => {
-      void api.saveVoiceTranscript(
+    (role: string, text: string, eventType = "transcript", metadata: Record<string, unknown> = {}) => {
+      const now = Date.now();
+      const startedAt = callStartedAtRef.current;
+      const sequence = ++eventSeqRef.current;
+      const save = api.saveVoiceTranscript(
         {
           call_id: callIdRef.current,
           role,
           text,
           event_type: eventType,
           user: speaker,
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(now).toISOString(),
+          sequence,
+          elapsed_ms: startedAt === null ? undefined : now - startedAt,
+          metadata,
         },
         speaker,
-      ).catch((exc) => {
-        const message = exc instanceof Error ? exc.message : String(exc);
-        addLog("error", `Transcript save failed: ${message}`);
-      });
+      )
+        .then((resp) => {
+          setLastSavePath(resp.path);
+          setSaveStatus(`Saved event #${sequence}`);
+          return resp;
+        })
+        .catch((exc) => {
+          const message = exc instanceof Error ? exc.message : String(exc);
+          setSaveStatus(`Save failed: ${message}`);
+          addLog("error", `Transcript save failed: ${message}`);
+        })
+        .finally(() => {
+          pendingTranscriptSavesRef.current = pendingTranscriptSavesRef.current.filter((item) => item !== save);
+        });
+      pendingTranscriptSavesRef.current.push(save);
+      return save;
     },
     [addLog, speaker],
   );
@@ -146,10 +188,16 @@ export default function VoiceCallPage() {
   }, [addLog, refreshInputDevices]);
 
   const stopCall = useCallback(() => {
+    const endStartedAt = Date.now();
+    const durationMs = callStartedAtRef.current === null ? 0 : endStartedAt - callStartedAtRef.current;
     callSeqRef.current += 1;
     setStatus((current) => (current === "idle" ? current : "ending"));
+    persistTranscript("system", "Call ended by user; microphone released.", "call_end", {
+      duration_ms: durationMs,
+      pending_saves_at_end: pendingTranscriptSavesRef.current.length,
+      log_entries: logs.length,
+    });
     if (dataRef.current) {
-      dataRef.current.onmessage = null;
       dataRef.current.onerror = null;
       dataRef.current.onopen = null;
     }
@@ -165,9 +213,11 @@ export default function VoiceCallPage() {
     peerRef.current = null;
     streamRef.current = null;
     setMuted(false);
+    setActiveTool(null);
+    Promise.allSettled([...pendingTranscriptSavesRef.current]).then(() => setSaveStatus("Call saved"));
     setStatus("idle");
-    addLog("system", "Call ended; microphone released.");
-  }, [addLog, stopMicMonitor]);
+    addLog("system", `Call ended; saved end marker (${(durationMs / 1000).toFixed(1)}s).`);
+  }, [addLog, logs.length, persistTranscript, stopMicMonitor]);
 
   const sendRealtimeEvent = useCallback((payload: Record<string, unknown>) => {
     const channel = dataRef.current;
@@ -192,13 +242,25 @@ export default function VoiceCallPage() {
         args = { raw: rawArgs };
       }
 
-      addLog("tool", `Running ${name}…`);
-      persistTranscript("tool", `Running ${name}: ${JSON.stringify(args)}`, "tool_call");
+      const startedAt = Date.now();
+      setActiveTool(`${name} running since ${formatClock(new Date(startedAt).toISOString())}`);
+      addLog("tool", `Running ${name}… ${JSON.stringify(args).slice(0, 300)}`);
+      persistTranscript("tool", `Running ${name}: ${JSON.stringify(args)}`, "tool_call", {
+        realtime_call_id: callId,
+        tool_name: name,
+        started_at: new Date(startedAt).toISOString(),
+      });
       try {
         const result = await api.runVoiceTool({ name, arguments: args } satisfies VoiceToolRequest, speaker);
+        const durationMs = Date.now() - startedAt;
         const output = result.ok ? result.result : `Tool failed: ${result.error ?? "unknown error"}`;
-        addLog(result.ok ? "tool" : "error", output.slice(0, 700));
-        persistTranscript("tool", output, result.ok ? "tool_result" : "tool_error");
+        setActiveTool(null);
+        addLog(result.ok ? "tool" : "error", `${name} finished in ${(durationMs / 1000).toFixed(1)}s\n${output.slice(0, 700)}`);
+        persistTranscript("tool", output, result.ok ? "tool_result" : "tool_error", {
+          realtime_call_id: callId,
+          tool_name: name,
+          duration_ms: durationMs,
+        });
         sendRealtimeEvent({
           type: "conversation.item.create",
           item: {
@@ -209,9 +271,15 @@ export default function VoiceCallPage() {
         });
         sendRealtimeEvent({ type: "response.create" });
       } catch (exc) {
+        const durationMs = Date.now() - startedAt;
         const message = exc instanceof Error ? exc.message : String(exc);
-        addLog("error", message);
-        persistTranscript("tool", message, "tool_error");
+        setActiveTool(null);
+        addLog("error", `${name} failed in ${(durationMs / 1000).toFixed(1)}s: ${message}`);
+        persistTranscript("tool", message, "tool_error", {
+          realtime_call_id: callId,
+          tool_name: name,
+          duration_ms: durationMs,
+        });
         sendRealtimeEvent({
           type: "conversation.item.create",
           item: {
@@ -257,14 +325,17 @@ export default function VoiceCallPage() {
       }
       if (type === "input_audio_buffer.speech_started") {
         addLog("system", "Realtime API heard speech start.");
+        persistTranscript("system", "Realtime API heard speech start.", "speech_started");
         return;
       }
       if (type === "input_audio_buffer.speech_stopped") {
         addLog("system", "Realtime API heard speech stop.");
+        persistTranscript("system", "Realtime API heard speech stop.", "speech_stopped");
         return;
       }
       if (type === "input_audio_buffer.committed") {
         addLog("system", "Realtime API committed mic audio.");
+        persistTranscript("system", "Realtime API committed mic audio.", "audio_committed");
         return;
       }
       if (type === "response.output_audio_transcript.done" || type === "response.audio_transcript.done" || type === "response.output_text.done") {
@@ -278,6 +349,7 @@ export default function VoiceCallPage() {
       if (type === "error") {
         const messageText = JSON.stringify(event.error ?? event).slice(0, 700);
         addLog("error", messageText);
+        persistTranscript("error", messageText, "realtime_error");
       }
     },
     [addLog, handleToolCall, persistTranscript],
@@ -287,7 +359,17 @@ export default function VoiceCallPage() {
     const callSeq = callSeqRef.current + 1;
     callSeqRef.current = callSeq;
     callIdRef.current = `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    callStartedAtRef.current = Date.now();
+    eventSeqRef.current = 0;
+    pendingTranscriptSavesRef.current = [];
+    setLastSavePath(null);
+    setSaveStatus("Saving call events…");
+    setActiveTool(null);
     window.localStorage.setItem("rolly.voice.user", speaker);
+    persistTranscript("system", "Call started.", "call_start", {
+      user_agent: navigator.userAgent,
+      selected_input_id: selectedInputId || "browser-default",
+    });
     const isCurrentCall = () => callSeqRef.current === callSeq;
     setError(null);
     setStatus("requesting");
@@ -311,6 +393,7 @@ export default function VoiceCallPage() {
       startMicMonitor(stream);
       const track = stream.getAudioTracks()[0];
       addLog("system", `Browser mic opened: ${track?.label || "unknown device"}. Watch the mic level; it should move when you talk.`);
+      persistTranscript("system", `Browser mic opened: ${track?.label || "unknown device"}.`, "mic_opened");
       setStatus("connecting");
 
       const peer = new RTCPeerConnection();
@@ -318,6 +401,7 @@ export default function VoiceCallPage() {
       peer.onconnectionstatechange = () => {
         if (["closed", "disconnected", "failed"].includes(peer.connectionState)) {
           addLog("system", `Connection ${peer.connectionState}.`);
+          persistTranscript("system", `Connection ${peer.connectionState}.`, "connection_state", { state: peer.connectionState });
         }
       };
 
@@ -332,6 +416,7 @@ export default function VoiceCallPage() {
       dataChannel.onopen = () => {
         setStatus("live");
         addLog("system", "Live. Talk normally; Rolly can answer by voice and call tools.");
+        persistTranscript("system", "Realtime data channel live.", "call_live");
       };
       dataChannel.onmessage = handleRealtimeEvent;
       dataChannel.onerror = () => addLog("error", "Realtime data channel error.");
@@ -349,7 +434,7 @@ export default function VoiceCallPage() {
       addLog("error", message);
       stopCall();
     }
-  }, [addLog, handleRealtimeEvent, refreshInputDevices, selectedInputId, speaker, startMicMonitor, stopCall]);
+  }, [addLog, handleRealtimeEvent, persistTranscript, refreshInputDevices, selectedInputId, speaker, startMicMonitor, stopCall]);
 
   const toggleMute = useCallback(() => {
     const next = !muted;
@@ -359,7 +444,14 @@ export default function VoiceCallPage() {
     setMuted(next);
   }, [muted]);
 
-  useEffect(() => stopCall, [stopCall]);
+  useEffect(() => {
+    return () => {
+      dataRef.current?.close();
+      peerRef.current?.close();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      stopMicMonitor();
+    };
+  }, [stopMicMonitor]);
   useEffect(() => {
     void refreshInputDevices().catch(() => undefined);
     navigator.mediaDevices?.addEventListener?.("devicechange", refreshInputDevices);
@@ -391,8 +483,12 @@ export default function VoiceCallPage() {
         </div>
         <div className="mt-4 flex flex-wrap gap-2 text-xs uppercase tracking-[0.12em] text-text-secondary">
           <span className="border border-current/20 px-2 py-1">Status: {status}</span>
+          <span className="border border-current/20 px-2 py-1">Call: {callIdRef.current}</span>
+          <span className="border border-current/20 px-2 py-1">Save: {saveStatus}</span>
+          {activeTool ? <span className="border border-current/20 px-2 py-1">Tool: {activeTool}</span> : null}
           <span className="border border-current/20 px-2 py-1">Provider: OpenAI Realtime WebRTC</span>
           <span className="border border-current/20 px-2 py-1">Tools: full Rolly</span>
+          {lastSavePath ? <span className="border border-current/20 px-2 py-1 normal-case">Transcript: {lastSavePath}</span> : null}
         </div>
         <div className="mt-3 text-xs uppercase tracking-[0.12em] text-text-secondary">
           <label className="mb-3 block">
@@ -444,7 +540,7 @@ export default function VoiceCallPage() {
             {logs.map((entry) => (
               <div key={entry.id} className="border border-current/10 bg-background-base/50 p-3">
                 <div className="mb-1 text-[0.65rem] uppercase tracking-[0.14em] text-text-secondary">
-                  {entry.kind}
+                  {entry.kind} · {formatClock(entry.timestamp)} · {formatElapsed(entry.elapsedMs)}
                 </div>
                 <div className="whitespace-pre-wrap leading-relaxed">{entry.text}</div>
               </div>

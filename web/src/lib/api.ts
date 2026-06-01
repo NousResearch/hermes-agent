@@ -747,6 +747,9 @@ export interface VoiceTranscriptEvent {
   event_type?: string;
   user?: string;
   timestamp?: string;
+  sequence?: number;
+  elapsed_ms?: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface VoiceToolResponse {

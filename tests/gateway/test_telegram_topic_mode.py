@@ -158,7 +158,7 @@ def _make_runner(session_db=None):
 
 
 @pytest.mark.asyncio
-async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(monkeypatch):
+async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_creation_unavailable(monkeypatch):
     import gateway.run as gateway_run
 
     runner = _make_runner()
@@ -174,7 +174,7 @@ async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(m
     result = await runner._handle_message(_make_event("hello from root"))
 
     assert "main chat is reserved for system commands" in result
-    assert "All Messages" in result
+    assert "new-topic/+ button" in result
     runner._run_agent.assert_not_called()
     runner.session_store.get_or_create_session.assert_not_called()
 
@@ -195,12 +195,38 @@ async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
 
     result = await runner._handle_message(_make_event("/new"))
 
-    assert "create a new topic" in result
-    assert "All Messages" in result
+    assert "send a normal prompt" in result
+    assert "Hermes will create a new topic" in result
     assert "Use /new inside" in result
     runner._run_agent.assert_not_called()
     runner.session_store.reset_session.assert_not_called()
     runner.session_store.get_or_create_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_root_telegram_dm_prompt_creates_topic_and_runs_agent(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.return_value = 555
+    runner._handle_message_with_agent = AsyncMock(return_value="agent response")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("research os cursor movement"))
+
+    assert result == "agent response"
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_awaited_once()
+    create_args = runner.adapters[Platform.TELEGRAM]._create_dm_topic.await_args.args
+    assert create_args[0] == 208214988
+    assert "research os cursor movement" in create_args[1]
+    runner._handle_message_with_agent.assert_awaited_once()
+    _, routed_source, quick_key, _run_generation = runner._handle_message_with_agent.await_args.args
+    assert routed_source.thread_id == "555"
+    assert quick_key.endswith(":555")
 
 
 @pytest.mark.asyncio
@@ -478,6 +504,28 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
 
 
 @pytest.mark.asyncio
+async def test_topic_root_status_does_not_create_duplicate_system_topic(tmp_path, monkeypatch):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("root /topic status must not enter the agent loop")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/topic"))
+
+    assert "Telegram multi-session topics are enabled" in result
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_not_awaited()
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
@@ -740,7 +788,10 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
     adapter.send.assert_awaited_once_with(
         "208214988",
         "System topic for Hermes commands and status.",
-        metadata={"thread_id": "4242"},
+        metadata={
+            "thread_id": "4242",
+            "telegram_dm_topic_created_for_send": True,
+        },
     )
     bot.pin_chat_message.assert_awaited_once_with(
         chat_id=208214988,

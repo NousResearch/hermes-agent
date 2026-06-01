@@ -664,7 +664,7 @@ Topics created outside of the config (e.g., by manually calling the Telegram API
 
 ## Multi-session DM mode (`/topic`)
 
-A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlike the operator-curated `extra.dm_topics` above, this mode is **user-driven**: no config, no pre-declared topic names. The end user flips it on with `/topic`, then taps the Telegram **+** button to create as many topics as they want, each one a fully independent Hermes session.
+A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlike the operator-curated `extra.dm_topics` above, this mode is **user-driven**: no config, no pre-declared topic names. The end user flips it on with `/topic`, then sends a normal prompt from the Telegram main/**All Messages** view; Hermes creates a fresh topic for that prompt and treats it as an independent session. Users can also use Telegram's new-topic/**+** button when their client exposes it.
 
 ### `/topic` subcommands
 
@@ -716,14 +716,16 @@ Hermes will:
 3. Create and pin a **System** topic for status/commands (best-effort)
 4. Reply with a list of previous unlinked Telegram sessions the user can restore
 
-After activation, the **root DM is a lobby**: normal prompts are rejected with guidance pointing at **All Messages**. System commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root.
+After activation, slash commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root/main view. A non-command prompt sent from the main/**All Messages** view starts a fresh topic automatically; if Hermes cannot create the topic (for example, BotFather thread settings changed), it falls back to guidance for creating a topic manually.
 
 ### Creating a new topic (end-user flow)
 
 1. Open the bot DM in Telegram
-2. Tap **All Messages** at the top of the bot interface, then send any message
-3. Telegram creates a new topic for that message
+2. From the main/**All Messages** view, send the first normal prompt for the new chat
+3. Hermes calls Telegram `createForumTopic`, creates a new topic for that prompt, and routes the prompt into that topic
 4. Hermes responds inside that topic — the topic is now a standalone session
+
+If your Telegram client exposes a new-topic/**+** button in the bot interface, you can also create/open a topic manually and send the first prompt there.
 
 Every topic gets its own conversation history, model state, tool execution, and session ID. The isolation key is `agent:main:telegram:dm:{chat_id}:{thread_id}` — identical to the config-driven DM topics isolation.
 
@@ -745,7 +747,7 @@ When this flag is on, Hermes still generates an internal session title (used by 
 
 ### `/new` inside a topic
 
-Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.
+Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, sending a new prompt from the main/**All Messages** view is usually what you want.
 
 ### Restoring a previous session
 

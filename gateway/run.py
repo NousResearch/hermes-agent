@@ -2254,19 +2254,64 @@ class GatewayRunner:
     def _telegram_topic_root_lobby_message(self) -> str:
         return (
             "This main chat is reserved for system commands.\n\n"
-            "To start a new Hermes chat, open the All Messages topic at the top "
-            "of this bot interface and send any message there. Telegram will "
-            "create a new topic for that message; each topic works as an "
-            "independent Hermes session."
+            "I tried to create a new Hermes topic for that prompt but couldn't. "
+            "Use Telegram's new-topic/+ button in this bot interface, then send "
+            "your message inside that topic. Each topic works as an independent "
+            "Hermes session."
         )
 
     def _telegram_topic_root_new_message(self) -> str:
         return (
-            "To start a new parallel Hermes chat, open the All Messages topic "
-            "at the top of this bot interface and send any message there. "
-            "Telegram will create a new topic for it.\n\n"
+            "To start a new parallel Hermes chat, send a normal prompt in the "
+            "main/All Messages view and Hermes will create a new topic for it.\n\n"
             "Each topic is an independent Hermes session. Use /new inside an "
             "existing topic only if you want to replace that topic's current session."
+        )
+
+    async def _telegram_topic_source_for_root_prompt(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+    ) -> Optional[SessionSource]:
+        """Create a fresh Telegram DM topic for a root-lobby prompt.
+
+        Telegram's "All Messages" view in bot DMs is not delivered to bots as a
+        special create-topic event: the Bot API sees an ordinary private-chat
+        message with no ``message_thread_id`` (or sometimes General/``1``).
+        If we reject that as the root lobby, users have no message-driven way to
+        start the new parallel session that our own guidance promises.  Treat a
+        non-command root prompt as a request for a new lane: create the forum
+        topic via Bot API, rewrite the event source to that new thread, then let
+        the normal agent path create/bind the session.
+        """
+        if not self._is_telegram_topic_root_lobby(source):
+            return None
+        if event.get_command():
+            return None
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None else None
+        if not callable(create_topic) or not source.chat_id:
+            return None
+        raw_title = (event.text or "").strip() or "Hermes Chat"
+        title = self._sanitize_telegram_topic_title(raw_title)
+        try:
+            thread_id = await create_topic(int(source.chat_id), title)
+        except Exception:
+            logger.debug("Failed to create Telegram topic for root prompt", exc_info=True)
+            return None
+        if not thread_id:
+            return None
+        logger.info(
+            "telegram topic lobby prompt: created topic chat=%s user=%s thread=%s title=%r",
+            source.chat_id,
+            source.user_id,
+            thread_id,
+            title,
+        )
+        return dataclasses.replace(
+            source,
+            thread_id=str(thread_id),
+            chat_topic=title,
         )
 
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
@@ -2274,9 +2319,9 @@ class GatewayRunner:
             return None
         return (
             "Started a new Hermes session in this topic.\n\n"
-            "Tip: for parallel work, open All Messages and send a message there "
-            "to create a separate topic instead of using /new here. /new replaces "
-            "the session attached to the current topic."
+            "Tip: for parallel work, send a normal prompt in the main/All "
+            "Messages view to create a separate topic instead of using /new "
+            "here. /new replaces the session attached to the current topic."
         )
 
     def _record_telegram_topic_binding(
@@ -7843,11 +7888,17 @@ class GatewayRunner:
         # execution of a dangerous command.
 
         if self._is_telegram_topic_root_lobby(source):
-            # Debounce the lobby reminder so a user who forgets about
-            # topic mode and fires ten prompts doesn't get ten copies.
-            if self._should_send_telegram_lobby_reminder(source):
-                return self._telegram_topic_root_lobby_message()
-            return None
+            topic_source = await self._telegram_topic_source_for_root_prompt(event, source)
+            if topic_source is not None:
+                source = topic_source
+                event = dataclasses.replace(event, source=source)
+                _quick_key = self._session_key_for_source(source)
+            else:
+                # Debounce the lobby reminder so a user who forgets about
+                # topic mode and fires ten prompts doesn't get ten copies.
+                if self._should_send_telegram_lobby_reminder(source):
+                    return self._telegram_topic_root_lobby_message()
+                return None
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -12420,7 +12471,10 @@ class GatewayRunner:
             send_result = await adapter.send(
                 source.chat_id,
                 "System topic for Hermes commands and status.",
-                metadata={"thread_id": str(thread_id)},
+                metadata={
+                    "thread_id": str(thread_id),
+                    "telegram_dm_topic_created_for_send": True,
+                },
             )
             message_id = getattr(send_result, "message_id", None)
         except Exception:
@@ -12648,8 +12702,8 @@ class GatewayRunner:
             "How it works:\n"
             "1. Run /topic once in this DM — Hermes checks BotFather Threads\n"
             "   Settings are enabled and flips on multi-session mode.\n"
-            "2. Tap All Messages at the top of the bot and send any message.\n"
-            "   Telegram creates a new topic for that message; each topic is\n"
+            "2. Send a normal prompt in the main/All Messages view.\n"
+            "   Hermes creates a new topic for that message; each topic is\n"
             "   an independent Hermes session (fresh history, fresh context).\n"
             "3. The root DM becomes a system lobby — send /topic, /status,\n"
             "   /help, /usage there. Normal prompts go in a topic.\n"
@@ -12742,6 +12796,15 @@ class GatewayRunner:
                     await self._send_telegram_topic_setup_image(source)
                 return t("gateway.topic.topics_user_disallowed")
 
+        was_enabled = False
+        try:
+            was_enabled = self._session_db.is_telegram_topic_mode_enabled(
+                chat_id=str(source.chat_id),
+                user_id=str(source.user_id),
+            )
+        except Exception:
+            logger.debug("Failed to read existing Telegram topic mode before /topic", exc_info=True)
+
         try:
             self._session_db.enable_telegram_topic_mode(
                 chat_id=str(source.chat_id),
@@ -12753,7 +12816,7 @@ class GatewayRunner:
             logger.exception("Failed to enable Telegram topic mode")
             return t("gateway.topic.enable_failed", error=exc)
 
-        if not source.thread_id:
+        if not source.thread_id and not was_enabled:
             await self._ensure_telegram_system_topic(source)
 
         if source.thread_id:
@@ -12786,9 +12849,8 @@ class GatewayRunner:
         lines = [
             "Telegram multi-session topics are enabled.",
             "",
-            "To create a new Hermes chat, open All Messages at the top of this "
-            "bot interface and send any message there. Telegram will create a "
-            "new topic for it.",
+            "To create a new Hermes chat, send a normal prompt in the main/All "
+            "Messages view. Hermes will create a new topic for it.",
             "",
         ]
         try:
@@ -12814,7 +12876,7 @@ class GatewayRunner:
             lines.extend([
                 "",
                 "To restore one:",
-                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
+                "1. Create or open a topic. To create a new one, send a normal prompt in the main/All Messages view.",
                 "2. Send /topic <session-id> inside that topic.",
                 f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
             ])
@@ -12823,7 +12885,7 @@ class GatewayRunner:
                 "No previous unlinked Telegram sessions found.",
                 "",
                 "To restore a previous session later:",
-                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
+                "1. Create or open a topic. To create a new one, send a normal prompt in the main/All Messages view.",
                 "2. Send /topic <session-id> inside that topic.",
             ])
         return "\n".join(lines)

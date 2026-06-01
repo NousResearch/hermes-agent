@@ -133,7 +133,11 @@ def cron_list(show_all: bool = False):
 
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
-            print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+            # Delivery is tracked separately from execution: a cron run can
+            # complete successfully while the platform send fails.  Say "Last
+            # delivery" so an old platform error is not mistaken for a current
+            # execution failure.
+            print(f"    {color('⚠ Last delivery failed:', Colors.YELLOW)} {delivery_err}")
 
         print()
 

@@ -4,7 +4,7 @@ from argparse import Namespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs
+from cron.jobs import create_job, get_job, list_jobs, mark_job_run
 from hermes_cli.cron import cron_command
 
 
@@ -111,3 +111,16 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_list_labels_delivery_failure_as_delivery_not_execution(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Report", schedule="every 1h", name="Report job")
+        mark_job_run(job["id"], success=True, delivery_error="telegram TLS failure")
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert "Last run:" in out
+        assert "ok" in out
+        assert "Last delivery failed:" in out
+        assert "Delivery failed:" not in out
+        assert "telegram TLS failure" in out

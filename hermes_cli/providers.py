@@ -81,6 +81,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
     ),
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        extra_env_vars=("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"),
+        base_url_env_var="VERTEX_BASE_URL",
+    ),
     "lmstudio": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
@@ -310,6 +316,9 @@ ALIASES: Dict[str, str] = {
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
 
+    # google-vertex
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
     # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",

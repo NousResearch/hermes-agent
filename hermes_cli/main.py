@@ -3109,6 +3109,8 @@ def select_provider_and_model(args=None):
         _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "vertex":
+        _model_flow_vertex(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in {
@@ -4082,6 +4084,546 @@ def _stepfun_base_url_for_region(region: str) -> str:
 
 
 
+
+def _model_flow_vertex(config, current_model=""):
+    """Google Vertex AI provider flow.
+
+    Credentials come from a service account JSON file or gcloud ADC —
+    no API key prompt. Region defaults to 'global' (required for Gemini
+    3.x previews). Models are shown from the curated Vertex catalog.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    # 1. Credential status — display only, no prompt needed
+    creds_path = (
+        os.environ.get("VERTEX_CREDENTIALS_PATH", "").strip()
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    )
+    if creds_path:
+        short = creds_path if len(creds_path) <= 40 else f"...{creds_path[-37:]}"
+        print(f"  Credentials: {short} \u2713")
+    else:
+        print("  Credentials: Application Default Credentials (ADC)")
+        print("  (Set VERTEX_CREDENTIALS_PATH or GOOGLE_APPLICATION_CREDENTIALS")
+        print("   to a service account JSON file, or run")
+        print("   `gcloud auth application-default login`.)")
+    print()
+
+    # 2. Region override (optional)
+    from agent.vertex_adapter import resolve_vertex_region
+    current_region = resolve_vertex_region()
+    try:
+        region_input = input(f"  Region [{current_region}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    region = region_input or current_region
+    if region != current_region:
+        from hermes_cli.config import save_env_value
+        save_env_value("VERTEX_REGION", region)
+        print(f"  Region saved: {region}")
+        print()
+
+    # 3. Model selection from curated catalog
+    model_list = _PROVIDER_MODELS.get("vertex", [])
+    if not model_list:
+        model_list = [
+            "google/gemini-3.1-flash-lite-preview",
+            "google/gemini-3.5-flash",
+            "google/gemini-2.5-pro",
+        ]
+
+    selected = _prompt_model_selection(model_list, current_model)
+    if not selected:
+        print("  No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "vertex"
+    model.pop("base_url", None)
+    model.pop("api_mode", None)
+    save_config(cfg)
+    deactivate_provider()
+    print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
+
+
+def _model_flow_bedrock(config, current_model=""):
+    """AWS Bedrock provider: verify credentials, pick region, discover models.
+
+    Uses the native Converse API via boto3 — not the OpenAI-compatible endpoint.
+    Auth is handled by the AWS SDK default credential chain (env vars, profile,
+    instance role), so no API key prompt is needed.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    # 1. Check for AWS credentials
+    try:
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+            resolve_bedrock_region,
+            discover_bedrock_models,
+        )
+    except ImportError:
+        print("  ✗ boto3 is not installed. Install it with:")
+        print("    pip install boto3")
+        print()
+        return
+
+    if not has_aws_credentials():
+        print("  ⚠ No AWS credentials detected via environment variables.")
+        print("  Bedrock will use boto3's default credential chain (IMDS, SSO, etc.)")
+        print()
+
+    auth_var = resolve_aws_auth_env_var()
+    if auth_var:
+        print(f"  AWS credentials: {auth_var} ✓")
+    else:
+        print("  AWS credentials: boto3 default chain (instance role / SSO)")
+    print()
+
+    # 2. Region selection
+    current_region = resolve_bedrock_region()
+    try:
+        region_input = input(f"  AWS Region [{current_region}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    region = region_input or current_region
+
+    # 2b. Authentication mode
+    print("  Choose authentication method:")
+    print()
+    print("    1. IAM credential chain (recommended)")
+    print("       Works with EC2 instance roles, SSO, env vars, aws configure")
+    print("    2. Bedrock API Key")
+    print("       Enter your Bedrock API Key directly — also supports")
+    print("       team scenarios where an admin distributes keys")
+    print()
+    try:
+        auth_choice = input("  Choice [1]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    if auth_choice == "2":
+        _model_flow_bedrock_api_key(config, region, current_model)
+        return
+
+    # 3. Model discovery — try live API first, fall back to static list
+    print(f"  Discovering models in {region}...")
+    live_models = discover_bedrock_models(region)
+
+    if live_models:
+        _EXCLUDE_PREFIXES = (
+            "stability.",
+            "cohere.embed",
+            "twelvelabs.",
+            "us.stability.",
+            "us.cohere.embed",
+            "us.twelvelabs.",
+            "global.cohere.embed",
+            "global.twelvelabs.",
+        )
+        _EXCLUDE_SUBSTRINGS = ("safeguard", "voxtral", "palmyra-vision")
+        filtered = []
+        for m in live_models:
+            mid = m["id"]
+            if any(mid.startswith(p) for p in _EXCLUDE_PREFIXES):
+                continue
+            if any(s in mid.lower() for s in _EXCLUDE_SUBSTRINGS):
+                continue
+            filtered.append(m)
+
+        # Deduplicate: prefer inference profiles (us.*, global.*) over bare
+        # foundation model IDs.
+        profile_base_ids = set()
+        for m in filtered:
+            mid = m["id"]
+            if mid.startswith(("us.", "global.")):
+                base = mid.split(".", 1)[1] if "." in mid[3:] else mid
+                profile_base_ids.add(base)
+
+        deduped = []
+        for m in filtered:
+            mid = m["id"]
+            if not mid.startswith(("us.", "global.")) and mid in profile_base_ids:
+                continue
+            deduped.append(m)
+
+        _RECOMMENDED = [
+            "us.anthropic.claude-sonnet-4-6",
+            "us.anthropic.claude-opus-4-6",
+            "us.anthropic.claude-haiku-4-5",
+            "us.amazon.nova-pro",
+            "us.amazon.nova-lite",
+            "us.amazon.nova-micro",
+            "deepseek.v3",
+            "us.meta.llama4-maverick",
+            "us.meta.llama4-scout",
+        ]
+
+        def _sort_key(m):
+            mid = m["id"]
+            for i, rec in enumerate(_RECOMMENDED):
+                if mid.startswith(rec):
+                    return (0, i, mid)
+            if mid.startswith("global."):
+                return (1, 0, mid)
+            return (2, 0, mid)
+
+        deduped.sort(key=_sort_key)
+        model_list = [m["id"] for m in deduped]
+        print(
+            f"  Found {len(model_list)} text model(s) (filtered from {len(live_models)} total)"
+        )
+    else:
+        model_list = _PROVIDER_MODELS.get("bedrock", [])
+        if model_list:
+            print(
+                f"  Using {len(model_list)} curated models (live discovery unavailable)"
+            )
+        else:
+            print(
+                "  No models found. Check IAM permissions for bedrock:ListFoundationModels."
+            )
+            return
+
+    # 4. Model selection
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("  Model ID: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "bedrock"
+        model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
+        model.pop("api_mode", None)  # bedrock_converse is auto-detected
+
+        bedrock_cfg = cfg.get("bedrock", {})
+        if not isinstance(bedrock_cfg, dict):
+            bedrock_cfg = {}
+        bedrock_cfg["region"] = region
+        cfg["bedrock"] = bedrock_cfg
+
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
+    else:
+        print("  No change.")
+
+
+def _model_flow_api_key_provider(config, provider_id, current_model=""):
+    """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import (
+        get_env_value,
+        save_env_value,
+        load_config,
+        save_config,
+    )
+    from hermes_cli.models import (
+        _PROVIDER_MODELS,
+        fetch_api_models,
+        opencode_model_api_mode,
+        normalize_opencode_model_id,
+    )
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+    base_url_env = pconfig.base_url_env_var or ""
+
+    # Check / prompt for API key
+    existing_key = ""
+    for ev in pconfig.api_key_env_vars:
+        existing_key = get_env_value(ev) or os.getenv(ev, "")
+        if existing_key:
+            break
+
+    existing_key, abort = _prompt_api_key(
+        pconfig, existing_key, provider_id=provider_id
+    )
+    if abort:
+        return
+
+    # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
+    # are exhausted in a handful of agent turns, so refuse to wire up the
+    # provider with a free-tier key. Probe is best-effort; network or auth
+    # errors fall through without blocking.
+    if provider_id == "gemini" and existing_key:
+        try:
+            from agent.gemini_native_adapter import probe_gemini_tier
+        except Exception:
+            probe_gemini_tier = None
+        if probe_gemini_tier is not None:
+            print("  Checking Gemini API tier...")
+            probe_base = (
+                (get_env_value(base_url_env) if base_url_env else "")
+                or os.getenv(base_url_env or "", "")
+                or pconfig.inference_base_url
+            )
+            tier = probe_gemini_tier(existing_key, probe_base)
+            if tier == "free":
+                print()
+                print(
+                    "❌ This Google API key is on the free tier "
+                    "(<= 250 requests/day for gemini-2.5-flash)."
+                )
+                print(
+                    "   Hermes typically makes 3-10 API calls per user turn "
+                    "(tool iterations + auxiliary tasks),"
+                )
+                print(
+                    "   so the free tier is exhausted after a handful of "
+                    "messages and cannot sustain"
+                )
+                print("   an agent session.")
+                print()
+                print(
+                    "   To use Gemini with Hermes, enable billing on your "
+                    "Google Cloud project and regenerate"
+                )
+                print(
+                    "   the key in a billing-enabled project: "
+                    "https://aistudio.google.com/apikey"
+                )
+                print()
+                print(
+                    "   Alternatives with workable free usage: DeepSeek, "
+                    "OpenRouter (free models), Groq, Nous."
+                )
+                print()
+                print("Not saving Gemini as the default provider.")
+                return
+            if tier == "paid":
+                print("  Tier check: paid ✓")
+            else:
+                # "unknown" -- network issue, auth problem, unexpected response.
+                # Don't block; the runtime 429 handler will surface free-tier
+                # guidance if the key turns out to be free tier.
+                print("  Tier check: could not verify (proceeding anyway).")
+            print()
+
+    # Optional base URL override.
+    # Precedence: env var → config.yaml model.base_url → registry default.
+    # Reading config.yaml prevents silently overwriting a saved remote URL
+    # (e.g. a remote LM Studio endpoint) with localhost when the user just
+    # presses Enter at the prompt below.
+    current_base = ""
+    if base_url_env:
+        current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+    if not current_base:
+        try:
+            _m = load_config().get("model") or {}
+            if str(_m.get("provider") or "").strip().lower() == provider_id:
+                current_base = str(_m.get("base_url") or "").strip()
+        except Exception:
+            pass
+    effective_base = current_base or pconfig.inference_base_url
+
+    try:
+        override = input(f"Base URL [{effective_base}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        override = ""
+    if override and base_url_env:
+        if not override.startswith(("http://", "https://")):
+            print(
+                "  Invalid URL — must start with http:// or https://. Keeping current value."
+            )
+        else:
+            save_env_value(base_url_env, override)
+            effective_base = override
+
+    # Model selection — resolution order:
+    #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
+    #   2. Curated static fallback list (offline insurance)
+    #   3. Live /models endpoint probe (small providers without models.dev data)
+    #
+    # LM Studio: live /api/v1/models probe (no models.dev catalog).
+    # Ollama Cloud: merged discovery (live API + models.dev + disk cache).
+    if provider_id == "lmstudio":
+        from hermes_cli.auth import AuthError
+        from hermes_cli.models import fetch_lmstudio_models
+
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        try:
+            model_list = fetch_lmstudio_models(
+                api_key=api_key_for_probe, base_url=effective_base
+            )
+        except AuthError as exc:
+            print(f"  LM Studio rejected the request: {exc}")
+            print("  Set LM_API_KEY (or update it) to match the server's bearer token.")
+            model_list = []
+        if model_list:
+            print(f"  Found {len(model_list)} model(s) from LM Studio")
+    elif provider_id == "ollama-cloud":
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        # During setup, force a live refresh so the picker reflects newly
+        # released models (e.g. deepseek v4 flash, kimi k2.6) the moment
+        # the user enters their key — not an hour later when the disk
+        # cache TTL expires.
+        model_list = fetch_ollama_cloud_models(
+            api_key=api_key_for_probe,
+            base_url=effective_base,
+            force_refresh=True,
+        )
+        if model_list:
+            print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
+    elif provider_id == "novita":
+        from hermes_cli.models import fetch_api_models
+
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        curated = _PROVIDER_MODELS.get(provider_id, [])
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
+        if live_models:
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+        else:
+            mdev_models: list = []
+            try:
+                from agent.models_dev import list_agentic_models
+
+                mdev_models = list_agentic_models(provider_id)
+            except Exception:
+                pass
+            if mdev_models:
+                seen = {m.lower() for m in mdev_models}
+                model_list = list(mdev_models)
+                for m in curated:
+                    if m.lower() not in seen:
+                        model_list.append(m)
+                        seen.add(m.lower())
+                print(f"  Found {len(model_list)} model(s) from models.dev registry")
+            else:
+                model_list = curated
+                if model_list:
+                    print(
+                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+                    )
+    else:
+        curated = _PROVIDER_MODELS.get(provider_id, [])
+
+        # Try models.dev first — returns tool-capable models, filtered for noise
+        mdev_models: list = []
+        try:
+            from agent.models_dev import list_agentic_models
+
+            mdev_models = list_agentic_models(provider_id)
+        except Exception:
+            pass
+
+        if mdev_models:
+            # Merge models.dev with curated list so newly added models
+            # (not yet in models.dev) still appear in the picker.
+            if curated:
+                seen = {m.lower() for m in mdev_models}
+                merged = list(mdev_models)
+                for m in curated:
+                    if m.lower() not in seen:
+                        merged.append(m)
+                        seen.add(m.lower())
+                model_list = merged
+            else:
+                model_list = mdev_models
+            print(f"  Found {len(model_list)} model(s) from models.dev registry")
+        elif curated and len(curated) >= 8:
+            # Curated list is substantial — use it directly, skip live probe
+            model_list = curated
+            print(
+                f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+            )
+        else:
+            api_key_for_probe = existing_key or (
+                get_env_value(key_env) if key_env else ""
+            )
+            live_models = fetch_api_models(api_key_for_probe, effective_base)
+            if live_models and len(live_models) >= len(curated):
+                model_list = live_models
+                print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+            else:
+                model_list = curated
+                if model_list:
+                    print(
+                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+                    )
+            # else: no defaults either, will fall through to raw input
+
+    if provider_id in {"opencode-zen", "opencode-go"}:
+        model_list = [
+            normalize_opencode_model_id(provider_id, mid) for mid in model_list
+        ]
+        current_model = normalize_opencode_model_id(provider_id, current_model)
+        model_list = list(dict.fromkeys(mid for mid in model_list if mid))
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        if provider_id in {"opencode-zen", "opencode-go"}:
+            selected = normalize_opencode_model_id(provider_id, selected)
+
+        _save_model_choice(selected)
+
+        # Update config with provider, base URL, and provider-specific API mode
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
+        if provider_id in {"opencode-zen", "opencode-go"}:
+            model["api_mode"] = opencode_model_api_mode(provider_id, selected)
+        else:
+            model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
 
 
 def _run_anthropic_oauth_flow(save_env_value):

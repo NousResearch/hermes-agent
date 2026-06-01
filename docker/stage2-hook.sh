@@ -326,6 +326,9 @@ if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
         # Write to s6's container_environment so with-contenv picks it
         # up for all supervised services (main-hermes, dashboard, etc.).
         # Idempotent: each boot overwrites with the current path.
+        # Some container runtimes / s6-overlay versions do not create the
+        # envdir before cont-init hooks run, so create it defensively.
+        mkdir -p /run/s6/container_environment
         printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
     else
         echo "[stage2] Warning: no Chromium binary under $PLAYWRIGHT_BROWSERS_PATH; browser tool may fail"

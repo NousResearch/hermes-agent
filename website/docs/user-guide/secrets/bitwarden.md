@@ -100,6 +100,32 @@ secrets:
 | `override_existing` | `true` | When true, Bitwarden values overwrite anything already in env (so rotation in the web app actually takes effect). Flip to `false` if you want `.env` / shell exports to win locally. |
 | `auto_install` | `true` | When true, `bws` is auto-downloaded into `~/.hermes/bin/` on first use. |
 
+## Inventory and prune a profile-local .env
+
+When you want to move plaintext secrets out of a profile-local `.env` and into Bitwarden, use the dedicated inventory/prune flow:
+
+```bash
+# List candidate env var names without printing values
+hermes secrets bitwarden inventory --profile coding
+
+# Scan every Hermes profile's .env file
+hermes secrets bitwarden inventory --all-profiles
+
+# Dry-run: verify Bitwarden has the secret before removing it from .env
+hermes secrets bitwarden prune --profile coding
+
+# Apply: create a timestamped 0600 backup, then remove only verified secret entries
+hermes secrets bitwarden prune --profile coding --apply
+```
+
+Notes:
+
+- The inventory command only prints env var names, profiles, and classification (`secret`, `non-secret`, or `bootstrap-secret`). It never prints values.
+- `prune` is dry-run by default.
+- The bootstrap token (`access_token_env`, usually `BWS_ACCESS_TOKEN`) is intentionally kept in the profile-local `.env` so Hermes can keep talking to Bitwarden.
+- `prune --apply` only rewrites the selected profile's `.env`; it does not touch `config.yaml`, and it leaves non-secret config like paths, CPU/memory, and channel IDs alone.
+- Before rewriting, Hermes creates a local backup named like `.env.bak-pre-bitwarden-prune-<timestamp>` and tightens it to mode `0600`.
+
 ## Failure modes
 
 Bitwarden never blocks Hermes startup. If anything goes wrong, you'll see a one-line warning in stderr and Hermes continues with whatever credentials `.env` already had:

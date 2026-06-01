@@ -14122,6 +14122,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             raise
 
         title = await self._session_db.get_session_title(session_id) or session_id
+        # Restored sessions already carry a title, so the auto-title path
+        # (which only fires for newly generated titles) never renames the
+        # topic. Rename it here so the restored topic reflects the session
+        # title instead of keeping Telegram's default name (the raw
+        # "/topic <id>" command text that created the topic).
+        await self._rename_telegram_topic_for_session_title(source, session_id, title)
         last_assistant = None
         try:
             for message in reversed(await self._session_db.get_messages(session_id)):

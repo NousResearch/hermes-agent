@@ -720,6 +720,46 @@ async def test_topic_restore_inside_topic_binds_old_session_and_returns_last_ass
 
 
 @pytest.mark.asyncio
+async def test_topic_restore_renames_topic_to_restored_session_title(
+    tmp_path, monkeypatch
+):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title("old-session", "Quarterly Tax Planning")
+    session_db.append_message("old-session", "user", "help with taxes")
+    session_db.append_message("old-session", "assistant", "Sure, happy to help.")
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic restore must not enter the agent loop")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    # The restored topic must be renamed to the session title rather than
+    # keeping Telegram's default (the raw "/topic <id>" command text).
+    assert "Session restored: Quarterly Tax Planning" in result
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="17585",
+        name="Quarterly Tax Planning",
+    )
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_topic_restore_refuses_session_owned_by_another_telegram_user(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 

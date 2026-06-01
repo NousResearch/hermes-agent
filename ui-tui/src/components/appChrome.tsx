@@ -266,6 +266,12 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+const profileStatusLabel = (profileName?: null | string) => {
+  const value = String(profileName ?? '').trim()
+
+  return value && value !== 'default' && value !== 'custom' ? `profile ${value}` : ''
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -300,6 +306,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  profileName,
   usage,
   bgCount,
   liveSessionCount,
@@ -320,8 +327,10 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
+  const profileLabel = profileStatusLabel(profileName)
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
     onSessionCountClick?.()
@@ -354,6 +363,12 @@ export function StatusRule({
           {' │ '}
           {modelLabel(model, modelReasoningEffort, modelFast)}
         </Text>
+        {profileLabel ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {profileLabel}
+          </Text>
+        ) : null}
         {ctxLabel ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -530,6 +545,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  profileName?: null | string
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

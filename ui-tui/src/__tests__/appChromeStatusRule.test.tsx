@@ -57,6 +57,7 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
 describe('StatusRule session count click target', () => {
   it('makes the live session count itself clickable', () => {
     const openSwitcher = vi.fn()
+
     const element = StatusRule({
       bgCount: 0,
       busy: false,
@@ -80,5 +81,38 @@ describe('StatusRule session count click target', () => {
     expect(clickableSessionCount).not.toBeNull()
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
     expect(openSwitcher).toHaveBeenCalledOnce()
+  })
+})
+
+describe('StatusRule active profile label', () => {
+  const renderStatusText = (profileName?: null | string) =>
+    textContent(
+      StatusRule({
+        bgCount: 0,
+        busy: false,
+        cols: 100,
+        cwdLabel: '~/repo',
+        liveSessionCount: 0,
+        model: 'kimi-k2.6',
+        profileName,
+        sessionStartedAt: null,
+        showCost: false,
+        status: 'ready',
+        statusColor: DEFAULT_THEME.color.ok,
+        t: DEFAULT_THEME,
+        turnStartedAt: null,
+        usage: { total: 0 },
+        voiceLabel: ''
+      })
+    )
+
+  it('shows named profiles in the status rule', () => {
+    expect(renderStatusText('research')).toContain('profile research')
+  })
+
+  it('keeps default profile labels quiet', () => {
+    expect(renderStatusText('default')).not.toContain('profile default')
+    expect(renderStatusText('custom')).not.toContain('profile custom')
+    expect(renderStatusText()).not.toContain('profile')
   })
 })

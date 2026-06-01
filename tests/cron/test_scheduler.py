@@ -378,6 +378,54 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_explicit_slack_same_channel_preserves_origin_thread_id(self):
+        job = {
+            "deliver": "slack:C0B3KEP3SD6",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "C0B3KEP3SD6",
+            "thread_id": "1778485067.844139",
+        }
+
+    def test_explicit_slack_other_channel_does_not_inherit_origin_thread_id(self):
+        job = {
+            "deliver": "slack:COTHERCHAN",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "COTHERCHAN",
+            "thread_id": None,
+        }
+
+    def test_explicit_slack_thread_target_overrides_origin_thread_id(self):
+        job = {
+            "deliver": "slack:C0B3KEP3SD6:1778500000.000001",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "C0B3KEP3SD6",
+            "thread_id": "1778500000.000001",
+        }
+
     def test_bare_platform_uses_matching_origin_chat(self):
         job = {
             "deliver": "telegram",
@@ -1802,6 +1850,65 @@ class TestRunJobSessionPersistence:
             "platform": "telegram",
             "chat_id": "-2002",
             "thread_id": None,
+        }
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
+        fake_db.close.assert_called_once()
+
+    def test_run_job_preserves_slack_origin_thread_for_same_explicit_channel(self, tmp_path, monkeypatch):
+        job = {
+            "id": "slack-thread-job",
+            "name": "slack-thread",
+            "prompt": "hello",
+            "deliver": "slack:C0B3KEP3SD6",
+            "origin": {
+                "platform": "slack",
+                "chat_id": "C0B3KEP3SD6",
+                "thread_id": "1778485067.844139",
+            },
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                from gateway.session_context import get_session_env
+
+                seen["platform"] = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") or None
+                seen["chat_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") or None
+                seen["thread_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID") or None
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert seen == {
+            "platform": "slack",
+            "chat_id": "C0B3KEP3SD6",
+            "thread_id": "1778485067.844139",
         }
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None

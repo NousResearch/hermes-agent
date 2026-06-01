@@ -398,29 +398,20 @@ def _cap_read_tracker_data(task_data: dict) -> None:
     dedup = task_data.get("dedup")
     if dedup is not None and len(dedup) > _DEDUP_CAP:
         excess = len(dedup) - _DEDUP_CAP
-        for _ in range(excess):
-            try:
-                dedup.pop(next(iter(dedup)))
-            except (StopIteration, KeyError):
-                break
+        for key in list(dedup)[:excess]:
+            dedup.pop(key, None)
 
     dedup_hits = task_data.get("dedup_hits")
     if dedup_hits is not None and len(dedup_hits) > _DEDUP_CAP:
         excess = len(dedup_hits) - _DEDUP_CAP
-        for _ in range(excess):
-            try:
-                dedup_hits.pop(next(iter(dedup_hits)))
-            except (StopIteration, KeyError):
-                break
+        for key in list(dedup_hits)[:excess]:
+            dedup_hits.pop(key, None)
 
     ts = task_data.get("read_timestamps")
     if ts is not None and len(ts) > _READ_TIMESTAMPS_CAP:
         excess = len(ts) - _READ_TIMESTAMPS_CAP
-        for _ in range(excess):
-            try:
-                ts.pop(next(iter(ts)))
-            except (StopIteration, KeyError):
-                break
+        for key in list(ts)[:excess]:
+            ts.pop(key, None)
 
 
 def _is_internal_file_status_text(content: str) -> bool:

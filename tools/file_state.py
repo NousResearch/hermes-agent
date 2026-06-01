@@ -282,13 +282,10 @@ def _cap_dict(d: dict, limit: int) -> None:
     over = len(d) - limit
     if over <= 0:
         return
-    # dict preserves insertion order (PY>=3.7) — pop the oldest keys.
-    it = iter(d)
-    for _ in range(over):
-        try:
-            d.pop(next(it))
-        except (StopIteration, KeyError):
-            break
+    # Snapshot keys before mutating.  Advancing an iterator after popping from
+    # the same dict raises ``RuntimeError: dictionary changed size``.
+    for key in list(d)[:over]:
+        d.pop(key, None)
 
 
 # ── Convenience wrappers (short names used at call sites) ────────────

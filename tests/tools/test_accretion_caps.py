@@ -78,6 +78,35 @@ class TestReadTrackerCaps:
         assert "/path/7" in task_data["read_timestamps"]
         assert "/path/0" not in task_data["read_timestamps"]
 
+    def test_dedup_hits_capped_oldest_first(self, monkeypatch):
+        """dedup_hits uses the same snapshot-before-pop cap path as dedup."""
+        from tools import file_tools as ft
+
+        monkeypatch.setattr(ft, "_DEDUP_CAP", 4)
+        task_data = {
+            "read_history": set(),
+            "dedup": {},
+            "dedup_hits": {f"/path/{i}": i for i in range(9)},
+            "read_timestamps": {},
+        }
+
+        ft._cap_read_tracker_data(task_data)
+
+        assert len(task_data["dedup_hits"]) == 4
+        assert "/path/8" in task_data["dedup_hits"]
+        assert "/path/5" in task_data["dedup_hits"]
+        assert "/path/0" not in task_data["dedup_hits"]
+
+    def test_file_state_dict_cap_trims_more_than_one_without_iterator_error(self):
+        """_cap_dict snapshots keys before mutation so multi-entry trims are safe."""
+        from tools import file_state
+
+        data = {f"/path/{i}": i for i in range(6)}
+
+        file_state._cap_dict(data, 3)
+
+        assert list(data) == ["/path/3", "/path/4", "/path/5"]
+
     def test_cap_is_idempotent_under_cap(self, monkeypatch):
         """When containers are under cap, _cap_read_tracker_data is a no-op."""
         from tools import file_tools as ft

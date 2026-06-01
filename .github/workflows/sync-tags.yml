@@ -2,8 +2,8 @@ name: Sync Upstream to Main and Develop
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Todos los días a medianoche
-  workflow_dispatch: # Botón manual
+    - cron: '0 0 * * *' # Todos los días a medianoche UTC
+  workflow_dispatch: # Ejecución manual
 
 permissions:
   contents: write
@@ -11,49 +11,95 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: develop # 👈 OBLIGATORIO: Le dice a GitHub que empiece trabajando en tu rama develop
+          ref: develop
           token: ${{ secrets.GH_TOKEN_SYNC_PAT }}
 
       - name: Sync Process
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN_SYNC_PAT }}
         run: |
-          # 1. Configurar la identidad del bot
+          set -euo pipefail
+
+          # ---------------------------------------------------------
+          # 1. Configurar identidad del bot
+          # ---------------------------------------------------------
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # 2. Configurar git para usar el token PAT en todas las URLs de GitHub
+
+          # ---------------------------------------------------------
+          # 2. Configurar Git para usar el PAT en GitHub
+          # ---------------------------------------------------------
           git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-          # 3. Configurar el repositorio original y descargar el historial completo de ambos lados
+          # ---------------------------------------------------------
+          # 3. Configurar remoto upstream
+          # ---------------------------------------------------------
           git remote add upstream https://github.com/NousResearch/hermes-agent.git
-          git fetch --all --tags --prune
 
           # ---------------------------------------------------------
-          # PASO A: Actualizar tu rama MAIN en la nube
+          # 4. Obtener ramas y tags actualizados
           # ---------------------------------------------------------
-          # Creamos una rama local 'main' que sea una copia exacta de 'upstream/main'
+          git fetch origin --prune
+          git fetch upstream main --prune
+
+          # Traer los tags de upstream al repositorio local.
+          # El '+' permite actualizar el tag local si en upstream cambió.
+          git fetch upstream '+refs/tags/*:refs/tags/*'
+
+          # ---------------------------------------------------------
+          # PASO A: Actualizar MAIN desde upstream/main
+          # ---------------------------------------------------------
           git checkout -B main upstream/main
-          
-          # La subimos directamente a TU 'origin/main', sobreescribiéndola para que quede idéntica
+
+          # Deja origin/main idéntica a upstream/main
           git push origin main --force
 
           # ---------------------------------------------------------
-          # PASO B: Actualizar tu rama DEVELOP integrando lo nuevo
+          # PASO B: Actualizar DEVELOP integrando MAIN
           # ---------------------------------------------------------
-          # Creamos la rama local 'develop' basada en tu 'origin/develop' real de la nube
           git checkout -B develop origin/develop
-          
-          # Fusionamos 'main' (que ya tiene lo último de NousResearch) dentro de 'develop'
+
+          # Fusiona main dentro de develop
           git merge main --no-edit
-          
-          # ---------------------------------------------------------
-          # PASO C: Subir los cambios de develop y los tags
-          # ---------------------------------------------------------
+
+          # Sube develop actualizado
           git push origin develop
-          git push origin --tags
+
+          # ---------------------------------------------------------
+          # PASO C: Crear o actualizar tags en origin
+          # ---------------------------------------------------------
+          echo "Sincronizando tags desde upstream hacia origin..."
+
+          while IFS= read -r tag; do
+            if [ -z "$tag" ]; then
+              continue
+            fi
+
+            local_commit="$(git rev-parse "$tag^{commit}")"
+
+            remote_commit="$(git ls-remote --tags origin "refs/tags/$tag" \
+              | awk '{print $1}' \
+              | head -n 1 || true)"
+
+            if [ -z "$remote_commit" ]; then
+              echo "Creando tag nuevo en origin: $tag -> $local_commit"
+              git push origin "refs/tags/$tag:refs/tags/$tag"
+
+            elif [ "$remote_commit" = "$local_commit" ]; then
+              echo "Tag ya sincronizado, se ignora: $tag"
+
+            else
+              echo "Actualizando tag existente en origin: $tag"
+              echo "  origin:   $remote_commit"
+              echo "  upstream: $local_commit"
+
+              git push origin "+refs/tags/$tag:refs/tags/$tag"
+            fi
+
+          done < <(git tag -l | sort -u)

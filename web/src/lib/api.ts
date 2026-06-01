@@ -188,6 +188,30 @@ export const api = {
       method: "POST",
     }),
 
+  // Mission Control packets: local review artifacts only, no execution hooks
+  listMissionControlPackets: () =>
+    fetchJSON<MissionControlPacketListResponse>("/api/mission-control/packets", { cache: "no-store" }),
+  getMissionControlPacket: (packetId: string) =>
+    fetchJSON<MissionControlPacketDetailResponse>(`/api/mission-control/packets/${encodeURIComponent(packetId)}`, { cache: "no-store" }),
+  createMissionControlCodexPromptPacket: (body: MissionControlCodexPromptPacketCreate) =>
+    fetchJSON<MissionControlPacketCreateResponse>("/api/mission-control/packets/codex-prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  createMissionControlWorkerResultPacket: (body: MissionControlWorkerResultPacketCreate) =>
+    fetchJSON<MissionControlPacketCreateResponse>("/api/mission-control/packets/worker-result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  createMissionControlBlockFlagPacket: (body: MissionControlBlockFlagPacketCreate) =>
+    fetchJSON<MissionControlPacketCreateResponse>("/api/mission-control/packets/block-flag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
@@ -782,6 +806,96 @@ export interface OpsSocialPlatformHistory {
   path: string;
   warning?: string | null;
   events: OpsSocialPlatformHistoryEvent[];
+}
+
+export type MissionControlPacketKind = "codex_prompt" | "worker_result" | "operator_note" | "block_flag";
+export type MissionControlPacketStatus = "draft" | "queued" | "imported" | "reviewed" | "archived";
+
+export interface MissionControlPacketSummary {
+  id: string;
+  kind: MissionControlPacketKind;
+  project: string;
+  title: string;
+  status: MissionControlPacketStatus;
+  dry_run: boolean;
+  review_required: boolean;
+  trusted_for_execution: boolean;
+  author?: string;
+  created_at: string;
+  updated_at: string;
+  redacted_payload_preview?: string;
+  warnings: string[];
+}
+
+export interface MissionControlPacket {
+  id: string;
+  kind: MissionControlPacketKind;
+  project: string;
+  title: string;
+  payload: Record<string, unknown> & {
+    prompt?: string;
+    worker_result?: string;
+    parsed_metadata?: Record<string, unknown>;
+    flag?: string;
+    reason?: string;
+    advisory_only?: boolean;
+  };
+  redacted_payload_preview: string;
+  source_refs: string[];
+  approval_gates: unknown[];
+  dry_run: boolean;
+  review_required: boolean;
+  trusted_for_execution: boolean;
+  status: MissionControlPacketStatus;
+  author: string;
+  created_at: string;
+  updated_at: string;
+  warnings: string[];
+}
+
+export interface MissionControlPacketListResponse {
+  generated_at: string;
+  source: string;
+  source_refs: string[];
+  items: MissionControlPacketSummary[];
+  warnings: string[];
+}
+
+export interface MissionControlPacketDetailResponse {
+  generated_at: string;
+  source: string;
+  source_refs: string[];
+  packet: MissionControlPacket;
+  warnings: string[];
+}
+
+export interface MissionControlPacketCreateResponse {
+  packet: MissionControlPacket;
+}
+
+export interface MissionControlCodexPromptPacketCreate {
+  project: string;
+  title: string;
+  prompt: string;
+  source_refs?: string[];
+  author?: string;
+}
+
+export interface MissionControlWorkerResultPacketCreate {
+  project: string;
+  title: string;
+  worker_result: string;
+  source_refs?: string[];
+  author?: string;
+}
+
+export interface MissionControlBlockFlagPacketCreate {
+  project: string;
+  title: string;
+  flag: "pause_future_outreach" | "block_all_sends" | "pause_cron_triggered_outreach" | "disable_launch_actions";
+  reason: string;
+  source_refs?: string[];
+  author?: string;
 }
 
 export interface OpsActionExecute {

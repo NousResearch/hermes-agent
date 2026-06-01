@@ -1764,11 +1764,41 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # dropped, leaving thinking signatures and tool_use id/name/input intact.
     ordered_blocks = m.get("anthropic_content_blocks")
     if isinstance(ordered_blocks, list) and ordered_blocks:
+        # Re-source each tool_use input from the stored tool_calls map rather
+        # than the captured block. The ordered-blocks list captures tool_use
+        # input from the RAW API response (normalize_response), which is NOT
+        # credential-redacted; tool_calls[].function.arguments IS redacted at
+        # storage time (build_assistant_message, #19798). Replaying the raw
+        # block input would resurrect a secret the model inlined into a tool
+        # call (e.g. terminal(command="curl -H 'Authorization: Bearer sk-...'")
+        # onto the wire, even though the same value is redacted everywhere else
+        # in history. Keying by sanitized tool id preserves interleave order
+        # (the reason this channel exists) while swapping in the redacted
+        # input. Adapted from #36071 (replay-time tool-input re-sourcing).
+        redacted_input_by_id: Dict[str, Any] = {}
+        for tc in m.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            raw_args = fn.get("arguments", "{}")
+            try:
+                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except (json.JSONDecodeError, ValueError):
+                parsed_args = {}
+            redacted_input_by_id[_sanitize_tool_id(tc.get("id", ""))] = parsed_args
         replayed: List[Dict[str, Any]] = []
         for b in ordered_blocks:
             clean = _sanitize_replay_block(b)
-            if clean is not None:
-                replayed.append(clean)
+            if clean is None:
+                continue
+            if clean.get("type") == "tool_use":
+                # Override raw (un-redacted) input with the redacted copy when
+                # we have one for this id; fall back to the sanitized block
+                # input only if the tool_call is missing (shape mismatch).
+                redacted = redacted_input_by_id.get(clean.get("id", ""))
+                if redacted is not None:
+                    clean["input"] = redacted
+            replayed.append(clean)
         if replayed:
             return {"role": "assistant", "content": replayed}
 

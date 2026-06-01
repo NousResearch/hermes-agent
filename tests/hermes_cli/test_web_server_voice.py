@@ -163,6 +163,21 @@ def test_voice_tool_memory_lookup_does_not_spawn_cli(voice_client, monkeypatch):
     assert resp.json()["tool_name"] == "memory_lookup"
 
 
+def test_voice_lookup_tools_return_explicit_no_match_text(voice_client, monkeypatch):
+    client, web_server = voice_client
+
+    monkeypatch.setattr(web_server, "_voice_kanban_digest", lambda query=None: "")
+    monkeypatch.setattr(web_server, "_voice_recent_sessions", lambda query=None: "")
+
+    kanban = client.post("/api/voice/tool", json={"name": "kanban_lookup", "arguments": {"query": "blocked mix card"}})
+    sessions = client.post("/api/voice/tool", json={"name": "session_lookup", "arguments": {"query": "recent mix message"}})
+
+    assert kanban.status_code == 200
+    assert kanban.json()["result"] == "Kanban: no matching results found for query: blocked mix card."
+    assert sessions.status_code == 200
+    assert sessions.json()["result"] == "Sessions: no matching results found for query: recent mix message."
+
+
 def test_voice_tool_dedupes_same_realtime_call_id(voice_client, monkeypatch):
     client, web_server = voice_client
     calls = []
@@ -230,6 +245,23 @@ def test_run_voice_research_uses_cli_bridge(monkeypatch, voice_client):
     assert calls[0][0][1:5] == ["-m", "hermes_cli.main", "chat", "-q"]
     assert "Dashboard voice user: deniz" in calls[0][0][5]
     assert calls[0][0][-3:] == ["--source", "dashboard-voice", "-Q"]
+    assert calls[0][1]["timeout"] == 90
+
+
+def test_run_voice_research_background_timeout_is_longer_and_concise(monkeypatch, voice_client):
+    _client, web_server = voice_client
+
+    def fake_run(_args, **_kwargs):
+        raise web_server.subprocess.TimeoutExpired(cmd=["python", "-m", "hermes_cli.main", "chat", "huge prompt"], timeout=600)
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        web_server._run_voice_research("long task", user="deniz", source="dashboard-voice-background")
+
+    message = str(exc_info.value)
+    assert message == "Rolly CLI tool timed out after 600s"
+    assert "huge prompt" not in message
 
 
 def test_voice_transcript_creates_state_session(voice_client):

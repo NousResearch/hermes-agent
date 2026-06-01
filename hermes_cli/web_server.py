@@ -678,6 +678,11 @@ def _voice_tool_result(text: str, *, tool_name: str, data: Dict[str, Any] | None
     return {"ok": True, "result": _voice_bound_text(text, 2200), "data": data or {}, "error": None, "tool_name": tool_name, "cached": cached}
 
 
+def _voice_lookup_no_match(source: str, query: str | None) -> str:
+    suffix = f" for query: {query}" if query else ""
+    return f"{source}: no matching results found{suffix}."
+
+
 def _voice_tool_cache_key(payload: VoiceToolRequest, user: str | None = None) -> str | None:
     explicit = payload.idempotency_key or payload.realtime_call_id or str(payload.arguments.get("_realtime_call_id") or "")
     if explicit or payload.call_id:
@@ -706,9 +711,13 @@ def _voice_tool_dispatch(payload: VoiceToolRequest, user: str | None = None) -> 
             raise HTTPException(status_code=400, detail="Missing query")
         return _voice_tool_result(_voice_brain_lookup_text(query), tool_name=name)
     if name == "kanban_lookup":
-        return _voice_tool_result(_voice_kanban_digest(str(args.get("query") or "").strip() or None), tool_name=name)
+        query = str(args.get("query") or "").strip() or None
+        result = _voice_kanban_digest(query)
+        return _voice_tool_result(result or _voice_lookup_no_match("Kanban", query), tool_name=name)
     if name == "session_lookup":
-        return _voice_tool_result(_voice_recent_sessions(str(args.get("query") or "").strip() or None), tool_name=name)
+        query = str(args.get("query") or "").strip() or None
+        result = _voice_recent_sessions(query)
+        return _voice_tool_result(result or _voice_lookup_no_match("Sessions", query), tool_name=name)
     if name == "context_lookup":
         query = str(args.get("query") or "").strip()
         sources = args.get("sources") or ["memory", "kanban", "brain", "sessions", "voice_tasks"]
@@ -953,14 +962,23 @@ def _run_voice_research(question: str, user: str | None = None, *, source: str =
     )
     env = os.environ.copy()
     env.setdefault("HERMES_HOME", str(get_hermes_home()))
-    proc = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "--source", source, "-Q"],
-        cwd=str(PROJECT_ROOT),
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=int(os.getenv("HERMES_VOICE_TOOL_TIMEOUT", "90")),
+    timeout_seconds = int(
+        os.getenv(
+            "HERMES_VOICE_BACKGROUND_TASK_TIMEOUT" if source == "dashboard-voice-background" else "HERMES_VOICE_TOOL_TIMEOUT",
+            "600" if source == "dashboard-voice-background" else "90",
+        )
     )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "--source", source, "-Q"],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Rolly CLI tool timed out after {timeout_seconds}s") from exc
     output = (proc.stdout or "").strip()
     if proc.returncode != 0:
         detail = (proc.stderr or output or f"exit {proc.returncode}").strip()

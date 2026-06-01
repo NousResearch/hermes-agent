@@ -579,7 +579,6 @@ export default function VoiceCallPage() {
 
   const pollVoiceTask = useCallback(
     async (taskId: string, toolCallId: string) => {
-      markWorkStarted(`task:${taskId}`, `Rolly background task ${taskId} running`);
       let lastProgress = "";
       try {
         for (;;) {
@@ -594,7 +593,6 @@ export default function VoiceCallPage() {
           }
           if (task.status === "complete") {
             const output = task.result || "Background Rolly task completed.";
-            markWorkFinished(`task:${taskId}`, false);
             addLog("tool", `${taskId} complete\n${output.slice(0, 700)}`);
             persistTranscript("tool", output, "delegation_result", { task_id: taskId, session_id: task.session_id });
             queueOrSendToolOutput(`handoff:${taskId}`, output, taskId);
@@ -602,7 +600,6 @@ export default function VoiceCallPage() {
           }
           if (task.status === "failed" || task.status === "cancelled") {
             const output = `Background Rolly task ${task.status}: ${task.error || "no error detail"}`;
-            markWorkFinished(`task:${taskId}`, "error");
             addLog("error", output);
             persistTranscript("tool", output, "delegation_error", { task_id: taskId, session_id: task.session_id });
             queueOrSendToolOutput(`handoff:${taskId}`, output, taskId);
@@ -611,13 +608,12 @@ export default function VoiceCallPage() {
         }
       } catch (exc) {
         const message = exc instanceof Error ? exc.message : String(exc);
-        markWorkFinished(`task:${taskId}`, "error");
         addLog("error", `${taskId} polling failed: ${message}`);
         persistTranscript("tool", message, "delegation_error", { task_id: taskId });
         queueOrSendToolOutput(toolCallId, `Background task status check failed: ${message}`, taskId);
       }
     },
-    [addLog, markWorkFinished, markWorkStarted, persistTranscript, queueOrSendToolOutput, rememberVoiceTask, speaker],
+    [addLog, persistTranscript, queueOrSendToolOutput, rememberVoiceTask, speaker],
   );
 
   const handleToolCall = useCallback(
@@ -764,7 +760,6 @@ export default function VoiceCallPage() {
         return;
       }
       if (type === "input_audio_buffer.committed") {
-        if (mode === "solo") startWorkingCue();
         addLog("system", "Realtime API committed mic audio.");
         persistTranscript("system", "Realtime API committed mic audio.", "audio_committed");
         return;
@@ -865,6 +860,13 @@ export default function VoiceCallPage() {
       streamRef.current = stream;
       startMicMonitor(stream);
       await startBackgroundCallSupport();
+      if (!isCurrentCall()) {
+        stopBackgroundCallSupport();
+        stopMicMonitor();
+        if (streamRef.current === stream) streamRef.current = null;
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const track = stream.getAudioTracks()[0];
       addLog("system", `Browser mic opened: ${track?.label || "unknown device"}. Watch the mic level; it should move when you talk.`);
       persistTranscript("system", `Browser mic opened: ${track?.label || "unknown device"}.`, "mic_opened");
@@ -912,7 +914,7 @@ export default function VoiceCallPage() {
       addLog("error", message);
       stopCall();
     }
-  }, [addLog, handleRealtimeEvent, mode, persistTranscript, refreshInputDevices, selectedInputId, speaker, startBackgroundCallSupport, startMicMonitor, stopCall, playVoiceCue]);
+  }, [addLog, handleRealtimeEvent, mode, persistTranscript, refreshInputDevices, selectedInputId, speaker, startBackgroundCallSupport, startMicMonitor, stopBackgroundCallSupport, stopCall, stopMicMonitor, playVoiceCue]);
 
   const toggleMute = useCallback(() => {
     const next = !muted;

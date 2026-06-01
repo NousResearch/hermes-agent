@@ -70,10 +70,10 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         "agent.shell_hooks",
         types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.mcp_tool",
-        types.SimpleNamespace(discover_mcp_tools=_blocking_discover),
+    monkeypatch.setattr(
+        mcp_startup,
+        "_discover_mcp_tools_without_interactive_oauth",
+        _blocking_discover,
     )
 
     try:

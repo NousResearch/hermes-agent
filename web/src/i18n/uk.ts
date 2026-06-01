@@ -218,6 +218,13 @@ export const uk: Translations = {
     next: "Наступне",
     pause: "Призупинити",
     resume: "Відновити",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Запустити зараз",
     delivery: {
       local: "Локально",

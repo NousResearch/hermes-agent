@@ -218,6 +218,13 @@ export const es: Translations = {
     next: "Próxima",
     pause: "Pausar",
     resume: "Reanudar",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Ejecutar ahora",
     delivery: {
       local: "Local",

@@ -218,6 +218,13 @@ export const ru: Translations = {
     next: "Следующий",
     pause: "Пауза",
     resume: "Возобновить",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Запустить сейчас",
     delivery: {
       local: "Локально",

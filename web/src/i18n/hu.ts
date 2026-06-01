@@ -218,6 +218,13 @@ export const hu: Translations = {
     next: "Következő",
     pause: "Szüneteltetés",
     resume: "Folytatás",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Indítás most",
     delivery: {
       local: "Helyi",

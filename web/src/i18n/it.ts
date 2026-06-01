@@ -218,6 +218,13 @@ export const it: Translations = {
     next: "Prossima",
     pause: "Pausa",
     resume: "Riprendi",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Esegui ora",
     delivery: {
       local: "Locale",

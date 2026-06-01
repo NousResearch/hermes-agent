@@ -1811,6 +1811,9 @@ simplex-streaming = [
 simplex-streaming-local-stt = [
     { name = "faster-whisper" },
 ]
+simplex-streaming-local-tts = [
+    { name = "piper-tts" },
+]
 slack = [
     { name = "aiohttp" },
     { name = "slack-bolt" },
@@ -1933,6 +1936,7 @@ requires-dist = [
     { name = "openai", specifier = "==2.24.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pipecat-ai", marker = "extra == 'simplex-streaming'", specifier = "==1.3.0" },
+    { name = "piper-tts", marker = "extra == 'simplex-streaming-local-tts'", specifier = "==1.4.2" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32' and extra == 'pty'", specifier = "==0.7.0" },
@@ -1967,7 +1971,7 @@ requires-dist = [
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.5.7" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "simplex-native-calls", "simplex-streaming", "simplex-streaming-local-stt", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "simplex-native-calls", "simplex-streaming", "simplex-streaming-local-stt", "simplex-streaming-local-tts", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -3174,6 +3178,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pathvalidate"
+version = "3.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fa/2a/52a8da6fe965dea6192eb716b357558e103aea0a1e9a8352ad575a8406ca/pathvalidate-3.3.1.tar.gz", hash = "sha256:b18c07212bfead624345bb8e1d6141cdcf15a39736994ea0b94035ad2b1ba177", size = 63262, upload-time = "2025-06-15T09:07:20.736Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/70/875f4a23bfc4731703a5835487d0d2fb999031bd415e7d17c0ae615c18b7/pathvalidate-3.3.1-py3-none-any.whl", hash = "sha256:5263baab691f8e1af96092fa5137ee17df5bdfbd6cff1fcac4d6ef4bc2e1735f", size = 24305, upload-time = "2025-06-15T09:07:19.117Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3287,6 +3300,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/92/cc/8352e30c47ee4fd075b9a0f3d91183294582578f07289180a30fc8228409/pipecat_ai-1.3.0.tar.gz", hash = "sha256:abeb9d95b1df2f35b855334cda1899fc603124d5448967c82ba08a94c604318f", size = 11260868, upload-time = "2026-05-29T01:03:00.532Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b6/73/fff17b48cd254ad1c358d612ce92fcc342838e0fc43cc235aca3c70527fb/pipecat_ai-1.3.0-py3-none-any.whl", hash = "sha256:59d4950a61a0a201cf551354d8cdec038c1bdf457df080cd41d29d7ff53e0b2e", size = 10905336, upload-time = "2026-05-29T01:02:57.764Z" },
+]
+
+[[package]]
+name = "piper-tts"
+version = "1.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "onnxruntime" },
+    { name = "pathvalidate" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/53/3c636c4250e8cb489c50c6dda9d64400518e8c6600576850104b3232b562/piper_tts-1.4.2.tar.gz", hash = "sha256:dbe7e5391d7657f8a5f2b7ce7cdbafc5bbc559de2af15e5299ce298323eade51", size = 4364835, upload-time = "2026-04-02T21:17:11.062Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/27/5e309f1218296118e8e9ac22eeeddb0bb9a17095bd9eedcd26603eea7bf5/piper_tts-1.4.2-cp39-abi3-macosx_10_9_x86_64.whl", hash = "sha256:d996f9139c44a0bedb6a9ed45805c429a827c56ef9213933859349801fa7f4e1", size = 13822408, upload-time = "2026-04-02T21:16:57.92Z" },
+    { url = "https://files.pythonhosted.org/packages/47/e1/84fcb36c7ac413bb22eb3bdda5f21861f02d0f436df0a9090949c9fec032/piper_tts-1.4.2-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:138e6adf26a8e796f53866770ea30b666b65432a5e94857c2d9a8c473a8a1f90", size = 13830417, upload-time = "2026-04-02T21:17:00.665Z" },
+    { url = "https://files.pythonhosted.org/packages/77/1c/260c65320df47fee582d78ad52d49d4195c5439a77b62e73306c2de835ea/piper_tts-1.4.2-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6736329f1ef58c39272215849dffdacae601201480b08a0c892938fa4d7c8c67", size = 13841991, upload-time = "2026-04-02T21:17:03.251Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/58/7b7cbd7e570ac6eb8dbfc22de94d1457863b97876c1cb6a926e959423fb2/piper_tts-1.4.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b17184a664bd9431ce95c138f4bfb3025e1280cf26075a703dbfdcab989b8ee3", size = 13841872, upload-time = "2026-04-02T21:17:06.208Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/5a/fda959ca07554a8ec3e380b168e79fff16f3020f4956c356a613616c1994/piper_tts-1.4.2-cp39-abi3-win_amd64.whl", hash = "sha256:9c4a3a11f5889ea9d0df4414dce2bd9bee5ce7d9cf604c8fd5e307441d4c031f", size = 13831944, upload-time = "2026-04-02T21:17:08.755Z" },
 ]
 
 [[package]]

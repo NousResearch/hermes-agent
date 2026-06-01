@@ -171,6 +171,99 @@ def test_v21_run_detail_route_links_events_and_artifacts(tmp_path, monkeypatch, 
     assert any(e["event_type"] == "task_created" for e in detail["data"]["events"])
 
 
+def _seed_v22_parent_child(paths):
+    now = agents_os.utc_now()
+    parent_id = "task-parent"
+    child_id = "task-child"
+    run_id = "run-child"
+    artifact_id = "artifact-parent"
+    artifact_path = paths.artifacts / "handoff" / "parent-evidence.md"
+    agents_os.write_markdown(artifact_path, "Parent evidence", "Parent result with token SECRET_TOKEN=abc123", {"id": artifact_id})
+    with agents_os.connect(paths) as conn:
+        conn.execute("INSERT INTO tasks(id,title,status,workflow,priority,created_at,updated_at,notes,approval_required) VALUES(?,?,?,?,?,?,?,?,?)", (parent_id, "Parent research", "completed", "research-brief", 2, now, now, "{\"evidence\":\"Parent closed with api_key=raw123\"}", 0))
+        conn.execute("INSERT INTO tasks(id,title,status,workflow,priority,created_at,updated_at,notes,approval_required) VALUES(?,?,?,?,?,?,?,?,?)", (child_id, "Child implementation", "blocked", "code-task", 2, now, now, "{\"parent_id\":\"task-parent\"}", 0))
+        conn.execute("INSERT INTO runs(id,task_id,workflow,status,input,created_at,completed_at) VALUES(?,?,?,?,?,?,?)", (run_id, child_id, "code-task", "blocked", "child input", now, None))
+        conn.execute("INSERT INTO artifacts(id,kind,title,path,task_id,workflow,created_at,run_id) VALUES(?,?,?,?,?,?,?,?)", (artifact_id, "note", "Parent evidence", str(artifact_path), parent_id, "research-brief", now, None))
+        conn.execute("INSERT INTO approvals(id,title,status,risk,task_id,payload,created_at) VALUES(?,?,?,?,?,?,?)", ("approval-child", "Child approval", "pending", "external-action", child_id, "payload password=raw", now))
+        conn.execute("INSERT INTO events(id,task_id,run_id,event_type,payload,created_at) VALUES(?,?,?,?,?,?)", ("event-parent-closed", parent_id, None, "task_closed", json.dumps({"evidence": "Parent closed with api_key=raw123", "child_task_id": child_id}), now))
+        conn.execute("INSERT INTO events(id,task_id,run_id,event_type,payload,created_at) VALUES(?,?,?,?,?,?)", ("event-child-linked", child_id, run_id, "dependency_linked", json.dumps({"parent_id": parent_id, "handoff_artifact_id": artifact_id, "token": "SECRET_TOKEN=abc"}), now))
+        conn.commit()
+    return parent_id, child_id, run_id, artifact_id
+
+
+def test_task_detail_route_returns_connected_operational_context(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    parent_id, child_id, run_id, artifact_id = _seed_v22_parent_child(paths)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    app = MissionControlWebApp(paths)
+    detail = app.handle_json("GET", f"/api/tasks/{child_id}")
+
+    assert detail["ok"] is True
+    data = detail["data"]
+    assert data["task"]["id"] == child_id
+    assert data["parent"]["id"] == parent_id
+    assert isinstance(data["children"], list)
+    assert data["approvals"][0]["id"] == "approval-child"
+    assert data["runs"][0]["id"] == run_id
+    assert any(e["event_type"] == "dependency_linked" for e in data["events"])
+    assert data["artifacts"][0]["id"] == artifact_id
+    assert data["dependency_status"]["state"] in {"blocked", "waiting", "ready"}
+    assert "safe_next_actions" in data
+
+
+def test_task_detail_redacts_credential_like_previews(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    _, child_id, _, _ = _seed_v22_parent_child(paths)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    detail = MissionControlWebApp(paths).handle_json("GET", f"/api/tasks/{child_id}")
+    dumped = json.dumps(detail["data"])
+    assert "SECRET_TOKEN=abc" not in dumped
+    assert "api_key=raw123" not in dumped
+    assert "password=raw" not in dumped
+    assert "[redacted]" in dumped
+
+
+def test_approval_gated_task_detail_blocks_execute_and_close(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    app = MissionControlWebApp(agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault))))
+    created = app.handle_json("POST", "/api/workflows/external-action-draft/run", {"input": "send outbound", "title": "Approval gated"})
+    task_id = created["data"]["task_id"]
+    detail = app.handle_json("GET", f"/api/tasks/{task_id}")
+    allowed = {a["id"]: a["allowed"] for a in detail["data"]["safe_next_actions"]}
+    assert allowed["execute"] is False
+    assert allowed["close"] is False
+    assert app.handle_json("POST", f"/api/tasks/{task_id}/execute")["error"]["code"] == "approval_required"
+    assert app.handle_json("POST", f"/api/tasks/{task_id}/close", {"evidence": "done"})["error"]["code"] == "approval_required"
+
+
+def test_child_dependency_handoff_preview_uses_parent_evidence_or_artifact(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    paths = agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault)))
+    parent_id, child_id, _, artifact_id = _seed_v22_parent_child(paths)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    detail = MissionControlWebApp(paths).handle_json("GET", f"/api/tasks/{child_id}")
+    handoff = detail["data"]["handoff_preview"]
+    assert handoff["parent_id"] == parent_id
+    assert handoff["artifact_id"] == artifact_id
+    assert "Parent" in handoff["preview"]
+    assert len(handoff["preview"]) < 500
+    assert "SECRET_TOKEN" not in handoff["preview"]
+
+
+def test_web_json_exposes_task_detail_route(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    assert agents_os.main(["--vault-root", str(vault), "web", "--json"]) == 0
+    payload = _json(capsys)
+    assert "/api/tasks/{id}" in payload["routes"]
+
+
 def test_cli_web_json_exposes_v21_routes(tmp_path, monkeypatch, capsys):
     vault = _setup(tmp_path, monkeypatch, capsys)
     assert agents_os.main(["--vault-root", str(vault), "web", "--json"]) == 0

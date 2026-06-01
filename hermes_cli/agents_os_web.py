@@ -27,6 +27,7 @@ API_ROUTES = [
     "/api/status",
     "/api/dashboard",
     "/api/tasks",
+    "/api/tasks/{id}",
     "/api/approvals",
     "/api/runs",
     "/api/runs/{id}",
@@ -345,6 +346,148 @@ class MissionControlWebApp:
         run = self._annotate_runs([run])[0]
         return ok({"run": run, "task": task, "artifacts": artifacts, "events": events, "read_only": True})
 
+
+    def _safe_json_dict(self, raw: str | None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw, strict=False)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _task_parent_id(self, task: dict[str, Any] | sqlite3.Row | None) -> str | None:
+        if not task:
+            return None
+        notes = task["notes"] if isinstance(task, sqlite3.Row) else task.get("notes")
+        payload = self._safe_json_dict(notes)
+        parent_id = payload.get("parent_id") or payload.get("parent_task_id") or payload.get("depends_on")
+        if isinstance(parent_id, list):
+            parent_id = parent_id[0] if parent_id else None
+        return str(parent_id) if parent_id else None
+
+    def _redact_value(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._redact_preview(value, limit=2000)
+        if isinstance(value, list):
+            return [self._redact_value(v) for v in value]
+        if isinstance(value, dict):
+            safe: dict[str, Any] = {}
+            for key, val in value.items():
+                if re.search(r"(?i)(api[_-]?key|token|secret|password|credential|auth)", str(key)):
+                    safe[key] = "[redacted]"
+                else:
+                    safe[key] = self._redact_value(val)
+            return safe
+        return value
+
+    def _sanitize_row(self, row: dict[str, Any] | None) -> dict[str, Any] | None:
+        return self._redact_value(row) if row is not None else None
+
+    def _parse_task_evidence(self, task: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any] | None:
+        notes_payload = self._safe_json_dict(task.get("notes"))
+        evidence = notes_payload.get("evidence") or notes_payload.get("close_evidence")
+        source = "task_notes" if evidence else None
+        for event in events:
+            if evidence:
+                break
+            if event.get("event_type") in {"task_closed", "close_blocked"}:
+                payload = self._safe_json_dict(event.get("payload"))
+                evidence = payload.get("evidence")
+                source = "event"
+        if not evidence:
+            return None
+        return {"source": source, "preview": self._redact_preview(str(evidence), 500)}
+
+    def _children_for_parent(self, conn: sqlite3.Connection, parent_id: str) -> list[dict[str, Any]]:
+        children: list[dict[str, Any]] = []
+        for row in conn.execute("SELECT * FROM tasks ORDER BY created_at ASC LIMIT 500").fetchall():
+            task = _row(row)
+            if task and self._task_parent_id(task) == parent_id:
+                children.append(self._sanitize_row(task))
+        return children
+
+    def _artifact_preview_text(self, artifact: dict[str, Any] | None, limit: int = 420) -> str:
+        if not artifact:
+            return ""
+        preview = self.preview_path(str(artifact.get("path") or ""))
+        if not preview.get("ok"):
+            return ""
+        data = preview.get("data") or {}
+        if data.get("preview_type") == "image":
+            return self._redact_preview(str(data.get("path") or "image artifact"), limit)
+        return self._redact_preview(str(data.get("content") or ""), limit)
+
+    def _dependency_status(self, task: dict[str, Any], parent: dict[str, Any] | None, approvals: list[dict[str, Any]]) -> dict[str, Any]:
+        pending_approval = any(a.get("status") == "pending" for a in approvals) or bool(task.get("approval_required")) or task.get("status") == "needs_approval"
+        if pending_approval:
+            return {"state": "blocked", "reason": "pending_approval", "waiting_for": "approval"}
+        if parent and parent.get("status") not in {"completed", "review", "cancelled"}:
+            return {"state": "waiting", "reason": "parent_not_closed", "waiting_for": parent.get("id")}
+        if task.get("status") == "blocked":
+            return {"state": "blocked", "reason": "task_status_blocked", "waiting_for": "operator_review"}
+        return {"state": "ready", "reason": "dependencies_clear", "waiting_for": None}
+
+    def _safe_next_actions(self, task: dict[str, Any], dependency: dict[str, Any], approvals: list[dict[str, Any]], artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        pending_approval = any(a.get("status") == "pending" for a in approvals) or bool(task.get("approval_required")) or task.get("status") == "needs_approval"
+        blocked = task.get("status") == "blocked" or dependency.get("state") in {"blocked", "waiting"}
+        completed = task.get("status") == "completed"
+        return [
+            {"id": "route", "label": "Route", "allowed": not completed and not pending_approval, "reason": "approval_required" if pending_approval else ("completed" if completed else "safe_local_route")},
+            {"id": "execute", "label": "Execute safe local task", "allowed": not completed and not pending_approval and not blocked, "reason": "approval_required" if pending_approval else ("dependency_blocked" if blocked else "safe_local_execution")},
+            {"id": "close", "label": "Close with evidence", "allowed": not completed and not pending_approval and task.get("status") in {"review", "ready", "blocked", "pending", "routed"}, "reason": "approval_required" if pending_approval else ("completed" if completed else "evidence_required")},
+            {"id": "open_artifact", "label": "Open artifact", "allowed": bool(artifacts), "reason": "artifact_available" if artifacts else "no_artifacts"},
+            {"id": "refresh", "label": "Refresh detail", "allowed": True, "reason": "read_only_refresh"},
+        ]
+
+    def task_detail_payload(self, task_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            task = _row(conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
+            if task is None:
+                return err("task_not_found", f"Task not found: {task_id}", 404)
+            parent_id = self._task_parent_id(task)
+            parent = _row(conn.execute("SELECT * FROM tasks WHERE id=?", (parent_id,)).fetchone()) if parent_id else None
+            children = self._children_for_parent(conn, task_id)
+            approvals = [_row(r) for r in conn.execute("SELECT * FROM approvals WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
+            runs = [_row(r) for r in conn.execute("SELECT * FROM runs WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
+            events = [_row(r) for r in conn.execute("SELECT * FROM events WHERE task_id=? ORDER BY created_at ASC", (task_id,)).fetchall()]
+            artifacts = [_row(r) for r in conn.execute("SELECT * FROM artifacts WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
+            parent_events: list[dict[str, Any]] = []
+            parent_artifacts: list[dict[str, Any]] = []
+            if parent:
+                parent_events = [_row(r) for r in conn.execute("SELECT * FROM events WHERE task_id=? ORDER BY created_at DESC", (parent["id"],)).fetchall()]
+                parent_artifacts = [_row(r) for r in conn.execute("SELECT * FROM artifacts WHERE task_id=? ORDER BY created_at DESC", (parent["id"],)).fetchall()]
+        handoff_artifact = parent_artifacts[0] if parent_artifacts else None
+        if handoff_artifact and not any(a.get("id") == handoff_artifact.get("id") for a in artifacts):
+            artifacts = [handoff_artifact] + artifacts
+        safe_events = [self._sanitize_row(e) for e in events]
+        safe_parent_events = [self._sanitize_row(e) for e in parent_events]
+        evidence = self._parse_task_evidence(task, safe_events)
+        parent_evidence = self._parse_task_evidence(parent, safe_parent_events) if parent else None
+        handoff_preview = None
+        if parent:
+            preview = self._artifact_preview_text(handoff_artifact) or ((parent_evidence or {}).get("preview") if parent_evidence else "")
+            handoff_preview = {"parent_id": parent.get("id"), "artifact_id": handoff_artifact.get("id") if handoff_artifact else None, "preview": self._redact_preview(preview, 420)}
+        safe_task = self._sanitize_row(task)
+        safe_parent = self._sanitize_row(parent)
+        safe_approvals = [self._sanitize_row(a) for a in approvals]
+        safe_runs = [self._sanitize_row(r) for r in self._annotate_runs(runs)]
+        safe_artifacts = [self._sanitize_row(a) for a in artifacts]
+        dependency = self._dependency_status(safe_task, safe_parent, safe_approvals)
+        return ok({
+            "task": safe_task,
+            "parent": safe_parent,
+            "children": children,
+            "approvals": safe_approvals,
+            "runs": safe_runs,
+            "events": safe_events,
+            "artifacts": safe_artifacts,
+            "close_evidence": evidence,
+            "handoff_preview": handoff_preview,
+            "dependency_status": dependency,
+            "safe_next_actions": self._safe_next_actions(safe_task, dependency, safe_approvals, safe_artifacts),
+        })
+
     def safety_payload(self) -> dict[str, Any]:
         doctor = self._doctor_payload()
         mirror_path = self.paths.vault_root / "00-command-center" / "RUNTIME-DASHBOARD.md"
@@ -568,6 +711,9 @@ class MissionControlWebApp:
                 return ok(self.dashboard_payload())
             if method == "GET" and route == "/api/tasks":
                 return ok(self.dashboard_payload()["tasks"])
+            m = re.fullmatch(r"/api/tasks/([^/]+)", route)
+            if method == "GET" and m:
+                return self.task_detail_payload(m.group(1))
             if method == "GET" and route == "/api/approvals":
                 return ok(self.dashboard_payload()["approvals"])
             if method == "GET" and route == "/api/runs":

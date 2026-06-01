@@ -58,7 +58,12 @@
 
       <section id="tasks" class="view">
         <div class="panel-toolbar"><h3>Task board</h3><button data-action="create-task">Create task</button></div>
-        <div class="kanban" id="taskBoard"></div>
+        <div class="task-layout">
+          <div class="kanban" id="taskBoard"></div>
+          <aside class="task-detail panel" id="taskDetail">
+            <div class="empty-detail">Select a task to inspect dependencies, handoff, evidence and safe actions.</div>
+          </aside>
+        </div>
       </section>
 
       <section id="approvals" class="view">

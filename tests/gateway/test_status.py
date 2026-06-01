@@ -270,6 +270,7 @@ class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_current_process_is_gateway_runtime", lambda: True)
 
         # Simulate a previous gateway run that left a state file with a stale PID
         state_path = tmp_path / "gateway_state.json"
@@ -357,6 +358,85 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_write_runtime_status_omits_platform_bucket_when_platform_is_unspecified(self, tmp_path, monkeypatch):
+        """Runtime status updates without a platform must not create JSON ``"null"`` buckets."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="running")
+        status.write_runtime_status(lcm_runtime={"scorecard": {"runtime_health": "ok"}})
+
+        payload = status.read_runtime_status()
+        assert "null" not in payload["platforms"]
+        assert None not in payload["platforms"]
+        assert payload["platforms"] == {}
+
+    def test_write_runtime_status_persists_recent_turn_memory_and_gateway_scorecards(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        recent_turn = {"scorecard": {"continuity_health": "ok"}}
+        memory = {"scorecard": {"memory_sync_health": "degraded"}}
+        lcm_gateway = {"scorecard": {"runtime_health": "ok"}}
+
+        status.write_runtime_status(
+            gateway_state="running",
+            lcm_recent_turn=recent_turn,
+            lcm_memory=memory,
+            lcm_gateway=lcm_gateway,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["lcm_recent_turn"] == recent_turn
+        assert payload["lcm_memory"] == memory
+        assert payload["lcm_gateway"] == lcm_gateway
+
+    def test_write_runtime_status_does_not_hijack_gateway_pid_from_cli_health_process(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 4242,
+            "start_time": 111.0,
+            "argv": ["/repo/hermes_cli/main.py", "gateway", "run", "--replace"],
+            "kind": "hermes-gateway",
+            "platforms": {},
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }))
+        monkeypatch.setattr(status, "_current_process_is_gateway_runtime", lambda: False)
+        monkeypatch.setattr(status, "_runtime_status_identity_is_live_gateway", lambda payload: True)
+
+        status.write_runtime_status(lcm_runtime={"scorecard": {"runtime_health": "ok"}})
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == 4242
+        assert payload["start_time"] == 111.0
+        assert payload["argv"] == ["/repo/hermes_cli/main.py", "gateway", "run", "--replace"]
+        assert payload["lcm_runtime"]["scorecard"]["runtime_health"] == "ok"
+
+    def test_write_runtime_status_recovers_live_gateway_identity_from_pid_file_for_cli_health(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,
+            "argv": ["/repo/hermes_cli/main.py", "gateway", "health", "--json"],
+            "kind": "hermes-gateway",
+            "platforms": {},
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }))
+        (tmp_path / "gateway.pid").write_text(json.dumps({
+            "pid": 4242,
+            "start_time": 111.0,
+            "argv": ["/repo/hermes_cli/main.py", "gateway", "run", "--replace"],
+            "kind": "hermes-gateway",
+        }))
+        monkeypatch.setattr(status, "_current_process_is_gateway_runtime", lambda: False)
+        monkeypatch.setattr(status, "_runtime_status_identity_is_live_gateway", lambda payload: payload.get("pid") == 4242)
+
+        status.write_runtime_status(lcm_runtime={"scorecard": {"runtime_health": "ok"}})
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == 4242
+        assert payload["start_time"] == 111.0
+        assert payload["argv"] == ["/repo/hermes_cli/main.py", "gateway", "run", "--replace"]
 
 
 class TestTerminatePid:

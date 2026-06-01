@@ -3,8 +3,9 @@ Gateway subcommand for hermes CLI.
 
 Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
-
 import asyncio
+import json
+import getpass
 import logging
 import os
 import shutil
@@ -12,6 +13,10 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
+from datetime import datetime, timezone
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2252,11 +2257,11 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
 
 
 def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
-    """Build PATH directory list for service units, excluding non-existent dirs."""
+    """Build PATH directory list for service units, excluding inaccessible dirs."""
     if project_root is None:
         project_root = PROJECT_ROOT
 
-    def _is_dir(path: Path) -> bool:
+    def _safe_is_dir(path: Path) -> bool:
         try:
             return path.is_dir()
         except OSError:
@@ -2265,21 +2270,21 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     candidates = []
 
     venv_bin = project_root / "venv" / "bin"
-    if _is_dir(venv_bin):
+    if _safe_is_dir(venv_bin):
         candidates.append(str(venv_bin))
     elif sys.prefix != sys.base_prefix:
         candidates.append(str(Path(sys.prefix) / "bin"))
 
     node_bin = project_root / "node_modules" / ".bin"
-    if _is_dir(node_bin):
+    if _safe_is_dir(node_bin):
         candidates.append(str(node_bin))
 
     hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
-    if _is_dir(hermes_node):
+    if _safe_is_dir(hermes_node):
         candidates.append(str(hermes_node))
     hermes_nm = hermes_home / "node_modules" / ".bin"
-    if _is_dir(hermes_nm):
+    if _safe_is_dir(hermes_nm):
         candidates.append(str(hermes_nm))
 
     return candidates
@@ -2380,7 +2385,7 @@ Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
-RestartSec=5
+RestartSec=10
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -2415,7 +2420,7 @@ Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
-RestartSec=5
+RestartSec=10
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -4331,14 +4336,358 @@ def _platform_status(platform: dict) -> str:
     return "not configured"
 
 
-def _runtime_health_lines() -> list[str]:
-    """Summarize the latest persisted gateway runtime health state."""
+def _load_runtime_health_state() -> dict | None:
     try:
         from gateway.status import read_runtime_status
     except Exception:
-        return []
+        return None
+    return read_runtime_status() or None
 
-    state = read_runtime_status()
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_event_age_seconds(events: list[object], workflow: str, *, now: datetime | None = None) -> float | None:
+    now = now or datetime.now(timezone.utc)
+    latest: datetime | None = None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("workflow") or "").strip() != workflow:
+            continue
+        recorded_at = _parse_iso_datetime(event.get("recorded_at"))
+        if recorded_at and (latest is None or recorded_at > latest):
+            latest = recorded_at
+    if latest is None:
+        return None
+    return max(0.0, (now - latest).total_seconds())
+
+
+def _build_gateway_lcm_scorecard(lcm_gateway: dict | None, *, now: datetime | None = None) -> dict[str, object]:
+    state = lcm_gateway if isinstance(lcm_gateway, dict) else {}
+    counters = state.get("workflow_counters") if isinstance(state.get("workflow_counters"), dict) else {}
+    recent_events = state.get("recent_workflow_events") if isinstance(state.get("recent_workflow_events"), list) else []
+    workflows: dict[str, object] = {}
+    total_success = 0
+    total_failure = 0
+    latest_outcome_by_workflow: dict[str, str] = {}
+    for event in recent_events:
+        if not isinstance(event, dict):
+            continue
+        workflow = str(event.get("workflow") or "").strip()
+        outcome = str(event.get("outcome") or "").strip().lower()
+        if workflow and outcome in {"success", "failure"}:
+            latest_outcome_by_workflow[workflow] = outcome
+    now = now or datetime.now(timezone.utc)
+    stale_workflows: list[str] = []
+    for workflow, counts in counters.items():
+        if not isinstance(counts, dict):
+            continue
+        success = int(counts.get("success", 0) or 0)
+        failure = int(counts.get("failure", 0) or 0)
+        total_success += success
+        total_failure += failure
+        total = success + failure
+        entry = {
+            "success": success,
+            "failure": failure,
+            "total": total,
+            "success_rate_pct": round((success / total) * 100, 1) if total else None,
+        }
+        latest = latest_outcome_by_workflow.get(workflow)
+        if latest:
+            entry["latest_outcome"] = latest
+        age_seconds = _latest_event_age_seconds(recent_events, workflow, now=now)
+        if age_seconds is not None:
+            entry["latest_event_age_seconds"] = round(age_seconds, 1)
+            # Gateway/API health proof should be fresh because `hermes gateway health`
+            # records this event on every invocation. If it is older than five
+            # minutes, the scorecard is stale rather than green-by-history.
+            if workflow == "health_check_execution" and age_seconds > 300:
+                entry["freshness"] = "stale"
+                stale_workflows.append(workflow)
+            else:
+                entry["freshness"] = "fresh"
+        elif total:
+            entry["freshness"] = "unknown"
+        workflows[workflow] = entry
+    total_events = total_success + total_failure
+    latest_health = None
+    if stale_workflows:
+        latest_health = "unknown"
+    elif latest_outcome_by_workflow:
+        if any(outcome == "failure" for outcome in latest_outcome_by_workflow.values()):
+            latest_health = "degraded"
+        elif any(outcome == "success" for outcome in latest_outcome_by_workflow.values()):
+            latest_health = "ok"
+    runtime_health = latest_health or ("degraded" if total_failure else ("ok" if total_success else "never"))
+    result = {
+        "overall": {
+            "success": total_success,
+            "failure": total_failure,
+            "total": total_events,
+            "success_rate_pct": round((total_success / total_events) * 100, 1) if total_events else None,
+        },
+        "workflows": workflows,
+        "runtime_health": runtime_health,
+    }
+    if stale_workflows:
+        result["stale_workflows"] = stale_workflows
+    return result
+
+
+def _record_gateway_workflow_event(
+    runtime_state: dict | None,
+    workflow: str,
+    outcome: str,
+    *,
+    failure_class: str | None = None,
+    details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    state = dict(runtime_state or {})
+    lcm_gateway = state.get("lcm_gateway") if isinstance(state.get("lcm_gateway"), dict) else {}
+    counters = lcm_gateway.get("workflow_counters") if isinstance(lcm_gateway.get("workflow_counters"), dict) else {}
+    events = lcm_gateway.get("recent_workflow_events") if isinstance(lcm_gateway.get("recent_workflow_events"), list) else []
+    counters = {name: dict(value) for name, value in counters.items() if isinstance(value, dict)}
+    events = [dict(item) for item in events if isinstance(item, dict)]
+    workflow_counts = counters.setdefault(workflow, {"success": 0, "failure": 0})
+    workflow_counts["success" if outcome == "success" else "failure"] += 1
+    events.append({
+        "workflow": workflow,
+        "outcome": outcome,
+        "failure_class": failure_class,
+        "details": details or {},
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    })
+    lcm_gateway = {
+        "workflow_counters": counters,
+        "recent_workflow_events": events[-20:],
+    }
+    lcm_gateway["scorecard"] = _build_gateway_lcm_scorecard(lcm_gateway)
+    state["lcm_gateway"] = lcm_gateway
+    return state
+
+
+def _coalesce_health(*values: object) -> str:
+    normalized = []
+    for value in values:
+        text = str(value or "").strip().lower()
+        if text:
+            normalized.append(text)
+    if any(value == "degraded" for value in normalized):
+        return "degraded"
+    if any(value == "ok" for value in normalized):
+        return "ok"
+    return "unknown"
+
+
+def _coalesce_complete_health(*values: object) -> str:
+    normalized = []
+    for value in values:
+        text = str(value or "").strip().lower()
+        if text:
+            normalized.append(text)
+    if any(value == "degraded" for value in normalized):
+        return "degraded"
+    if not normalized:
+        return "unknown"
+    if all(value == "ok" for value in normalized):
+        return "ok"
+    return "unknown"
+
+
+def _build_architecture_dashboard(
+    *,
+    runtime_state: dict | None,
+    lcm_gateway: dict | None,
+) -> dict[str, object]:
+    runtime_state = runtime_state if isinstance(runtime_state, dict) else {}
+    runtime_lcm = runtime_state.get("lcm_runtime") if isinstance(runtime_state.get("lcm_runtime"), dict) else {}
+    runtime_scorecard = runtime_lcm.get("scorecard") if isinstance(runtime_lcm.get("scorecard"), dict) else {}
+    recent_turn_lcm = runtime_state.get("lcm_recent_turn") if isinstance(runtime_state.get("lcm_recent_turn"), dict) else {}
+    recent_turn_scorecard = recent_turn_lcm.get("scorecard") if isinstance(recent_turn_lcm.get("scorecard"), dict) else {}
+    memory_lcm = runtime_state.get("lcm_memory") if isinstance(runtime_state.get("lcm_memory"), dict) else {}
+    memory_scorecard = memory_lcm.get("scorecard") if isinstance(memory_lcm.get("scorecard"), dict) else {}
+    gateway_scorecard = lcm_gateway.get("scorecard") if isinstance(lcm_gateway, dict) and isinstance(lcm_gateway.get("scorecard"), dict) else {}
+
+    fallback_workflow = runtime_scorecard.get("workflows", {}).get("fallback_activation") if isinstance(runtime_scorecard.get("workflows"), dict) else None
+    continuity_workflows = recent_turn_scorecard.get("workflows", {}) if isinstance(recent_turn_scorecard.get("workflows"), dict) else {}
+    memory_workflows = memory_scorecard.get("workflows", {}) if isinstance(memory_scorecard.get("workflows"), dict) else {}
+    gateway_workflows = gateway_scorecard.get("workflows", {}) if isinstance(gateway_scorecard.get("workflows"), dict) else {}
+
+    fallback_status = runtime_scorecard.get("runtime_health") if isinstance(fallback_workflow, dict) else "unknown"
+    active_agents = int(runtime_state.get("active_agents", 0) or 0) if isinstance(runtime_state, dict) else 0
+    continuity_required = bool(continuity_workflows) or active_agents > 0
+    continuity_status = recent_turn_scorecard.get("continuity_health") if continuity_workflows else ("not_applicable" if not continuity_required else "unknown")
+    memory_status = memory_scorecard.get("memory_sync_health") if memory_workflows else "unknown"
+    memory_write_signal = memory_workflows.get("memory_write_propagation")
+    memory_audit_signal = memory_workflows.get("memory_audit")
+    memory_reconcile_signal = memory_workflows.get("memory_reconcile_projection")
+    healthcheck_status = gateway_scorecard.get("runtime_health") if isinstance(gateway_workflows.get("health_check_execution"), dict) else "unknown"
+    hermes_acts_status = _coalesce_health(fallback_status, continuity_status)
+    honcho_remembers_status = _coalesce_health(memory_status)
+    lcm_proves_inputs = [fallback_status, memory_status, healthcheck_status]
+    if continuity_required:
+        lcm_proves_inputs.append(continuity_status)
+    lcm_proves_status = _coalesce_complete_health(*lcm_proves_inputs)
+    overall_status = _coalesce_complete_health(hermes_acts_status, honcho_remembers_status, lcm_proves_status)
+
+    return {
+        "hermes_acts": {
+            "status": hermes_acts_status,
+            "signals": {
+                "fallback_activation": runtime_scorecard.get("workflows", {}).get("fallback_activation"),
+                "short_confirmation_binding": recent_turn_scorecard.get("workflows", {}).get("short_confirmation_binding"),
+                "ambiguity_resolution": recent_turn_scorecard.get("workflows", {}).get("ambiguity_resolution"),
+            },
+        },
+        "honcho_remembers": {
+            "status": honcho_remembers_status,
+            "signals": {
+                "memory_write_propagation": memory_write_signal,
+                "memory_audit": memory_audit_signal,
+                "memory_reconcile_projection": memory_reconcile_signal,
+            },
+        },
+        "lcm_proves": {
+            "status": lcm_proves_status,
+            "signals": {
+                "fallback_activation": runtime_scorecard.get("workflows", {}).get("fallback_activation"),
+                "short_confirmation_binding": recent_turn_scorecard.get("workflows", {}).get("short_confirmation_binding"),
+                "ambiguity_resolution": recent_turn_scorecard.get("workflows", {}).get("ambiguity_resolution"),
+                "memory_write_propagation": memory_write_signal,
+                "memory_audit": memory_audit_signal,
+                "memory_reconcile_projection": memory_reconcile_signal,
+                "health_check_execution": gateway_scorecard.get("workflows", {}).get("health_check_execution"),
+            },
+        },
+        "overall": {
+            "status": overall_status,
+        },
+    }
+
+
+def _probe_api_server_health(url: str, timeout: float = 2.0) -> dict[str, object]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(body)
+            return {"ok": True, "url": url, "body": data}
+    except Exception as e:
+        return {"ok": False, "url": url, "error": str(e)}
+
+
+def build_gateway_health_payload(system: bool = False) -> dict[str, object]:
+    from gateway.config import Platform, load_gateway_config
+    from gateway.status import write_runtime_status
+
+    snapshot = get_gateway_runtime_snapshot(system=system)
+    runtime_state = _load_runtime_health_state() or {}
+    config = load_gateway_config()
+    api_cfg = config.platforms.get(Platform.API_SERVER)
+    api_enabled = bool(api_cfg and api_cfg.enabled)
+    api_host = None
+    api_port = None
+    api_health = None
+    api_health_detailed = None
+    if api_enabled:
+        extra = api_cfg.extra if isinstance(api_cfg.extra, dict) else {}
+        api_host = str(extra.get("host") or "127.0.0.1")
+        api_port = int(extra.get("port") or 8642)
+        base = f"http://{api_host}:{api_port}"
+        api_health = _probe_api_server_health(f"{base}/health")
+        api_health_detailed = _probe_api_server_health(f"{base}/health/detailed")
+        health_ok = bool(api_health.get("ok"))
+        detailed_ok = bool(api_health_detailed.get("ok"))
+        runtime_state = _record_gateway_workflow_event(
+            runtime_state,
+            "health_check_execution",
+            "success" if health_ok and detailed_ok else "failure",
+            failure_class=None if health_ok and detailed_ok else "api_health_probe_failed",
+            details={
+                "health_ok": health_ok,
+                "health_detailed_ok": detailed_ok,
+                "host": api_host,
+                "port": api_port,
+            },
+        )
+        write_runtime_status(lcm_gateway=runtime_state.get("lcm_gateway"))
+        reloaded_runtime_state = _load_runtime_health_state() or {}
+        if isinstance(reloaded_runtime_state, dict) and not isinstance(reloaded_runtime_state.get("lcm_gateway"), dict):
+            reloaded_runtime_state = {**reloaded_runtime_state, "lcm_gateway": runtime_state.get("lcm_gateway") or {}}
+        runtime_state = reloaded_runtime_state or runtime_state
+
+    return {
+        "manager": snapshot.manager,
+        "service_installed": snapshot.service_installed,
+        "service_running": snapshot.service_running,
+        "gateway_pids": list(snapshot.gateway_pids),
+        "running": snapshot.running,
+        "runtime_state": runtime_state,
+        "api_server": {
+            "configured": api_enabled,
+            "host": api_host,
+            "port": api_port,
+            "health": api_health,
+            "health_detailed": api_health_detailed,
+        },
+        "lcm_gateway": runtime_state.get("lcm_gateway") or {},
+        "architecture_dashboard": _build_architecture_dashboard(
+            runtime_state=runtime_state,
+            lcm_gateway=runtime_state.get("lcm_gateway") or {},
+        ),
+    }
+
+
+def print_gateway_health(system: bool = False, json_output: bool = False) -> None:
+    payload = build_gateway_health_payload(system=system)
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    runtime_state = payload.get("runtime_state") or {}
+    gateway_state = runtime_state.get("gateway_state") or "unknown"
+    print(f"Gateway runtime: {gateway_state}")
+    connected = []
+    for name, pdata in (runtime_state.get("platforms") or {}).items():
+        if isinstance(pdata, dict) and pdata.get("state") == "connected":
+            connected.append(name)
+    if connected:
+        print(f"Connected platforms: {', '.join(sorted(connected))}")
+    api = payload.get("api_server") or {}
+    if api.get("configured"):
+        print(f"API server configured: http://{api.get('host')}:{api.get('port')}")
+        health = api.get("health") or {}
+        detailed = api.get("health_detailed") or {}
+        print(f"  /health: {'ok' if health.get('ok') else 'fail'}")
+        print(f"  /health/detailed: {'ok' if detailed.get('ok') else 'fail'}")
+    else:
+        print("API server configured: no")
+    lcm_gateway = payload.get("lcm_gateway") or {}
+    scorecard = lcm_gateway.get("scorecard") or {}
+    if scorecard:
+        print(f"Gateway proof health: {scorecard.get('runtime_health') or 'unknown'}")
+    dashboard = payload.get("architecture_dashboard") or {}
+    if dashboard:
+        print("Architecture dashboard:")
+        print(f"  Hermes acts: {dashboard.get('hermes_acts', {}).get('status', 'unknown')}")
+        print(f"  Honcho remembers: {dashboard.get('honcho_remembers', {}).get('status', 'unknown')}")
+        print(f"  LCM proves: {dashboard.get('lcm_proves', {}).get('status', 'unknown')}")
+        print(f"  Overall: {dashboard.get('overall', {}).get('status', 'unknown')}")
+
+
+def _runtime_health_lines() -> list[str]:
+    """Summarize the latest persisted gateway runtime health state."""
+    state = _load_runtime_health_state()
     if not state:
         return []
 
@@ -6358,6 +6707,12 @@ def _gateway_command_inner(args):
             # Start fresh
             print("Starting gateway...")
             run_gateway(verbose=0)
+
+    elif subcmd == "health":
+        print_gateway_health(
+            system=getattr(args, "system", False),
+            json_output=getattr(args, "json", False),
+        )
 
     elif subcmd == "status":
         deep = getattr(args, "deep", False)

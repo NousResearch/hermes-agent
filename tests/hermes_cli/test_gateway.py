@@ -1,5 +1,6 @@
 """Tests for hermes_cli.gateway."""
 
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -67,6 +68,352 @@ def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatc
     assert calls == [(True, None)]
 
 
+def test_build_architecture_dashboard_summarizes_known_and_missing_layers():
+    dashboard = gateway._build_architecture_dashboard(
+        runtime_state={
+            "lcm_runtime": {
+                "scorecard": {
+                    "runtime_health": "ok",
+                    "workflows": {
+                        "fallback_activation": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                    },
+                }
+            }
+        },
+        lcm_gateway={
+            "scorecard": {
+                "runtime_health": "degraded",
+                "workflows": {
+                    "health_check_execution": {"success": 0, "failure": 1, "total": 1, "success_rate_pct": 0.0},
+                },
+            }
+        },
+    )
+
+    assert dashboard["hermes_acts"]["status"] == "ok"
+    assert dashboard["honcho_remembers"]["status"] == "unknown"
+    assert dashboard["lcm_proves"]["status"] == "degraded"
+    assert dashboard["overall"]["status"] == "degraded"
+
+
+def test_build_architecture_dashboard_integrates_memory_and_recent_turn_scorecards():
+    dashboard = gateway._build_architecture_dashboard(
+        runtime_state={
+            "lcm_runtime": {
+                "scorecard": {
+                    "runtime_health": "ok",
+                    "workflows": {
+                        "fallback_activation": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                    },
+                }
+            },
+            "lcm_memory": {
+                "scorecard": {
+                    "memory_sync_health": "ok",
+                    "workflows": {
+                        "memory_write_propagation": {"success": 2, "failure": 0, "total": 2, "success_rate_pct": 100.0},
+                    },
+                }
+            },
+            "lcm_recent_turn": {
+                "scorecard": {
+                    "continuity_health": "ok",
+                    "workflows": {
+                        "short_confirmation_binding": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                    },
+                }
+            },
+        },
+        lcm_gateway={
+            "scorecard": {
+                "runtime_health": "ok",
+                "workflows": {
+                    "health_check_execution": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                },
+            }
+        },
+    )
+
+    assert dashboard["hermes_acts"]["status"] == "ok"
+    assert dashboard["honcho_remembers"]["status"] == "ok"
+    assert dashboard["lcm_proves"]["status"] == "ok"
+    assert dashboard["honcho_remembers"]["signals"]["memory_write_propagation"]["success"] == 2
+    assert dashboard["hermes_acts"]["signals"]["short_confirmation_binding"]["success"] == 1
+    assert dashboard["overall"]["status"] == "ok"
+
+
+def test_build_architecture_dashboard_marks_lcm_proves_unknown_when_required_proof_is_missing():
+    dashboard = gateway._build_architecture_dashboard(
+        runtime_state={
+            "active_agents": 1,
+            "lcm_runtime": {
+                "scorecard": {
+                    "runtime_health": "ok",
+                    "workflows": {
+                        "fallback_activation": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                    },
+                }
+            },
+            "lcm_memory": {
+                "scorecard": {
+                    "memory_sync_health": "ok",
+                    "workflows": {
+                        "memory_write_propagation": {"success": 2, "failure": 0, "total": 2, "success_rate_pct": 100.0},
+                    },
+                }
+            },
+        },
+        lcm_gateway={
+            "scorecard": {
+                "runtime_health": "ok",
+                "workflows": {
+                    "health_check_execution": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                },
+            }
+        },
+    )
+
+    assert dashboard["hermes_acts"]["status"] == "ok"
+    assert dashboard["honcho_remembers"]["status"] == "ok"
+    assert dashboard["lcm_proves"]["status"] == "unknown"
+    assert dashboard["overall"]["status"] == "unknown"
+
+
+def test_build_architecture_dashboard_ignores_runtime_health_without_matching_workflow():
+    dashboard = gateway._build_architecture_dashboard(
+        runtime_state={
+            "lcm_runtime": {
+                "scorecard": {
+                    "runtime_health": "ok",
+                    "workflows": {
+                        "health_check_execution": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                    },
+                }
+            },
+            "lcm_memory": {
+                "scorecard": {
+                    "memory_sync_health": "ok",
+                    "workflows": {
+                        "memory_audit": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                    },
+                }
+            },
+        },
+        lcm_gateway={
+            "scorecard": {
+                "runtime_health": "ok",
+                "workflows": {
+                    "health_check_execution": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                },
+            }
+        },
+    )
+
+    assert dashboard["hermes_acts"]["status"] == "unknown"
+    assert dashboard["lcm_proves"]["status"] == "unknown"
+
+
+def test_gateway_health_json_uses_runtime_and_api_probe(monkeypatch, capsys):
+    monkeypatch.setattr(
+        gateway,
+        "build_gateway_health_payload",
+        lambda system=False: {
+            "manager": "systemd",
+            "service_installed": True,
+            "service_running": True,
+            "gateway_pids": [123],
+            "running": True,
+            "runtime_state": {"gateway_state": "running"},
+            "api_server": {
+                "configured": True,
+                "host": "127.0.0.1",
+                "port": 8642,
+                "health": {"ok": True},
+                "health_detailed": {"ok": True},
+            },
+            "lcm_gateway": {
+                "scorecard": {"runtime_health": "ok"},
+            },
+        },
+    )
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="health", system=False, json=True))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["runtime_state"]["gateway_state"] == "running"
+    assert payload["api_server"]["configured"] is True
+    assert payload["lcm_gateway"]["scorecard"]["runtime_health"] == "ok"
+
+
+def test_gateway_health_text_reports_api_server_status(monkeypatch, capsys):
+    monkeypatch.setattr(
+        gateway,
+        "build_gateway_health_payload",
+        lambda system=False: {
+            "manager": "systemd",
+            "service_installed": True,
+            "service_running": True,
+            "gateway_pids": [123],
+            "running": True,
+            "runtime_state": {
+                "gateway_state": "running",
+                "platforms": {
+                    "telegram": {"state": "connected"},
+                    "api_server": {"state": "connected"},
+                },
+            },
+            "api_server": {
+                "configured": True,
+                "host": "127.0.0.1",
+                "port": 8642,
+                "health": {"ok": True},
+                "health_detailed": {"ok": True},
+            },
+            "lcm_gateway": {
+                "scorecard": {"runtime_health": "ok"},
+            },
+            "architecture_dashboard": {
+                "hermes_acts": {"status": "ok"},
+                "honcho_remembers": {"status": "unknown"},
+                "lcm_proves": {"status": "ok"},
+                "overall": {"status": "ok"},
+            },
+        },
+    )
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="health", system=False, json=False))
+
+    out = capsys.readouterr().out
+    assert "Gateway runtime: running" in out
+    assert "API server configured: http://127.0.0.1:8642" in out
+    assert "/health: ok" in out
+    assert "/health/detailed: ok" in out
+    assert "Gateway proof health: ok" in out
+    assert "Architecture dashboard:" in out
+
+
+def test_gateway_health_json_exposes_architecture_dashboard(monkeypatch, capsys):
+    monkeypatch.setattr(
+        gateway,
+        "build_gateway_health_payload",
+        lambda system=False: {
+            "runtime_state": {
+                "gateway_state": "running",
+                "lcm_runtime": {
+                    "scorecard": {
+                        "runtime_health": "ok",
+                        "workflows": {
+                            "fallback_activation": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0}
+                        },
+                    }
+                },
+            },
+            "api_server": {
+                "configured": True,
+                "host": "127.0.0.1",
+                "port": 8642,
+                "health": {"ok": True},
+                "health_detailed": {"ok": True},
+            },
+            "lcm_gateway": {
+                "scorecard": {
+                    "runtime_health": "ok",
+                    "workflows": {
+                        "health_check_execution": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0}
+                    },
+                }
+            },
+            "architecture_dashboard": {
+                "hermes_acts": {"status": "ok"},
+                "honcho_remembers": {"status": "unknown"},
+                "lcm_proves": {"status": "ok"},
+                "overall": {"status": "ok"},
+            },
+        },
+    )
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="health", system=False, json=True))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["architecture_dashboard"]["hermes_acts"]["status"] == "ok"
+    assert payload["architecture_dashboard"]["honcho_remembers"]["status"] == "unknown"
+    assert payload["architecture_dashboard"]["lcm_proves"]["status"] == "ok"
+
+
+def test_build_gateway_health_payload_reads_recent_turn_and_memory_from_runtime_status(monkeypatch):
+    runtime_state = {
+        "gateway_state": "running",
+        "lcm_runtime": {
+            "scorecard": {
+                "runtime_health": "ok",
+                "workflows": {
+                    "fallback_activation": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                },
+            },
+        },
+        "lcm_recent_turn": {
+            "scorecard": {
+                "continuity_health": "ok",
+                "workflows": {
+                    "short_confirmation_binding": {"success": 2, "failure": 0, "total": 2, "success_rate_pct": 100.0},
+                },
+            },
+        },
+        "lcm_memory": {
+            "scorecard": {
+                "memory_sync_health": "ok",
+                "workflows": {
+                    "memory_write_propagation": {"success": 3, "failure": 0, "total": 3, "success_rate_pct": 100.0},
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", lambda system=False: SimpleNamespace(
+        manager="systemd",
+        service_installed=True,
+        service_running=True,
+        gateway_pids=[123],
+        running=True,
+    ))
+    monkeypatch.setattr(gateway, "_load_runtime_health_state", lambda: runtime_state)
+    monkeypatch.setattr(gateway, "_probe_api_server_health", lambda url, timeout=2.0: {"ok": True, "url": url})
+    monkeypatch.setattr(gateway, "_record_gateway_workflow_event", lambda state, workflow, outcome, **kwargs: {
+        **state,
+        "lcm_gateway": {
+            "scorecard": {
+                "runtime_health": "ok",
+                "workflows": {
+                    "health_check_execution": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+                },
+            },
+        },
+    })
+    from gateway.config import Platform
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: SimpleNamespace(platforms={
+        Platform.API_SERVER: SimpleNamespace(enabled=True, extra={"host": "127.0.0.1", "port": 8642})
+    }))
+    write_calls = []
+    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kwargs: write_calls.append(kwargs))
+
+    payload = gateway.build_gateway_health_payload(system=False)
+
+    expected_lcm_gateway = {
+        "scorecard": {
+            "runtime_health": "ok",
+            "workflows": {
+                "health_check_execution": {"success": 1, "failure": 0, "total": 1, "success_rate_pct": 100.0},
+            },
+        },
+    }
+
+    assert payload["runtime_state"]["lcm_recent_turn"]["scorecard"]["continuity_health"] == "ok"
+    assert payload["runtime_state"]["lcm_memory"]["scorecard"]["memory_sync_health"] == "ok"
+    assert payload["architecture_dashboard"]["hermes_acts"]["status"] == "ok"
+    assert payload["architecture_dashboard"]["honcho_remembers"]["status"] == "ok"
+    assert payload["architecture_dashboard"]["lcm_proves"]["status"] == "ok"
+    assert payload["lcm_gateway"] == expected_lcm_gateway
+    assert write_calls == [{"lcm_gateway": expected_lcm_gateway}]
 def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, capsys):
     project_root = tmp_path / "opt" / "hermes"
     (project_root / "docker").mkdir(parents=True)

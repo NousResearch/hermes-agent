@@ -8007,10 +8007,13 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
 def _anthropic_oauth_status() -> Dict[str, Any]:
     """Status for the "Anthropic API Key" catalog entry.
 
-    Two sources, in priority order:
-    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow (what
+    Sources, in priority order:
+    1. Workload Identity Federation — when the profile's Anthropic auth state
+       selects ``wif``, it wins outright: no static key or PKCE token is used
+       to call the API, so reporting either one here would be a lie.
+    2. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow (what
        this entry's Connect button writes)
-    2. ``ANTHROPIC_API_KEY`` → ``ANTHROPIC_TOKEN`` → ``CLAUDE_CODE_OAUTH_TOKEN``
+    3. ``ANTHROPIC_API_KEY`` → ``ANTHROPIC_TOKEN`` → ``CLAUDE_CODE_OAUTH_TOKEN``
        env vars (registry order) — from ``.env``, the shell, or an external
        secret source like Bitwarden (whose keys are injected into the process
        env during ``load_hermes_dotenv()``, so the same check covers them)
@@ -8020,6 +8023,27 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     ``_claude_code_only_status``). Reporting it under the API-key entry
     double-counts the token and shadows a real ANTHROPIC_API_KEY.
     """
+    try:
+        from hermes_cli import auth as hauth
+
+        unified = hauth.get_auth_status("anthropic")
+    except Exception:
+        unified = {}
+
+    if unified.get("auth_type") == "wif":
+        return {
+            "logged_in": bool(unified.get("logged_in")),
+            "source": "anthropic_wif",
+            "source_label": f"Anthropic WIF ({unified.get('identity_token_file') or 'token file not set'})",
+            "token_preview": None,
+            "expires_at": None,
+            "has_refresh_token": False,
+            "federation_rule_id": unified.get("federation_rule_id"),
+            "organization_id": unified.get("organization_id"),
+            "service_account_id": unified.get("service_account_id"),
+            **({"error": unified.get("error")} if unified.get("error") else {}),
+        }
+
     try:
         from agent.anthropic_adapter import (
             read_hermes_oauth_credentials,
@@ -8672,6 +8696,12 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         pool.add_entry(entry)
     except Exception as e:
         _log.warning("anthropic pool add (dashboard) failed: %s", e)
+
+    # Dashboard OAuth replaces the exclusive persisted WIF mode even when the
+    # optional pool insert failed: the OAuth file above is already authoritative.
+    from hermes_cli.auth_commands import _remove_anthropic_wif_state
+
+    _remove_anthropic_wif_state()
 
 
 def _start_anthropic_pkce(profile: Optional[str] = None) -> Dict[str, Any]:

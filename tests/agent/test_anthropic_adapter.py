@@ -1,13 +1,17 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
+import os
+import stat
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
 
+import agent.anthropic_adapter as anthropic_adapter
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
@@ -20,6 +24,7 @@ from agent.anthropic_adapter import (
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
+    exchange_anthropic_wif_for_access_token,
     is_claude_code_token_valid,
     normalize_model_name,
     read_claude_code_credentials,
@@ -93,9 +98,9 @@ class TestBuildAnthropicClient:
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-api03-something")
+            build_anthropic_client("sk-ant-api03-test-key")
             kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["api_key"] == "sk-ant-api03-something"
+            assert kwargs["api_key"] == "sk-ant-api03-test-key"
             assert "auth_token" not in kwargs
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
@@ -103,6 +108,7 @@ class TestBuildAnthropicClient:
             assert "context-1m-2025-08-07" not in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
+
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -133,18 +139,26 @@ class TestBuildAnthropicClient:
             assert "context-1m-2025-08-07" in betas
 
     def test_azure_anthropic_endpoint_detection_is_host_and_path_scoped(self):
-        assert _is_azure_anthropic_endpoint(
-            "https://example.services.ai.azure.com/models/anthropic"
-        ) is True
-        assert _is_azure_anthropic_endpoint(
-            "https://example.services.ai.azure.us/anthropic"
-        ) is True
-        assert _is_azure_anthropic_endpoint(
-            "https://example.openai.azure.com/openai/v1"
-        ) is False
-        assert _is_azure_anthropic_endpoint(
-            "https://management.azure.com/anthropic"
-        ) is False
+        assert (
+            _is_azure_anthropic_endpoint(
+                "https://example.services.ai.azure.com/models/anthropic"
+            )
+            is True
+        )
+        assert (
+            _is_azure_anthropic_endpoint(
+                "https://example.services.ai.azure.us/anthropic"
+            )
+            is True
+        )
+        assert (
+            _is_azure_anthropic_endpoint("https://example.openai.azure.com/openai/v1")
+            is False
+        )
+        assert (
+            _is_azure_anthropic_endpoint("https://management.azure.com/anthropic")
+            is False
+        )
 
     def test_bedrock_client_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -235,13 +249,15 @@ class TestReadClaudeCodeCredentials:
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "sk-ant-oat01-token",
-                "refreshToken": "sk-ant-oat01-refresh",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
+        cred_file.write_text(
+            json.dumps({
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-token",
+                    "refreshToken": "sk-ant-oat01-refresh",
+                    "expiresAt": int(time.time() * 1000) + 3600_000,
+                }
+            })
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         creds = read_claude_code_credentials()
         assert creds is not None
@@ -249,7 +265,9 @@ class TestReadClaudeCodeCredentials:
         assert creds["refreshToken"] == "sk-ant-oat01-refresh"
         assert creds["source"] == "claude_code_credentials_file"
 
-    def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
+    def test_ignores_primary_api_key_for_native_anthropic_resolution(
+        self, tmp_path, monkeypatch
+    ):
         claude_json = tmp_path / ".claude.json"
         claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
@@ -271,9 +289,9 @@ class TestReadClaudeCodeCredentials:
     def test_returns_none_for_empty_access_token(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {"accessToken": "", "refreshToken": "x"}
-        }))
+        cred_file.write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "", "refreshToken": "x"}})
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert read_claude_code_credentials() is None
 
@@ -300,16 +318,22 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
 
-    def test_does_not_resolve_primary_api_key_as_native_anthropic_token(self, monkeypatch, tmp_path):
+    def test_does_not_resolve_primary_api_key_as_native_anthropic_token(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        (tmp_path / ".claude.json").write_text(
+            json.dumps({"primaryApiKey": "sk-ant-api03-primary"})
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() is None
 
-    def test_falls_back_to_api_key_when_no_oauth_sources_exist(self, monkeypatch, tmp_path):
+    def test_falls_back_to_api_key_when_no_oauth_sources_exist(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -343,13 +367,15 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "cc-auto-token",
-                "refreshToken": "refresh",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
+        cred_file.write_text(
+            json.dumps({
+                "claudeAiOauth": {
+                    "accessToken": "cc-auto-token",
+                    "refreshToken": "refresh",
+                    "expiresAt": int(time.time() * 1000) + 3600_000,
+                }
+            })
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "cc-auto-token"
 
@@ -361,7 +387,9 @@ class TestResolveAnthropicToken:
         # Isolate source #4 (credential_pool): ensure source #3 (Claude Code
         # creds, incl. the macOS keychain read which Path.home does not cover)
         # returns nothing, mirroring a Hermes-PKCE-only setup.
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
         pool_entry = SimpleNamespace(
             auth_type="oauth",
@@ -374,7 +402,54 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "pool-oauth-token"
 
-    def test_prefers_anthropic_credential_pool_oauth_over_api_key(self, monkeypatch, tmp_path):
+    def test_falls_back_to_dashboard_oauth_when_pool_registration_failed(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._resolve_anthropic_pool_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            lambda: {
+                "accessToken": "dashboard-oauth-token",
+                "refreshToken": "dashboard-refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3_600_000,
+            },
+        )
+
+        assert resolve_anthropic_token() == "dashboard-oauth-token"
+
+    def test_expired_dashboard_oauth_is_not_revived(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "api-key-fallback")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._resolve_anthropic_pool_token", lambda: None
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            lambda: {
+                "accessToken": "expired-dashboard-token",
+                "expiresAt": int(time.time() * 1000) - 1,
+            },
+        )
+
+        assert resolve_anthropic_token() == "api-key-fallback"
+
+    def test_prefers_anthropic_credential_pool_oauth_over_api_key(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -382,7 +457,9 @@ class TestResolveAnthropicToken:
         # Pool (source #4) must win over ANTHROPIC_API_KEY (source #5); also
         # isolate source #3 so a machine-local Claude Code creds / keychain
         # entry can't short-circuit before the pool.
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
         pool_entry = SimpleNamespace(
             auth_type="oauth",
@@ -395,7 +472,9 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "pool-oauth-token"
 
-    def test_pool_entry_with_null_access_token_does_not_crash(self, monkeypatch, tmp_path):
+    def test_pool_entry_with_null_access_token_does_not_crash(
+        self, monkeypatch, tmp_path
+    ):
         """A persisted OAuth entry with access_token=None must not crash the
         resolver (None.strip() would escape the helper's try/excepts and take
         down the whole resolver incl. the ANTHROPIC_API_KEY fallback). It should
@@ -404,7 +483,9 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
         broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
         pool = SimpleNamespace(
@@ -415,7 +496,9 @@ class TestResolveAnthropicToken:
         # Must fall through to source #5 (ANTHROPIC_API_KEY), not raise.
         assert resolve_anthropic_token() == "sk-ant...ykey"
 
-    def test_pool_api_key_only_entry_is_not_returned_as_token(self, monkeypatch, tmp_path):
+    def test_pool_api_key_only_entry_is_not_returned_as_token(
+        self, monkeypatch, tmp_path
+    ):
         """resolve_anthropic_token() returns an OAuth bearer token; a pool entry
         whose auth_type is api_key (not oauth) must NOT be returned from the pool
         path — those are consumed via the aux client's _pool_runtime_api_key
@@ -424,9 +507,13 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
-        api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
+        api_key_entry = SimpleNamespace(
+            auth_type="api_key", access_token="sk-pool-apikey"
+        )
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: [api_key_entry],
         )
@@ -442,7 +529,9 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
         pool_calls = []
 
@@ -463,7 +552,9 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
         captured = {}
         pool_entry = SimpleNamespace(auth_type="oauth", access_token="pool-oauth-token")
@@ -478,29 +569,37 @@ class TestResolveAnthropicToken:
         assert resolve_anthropic_token() == "pool-oauth-token"
         assert captured == {"clear_expired": False, "refresh": False}
 
-    def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
+    def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "cc-auto-token",
-                "refreshToken": "refresh-token",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
+        cred_file.write_text(
+            json.dumps({
+                "claudeAiOauth": {
+                    "accessToken": "cc-auto-token",
+                    "refreshToken": "refresh-token",
+                    "expiresAt": int(time.time() * 1000) + 3600_000,
+                }
+            })
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() == "cc-auto-token"
 
-    def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(self, monkeypatch, tmp_path):
+    def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         claude_json = tmp_path / ".claude.json"
-        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-managed-key"}))
+        claude_json.write_text(
+            json.dumps({"primaryApiKey": "sk-ant-api03-managed-key"})
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() == "sk-ant-oat01-static-token"
@@ -538,9 +637,9 @@ class TestRefreshOauthToken:
 
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_ctx = MagicMock()
-            mock_ctx.__enter__ = MagicMock(return_value=MagicMock(
-                read=MagicMock(return_value=mock_response)
-            ))
+            mock_ctx.__enter__ = MagicMock(
+                return_value=MagicMock(read=MagicMock(return_value=mock_response))
+            )
             mock_ctx.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_ctx
 
@@ -569,6 +668,387 @@ class TestRefreshOauthToken:
             assert _refresh_oauth_token(creds) is None
 
 
+class TestAnthropicWifExchangeCaching:
+    def test_reuses_cached_access_token_for_same_assertion(self, tmp_path, monkeypatch):
+        anthropic_adapter._WIF_ACCESS_TOKEN_CACHE.clear()
+        token_file = tmp_path / "oidc.jwt"
+        token_file.write_text("jwt-assertion", encoding="utf-8")
+
+        config = {
+            "federation_rule_id": "fdrl_test123",
+            "organization_id": "org_test456",
+            "service_account_id": "svac_test789",
+            "identity_token_file": str(token_file),
+            "api_base_url": "https://api.anthropic.com",
+        }
+
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._get_claude_code_version", lambda: "2.1.74"
+        )
+
+        calls = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "access_token": "cached-wif-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }).encode()
+
+        def _fake_urlopen(req, timeout=0):
+            calls.append((req.full_url, timeout, req.get_header("User-agent")))
+            return _Resp()
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            first = exchange_anthropic_wif_for_access_token(config)
+            second = exchange_anthropic_wif_for_access_token(config)
+
+        assert first["access_token"] == "cached-wif-token"
+        assert second["access_token"] == "cached-wif-token"
+        assert len(calls) == 1
+        assert calls[0][2] == anthropic_adapter._OAUTH_TOKEN_USER_AGENT
+
+    def test_reuses_persisted_wif_exchange_cache_across_processes(
+        self, monkeypatch, tmp_path
+    ):
+        token_file = tmp_path / "oidc.jwt"
+        token_file.write_text("gh-oidc-jwt")
+        monkeypatch.setattr("agent.anthropic_adapter.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._get_claude_code_version", lambda: "2.1.74"
+        )
+        anthropic_adapter._WIF_ACCESS_TOKEN_CACHE.clear()
+
+        config = {
+            "federation_rule_id": "fdrl_test123",
+            "organization_id": "org_test456",
+            "service_account_id": "svac_test789",
+            "identity_token_file": str(token_file),
+            "api_base_url": "https://api.anthropic.com",
+        }
+
+        calls = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "access_token": "persisted-wif-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }).encode()
+
+        def _fake_urlopen(req, timeout=0):
+            calls.append((req.full_url, timeout))
+            return _Resp()
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            first = exchange_anthropic_wif_for_access_token(config)
+            anthropic_adapter._WIF_ACCESS_TOKEN_CACHE.clear()
+            second = exchange_anthropic_wif_for_access_token(config)
+
+        assert first["access_token"] == "persisted-wif-token"
+        assert second["access_token"] == "persisted-wif-token"
+        assert len(calls) == 1
+        assert (tmp_path / ".anthropic_wif_token_cache.json").exists()
+
+    def test_malformed_persisted_expiry_is_treated_as_cache_miss(
+        self, monkeypatch, tmp_path
+    ):
+        token_file = tmp_path / "oidc.jwt"
+        token_file.write_text("gh-oidc-jwt", encoding="utf-8")
+        monkeypatch.setattr("agent.anthropic_adapter.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._get_claude_code_version", lambda: "2.1.74"
+        )
+        anthropic_adapter._WIF_ACCESS_TOKEN_CACHE.clear()
+        config = {
+            "federation_rule_id": "fdrl_test123",
+            "organization_id": "org_test456",
+            "service_account_id": "svac_test789",
+            "identity_token_file": str(token_file),
+            "api_base_url": "https://api.anthropic.com",
+        }
+        responses = iter(("first-token", "fresh-token"))
+
+        class _Resp:
+            def __init__(self, token):
+                self.token = token
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "access_token": self.token,
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                }).encode()
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=lambda *_args, **_kwargs: _Resp(next(responses)),
+        ):
+            first = exchange_anthropic_wif_for_access_token(config)
+            cache_file = tmp_path / ".anthropic_wif_token_cache.json"
+            persisted = json.loads(cache_file.read_text(encoding="utf-8"))
+            persisted["expires_at_ms"] = "not-an-integer"
+            cache_file.write_text(json.dumps(persisted), encoding="utf-8")
+            anthropic_adapter._WIF_ACCESS_TOKEN_CACHE.clear()
+            second = exchange_anthropic_wif_for_access_token(config)
+
+        assert first["access_token"] == "first-token"
+        assert second["access_token"] == "fresh-token"
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="POSIX mode bits not enforced on Windows",
+)
+class TestAnthropicWifCacheFileSecurity:
+    """The WIF cache persists a live Anthropic bearer token to disk.
+
+    It must get the same TOCTOU-safe treatment as every other credential
+    writer in the tree (``hermes_cli.auth._save_auth_store``, #19673,
+    #21148): created 0o600 via ``O_CREAT|O_EXCL`` under a unique temp name,
+    never chmod'd into safety after the fact and never sharing a temp path
+    with a concurrent writer.
+    """
+
+    CACHE_NAME = ".anthropic_wif_token_cache.json"
+
+    @classmethod
+    def _temp_leftovers(cls, home) -> list:
+        """Temp files the writer failed to clean up (the conftest's own
+        HERMES_HOME sandbox dir also lives under ``tmp_path``, so match on
+        the cache's temp prefix rather than asserting the dir is empty)."""
+        return sorted(
+            p.name for p in home.iterdir() if p.name.startswith(f"{cls.CACHE_NAME}.tmp")
+        )
+
+    @staticmethod
+    def _exchanged(token: str = "wif-bearer-secret") -> dict:
+        return {
+            "access_token": token,
+            "token_type": "Bearer",
+            "scope": None,
+            "expires_in": 3600,
+            "expires_at_ms": 1_900_000_000_000,
+        }
+
+    def test_temp_file_is_0600_from_creation_never_at_umask(
+        self, tmp_path, monkeypatch
+    ):
+        """The token must never touch disk world-readable, not even briefly."""
+        monkeypatch.setattr("agent.anthropic_adapter.get_hermes_home", lambda: tmp_path)
+
+        observed = {}
+        real_replace = os.replace
+
+        def _spy_replace(src, dst):
+            # Inspect the temp file at the last instant before it lands.
+            observed["tmp_mode"] = stat.S_IMODE(os.stat(src).st_mode)
+            observed["tmp_name"] = os.path.basename(str(src))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", _spy_replace)
+
+        old_umask = os.umask(0o022)  # makes the race observable if it regresses
+        try:
+            anthropic_adapter._write_cached_wif_exchange(
+                "cache-key-1", self._exchanged()
+            )
+        finally:
+            os.umask(old_umask)
+
+        assert observed["tmp_mode"] == 0o600, (
+            f"WIF cache temp file created at 0o{observed['tmp_mode']:o} — the bearer "
+            "token was exposed to other local users before the chmod landed"
+        )
+        assert str(os.getpid()) in observed["tmp_name"], (
+            f"temp name {observed['tmp_name']!r} is not process-unique — "
+            "concurrent writers collide on it"
+        )
+
+        cache_file = tmp_path / self.CACHE_NAME
+        assert stat.S_IMODE(cache_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+        payload = json.loads(cache_file.read_text())
+        assert payload["access_token"] == "wif-bearer-secret"
+        assert payload["cache_key"] == "cache-key-1"
+        assert self._temp_leftovers(tmp_path) == [], "a temp file was left behind"
+
+    def test_concurrent_writers_do_not_share_a_temp_path(self, tmp_path, monkeypatch):
+        """Parallel agents refreshing the same WIF token must not clobber each other."""
+        monkeypatch.setattr("agent.anthropic_adapter.get_hermes_home", lambda: tmp_path)
+
+        writers = 8
+        seen_temp_names: list = []
+        errors: list = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(writers)
+        real_replace = os.replace
+
+        def _spy_replace(src, dst):
+            with lock:
+                seen_temp_names.append(os.path.basename(str(src)))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", _spy_replace)
+
+        def _writer(index: int) -> None:
+            try:
+                barrier.wait(timeout=10)
+                anthropic_adapter._write_cached_wif_exchange(
+                    f"cache-key-{index}", self._exchanged(f"wif-bearer-{index}")
+                )
+            except Exception as exc:  # pragma: no cover - surfaced via assert below
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=_writer, args=(i,)) for i in range(writers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+
+        assert not errors, f"concurrent writers raised: {errors}"
+        assert len(set(seen_temp_names)) == writers, (
+            f"{writers} writers produced {len(set(seen_temp_names))} distinct temp "
+            f"names ({sorted(set(seen_temp_names))}) — a shared temp path lets one "
+            "writer truncate another's in-flight token"
+        )
+
+        cache_file = tmp_path / self.CACHE_NAME
+        assert self._temp_leftovers(tmp_path) == []
+        assert stat.S_IMODE(cache_file.stat().st_mode) == 0o600
+        # Last writer wins atomically — the file is never a torn mix of two payloads.
+        payload = json.loads(cache_file.read_text())
+        index = payload["access_token"].removeprefix("wif-bearer-")
+        assert payload["cache_key"] == f"cache-key-{index}"
+
+    def test_preexisting_temp_symlink_is_not_followed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.get_hermes_home", lambda: tmp_path)
+
+        class _FixedUuid:
+            hex = "known"
+
+        monkeypatch.setattr("agent.anthropic_adapter.uuid.uuid4", lambda: _FixedUuid())
+        victim = tmp_path / "victim"
+        victim.write_text("do-not-overwrite", encoding="utf-8")
+        temp_path = tmp_path / f"{self.CACHE_NAME}.tmp.{os.getpid()}.known"
+        temp_path.symlink_to(victim)
+
+        anthropic_adapter._write_cached_wif_exchange("cache-key", self._exchanged())
+
+        assert victim.read_text(encoding="utf-8") == "do-not-overwrite"
+        assert not (tmp_path / self.CACHE_NAME).exists()
+        assert not temp_path.exists()
+
+
+class TestAnthropicWifProviderState:
+    """WIF state must be read through the auth store's own accessor.
+
+    ``get_provider_auth_state`` carries the profile → global-root fallback
+    (issue #18594 follow-up): a profile process that never ran
+    ``hermes auth login anthropic`` locally still sees the WIF identity
+    configured at the global root. Re-reading ``$HERMES_HOME/auth.json`` by
+    hand skips that fallback and silently drops WIF in every profile.
+    """
+
+    WIF_ENV_VARS = (
+        "ANTHROPIC_FEDERATION_RULE_ID",
+        "ANTHROPIC_ORGANIZATION_ID",
+        "ANTHROPIC_SERVICE_ACCOUNT_ID",
+        "ANTHROPIC_IDENTITY_TOKEN_FILE",
+        "ANTHROPIC_API_BASE_URL",
+    )
+
+    @staticmethod
+    def _wif_state(token_file, rule_id: str) -> dict:
+        return {
+            "auth_type": "wif",
+            "federation_rule_id": rule_id,
+            "organization_id": "org_test456",
+            "service_account_id": "svac_test789",
+            "identity_token_file": str(token_file),
+        }
+
+    def _profile_mode(self, tmp_path, monkeypatch):
+        """Put the process in profile mode: HERMES_HOME=<root>/profiles/work."""
+        for var in self.WIF_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        token_file = tmp_path / "oidc.jwt"
+        token_file.write_text("gh-oidc-jwt", encoding="utf-8")
+        return root, profile, token_file
+
+    def test_falls_back_to_global_root_state_in_profile_mode(
+        self, tmp_path, monkeypatch
+    ):
+        root, profile, token_file = self._profile_mode(tmp_path, monkeypatch)
+        (root / "auth.json").write_text(
+            json.dumps({
+                "version": 1,
+                "providers": {"anthropic": self._wif_state(token_file, "fdrl_global")},
+            }),
+            encoding="utf-8",
+        )
+        # Profile store exists but has no Anthropic entry — the global one must show through.
+        (profile / "auth.json").write_text(
+            json.dumps({"version": 1, "providers": {}}), encoding="utf-8"
+        )
+
+        config = anthropic_adapter.read_anthropic_wif_config()
+
+        assert config is not None, (
+            "WIF configured at the global root is invisible to a profile process"
+        )
+        assert config["auth_type"] == "wif"
+        assert config["federation_rule_id"] == "fdrl_global"
+        assert config["identity_token_file"] == str(token_file)
+
+    def test_profile_state_shadows_global_state(self, tmp_path, monkeypatch):
+        root, profile, token_file = self._profile_mode(tmp_path, monkeypatch)
+        (root / "auth.json").write_text(
+            json.dumps({
+                "version": 1,
+                "providers": {"anthropic": self._wif_state(token_file, "fdrl_global")},
+            }),
+            encoding="utf-8",
+        )
+        (profile / "auth.json").write_text(
+            json.dumps({
+                "version": 1,
+                "providers": {"anthropic": self._wif_state(token_file, "fdrl_profile")},
+            }),
+            encoding="utf-8",
+        )
+
+        config = anthropic_adapter.read_anthropic_wif_config()
+
+        assert config is not None
+        assert config["federation_rule_id"] == "fdrl_profile"
+
+
 class TestWriteClaudeCodeCredentials:
     def test_writes_new_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
@@ -591,7 +1071,9 @@ class TestWriteClaudeCodeCredentials:
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows"
+    )
     def test_credentials_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Refreshed Claude Code credentials must land on disk at 0o600.
 
@@ -601,13 +1083,16 @@ class TestWriteClaudeCodeCredentials:
         the fix shipped in #19673 (google_oauth) and #21148 (mcp_oauth).
         """
         import stat as _stat
+
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         _write_claude_code_credentials("tok", "ref", 12345)
 
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
         mode = _stat.S_IMODE(cred_file.stat().st_mode)
-        assert mode == 0o600, f"creds file mode {oct(mode)} != 0o600 — TOCTOU race regressed"
+        assert mode == 0o600, (
+            f"creds file mode {oct(mode)} != 0o600 — TOCTOU race regressed"
+        )
 
 
 class TestResolveWithRefresh:
@@ -620,38 +1105,50 @@ class TestResolveWithRefresh:
         # Set up expired creds with a refresh token
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "expired-tok",
-                "refreshToken": "valid-refresh",
-                "expiresAt": int(time.time() * 1000) - 3600_000,
-            }
-        }))
+        cred_file.write_text(
+            json.dumps({
+                "claudeAiOauth": {
+                    "accessToken": "expired-tok",
+                    "refreshToken": "valid-refresh",
+                    "expiresAt": int(time.time() * 1000) - 3600_000,
+                }
+            })
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         # Mock refresh to succeed
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch(
+            "agent.anthropic_adapter._refresh_oauth_token",
+            return_value="refreshed-token",
+        ):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
 
-    def test_static_env_oauth_token_does_not_block_refreshable_claude_creds(self, monkeypatch, tmp_path):
+    def test_static_env_oauth_token_does_not_block_refreshable_claude_creds(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-expired-env-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "expired-claude-creds-token",
-                "refreshToken": "valid-refresh",
-                "expiresAt": int(time.time() * 1000) - 3600_000,
-            }
-        }))
+        cred_file.write_text(
+            json.dumps({
+                "claudeAiOauth": {
+                    "accessToken": "expired-claude-creds-token",
+                    "refreshToken": "valid-refresh",
+                    "expiresAt": int(time.time() * 1000) - 3600_000,
+                }
+            })
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch(
+            "agent.anthropic_adapter._refresh_oauth_token",
+            return_value="refreshed-token",
+        ):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
@@ -672,13 +1169,15 @@ class TestRunOauthSetupToken:
         # Pre-create credential files that will be found after subprocess
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "from-cred-file",
-                "refreshToken": "refresh",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
+        cred_file.write_text(
+            json.dumps({
+                "claudeAiOauth": {
+                    "accessToken": "from-cred-file",
+                    "refreshToken": "refresh",
+                    "expiresAt": int(time.time() * 1000) + 3600_000,
+                }
+            })
+        )
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
@@ -735,27 +1234,45 @@ class TestRunOauthSetupToken:
 
 class TestNormalizeModelName:
     def test_strips_anthropic_prefix(self):
-        assert normalize_model_name("anthropic/claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
+        assert (
+            normalize_model_name("anthropic/claude-sonnet-4-20250514")
+            == "claude-sonnet-4-20250514"
+        )
 
     def test_leaves_bare_name(self):
-        assert normalize_model_name("claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
+        assert (
+            normalize_model_name("claude-sonnet-4-20250514")
+            == "claude-sonnet-4-20250514"
+        )
 
     def test_converts_dots_to_hyphens(self):
         """OpenRouter uses dots (4.6), Anthropic uses hyphens (4-6)."""
         assert normalize_model_name("anthropic/claude-opus-4.6") == "claude-opus-4-6"
-        assert normalize_model_name("anthropic/claude-sonnet-4.5") == "claude-sonnet-4-5"
+        assert (
+            normalize_model_name("anthropic/claude-sonnet-4.5") == "claude-sonnet-4-5"
+        )
         assert normalize_model_name("claude-opus-4.6") == "claude-opus-4-6"
 
     def test_already_hyphenated_unchanged(self):
         """Names already in Anthropic format should pass through."""
         assert normalize_model_name("claude-opus-4-6") == "claude-opus-4-6"
-        assert normalize_model_name("claude-opus-4-5-20251101") == "claude-opus-4-5-20251101"
+        assert (
+            normalize_model_name("claude-opus-4-5-20251101")
+            == "claude-opus-4-5-20251101"
+        )
 
     def test_preserve_dots_for_alibaba_dashscope(self):
         """Alibaba/DashScope use dots in model names (e.g. qwen3.5-plus). Fixes #1739."""
-        assert normalize_model_name("qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
-        assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
-        assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
+        assert (
+            normalize_model_name("qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        )
+        assert (
+            normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True)
+            == "qwen3.5-plus"
+        )
+        assert (
+            normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -842,7 +1359,10 @@ class TestConvertMessages:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Can you see this?"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/cat.png"},
+                    },
                 ],
             }
         ]
@@ -854,7 +1374,10 @@ class TestConvertMessages:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Can you see this?"},
-                    {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://example.com/cat.png"},
+                    },
                 ],
             }
         ]
@@ -919,7 +1442,10 @@ class TestConvertMessages:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                    {
+                        "id": "tc_1",
+                        "function": {"name": "test_tool", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result data"},
@@ -984,10 +1510,9 @@ class TestConvertMessages:
         # tc_gone has no matching tool_use — its tool_result should be stripped
         for m in result:
             if m["role"] == "user" and isinstance(m["content"], list):
-                assert all(
-                    b.get("type") != "tool_result"
-                    for b in m["content"]
-                ), "Orphaned tool_result should have been stripped"
+                assert all(b.get("type") != "tool_result" for b in m["content"]), (
+                    "Orphaned tool_result should have been stripped"
+                )
 
     def test_strips_orphaned_tool_result_preserves_valid(self):
         """Orphaned tool_results are stripped while valid ones survive."""
@@ -996,7 +1521,10 @@ class TestConvertMessages:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"id": "tc_valid", "function": {"name": "search", "arguments": "{}"}},
+                    {
+                        "id": "tc_valid",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_valid", "content": "good result"},
@@ -1024,7 +1552,10 @@ class TestConvertMessages:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"id": "tc_late", "function": {"name": "search", "arguments": "{}"}},
+                    {
+                        "id": "tc_late",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "user", "content": "actually, something else"},
@@ -1066,7 +1597,11 @@ class TestConvertMessages:
             {
                 "role": "system",
                 "content": [
-                    {"type": "text", "text": "System prompt", "cache_control": {"type": "ephemeral"}},
+                    {
+                        "type": "text",
+                        "text": "System prompt",
+                        "cache_control": {"type": "ephemeral"},
+                    },
                 ],
             },
             {"role": "user", "content": "Hi"},
@@ -1090,18 +1625,24 @@ class TestConvertMessages:
         assert assistant_blocks[0]["cache_control"] == {"type": "ephemeral"}
 
     def test_assistant_tool_use_cache_control_is_preserved(self):
-        messages = apply_anthropic_cache_control([
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Run the tool"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ], native_anthropic=True)
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "Run the tool"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc_1",
+                            "function": {"name": "test_tool", "arguments": "{}"},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+            ],
+            native_anthropic=True,
+        )
 
         _, result = convert_messages_to_anthropic(messages)
         assistant_msg = [m for m in result if m["role"] == "assistant"][0]
@@ -1112,37 +1653,40 @@ class TestConvertMessages:
         assert tool_use["cache_control"] == {"type": "ephemeral"}
 
     def test_ordered_replay_tool_use_cache_control_is_preserved(self):
-        messages = apply_anthropic_cache_control([
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Run the tool"},
-            {
-                "role": "assistant",
-                "content": "",
-                "anthropic_content_blocks": [
-                    {
-                        "type": "thinking",
-                        "thinking": "Need a tool.",
-                        "signature": "sig_1",
-                    },
-                    {
-                        "type": "tool_use",
-                        "id": "tc_1",
-                        "name": "test_tool",
-                        "input": {"query": "raw"},
-                    },
-                ],
-                "tool_calls": [
-                    {
-                        "id": "tc_1",
-                        "function": {
-                            "name": "test_tool",
-                            "arguments": '{"query":"redacted"}',
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "Run the tool"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "anthropic_content_blocks": [
+                        {
+                            "type": "thinking",
+                            "thinking": "Need a tool.",
+                            "signature": "sig_1",
                         },
-                    },
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ], native_anthropic=True)
+                        {
+                            "type": "tool_use",
+                            "id": "tc_1",
+                            "name": "test_tool",
+                            "input": {"query": "raw"},
+                        },
+                    ],
+                    "tool_calls": [
+                        {
+                            "id": "tc_1",
+                            "function": {
+                                "name": "test_tool",
+                                "arguments": '{"query":"redacted"}',
+                            },
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+            ],
+            native_anthropic=True,
+        )
 
         _, result = convert_messages_to_anthropic(messages)
         assistant_msg = [m for m in result if m["role"] == "assistant"][0]
@@ -1156,17 +1700,23 @@ class TestConvertMessages:
         assert tool_use["cache_control"] == {"type": "ephemeral"}
 
     def test_tool_cache_control_is_preserved_on_tool_result_block(self):
-        messages = apply_anthropic_cache_control([
-            {"role": "system", "content": "System prompt"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ], native_anthropic=True)
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "System prompt"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc_1",
+                            "function": {"name": "test_tool", "arguments": "{}"},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+            ],
+            native_anthropic=True,
+        )
 
         _, result = convert_messages_to_anthropic(messages)
         user_msg = [m for m in result if m["role"] == "user"][0]
@@ -1183,7 +1733,10 @@ class TestConvertMessages:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                    {
+                        "id": "tc_1",
+                        "function": {"name": "test_tool", "arguments": "{}"},
+                    },
                 ],
                 "reasoning_details": [
                     {
@@ -1197,10 +1750,14 @@ class TestConvertMessages:
         ]
 
         _, result = convert_messages_to_anthropic(messages)
-        assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")["content"]
+        assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")[
+            "content"
+        ]
 
         assert assistant_blocks[0]["type"] == "thinking"
-        assert assistant_blocks[0]["thinking"] == "Need to inspect the tool result first."
+        assert (
+            assistant_blocks[0]["thinking"] == "Need to inspect the tool result first."
+        )
         assert assistant_blocks[0]["signature"] == "sig_123"
         assert assistant_blocks[1]["type"] == "tool_use"
 
@@ -1262,7 +1819,10 @@ class TestConvertMessages:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "skill_view", "arguments": "{}"}},
+                    {
+                        "id": "tc_1",
+                        "function": {"name": "skill_view", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
@@ -1273,7 +1833,10 @@ class TestConvertMessages:
         assistant_turn = next(msg for msg in result if msg["role"] == "assistant")
         assistant_blocks = assistant_turn["content"]
 
-        assert all(not (b.get("type") == "text" and b.get("text") == "") for b in assistant_blocks)
+        assert all(
+            not (b.get("type") == "text" and b.get("text") == "")
+            for b in assistant_blocks
+        )
         assert any(b.get("type") == "tool_use" for b in assistant_blocks)
 
     def test_empty_user_message_string_gets_placeholder(self):
@@ -1311,7 +1874,13 @@ class TestConvertMessages:
     def test_user_message_with_empty_text_blocks_gets_placeholder(self):
         """User message with only empty text blocks should get placeholder."""
         messages = [
-            {"role": "user", "content": [{"type": "text", "text": ""}, {"type": "text", "text": "  "}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": ""},
+                    {"type": "text", "text": "  "},
+                ],
+            },
         ]
         _, result = convert_messages_to_anthropic(messages)
         assert result[0]["role"] == "user"
@@ -1485,6 +2054,7 @@ class TestBuildAnthropicKwargs:
         # params through its signature, we exercise the strip behavior by
         # calling the internal predicate directly.
         from agent.anthropic_adapter import _forbids_sampling_params
+
         assert _forbids_sampling_params("claude-opus-4-8") is True
         assert _forbids_sampling_params("claude-opus-4-8-fast") is True
         assert _forbids_sampling_params("claude-opus-4-7") is True
@@ -1501,6 +2071,7 @@ class TestBuildAnthropicKwargs:
         False for both opus-4-8 and opus-4-8-fast.
         """
         from agent.anthropic_adapter import _supports_fast_mode
+
         assert _supports_fast_mode("claude-opus-4-6") is True
         assert _supports_fast_mode("anthropic/claude-opus-4-6") is True
         assert _supports_fast_mode("claude-opus-4-7") is False
@@ -1523,11 +2094,12 @@ class TestBuildAnthropicKwargs:
             _forbids_sampling_params,
             _get_anthropic_max_output,
         )
+
         # New / unknown Claude models → modern contract by default.
         for m in (
             "claude-fable-5",
             "anthropic/claude-fable-5",
-            "claude-saga-2",            # hypothetical future named model
+            "claude-saga-2",  # hypothetical future named model
             "anthropic/claude-opus-9",  # hypothetical future numbered model
         ):
             assert _supports_adaptive_thinking(m) is True, m
@@ -1542,6 +2114,7 @@ class TestBuildAnthropicKwargs:
             _supports_adaptive_thinking,
             _forbids_sampling_params,
         )
+
         for m in (
             "claude-3-5-sonnet",
             "claude-3-7-sonnet",
@@ -1559,6 +2132,7 @@ class TestBuildAnthropicKwargs:
             _supports_xhigh_effort,
             _forbids_sampling_params,
         )
+
         for m in ("claude-opus-4.6", "claude-sonnet-4-6"):
             assert _supports_adaptive_thinking(m) is True, m
             assert _supports_xhigh_effort(m) is False, m
@@ -1572,6 +2146,7 @@ class TestBuildAnthropicKwargs:
             _supports_xhigh_effort,
             _forbids_sampling_params,
         )
+
         for m in ("minimax-m2", "qwen3-max", "moonshotai/kimi-k2.5", "glm-4.6"):
             assert _supports_adaptive_thinking(m) is False, m
             assert _supports_xhigh_effort(m) is False, m
@@ -1723,35 +2298,43 @@ class TestBuildAnthropicKwargs:
 class TestGetAnthropicMaxOutput:
     def test_opus_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
 
     def test_opus_4_6_variant(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
 
     def test_sonnet_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
 
     def test_sonnet_4_date_stamped(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         assert _get_anthropic_max_output("claude-sonnet-4-20250514") == 64_000
 
     def test_claude_3_5_sonnet(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
     def test_claude_3_opus(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         assert _get_anthropic_max_output("claude-3-opus-20240229") == 4_096
 
     def test_unknown_future_model(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         assert _get_anthropic_max_output("claude-ultra-5-20260101") == 128_000
 
     def test_longest_prefix_wins(self):
         """'claude-3-5-sonnet' should match before 'claude-3-5'."""
         from agent.anthropic_adapter import _get_anthropic_max_output
+
         # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
@@ -1824,7 +2407,9 @@ class TestNormalizeResponse:
 
     def test_text_response(self):
         block = SimpleNamespace(type="text", text="Hello world")
-        nr = get_transport("anthropic_messages").normalize_response(self._make_response([block]))
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response([block])
+        )
         assert nr.content == "Hello world"
         assert nr.finish_reason == "stop"
         assert nr.tool_calls is None
@@ -1853,10 +2438,14 @@ class TestNormalizeResponse:
             SimpleNamespace(type="thinking", thinking="Let me reason about this..."),
             SimpleNamespace(type="text", text="The answer is 42."),
         ]
-        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response(blocks)
+        )
         assert nr.content == "The answer is 42."
         assert nr.reasoning == "Let me reason about this..."
-        assert nr.provider_data["reasoning_details"] == [{"type": "thinking", "thinking": "Let me reason about this..."}]
+        assert nr.provider_data["reasoning_details"] == [
+            {"type": "thinking", "thinking": "Let me reason about this..."}
+        ]
 
     def test_thinking_response_preserves_signature(self):
         blocks = [
@@ -1867,9 +2456,16 @@ class TestNormalizeResponse:
                 redacted=False,
             ),
         ]
-        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
-        assert nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
-        assert nr.provider_data["reasoning_details"][0]["thinking"] == "Let me reason about this..."
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response(blocks)
+        )
+        assert (
+            nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
+        )
+        assert (
+            nr.provider_data["reasoning_details"][0]["thinking"]
+            == "Let me reason about this..."
+        )
 
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
@@ -1959,7 +2555,11 @@ class TestThinkingBlockSignatureManagement:
                     {"id": "tc_1", "function": {"name": "tool1", "arguments": "{}"}},
                 ],
                 "reasoning_details": [
-                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
+                    {
+                        "type": "thinking",
+                        "thinking": "Old reasoning.",
+                        "signature": "sig_old",
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
@@ -1970,7 +2570,11 @@ class TestThinkingBlockSignatureManagement:
                     {"id": "tc_2", "function": {"name": "tool2", "arguments": "{}"}},
                 ],
                 "reasoning_details": [
-                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
+                    {
+                        "type": "thinking",
+                        "thinking": "Latest reasoning.",
+                        "signature": "sig_new",
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
@@ -2001,7 +2605,11 @@ class TestThinkingBlockSignatureManagement:
                 "role": "assistant",
                 "content": "The answer is 42.",
                 "reasoning_details": [
-                    {"type": "thinking", "thinking": "Deep thought.", "signature": "sig_valid"},
+                    {
+                        "type": "thinking",
+                        "thinking": "Deep thought.",
+                        "signature": "sig_valid",
+                    },
                 ],
             },
         ]
@@ -2098,14 +2706,22 @@ class TestThinkingBlockSignatureManagement:
                 "role": "assistant",
                 "content": "First response.",
                 "reasoning_details": [
-                    {"type": "thinking", "thinking": "First thought.", "signature": "sig_1"},
+                    {
+                        "type": "thinking",
+                        "thinking": "First thought.",
+                        "signature": "sig_1",
+                    },
                 ],
             },
             {
                 "role": "assistant",
                 "content": "Second response.",
                 "reasoning_details": [
-                    {"type": "thinking", "thinking": "Second thought.", "signature": "sig_2"},
+                    {
+                        "type": "thinking",
+                        "thinking": "Second thought.",
+                        "signature": "sig_2",
+                    },
                 ],
             },
         ]
@@ -2185,7 +2801,8 @@ class TestThinkingBlockSignatureManagement:
 
         # Last one: thinking preserved
         last_thinking = [
-            b for b in assistants[2]["content"]
+            b
+            for b in assistants[2]["content"]
             if isinstance(b, dict) and b.get("type") == "thinking"
         ]
         assert len(last_thinking) == 1
@@ -2210,11 +2827,21 @@ class TestThinkingBlockSignatureManagement:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"id": "tc_kept", "function": {"name": "tool_a", "arguments": "{}"}},
-                    {"id": "tc_orphan", "function": {"name": "tool_b", "arguments": "{}"}},
+                    {
+                        "id": "tc_kept",
+                        "function": {"name": "tool_a", "arguments": "{}"},
+                    },
+                    {
+                        "id": "tc_orphan",
+                        "function": {"name": "tool_b", "arguments": "{}"},
+                    },
                 ],
                 "reasoning_details": [
-                    {"type": "thinking", "thinking": "Plan: call A and B.", "signature": "sig_dead"},
+                    {
+                        "type": "thinking",
+                        "thinking": "Plan: call A and B.",
+                        "signature": "sig_dead",
+                    },
                 ],
             },
             # Only one of the two parallel tool_use blocks got a result back.
@@ -2252,7 +2879,11 @@ class TestThinkingBlockSignatureManagement:
                     {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
                 ],
                 "reasoning_details": [
-                    {"type": "thinking", "thinking": "Valid plan.", "signature": "sig_live"},
+                    {
+                        "type": "thinking",
+                        "thinking": "Valid plan.",
+                        "signature": "sig_live",
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result A"},
@@ -2316,7 +2947,6 @@ class TestToolChoice:
         assert kwargs["tool_choice"] == {"type": "tool", "name": "search"}
 
 
-
 # ---------------------------------------------------------------------------
 # max_tokens resolver — openclaw/openclaw#66664 port
 # ---------------------------------------------------------------------------
@@ -2374,9 +3004,7 @@ class TestResolveMessagesMaxTokens:
     """Integration tests for the full Messages resolver."""
 
     def test_positive_requested_wins(self):
-        assert _resolve_anthropic_messages_max_tokens(
-            8192, "claude-opus-4-6"
-        ) == 8192
+        assert _resolve_anthropic_messages_max_tokens(8192, "claude-opus-4-6") == 8192
 
     def test_zero_falls_back_to_model_default(self):
         # Should use _get_anthropic_max_output(model), not crash
@@ -2393,9 +3021,7 @@ class TestResolveMessagesMaxTokens:
         assert result > 0
 
     def test_fractional_positive_floored(self):
-        assert _resolve_anthropic_messages_max_tokens(
-            8192.5, "claude-opus-4-6"
-        ) == 8192
+        assert _resolve_anthropic_messages_max_tokens(8192.5, "claude-opus-4-6") == 8192
 
     def test_sub_one_float_falls_back(self):
         # 0.5 floors to 0 -> not positive -> falls back to model ceiling
@@ -2407,6 +3033,7 @@ class TestResolveMessagesMaxTokens:
 # ---------------------------------------------------------------------------
 # convert_tools_to_anthropic — tool dedup at API boundary
 # ---------------------------------------------------------------------------
+
 
 class TestConvertToolsToAnthropicDedup:
     """convert_tools_to_anthropic must deduplicate tool names.
@@ -2444,9 +3071,7 @@ class TestConvertToolsToAnthropicDedup:
         ]
         result = convert_tools_to_anthropic(tools)
         names = [t["name"] for t in result]
-        assert len(names) == len(set(names)), (
-            f"Duplicate tool names found: {names}"
-        )
+        assert len(names) == len(set(names)), f"Duplicate tool names found: {names}"
         assert len(result) == 3  # lcm_grep, lcm_describe, lcm_expand
 
     def test_empty_tools_returns_empty(self):

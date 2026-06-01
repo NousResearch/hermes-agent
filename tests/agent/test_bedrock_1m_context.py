@@ -61,3 +61,28 @@ class TestBedrockContext1MBeta:
         # Other common betas still present — no regression.
         assert "interleaved-thinking-2025-05-14" in beta_header
         assert "fine-grained-tool-streaming-2025-05-14" in beta_header
+
+    def test_build_anthropic_kwargs_omits_1m_for_native_fastmode(self):
+        """Native fast-mode requests avoid the 1M beta by default.
+
+        Bedrock/Azure clients opt into 1M at client construction. Native Anthropic
+        subscriptions that lack long-context access can reject even short requests
+        if the beta is sent unnecessarily.
+        """
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            is_oauth=False,
+            base_url=None,
+            fast_mode=True,
+        )
+        beta_header = kwargs.get("extra_headers", {}).get("anthropic-beta", "")
+        assert "context-1m-2025-08-07" not in beta_header, (
+            "native fast-mode requests should not opt into context-1m unless "
+            "a long-context endpoint specifically requires it"
+        )

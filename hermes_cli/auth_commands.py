@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import sys
 import time
 from types import SimpleNamespace
@@ -113,6 +114,59 @@ def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 
 
+def _anthropic_wif_status() -> dict | None:
+    try:
+        status = auth_mod.get_auth_status("anthropic")
+    except Exception:
+        return None
+    return status if status.get("auth_type") == "wif" else None
+
+
+def _print_anthropic_wif_entry(status: dict, *, index: int = 1) -> None:
+    label = str(status.get("label") or "anthropic-wif")
+    source = _display_source(str(status.get("source") or "wif"))
+    file_exists = status.get("identity_token_file_exists")
+    file_status = "file:ok" if file_exists else "file:missing"
+    marker = "← " if status.get("logged_in") else "  "
+    print(f"  #{index}  {label:<20} {'wif':<7} {source} {file_status} {marker}".rstrip())
+
+
+def _remove_anthropic_wif_state() -> bool:
+    """Replace exclusive WIF state without exposing a global fallback.
+
+    A named profile inherits provider singleton state from the global auth store
+    when it has no local entry.  Removing a local WIF entry (or finding only an
+    inherited one) must therefore leave an explicit local shadow marker when a
+    profile switches to API-key/OAuth credentials.  Otherwise the old global
+    WIF identity immediately becomes authoritative again.
+    """
+    with auth_mod._auth_store_lock():
+        auth_store = auth_mod._load_auth_store()
+        providers = auth_store.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+            auth_store["providers"] = providers
+        state = providers.get("anthropic")
+        had_local_wif = isinstance(state, dict) and state.get("auth_type") == "wif"
+        in_profile = auth_mod._global_auth_file_path() is not None
+        if in_profile:
+            providers["anthropic"] = {
+                "auth_type": "profile_shadow",
+                "source": "profile:local-credential",
+            }
+        elif had_local_wif:
+            providers.pop("anthropic", None)
+        else:
+            return False
+        if auth_store.get("active_provider") == "anthropic":
+            auth_store.pop("active_provider", None)
+        auth_mod._save_auth_store(auth_store)
+    from agent.anthropic_adapter import clear_anthropic_wif_token_cache
+
+    clear_anthropic_wif_token_cache()
+    return True
+
+
 def _classify_exhausted_status(entry) -> tuple[str, bool]:
     code = getattr(entry, "last_error_code", None)
     reason = str(getattr(entry, "last_error_reason", "") or "").strip().lower()
@@ -218,7 +272,77 @@ def auth_add_command(args) -> None:
             base_url=_provider_base_url(provider),
         )
         pool.add_entry(entry)
+        if provider == "anthropic":
+            _remove_anthropic_wif_state()
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
+        return
+
+    if requested_type == "wif":
+        if provider != "anthropic":
+            raise SystemExit("Workload Identity Federation is currently supported only for provider 'anthropic'.")
+
+        prompts = {
+            "federation_rule_id": "Anthropic federation rule ID (fdrl_...)",
+            "organization_id": "Anthropic organization ID",
+            "service_account_id": "Anthropic service account ID (svac_...)",
+            "identity_token_file": "Path to identity token file",
+        }
+        values = {
+            "federation_rule_id": str(getattr(args, "federation_rule_id", None) or "").strip(),
+            "organization_id": str(getattr(args, "organization_id", None) or "").strip(),
+            "service_account_id": str(getattr(args, "service_account_id", None) or "").strip(),
+            "identity_token_file": str(getattr(args, "identity_token_file", None) or "").strip(),
+        }
+        missing = [key for key, value in values.items() if not value]
+        if missing and sys.stdin.isatty():
+            for key in missing:
+                try:
+                    values[key] = input(f"{prompts[key]}: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    raise SystemExit("Anthropic WIF setup cancelled.")
+        missing = [key for key, value in values.items() if not value]
+        if missing:
+            formatted = ", ".join(missing)
+            raise SystemExit(
+                "Missing required Anthropic WIF fields: "
+                f"{formatted}. Pass --federation-rule-id, --organization-id, "
+                "--service-account-id, and --identity-token-file."
+            )
+
+        label = (getattr(args, "label", None) or "").strip() or "anthropic-wif"
+        token_path = Path(values["identity_token_file"]).expanduser()
+        if token_path.exists():
+            try:
+                sample = token_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                sample = ""
+            if sample and sample.count(".") < 2:
+                print(
+                    "Warning: identity token file does not look like a JWT. "
+                    "Use a short-lived OIDC token file, not a workflow YAML or config file."
+                )
+        else:
+            print(
+                "Note: identity token file does not exist yet. This is OK only "
+                "if your workload will create it before Hermes runs."
+            )
+        state = {
+            "auth_type": "wif",
+            "source": "manual:wif",
+            "label": label,
+            **values,
+            "api_base_url": _provider_base_url(provider),
+        }
+        with auth_mod._auth_store_lock():
+            auth_store = auth_mod._load_auth_store()
+            auth_mod._save_provider_state(auth_store, provider, state)
+            auth_mod._save_auth_store(auth_store)
+        from agent.anthropic_adapter import clear_anthropic_wif_token_cache
+
+        # Purge after persisting the replacement: any runtime that starts once
+        # the purge lock is released can only resolve the new identity.
+        clear_anthropic_wif_token_cache()
+        print(f'Configured {provider} Workload Identity Federation: "{label}"')
         return
 
     if provider == "anthropic":
@@ -244,6 +368,7 @@ def auth_add_command(args) -> None:
             base_url=_provider_base_url(provider),
         )
         pool.add_entry(entry)
+        _remove_anthropic_wif_state()
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
@@ -425,11 +550,17 @@ def auth_list_command(args) -> None:
     for provider in providers:
         pool = load_pool(provider)
         entries = pool.entries()
-        if not entries:
+        wif_status = _anthropic_wif_status() if provider == "anthropic" else None
+        if not entries and not wif_status:
             continue
         current = pool.peek()
-        print(f"{provider} ({len(entries)} credentials):")
-        for idx, entry in enumerate(entries, start=1):
+        total = len(entries) + (1 if wif_status else 0)
+        print(f"{provider} ({total} credentials):")
+        next_index = 1
+        if wif_status:
+            _print_anthropic_wif_entry(wif_status, index=next_index)
+            next_index += 1
+        for idx, entry in enumerate(entries, start=next_index):
             marker = "  "
             if current is not None and entry.id == current.id:
                 marker = "← "
@@ -445,7 +576,17 @@ def auth_remove_command(args) -> None:
     if target is None:
         target = getattr(args, "index", None)
     pool = load_pool(provider)
-    index, matched, error = pool.resolve_target(target)
+    wif_status = _anthropic_wif_status() if provider == "anthropic" else None
+    if wif_status and str(target or "1").strip() in {"", "1", "anthropic-wif", str(wif_status.get("label") or "").strip()}:
+        if _remove_anthropic_wif_state():
+            print(f"Removed {provider} WIF credential ({wif_status.get('label') or 'anthropic-wif'})")
+            return
+    pool_target = target
+    if wif_status and isinstance(target, int):
+        pool_target = target - 1
+    elif wif_status and str(target or "").strip().isdigit():
+        pool_target = int(str(target).strip()) - 1
+    index, matched, error = pool.resolve_target(pool_target)
     if matched is None or index is None:
         raise SystemExit(f"{error} Provider: {provider}.")
     removed = pool.remove_index(index)
@@ -686,12 +827,17 @@ def _interactive_add() -> None:
 def _interactive_remove() -> None:
     provider = _pick_provider("Provider to remove credential from")
     pool = load_pool(provider)
-    if not pool.has_credentials():
+    wif_status = _anthropic_wif_status() if provider == "anthropic" else None
+    entries = pool.entries()
+    if not entries and not wif_status:
         print(f"No credentials for {provider}.")
         return
 
-    # Show entries with indices
-    for i, e in enumerate(pool.entries(), 1):
+    next_index = 1
+    if wif_status:
+        _print_anthropic_wif_entry(wif_status, index=next_index)
+        next_index += 1
+    for i, e in enumerate(entries, next_index):
         exhausted = _format_exhausted_status(e)
         print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
 

@@ -4378,6 +4378,13 @@ class AIAgent:
         # Other anthropic_messages providers (MiniMax, Alibaba, etc.) use their own keys.
         if self.provider != "anthropic":
             return False
+        # Callable credentials (WIF/Entra-style providers) refresh inside the
+        # per-request HTTP bearer hook. Resolving the legacy static/OAuth token
+        # here would replace the callable and silently change identities.
+        if callable(self._anthropic_api_key) and not isinstance(
+            self._anthropic_api_key, str
+        ):
+            return False
         # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
         # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
         _base = getattr(self, "_anthropic_base_url", "") or ""

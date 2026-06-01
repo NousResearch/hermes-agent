@@ -255,6 +255,44 @@ def _anthropic_base_url_override_ok(base_url: str) -> bool:
     return False
 
 
+def _resolve_anthropic_wif_or_legacy_token() -> tuple[Any, str]:
+    """Resolve Anthropic auth without reviving a concurrently removed WIF identity."""
+    from agent.anthropic_adapter import (
+        AnthropicWIFGenerationChanged,
+        build_anthropic_wif_token_provider,
+        get_anthropic_wif_provider_generation,
+        read_anthropic_wif_config,
+        resolve_anthropic_token,
+    )
+
+    # A generation change means logout/reconfiguration raced the auth-store
+    # read. Retry the complete read so a stale config can never be registered
+    # after the invalidation pass has completed.
+    for _attempt in range(3):
+        generation = get_anthropic_wif_provider_generation()
+        wif_config = read_anthropic_wif_config()
+        if not wif_config:
+            if generation != get_anthropic_wif_provider_generation():
+                continue
+            legacy_token = resolve_anthropic_token()
+            # The legacy resolution can read files, pools, and refresh OAuth,
+            # so a WIF reconfiguration may complete while it is running. Do not
+            # return the identity selected before that transition.
+            if generation != get_anthropic_wif_provider_generation():
+                continue
+            return legacy_token, "explicit"
+        try:
+            return (
+                build_anthropic_wif_token_provider(
+                    wif_config, expected_generation=generation
+                ),
+                "wif",
+            )
+        except AnthropicWIFGenerationChanged:
+            continue
+    raise AuthError("Anthropic WIF credentials changed during resolution; retry")
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -1379,13 +1417,12 @@ def _resolve_explicit_runtime(
                 cfg_base_url = ""
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
+        auth_source = "explicit"
         if not api_key:
-            from agent.anthropic_adapter import resolve_anthropic_token
-
-            api_key = resolve_anthropic_token()
+            api_key, auth_source = _resolve_anthropic_wif_or_legacy_token()
             if not api_key:
                 raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
+                    "No Anthropic credentials found. Configure WIF, set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."
                 )
         return {
@@ -1393,7 +1430,7 @@ def _resolve_explicit_runtime(
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": api_key,
-            "source": "explicit",
+            "source": auth_source,
             "requested_provider": requested_provider,
         }
 
@@ -1672,6 +1709,17 @@ def resolve_runtime_provider(
         return explicit_runtime
 
     should_use_pool = provider != "openrouter"
+    if provider == "anthropic":
+        try:
+            from agent.anthropic_adapter import read_anthropic_wif_config
+
+            if read_anthropic_wif_config():
+                # Explicit WIF configuration is a runtime exchange, not a pooled
+                # static credential.  Do not let an older Anthropic pool entry
+                # shadow it.
+                should_use_pool = False
+        except Exception:
+            pass
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
@@ -1876,6 +1924,8 @@ def resolve_runtime_provider(
             if not _anthropic_base_url_override_ok(cfg_base_url):
                 cfg_base_url = ""
         base_url = cfg_base_url or "https://api.anthropic.com"
+        token = ""
+        auth_source = "env"
 
         # For Microsoft Foundry endpoints, use ANTHROPIC_API_KEY directly —
         # Claude Code OAuth tokens (sk-ant-oat01) are not accepted by Azure.
@@ -1917,11 +1967,12 @@ def resolve_runtime_provider(
                     "config.yaml model section at a custom env var."
                 )
         else:
-            from agent.anthropic_adapter import resolve_anthropic_token
-            token = resolve_anthropic_token()
+            token, auth_source = _resolve_anthropic_wif_or_legacy_token()
+            if auth_source == "explicit":
+                auth_source = "env"
             if not token:
                 raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
+                    "No Anthropic credentials found. Configure WIF, set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."
                 )
         return {
@@ -1929,7 +1980,7 @@ def resolve_runtime_provider(
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": token,
-            "source": "env",
+            "source": auth_source,
             "requested_provider": requested_provider,
         }
 

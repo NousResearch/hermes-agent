@@ -2638,28 +2638,46 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(
+    explicit_api_key: Any = None,
+    explicit_base_url: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
         return None, None
 
-    pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
+    runtime: Dict[str, Any] = {}
+    entry = None
+    pool_present = False
+    if explicit_api_key:
+        # A credential inherited from the main runtime is an indivisible
+        # credential/endpoint bundle. Never combine it with a stale pool entry.
+        token = explicit_api_key
     else:
-        # Pool absent, OR pool present but no usable entry (expired token +
-        # stale refresh_token, all entries exhausted, etc). Fall through to the
-        # legacy resolver instead of hard-failing: a temporarily dead pool
-        # entry must not wedge auxiliary tasks when a valid standalone
-        # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
-        # matches the openrouter and codex paths, which already fall back to
-        # their env/auth-store credential on (True, None). Without this, the
-        # goal judge and every other Anthropic-routed side channel died with
-        # "no auxiliary client configured" while the main session stayed
-        # healthy (it resolves the env token directly).
-        entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+        pool_present, entry = _select_pool_entry("anthropic")
+        if pool_present and entry is not None:
+            token = _pool_runtime_api_key(entry)
+        else:
+            # Pool absent, OR pool present but no usable entry (expired token +
+            # stale refresh_token, all entries exhausted, etc). Fall through to the
+            # legacy resolver instead of hard-failing: a temporarily dead pool
+            # entry must not wedge auxiliary tasks when a valid standalone
+            # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
+            # matches the openrouter and codex paths, which already fall back to
+            # their env/auth-store credential on (True, None). Without this, the
+            # goal judge and every other Anthropic-routed side channel died with
+            # "no auxiliary client configured" while the main session stayed
+            # healthy (it resolves the env token directly).
+            entry = None
+            token = None
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(requested="anthropic")
+                token = runtime.get("api_key")
+            except Exception:
+                token = resolve_anthropic_token()
     if not token:
         return None, None
 
@@ -2673,22 +2691,30 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     # would have every auxiliary side-channel call (memory extractors,
     # reflection, vision, title generation) 401 from the foreign host —
     # see issue #52608.
-    base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        model_cfg = cfg.get("model")
-        if isinstance(model_cfg, dict):
-            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-            if cfg_provider == "anthropic":
-                cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-                if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
-                    base_url = cfg_base_url
-    except Exception:
-        pass
+    if explicit_api_key:
+        base_url = str(explicit_base_url or _ANTHROPIC_DEFAULT_BASE_URL).rstrip("/")
+    else:
+        base_url = (
+            _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL)
+            if pool_present
+            else str(runtime.get("base_url") or _ANTHROPIC_DEFAULT_BASE_URL)
+        )
+    if not explicit_api_key:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            model_cfg = cfg.get("model")
+            if isinstance(model_cfg, dict):
+                cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+                if cfg_provider == "anthropic":
+                    cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+                    if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
+                        base_url = cfg_base_url
+        except Exception:
+            pass
 
     from agent.anthropic_adapter import _is_oauth_token
-    is_oauth = _is_oauth_token(token)
+    is_oauth = _is_oauth_token(token) if isinstance(token, str) else False
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
@@ -4909,7 +4935,10 @@ def resolve_provider_client(
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
-            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
+            client, default_model = _try_anthropic(
+                explicit_api_key=explicit_api_key,
+                explicit_base_url=explicit_base_url,
+            )
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None

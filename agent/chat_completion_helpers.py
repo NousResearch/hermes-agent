@@ -1554,16 +1554,49 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_timeout = get_provider_request_timeout(fb_provider, fb_model)
 
         if fb_api_mode == "anthropic_messages":
-            # Build native Anthropic client instead of using OpenAI client
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-            effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+            # Build native Anthropic client instead of using OpenAI client.
+            # Re-resolve native Anthropic here so a WIF fallback carries its
+            # per-request refresh callable rather than the static token baked
+            # into the compatibility client used during fallback discovery.
+            from agent.anthropic_adapter import (
+                build_anthropic_client,
+                resolve_anthropic_token,
+                _is_oauth_token,
+            )
+            resolved_key = None
+            resolved_base_url = None
+            if fb_provider == "anthropic":
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                    fb_runtime = resolve_runtime_provider(
+                        requested="anthropic", target_model=fb_model
+                    )
+                    resolved_key = fb_runtime.get("api_key")
+                    resolved_base_url = fb_runtime.get("base_url")
+                except Exception:
+                    logger.debug(
+                        "Could not re-resolve Anthropic fallback runtime",
+                        exc_info=True,
+                    )
+            effective_key = (
+                resolved_key or fb_client.api_key or resolve_anthropic_token() or ""
+                if fb_provider == "anthropic"
+                else (fb_client.api_key or "")
+            )
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
-            agent._anthropic_base_url = fb_base_url
+            agent._anthropic_base_url = resolved_base_url or fb_base_url
             agent._anthropic_client = build_anthropic_client(
-                effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
+                effective_key,
+                agent._anthropic_base_url,
+                timeout=_fb_timeout,
             )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
+            agent._is_anthropic_oauth = (
+                _is_oauth_token(effective_key)
+                if fb_provider == "anthropic" and isinstance(effective_key, str)
+                else False
+            )
             agent.client = None
             agent._client_kwargs = {}
         else:

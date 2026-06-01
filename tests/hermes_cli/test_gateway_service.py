@@ -1041,6 +1041,39 @@ class TestGatewaySystemServiceRouting:
         assert snapshot.running is True
         assert snapshot.has_process_service_mismatch is False
 
+    def test_runtime_snapshot_uses_main_pid_when_is_active_errors(self, monkeypatch):
+        """The authoritative MainPID fallback still applies when is-active errors."""
+        user_unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: user_unit)
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_service_scope_label", lambda system=False: "user")
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [4242])
+
+        def fake_run_systemctl(args, **kwargs):
+            if args[0] == "is-active":
+                raise RuntimeError("systemctl is-active unavailable")
+            if args[0] == "show":
+                return SimpleNamespace(
+                    stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\nMainPID=4242\n",
+                    stderr="",
+                    returncode=0,
+                )
+            raise AssertionError(f"Unexpected systemctl call: {args}")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "systemd (user)"
+        assert snapshot.service_running is True
+        assert snapshot.gateway_pids == (4242,)
+        assert snapshot.has_process_service_mismatch is False
+
     def test_runtime_snapshot_treats_systemd_main_pid_discovered_via_port_as_managed(self, monkeypatch):
         """If the port owner is the active systemd MainPID, status must not report manual."""
         user_unit = SimpleNamespace(exists=lambda: True)

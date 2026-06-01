@@ -658,10 +658,13 @@ def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
             text=True,
             timeout=10,
         )
+        if result.stdout.strip() == "active":
+            return selected_system, True
     except (RuntimeError, subprocess.TimeoutExpired):
-        return selected_system, False
-    if result.stdout.strip() == "active":
-        return selected_system, True
+        # Fall through to the authoritative `systemctl show` probe below; some
+        # reported environments can still expose ActiveState/MainPID even when
+        # the weaker `is-active` check is stale or unavailable.
+        pass
 
     # Authoritative fallback: when systemd reports an active MainPID that
     # matches a discovered gateway process, the gateway is service-managed.

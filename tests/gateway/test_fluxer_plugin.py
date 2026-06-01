@@ -7,7 +7,7 @@ surface stabilizes.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -173,6 +173,109 @@ async def test_send_posts_channel_message_and_reply_reference(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_splits_long_channel_messages(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+        )
+    )
+    adapter._request = AsyncMock(side_effect=[{"id": "msg-1"}, {"id": "msg-2"}])
+
+    result = await adapter.send("chan-1", "a" * 4500, reply_to="msg-0")
+
+    assert result.success is True
+    assert result.message_id == "msg-1"
+    assert result.raw_response["message_ids"] == ["msg-1", "msg-2"]
+    assert adapter._request.await_count == 2
+    first = adapter._request.await_args_list[0]
+    second = adapter._request.await_args_list[1]
+    assert first.kwargs["json"]["message_reference"] == {"message_id": "msg-0"}
+    assert len(first.kwargs["json"]["content"]) <= 4000
+    assert "message_reference" not in second.kwargs["json"]
+    assert len(second.kwargs["json"]["content"]) <= 4000
+
+
+@pytest.mark.asyncio
+async def test_send_image_file_posts_multipart_payload(tmp_path, monkeypatch):
+    from gateway.config import PlatformConfig
+
+    image = tmp_path / "zofka.png"
+    image.write_bytes(b"png-data")
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+        )
+    )
+    adapter._multipart_request = AsyncMock(return_value={"id": "msg-img"})
+
+    result = await adapter.send_image_file("chan-1", str(image), caption="look")
+
+    assert result.success is True
+    assert result.message_id == "msg-img"
+    adapter._multipart_request.assert_awaited_once()
+    call = adapter._multipart_request.await_args
+    assert call is not None
+    _, path = call.args
+    kwargs = call.kwargs
+    assert path == "/channels/chan-1/messages"
+    assert kwargs["payload"]["content"] == "look"
+    assert kwargs["payload"]["attachments"] == [{"id": 0, "filename": "zofka.png", "title": "zofka.png"}]
+    assert kwargs["files"] == [("files[0]", image.resolve(), "zofka.png")]
+
+
+@pytest.mark.asyncio
+async def test_send_voice_marks_fluxer_voice_message(tmp_path, monkeypatch):
+    from gateway.config import PlatformConfig
+
+    audio = tmp_path / "reply.mp3"
+    audio.write_bytes(b"mp3-data")
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+        )
+    )
+    adapter._multipart_request = AsyncMock(return_value={"id": "msg-voice"})
+
+    result = await adapter.send_voice("chan-1", str(audio), caption="spoken", duration=3, waveform="AAAA")
+
+    assert result.success is True
+    call = adapter._multipart_request.await_args
+    assert call is not None
+    kwargs = call.kwargs
+    assert "content" not in kwargs["payload"]
+    assert kwargs["payload"]["flags"] == 1 << 13
+    assert kwargs["payload"]["attachments"] == [
+        {"id": 0, "filename": "reply.mp3", "title": "reply.mp3", "duration": 3, "waveform": "AAAA"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_routes_audio_as_voice(tmp_path, monkeypatch):
+    from gateway.config import PlatformConfig
+
+    audio = tmp_path / "reply.mp3"
+    audio.write_bytes(b"mp3-data")
+    pconfig = PlatformConfig(
+        enabled=True,
+        extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+    )
+
+    with patch.object(FluxerAdapter, "send_voice", new=AsyncMock(return_value=_fluxer.SendResult(success=True, message_id="msg-voice"))) as send_voice:
+        result = await _fluxer._standalone_send(pconfig, "chan-1", "", media_files=[str(audio)])
+
+    assert result == {"success": True, "platform": "fluxer", "chat_id": "chan-1", "message_id": "msg-voice"}
+    send_voice.assert_awaited_once()
+    call = send_voice.await_args
+    assert call is not None
+    assert call.args[:2] == ("chan-1", str(audio))
+
+
+@pytest.mark.asyncio
 async def test_send_reports_retryable_error_on_request_failure(monkeypatch):
     from gateway.config import PlatformConfig
 
@@ -233,6 +336,116 @@ async def test_message_create_dispatches_normalized_event(monkeypatch):
     assert event.source.user_id == "user-1"
     assert event.source.user_name == "Elkim"
     assert event.source.message_id == "msg-1"
+
+
+@pytest.mark.asyncio
+async def test_message_create_dispatches_image_attachment(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+        )
+    )
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    adapter.handle_message = fake_handle
+
+    with patch.object(
+        _fluxer,
+        "cache_image_from_url",
+        new=AsyncMock(return_value="/tmp/fluxer-image.jpg"),
+    ) as cache_image:
+        await adapter._handle_gateway_dispatch(
+            {
+                "op": 0,
+                "t": "MESSAGE_CREATE",
+                "s": 43,
+                "d": {
+                    "id": "msg-img",
+                    "channel_id": "chan-1",
+                    "content": "",
+                    "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                    "attachments": [
+                        {
+                            "id": "att-1",
+                            "filename": "photo.jpg",
+                            "content_type": "image/jpeg",
+                            "url": "https://fluxerusercontent.com/attachments/chan-1/att-1/photo.jpg",
+                        }
+                    ],
+                },
+            }
+        )
+
+    assert len(seen) == 1
+    event = seen[0]
+    assert event.text == ""
+    assert event.message_type == MessageType.PHOTO
+    assert event.media_urls == ["/tmp/fluxer-image.jpg"]
+    assert event.media_types == ["image/jpeg"]
+    cache_image.assert_awaited_once_with(
+        "https://fluxerusercontent.com/attachments/chan-1/att-1/photo.jpg",
+        ".jpg",
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_create_dispatches_voice_attachment_when_flagged(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+        )
+    )
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    adapter.handle_message = fake_handle
+
+    with patch.object(
+        _fluxer,
+        "cache_audio_from_url",
+        new=AsyncMock(return_value="/tmp/fluxer-voice.mp3"),
+    ):
+        await adapter._handle_gateway_dispatch(
+            {
+                "op": 0,
+                "t": "MESSAGE_CREATE",
+                "s": 44,
+                "d": {
+                    "id": "msg-voice",
+                    "channel_id": "chan-1",
+                    "content": "",
+                    "flags": 1 << 13,
+                    "author": {"id": "user-1", "username": "Elkim", "bot": False},
+                    "attachments": [
+                        {
+                            "id": "att-voice",
+                            "filename": "voice.mp3",
+                            "content_type": "audio/mpeg",
+                            "url": "https://fluxerusercontent.com/attachments/chan-1/att-voice/voice.mp3",
+                        }
+                    ],
+                },
+            }
+        )
+
+    assert len(seen) == 1
+    event = seen[0]
+    assert event.message_type == MessageType.VOICE
+    assert event.media_urls == ["/tmp/fluxer-voice.mp3"]
+    assert event.media_types == ["audio/mpeg"]
 
 
 @pytest.mark.asyncio

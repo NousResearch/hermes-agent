@@ -509,7 +509,7 @@ async def _send_via_adapter(
     except Exception:
         runner = None
 
-    if runner is not None:
+    if runner is not None and not media_files:
         try:
             adapter = runner.adapters.get(platform)
         except Exception:
@@ -749,12 +749,37 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Plugin platforms with standalone media support (e.g. Fluxer) ---
+    if media_files:
+        try:
+            from gateway.platform_registry import platform_registry
+            plugin_entry = platform_registry.get(platform.value if hasattr(platform, "value") else str(platform))
+        except Exception:
+            plugin_entry = None
+        if plugin_entry is not None and plugin_entry.standalone_sender_fn is not None:
+            last_result = None
+            for i, chunk in enumerate(chunks or [""]):
+                is_last = (i == len(chunks) - 1)
+                result = await _send_via_adapter(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    chunk,
+                    thread_id=thread_id,
+                    media_files=media_files if is_last else [],
+                    force_document=force_document,
+                )
+                if isinstance(result, dict) and result.get("error"):
+                    return result
+                last_result = result
+            return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
-                f"target {platform.value} had only media attachments"
+                f"send_message MEDIA delivery is not available for target {platform.value}; "
+                "the platform has no native media sender or plugin standalone media sender"
             )
         }
     warning = None

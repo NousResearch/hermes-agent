@@ -14,19 +14,34 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
+import subprocess
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    SUPPORTED_IMAGE_DOCUMENT_TYPES,
+    cache_audio_from_url,
+    cache_document_from_bytes,
+    cache_image_from_url,
+    safe_url_for_log,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 4000
 _DEFAULT_BASE_URL = "https://api.fluxer.app/v1"
 _GATEWAY_VERSION = 1
+_VOICE_MESSAGE_FLAG = 1 << 13
 
 
 def _strip_slash(url: str) -> str:
@@ -72,6 +87,14 @@ def _headers(bot_token: str) -> Dict[str, str]:
     }
 
 
+def _auth_headers(bot_token: str) -> Dict[str, str]:
+    """Headers for requests where httpx must set Content-Type itself."""
+    return {
+        "Authorization": f"Bot {bot_token}",
+        "User-Agent": "Hermes-Fluxer/0.1",
+    }
+
+
 def _event_seq(payload: Dict[str, Any]) -> Optional[int]:
     seq = payload.get("s")
     try:
@@ -105,6 +128,75 @@ def _chat_type(raw: Any) -> str:
     if raw == 3:
         return "group"
     return "channel"
+
+
+def _attachment_url(att: Dict[str, Any]) -> str:
+    return str(att.get("url") or att.get("proxy_url") or "").strip()
+
+
+def _attachment_filename(att: Dict[str, Any]) -> str:
+    return str(att.get("filename") or att.get("title") or att.get("name") or "attachment").strip()
+
+
+def _extension_for_attachment(att: Dict[str, Any], content_type: str, default: str = ".bin") -> str:
+    filename = _attachment_filename(att)
+    suffix = Path(filename).suffix.lower()
+    if suffix:
+        return suffix
+    subtype = (content_type or "").split("/", 1)[-1].split(";", 1)[0].lower()
+    aliases = {"jpeg": ".jpg", "plain": ".txt", "mpeg": ".mp3", "quicktime": ".mov"}
+    if subtype:
+        return aliases.get(subtype, f".{subtype}")
+    return default
+
+
+def _message_type_for_media(media_types: List[str]) -> MessageType:
+    if not media_types:
+        return MessageType.TEXT
+    if any(m.startswith("image/") for m in media_types):
+        return MessageType.PHOTO
+    if any(m.startswith("audio/") for m in media_types):
+        return MessageType.AUDIO
+    if any(m.startswith("video/") for m in media_types):
+        return MessageType.VIDEO
+    return MessageType.DOCUMENT
+
+
+def _is_voice_message(data: Dict[str, Any]) -> bool:
+    try:
+        flags = int(data.get("flags") or 0)
+    except (TypeError, ValueError):
+        flags = 0
+    if flags & _VOICE_MESSAGE_FLAG:
+        return True
+    if str(data.get("message_type") or data.get("type") or "").lower() in {"voice", "voice_message"}:
+        return True
+    attachments = data.get("attachments") or []
+    if isinstance(attachments, list):
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            if bool(att.get("is_voice_message") or att.get("voice") or att.get("voice_message")):
+                return True
+    return False
+
+
+def _audio_duration_seconds(path: Path) -> int:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", str(path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        duration = float((result.stdout or "").strip())
+        if duration > 0:
+            return max(1, int(round(duration)))
+    except Exception:
+        pass
+    return 1
 
 
 class FluxerAdapter(BasePlatformAdapter):
@@ -191,14 +283,181 @@ class FluxerAdapter(BasePlatformAdapter):
                 payload["message_reference"] = {"message_id": str(thread_id)}
 
         try:
-            data = await self._request(
+            formatted = self.format_message(content)
+            chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
+            message_ids: List[str] = []
+            responses: List[Dict[str, Any]] = []
+
+            for index, chunk in enumerate(chunks):
+                chunk_payload = dict(payload)
+                chunk_payload["content"] = chunk
+                if index > 0:
+                    # Reply/reference metadata only belongs on the first split
+                    # chunk; applying the same reference to every continuation
+                    # creates noisy threads and can make partial retries nastier.
+                    chunk_payload.pop("message_reference", None)
+
+                data = await self._request(
+                    "POST",
+                    f"/channels/{chat_id}/messages",
+                    json=chunk_payload,
+                )
+                responses.append(data)
+                if data.get("id"):
+                    message_ids.append(str(data["id"]))
+
+            return SendResult(
+                success=True,
+                message_id=message_ids[0] if message_ids else None,
+                raw_response={"message_ids": message_ids, "responses": responses},
+            )
+        except Exception as exc:
+            logger.warning("Fluxer send failed: %s", exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        try:
+            cached = await cache_image_from_url(image_url, Path(image_url.split("?", 1)[0]).suffix or ".jpg")
+            return await self.send_image_file(chat_id, cached, caption=caption, reply_to=reply_to, metadata=metadata)
+        except Exception as exc:
+            logger.warning("Fluxer image URL upload failed: %s", exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_file_message(
+            chat_id,
+            image_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            title=kwargs.get("title"),
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_file_message(
+            chat_id,
+            file_path,
+            caption=caption,
+            file_name=file_name,
+            reply_to=reply_to,
+            metadata=metadata,
+            title=kwargs.get("title"),
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_file_message(
+            chat_id,
+            video_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            title=kwargs.get("title"),
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_file_message(
+            chat_id,
+            audio_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            flags=_VOICE_MESSAGE_FLAG,
+            is_voice=True,
+            duration=kwargs.get("duration"),
+            waveform=kwargs.get("waveform"),
+            title=kwargs.get("title"),
+        )
+
+    async def _send_file_message(
+        self,
+        chat_id: str,
+        file_path: str,
+        *,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        flags: int = 0,
+        is_voice: bool = False,
+        duration: Optional[int] = None,
+        waveform: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> SendResult:
+        resolved = self.validate_media_delivery_path(file_path)
+        if not resolved:
+            return SendResult(success=False, error=f"Unsafe or missing file path: {file_path}", retryable=False)
+
+        path = Path(resolved)
+        filename = file_name or path.name
+        payload: Dict[str, Any] = {"nonce": str(int(time.time() * 1000))}
+        if caption and not is_voice:
+            payload["content"] = caption
+        if reply_to:
+            payload["message_reference"] = {"message_id": str(reply_to)}
+        if metadata:
+            thread_id = metadata.get("thread_id")
+            if thread_id and "message_reference" not in payload:
+                payload["message_reference"] = {"message_id": str(thread_id)}
+        if flags:
+            payload["flags"] = flags
+
+        attachment: Dict[str, Any] = {"id": 0, "filename": filename, "title": title or filename}
+        if is_voice:
+            # Fluxer's schema requires duration + waveform for VOICE_MESSAGE uploads.
+            attachment["duration"] = int(duration) if duration is not None else _audio_duration_seconds(path)
+            attachment["waveform"] = str(waveform or "AAAA")
+        payload["attachments"] = [attachment]
+
+        try:
+            data = await self._multipart_request(
                 "POST",
                 f"/channels/{chat_id}/messages",
-                json=payload,
+                payload=payload,
+                files=[("files[0]", path, filename)],
             )
             return SendResult(success=True, message_id=str(data.get("id")) if data.get("id") else None, raw_response=data)
         except Exception as exc:
-            logger.warning("Fluxer send failed: %s", exc)
+            logger.warning("Fluxer file upload failed: %s", exc)
             return SendResult(success=False, error=str(exc), retryable=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -222,10 +481,118 @@ class FluxerAdapter(BasePlatformAdapter):
         url = urljoin(self.api_base_url + "/", path.lstrip("/"))
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.request(method, url, headers=_headers(self.bot_token), **kwargs)
+            if response.status_code >= 400:
+                logger.warning(
+                    "Fluxer REST %s %s failed: status=%s body=%s",
+                    method,
+                    path,
+                    response.status_code,
+                    response.text[:500],
+                )
             response.raise_for_status()
             if not response.content:
                 return {}
             return response.json()
+
+    async def _multipart_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: Dict[str, Any],
+        files: List[tuple[str, Path, str]],
+    ) -> Dict[str, Any]:
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError("httpx is required for Fluxer adapter") from exc
+
+        url = urljoin(self.api_base_url + "/", path.lstrip("/"))
+        multipart_files = []
+        handles = []
+        try:
+            for field_name, file_path, filename in files:
+                handle = file_path.open("rb")
+                handles.append(handle)
+                content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                multipart_files.append((field_name, (filename, handle, content_type)))
+            data = {"payload_json": json.dumps(payload, separators=(",", ":"))}
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=_auth_headers(self.bot_token),
+                    data=data,
+                    files=multipart_files,
+                )
+                response.raise_for_status()
+                if not response.content:
+                    return {}
+                return response.json()
+        finally:
+            for handle in handles:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+
+    async def _download_attachment_bytes(self, url: str) -> bytes:
+        try:
+            import httpx
+            from tools.url_safety import is_safe_url
+        except ImportError as exc:
+            raise RuntimeError("httpx and url safety helpers are required for Fluxer attachments") from exc
+
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe Fluxer attachment URL: {safe_url_for_log(url)}")
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bot {self.bot_token}",
+                    "User-Agent": "Hermes-Fluxer/0.1",
+                    "Accept": "*/*",
+                },
+            )
+            response.raise_for_status()
+            return response.content
+
+    async def _cache_attachment(self, att: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        url = _attachment_url(att)
+        if not url:
+            return None, None
+        content_type = str(att.get("content_type") or att.get("contentType") or "application/octet-stream").split(";", 1)[0].lower()
+        filename = _attachment_filename(att)
+        ext = _extension_for_attachment(att, content_type)
+
+        try:
+            if content_type.startswith("image/") or ext in SUPPORTED_IMAGE_DOCUMENT_TYPES:
+                image_type = content_type if content_type.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(ext, "image/jpeg")
+                image_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else _extension_for_attachment(att, image_type, ".jpg")
+                return await cache_image_from_url(url, image_ext), image_type
+            if content_type.startswith("audio/"):
+                return await cache_audio_from_url(url, ext if ext != ".bin" else ".ogg"), content_type
+
+            data = await self._download_attachment_bytes(url)
+            return cache_document_from_bytes(data, filename), content_type or "application/octet-stream"
+        except Exception as exc:
+            logger.warning("Fluxer failed to cache attachment %s: %s", filename, exc)
+            return url, content_type or "application/octet-stream"
+
+    async def _extract_attachments(self, data: Dict[str, Any]) -> tuple[List[str], List[str]]:
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        attachments = data.get("attachments") or []
+        if not isinstance(attachments, list):
+            return media_urls, media_types
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            cached, mtype = await self._cache_attachment(att)
+            if cached:
+                media_urls.append(cached)
+                media_types.append(mtype or "application/octet-stream")
+        return media_urls, media_types
 
     async def _listen_loop(self) -> None:
         assert self._ws is not None
@@ -289,7 +656,8 @@ class FluxerAdapter(BasePlatformAdapter):
             return
 
         text = data.get("content") or ""
-        if not text and not data.get("attachments"):
+        media_urls, media_types = await self._extract_attachments(data)
+        if not text and not media_urls:
             return
 
         channel_id = str(data.get("channel_id") or data.get("channel", {}).get("id") or "")
@@ -315,10 +683,12 @@ class FluxerAdapter(BasePlatformAdapter):
 
         event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=MessageType.VOICE if _is_voice_message(data) else _message_type_for_media(media_types),
             source=source,
             raw_message=raw_payload,
             message_id=msg_id or None,
+            media_urls=media_urls,
+            media_types=media_types,
             timestamp=timestamp,
         )
         await self.handle_message(event)
@@ -376,10 +746,35 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     adapter = FluxerAdapter(pconfig)
     metadata = {"thread_id": thread_id} if thread_id else None
-    result = await adapter.send(chat_id, message, metadata=metadata)
-    if result.success:
-        return {"success": True, "platform": "fluxer", "chat_id": chat_id, "message_id": result.message_id}
-    return {"error": result.error or "Fluxer send failed"}
+    try:
+        last: Optional[SendResult] = None
+        if message:
+            last = await adapter.send(chat_id, message, metadata=metadata)
+            if not last.success:
+                return {"error": last.error or "Fluxer send failed"}
+        for media_item in media_files or []:
+            if isinstance(media_item, (tuple, list)):
+                media_path = str(media_item[0])
+                is_voice_directive = bool(media_item[1]) if len(media_item) > 1 else False
+            else:
+                media_path = str(media_item)
+                is_voice_directive = False
+            ext = Path(media_path).suffix.lower()
+            if not force_document and ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+                last = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+            elif not force_document and ext in {".mp4", ".mov", ".webm", ".mkv", ".avi"}:
+                last = await adapter.send_video(chat_id, media_path, metadata=metadata)
+            elif not force_document and (is_voice_directive or ext in {".mp3", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac"}):
+                last = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            else:
+                last = await adapter.send_document(chat_id, media_path, metadata=metadata)
+            if not last.success:
+                return {"error": last.error or "Fluxer media send failed"}
+        if last and last.success:
+            return {"success": True, "platform": "fluxer", "chat_id": chat_id, "message_id": last.message_id}
+        return {"error": "Fluxer send failed: empty message and no media"}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 def interactive_setup() -> None:

@@ -1306,7 +1306,7 @@ class LineAdapter(BasePlatformAdapter):
             else:
                 base = f"https://{host}:{port}"
         safe_name = _urlquote(filename, safe="")
-        return f"{base}{DEFAULT_MEDIA_PATH_PREFIX}/{token}/{safe_name}"
+        return f"{base}{self.media_path_prefix}/{token}/{safe_name}"
 
     async def _handle_media(self, request) -> Any:
         """Serve a registered local file over HTTPS for LINE's media URLs.

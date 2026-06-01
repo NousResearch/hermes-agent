@@ -199,6 +199,37 @@ def test_admin_sources_use_distinct_session_namespace(monkeypatch):
     assert build_session_key(admin_source) == "agent:main:line_admin:dm:U123"
 
 
+def test_admin_media_urls_use_admin_prefix(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_SECRET", "admin-secret")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_PUBLIC_URL", "https://admin.example.com")
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        admin = LineAdapter(
+            PlatformConfig(enabled=True),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    assert admin._media_url("tok", "file.png") == "https://admin.example.com/line-admin/media/tok/file.png"
+
+
 @pytest.mark.asyncio
 async def test_verify_code_uses_adapter_platform(monkeypatch):
     from gateway.config import PlatformConfig

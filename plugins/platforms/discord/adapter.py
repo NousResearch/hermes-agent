@@ -4064,6 +4064,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        risk_category: Optional[str] = None,
+        risk_warning: Optional[str] = None,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -4092,6 +4094,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
+            # Risk field
+            risk_line_parts = []
+            if risk_category:
+                risk_line_parts.append(f"**[{risk_category}]**")
+            if risk_warning:
+                risk_line_parts.append(risk_warning)
+            risk_text = " ".join(risk_line_parts)
+            if risk_text:
+                embed.add_field(name="⚠️ Risk", value=risk_text, inline=False)
             embed.add_field(name="Reason", value=description, inline=False)
 
             view = ExecApprovalView(

@@ -2626,6 +2626,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        risk_category: Optional[str] = None,
+        risk_warning: Optional[str] = None,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -2637,8 +2639,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            risk_line_parts = []
+            if risk_category:
+                risk_line_parts.append(f"<b>[{_html.escape(risk_category)}]</b>")
+            if risk_warning:
+                risk_line_parts.append(_html.escape(risk_warning))
+            risk_html = f"{' '.join(risk_line_parts)}\n\n" if risk_line_parts else ""
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"{risk_html}"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )

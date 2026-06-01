@@ -1,0 +1,184 @@
+# Risk category mapping and translations for approval UI.
+# Loaded by tools/approval.py _load_risk_data().
+#
+# category: maps each DANGEROUS_PATTERNS / HARDLINE_PATTERNS
+#   description to a risk category ID.  Keep in sync with the
+#   patterns in tools/approval.py.
+#
+# Each category ID below has label (name in each language) and
+# warning (risk description in each language).
+# To add a new language, add its key under label and warning for
+# every category.
+
+category:
+  # FILE_DELETION
+  delete in root path: FILE_DELETION
+  recursive delete: FILE_DELETION
+  recursive delete (long flag): FILE_DELETION
+  recursive delete of root filesystem: FILE_DELETION
+  recursive delete of system directory: FILE_DELETION
+  recursive delete of home directory: FILE_DELETION
+  xargs with rm: FILE_DELETION
+  find -exec/-execdir rm: FILE_DELETION
+  find -delete: FILE_DELETION
+  # SYSTEM_CONFIG_OVERWRITE
+  overwrite system config: SYSTEM_CONFIG_OVERWRITE
+  overwrite system file via tee: SYSTEM_CONFIG_OVERWRITE
+  overwrite system file via redirection: SYSTEM_CONFIG_OVERWRITE
+  copy/move file into system config path: SYSTEM_CONFIG_OVERWRITE
+  in-place edit of system config: SYSTEM_CONFIG_OVERWRITE
+  in-place edit of system config (long flag): SYSTEM_CONFIG_OVERWRITE
+  dd to raw block device: SYSTEM_CONFIG_OVERWRITE
+  redirect to raw block device: SYSTEM_CONFIG_OVERWRITE
+  # PROJECT_CONFIG_OVERWRITE
+  overwrite project env/config via tee: PROJECT_CONFIG_OVERWRITE
+  overwrite project env/config via redirection: PROJECT_CONFIG_OVERWRITE
+  overwrite project env/config file: PROJECT_CONFIG_OVERWRITE
+  # GIT_DATA_LOSS
+  git reset --hard (destroys uncommitted changes): GIT_DATA_LOSS
+  git force push (rewrites remote history): GIT_DATA_LOSS
+  git force push short flag (rewrites remote history): GIT_DATA_LOSS
+  git clean with force (deletes untracked files): GIT_DATA_LOSS
+  git branch force delete: GIT_DATA_LOSS
+  # DATABASE_DESTRUCTION
+  SQL DROP: DATABASE_DESTRUCTION
+  SQL DELETE without WHERE: DATABASE_DESTRUCTION
+  SQL TRUNCATE: DATABASE_DESTRUCTION
+  # DISK_FORMAT
+  format filesystem: DISK_FORMAT
+  format filesystem (mkfs): DISK_FORMAT
+  disk copy: DISK_FORMAT
+  write to block device: DISK_FORMAT
+  # REMOTE_CODE_EXECUTION
+  shell command via -c/-lc flag: REMOTE_CODE_EXECUTION
+  script execution via -e/-c flag: REMOTE_CODE_EXECUTION
+  script execution via heredoc: REMOTE_CODE_EXECUTION
+  pipe remote content to shell: REMOTE_CODE_EXECUTION
+  execute remote script via process substitution: REMOTE_CODE_EXECUTION
+  chmod +x followed by immediate execution: REMOTE_CODE_EXECUTION
+  # PROCESS_TERMINATION
+  kill all processes: PROCESS_TERMINATION
+  force kill processes: PROCESS_TERMINATION
+  force kill processes (killall -KILL): PROCESS_TERMINATION
+  force kill processes (killall -s KILL): PROCESS_TERMINATION
+  kill processes by regex (killall -r): PROCESS_TERMINATION
+  kill hermes/gateway process (self-termination): PROCESS_TERMINATION
+  kill process via pgrep expansion (self-termination): PROCESS_TERMINATION
+  kill process via backtick pgrep expansion (self-termination): PROCESS_TERMINATION
+  # SERVICE_LIFECYCLE
+  stop/restart system service: SERVICE_LIFECYCLE
+  stop/restart hermes gateway (kills running agents): SERVICE_LIFECYCLE
+  hermes update (restarts gateway, kills running agents): SERVICE_LIFECYCLE
+  docker compose restart/stop/kill/down (container lifecycle): SERVICE_LIFECYCLE
+  docker restart/stop/kill (container lifecycle): SERVICE_LIFECYCLE
+  start gateway outside systemd (use 'systemctl --user restart hermes-gateway'): SERVICE_LIFECYCLE
+  # SYSTEM_SHUTDOWN
+  system shutdown/reboot: SYSTEM_SHUTDOWN
+  init 0/6 (shutdown/reboot): SYSTEM_SHUTDOWN
+  systemctl poweroff/reboot: SYSTEM_SHUTDOWN
+  telinit 0/6 (shutdown/reboot): SYSTEM_SHUTDOWN
+  # PERMISSION_ESCALATION
+  world/other-writable permissions: PERMISSION_ESCALATION
+  recursive world/other-writable (long flag): PERMISSION_ESCALATION
+  recursive chown to root: PERMISSION_ESCALATION
+  recursive chown to root (long flag): PERMISSION_ESCALATION
+  sudo with privilege flag (stdin/askpass/shell/list): PERMISSION_ESCALATION
+  sudo with combined-flag privilege escalation: PERMISSION_ESCALATION
+  # FORK_BOMB
+  fork bomb: FORK_BOMB
+
+FILE_DELETION:
+  label:
+    en: "File Deletion"
+    zh: "删除文件"
+  warning:
+    en: "This will permanently delete files and cannot be undone."
+    zh: "此操作将永久删除文件，无法恢复。"
+
+SYSTEM_CONFIG_OVERWRITE:
+  label:
+    en: "System Config Overwrite"
+    zh: "系统配置覆盖"
+  warning:
+    en: "This modifies system configuration files and may affect system stability."
+    zh: "此操作将修改系统配置文件，可能影响系统稳定性。"
+
+PROJECT_CONFIG_OVERWRITE:
+  label:
+    en: "Project Config Overwrite"
+    zh: "项目配置覆盖"
+  warning:
+    en: "This overwrites project environment or configuration files."
+    zh: "此操作将覆盖项目环境变量或配置文件。"
+
+GIT_DATA_LOSS:
+  label:
+    en: "Git Data Loss"
+    zh: "Git 数据丢失"
+  warning:
+    en: "This will permanently discard uncommitted work or rewrite history."
+    zh: "此操作将永久丢弃未提交的工作或重写历史记录。"
+
+DATABASE_DESTRUCTION:
+  label:
+    en: "Database Destruction"
+    zh: "数据库删除"
+  warning:
+    en: "This permanently deletes database data or schema."
+    zh: "此操作将永久删除数据库数据或结构。"
+
+DISK_FORMAT:
+  label:
+    en: "Disk Format"
+    zh: "磁盘格式化"
+  warning:
+    en: "This destroys data on the target disk or partition."
+    zh: "此操作将销毁目标磁盘或分区上的数据。"
+
+REMOTE_CODE_EXECUTION:
+  label:
+    en: "Remote Code Execution"
+    zh: "远程代码执行"
+  warning:
+    en: "This downloads and executes code from an external source."
+    zh: "此操作将从外部来源下载并执行代码。"
+
+PROCESS_TERMINATION:
+  label:
+    en: "Process Termination"
+    zh: "进程终止"
+  warning:
+    en: "This terminates running processes and may cause data loss."
+    zh: "此操作将终止运行中的进程，可能导致数据丢失。"
+
+SERVICE_LIFECYCLE:
+  label:
+    en: "Service Lifecycle"
+    zh: "服务生命周期"
+  warning:
+    en: "This stops or restarts services and will disrupt running operations."
+    zh: "此操作将停止或重启服务，会中断正在运行的操作。"
+
+SYSTEM_SHUTDOWN:
+  label:
+    en: "System Shutdown"
+    zh: "系统关机"
+  warning:
+    en: "This shuts down or reboots the system immediately."
+    zh: "此操作将立即关机或重启系统。"
+
+PERMISSION_ESCALATION:
+  label:
+    en: "Permission Escalation"
+    zh: "提权操作"
+  warning:
+    en: "This changes file permissions or escalates privileges."
+    zh: "此操作将修改文件权限或提升权限等级。"
+
+FORK_BOMB:
+  label:
+    en: "Fork Bomb"
+    zh: "Fork 炸弹"
+  warning:
+    en: "This will crash the system by exhausting all resources."
+    zh: "此操作将耗尽系统资源导致崩溃。"

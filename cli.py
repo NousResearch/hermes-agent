@@ -11583,12 +11583,18 @@ class HermesCLI:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
 
+            # Read risk info set by check_all_command_guards via contextvar
+            from tools.approval import _approval_risk_info
+            _risk_info = _approval_risk_info.get()
+
             self._approval_state = {
                 "command": command,
                 "description": description,
                 "choices": self._approval_choices(command, allow_permanent=allow_permanent),
                 "selected": 0,
                 "response_queue": response_queue,
+                "risk_category": _risk_info.get("category"),
+                "risk_warning": _risk_info.get("warning"),
             }
             self._approval_deadline = _time.monotonic() + timeout
 
@@ -11712,6 +11718,8 @@ class HermesCLI:
 
         command = state["command"]
         description = state["description"]
+        risk_category = state.get("risk_category")
+        risk_warning = state.get("risk_warning")
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
@@ -11727,6 +11735,15 @@ class HermesCLI:
         }
 
         preview_lines = _wrap_panel_text(description, 60)
+        # Build risk line text for box sizing
+        risk_line_parts = []
+        if risk_category:
+            risk_line_parts.append(f"[{risk_category}]")
+        if risk_warning:
+            risk_line_parts.append(risk_warning)
+        risk_text = " ".join(risk_line_parts) if risk_line_parts else ""
+        if risk_text:
+            preview_lines.extend(_wrap_panel_text(risk_text, 60))
         preview_lines.extend(_wrap_panel_text(cmd_display, 60))
         for i, choice in enumerate(choices):
             prefix = '❯ ' if i == selected else '  '
@@ -11816,6 +11833,19 @@ class HermesCLI:
         _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
         if not use_compact_chrome:
             _append_blank_panel_line(lines, 'class:approval-border', box_width)
+
+        # Risk banner: category + warning between title and command
+        risk_line_parts = []
+        if risk_category:
+            risk_line_parts.append(f"[{risk_category}]")
+        if risk_warning:
+            risk_line_parts.append(risk_warning)
+        risk_text = " ".join(risk_line_parts) if risk_line_parts else ""
+        if risk_text:
+            for wrapped in _wrap_panel_text(risk_text, inner_text_width):
+                _append_panel_line(lines, 'class:approval-border', 'class:approval-risk', wrapped, box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:approval-border', box_width)
 
         for wrapped in cmd_wrapped:
             _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)

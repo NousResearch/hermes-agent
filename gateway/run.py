@@ -17781,6 +17781,8 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                risk_category = approval_data.get("risk_category")
+                risk_warning = approval_data.get("risk_warning")
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -17794,6 +17796,8 @@ class GatewayRunner:
                                 session_key=_approval_session_key,
                                 description=desc,
                                 metadata=_status_thread_metadata,
+                                risk_category=risk_category,
+                                risk_warning=risk_warning,
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -17815,8 +17819,16 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                risk_line_parts = []
+                if risk_category:
+                    risk_line_parts.append(f"[{risk_category}]")
+                if risk_warning:
+                    risk_line_parts.append(risk_warning)
+                risk_text = " ".join(risk_line_parts)
+                risk_block = f"\n{risk_text}\n" if risk_text else ""
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{risk_block}"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `/approve` to execute, `/approve session` to approve this pattern "

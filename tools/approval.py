@@ -37,6 +37,14 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     default="",
 )
 
+# Per-thread/per-task risk info for CLI approval callback.
+# Set in check_all_command_guards before calling the CLI callback,
+# read inside the callback when building _approval_state.
+_approval_risk_info: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "approval_risk_info",
+    default={},
+)
+
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook for the approval system.
@@ -1318,6 +1326,10 @@ def check_all_command_guards(command: str, env_type: str,
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
 
+    # Risk info for approval UI banners (category + warning).
+    risk_descriptions = [desc for _, desc, _ in warnings]
+    _risk_info = _get_risk_info(risk_descriptions)
+
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
     # input() flow.  The agent never sees "approval_required"; it either
@@ -1337,6 +1349,8 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "risk_category": _risk_info.get("category"),
+                "risk_warning": _risk_info.get("warning"),
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
@@ -1427,9 +1441,13 @@ def check_all_command_guards(command: str, env_type: str,
         session_key=session_key,
         surface="cli",
     )
-    choice = prompt_dangerous_approval(command, combined_desc,
-                                       allow_permanent=not has_tirith,
-                                       approval_callback=approval_callback)
+    token = _approval_risk_info.set(_risk_info)
+    try:
+        choice = prompt_dangerous_approval(command, combined_desc,
+                                           allow_permanent=not has_tirith,
+                                           approval_callback=approval_callback)
+    finally:
+        _approval_risk_info.reset(token)
     _fire_approval_hook(
         "post_approval_response",
         command=command,
@@ -1639,6 +1657,90 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # persists to future scripts.
     return {"approved": True, "message": None,
             "user_approved": True, "description": description}
+
+
+# =========================================================================
+# Risk category mapping for dangerous command approval UI
+# =========================================================================
+# Maps each DANGEROUS_PATTERNS / HARDLINE_PATTERNS description to a
+# user-facing risk category and a short warning.  Data lives in
+# locales/risk.yaml (category + label + warning per language).
+# Unknown descriptions silently produce None (no banner rendered).
+
+def _load_risk_data() -> dict:
+    """Load risk category mapping + translations from locales/risk.yaml.
+
+    Returns a dict with:
+      "category" -> {description: category_id, ...}
+      "<category_id>" -> {"label": {en: ..., zh: ...}, "warning": {...}}
+    Returns empty dict on any error (banner silently degrades to None).
+    """
+    try:
+        from agent.i18n import _locales_dir as _base_dir
+        import yaml
+        path = _base_dir() / "risk.yaml"
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _get_risk_info(descriptions: list[str]) -> dict:
+    """Return risk category label + warning for a list of matched descriptions.
+
+    Args:
+        descriptions: Description strings from matched DANGEROUS_PATTERNS
+                      and/or HARDLINE_PATTERNS entries.
+
+    Returns:
+        dict with keys:
+          "category" — user-facing category label in the active language,
+                       or None if no description maps to a known category.
+          "warning"  — human-readable risk warning in the active language,
+                       or None if no warning is available.
+    """
+    data = _load_risk_data()
+    cat_map: dict = data.get("category", {})
+
+    # Collect unique categories from all descriptions
+    categories: set[str] = set()
+    for desc in descriptions:
+        cat = cat_map.get(desc)
+        if cat:
+            categories.add(cat)
+
+    if not categories:
+        return {"category": None, "warning": None}
+
+    # Primary category = first description's mapping
+    primary = None
+    for desc in descriptions:
+        cat = cat_map.get(desc)
+        if cat:
+            primary = cat
+            break
+
+    # Resolve active language
+    try:
+        from agent.i18n import get_language
+        lang = get_language()
+    except Exception:
+        lang = "en"
+
+    # Get label and warning in the active language
+    cat_data = data.get(primary, {})
+    labels = cat_data.get("label", {})
+    label = labels.get(lang) or labels.get("en") or primary
+
+    warnings = cat_data.get("warning", {})
+    warning = warnings.get(lang) or warnings.get("en") or ""
+
+    return {
+        "category": label or None,
+        "warning": warning or None,
+    }
 
 
 # Load permanent allowlist from config on module import

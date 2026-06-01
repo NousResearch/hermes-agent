@@ -2650,6 +2650,8 @@ class SlackAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        risk_category: Optional[str] = None,
+        risk_warning: Optional[str] = None,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
@@ -2663,6 +2665,13 @@ class SlackAdapter(BasePlatformAdapter):
             cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
 
+            risk_line_parts = []
+            if risk_category:
+                risk_line_parts.append(f"[{risk_category}]")
+            if risk_warning:
+                risk_line_parts.append(risk_warning)
+            risk_text = " ".join(risk_line_parts)
+
             blocks = [
                 {
                     "type": "section",
@@ -2675,6 +2684,13 @@ class SlackAdapter(BasePlatformAdapter):
                         ),
                     },
                 },
+                *([{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f":warning: *{risk_text}*",
+                    },
+                }] if risk_text else []),
                 {
                     "type": "actions",
                     "elements": [

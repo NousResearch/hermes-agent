@@ -1520,3 +1520,60 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestRiskInfo:
+    """Tests for _get_risk_info — risk category + warning for approval UI."""
+
+    def test_returns_category_for_known_description(self):
+        from tools.approval import _get_risk_info
+        result = _get_risk_info(["recursive delete"])
+        assert result["category"] is not None
+        assert "File Deletion" in result["category"]
+
+    def test_returns_warning_for_known_description(self):
+        from tools.approval import _get_risk_info
+        result = _get_risk_info(["recursive delete"])
+        assert result["warning"] is not None
+        assert "permanently delete" in result["warning"].lower()
+
+    def test_returns_none_for_unknown_description(self):
+        from tools.approval import _get_risk_info
+        result = _get_risk_info(["some unknown pattern"])
+        assert result["category"] is None
+        assert result["warning"] is None
+
+    def test_empty_list_returns_none(self):
+        from tools.approval import _get_risk_info
+        result = _get_risk_info([])
+        assert result["category"] is None
+        assert result["warning"] is None
+
+    def test_all_dangerous_patterns_have_risk_category(self):
+        from tools.approval import (
+            DANGEROUS_PATTERNS, HARDLINE_PATTERNS, _load_risk_data
+        )
+        data = _load_risk_data()
+        cat_map = data.get("category", {})
+        all_descs = set()
+        for _, desc in DANGEROUS_PATTERNS:
+            all_descs.add(desc)
+        for _, desc in HARDLINE_PATTERNS:
+            all_descs.add(desc)
+        mapped = set(cat_map.keys())
+        missing = all_descs - mapped
+        extra = mapped - all_descs
+        if missing or extra:
+            msg = []
+            if missing:
+                msg.append(f"Missing categories for: {sorted(missing)}")
+            if extra:
+                msg.append(f"Unknown keys in risk.yaml: {sorted(extra)}")
+            pytest.fail("; ".join(msg))
+
+    def test_returns_chinese_label_when_lang_is_zh(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        from tools.approval import _get_risk_info
+        result = _get_risk_info(["recursive delete"])
+        assert result["category"] == "删除文件"
+        assert "文件" in result["warning"]

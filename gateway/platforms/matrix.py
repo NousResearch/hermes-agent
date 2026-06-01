@@ -1269,6 +1269,8 @@ class MatrixAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        risk_category: Optional[str] = None,
+        risk_warning: Optional[str] = None,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
         if not self._client:

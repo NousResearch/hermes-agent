@@ -918,6 +918,7 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "approval-border": input_rule,
         "approval-title": f"{warn} bold",
         "approval-desc": f"{text} bold",
+        "approval-risk": f"{warn}",
         "approval-cmd": f"{dim} italic",
         "approval-choice": dim,
         "approval-selected": f"{title} bold",

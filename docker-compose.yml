@@ -32,6 +32,11 @@ services:
     image: hermes-agent
     container_name: hermes
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     network_mode: host
     volumes:
       - ~/.hermes:/opt/data
@@ -64,6 +69,11 @@ services:
     image: hermes-agent
     container_name: hermes-dashboard
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     network_mode: host
     depends_on:
       - gateway

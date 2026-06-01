@@ -1,6 +1,11 @@
 services:
   homeserver:
     image: ghcr.io/continuwuity/continuwuity:latest
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       CONTINUWUITY_SERVER_NAME: localhost
       CONTINUWUITY_DATABASE_PATH: /var/lib/conduwuit/conduwuit.db

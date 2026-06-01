@@ -3548,11 +3548,39 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT * FROM tasks WHERE status IN ('todo', 'blocked')"
+            "SELECT * FROM tasks WHERE status IN ('todo', 'blocked') "
+            "OR (status = 'ready' AND review_phase IN ('worker_done', 'review_ready'))"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if row["review_phase"] in {"worker_done", "review_ready"}:
+                # Review-phase tasks are governed handoffs, not dependency-waiting
+                # blocked work.  Re-promoting them would let the dispatcher rerun
+                # a worker before the verifier/remediation gate has made a
+                # decision.
+                if cur_status == "ready":
+                    _end_run(
+                        conn,
+                        task_id,
+                        outcome="reclaimed",
+                        status="reclaimed",
+                        summary="review phase handoff demoted from stale ready",
+                        metadata={"reason": "review_phase_handoff"},
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL "
+                        "WHERE id = ? AND status = 'ready'",
+                        (task_id,),
+                    )
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "review_phase_handoff"},
+                    )
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -3627,6 +3655,32 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        phase_row = conn.execute(
+            "SELECT review_phase FROM tasks WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        ).fetchone()
+        if phase_row and phase_row["review_phase"] in {"worker_done", "review_ready"}:
+            reclaimed_run_id = _end_run(
+                conn,
+                task_id,
+                outcome="reclaimed",
+                status="reclaimed",
+                summary="review phase handoff rejected worker re-claim",
+                metadata={"reason": "review_phase_handoff"},
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL WHERE id = ? AND status = 'ready'",
+                (task_id,),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {"reason": "review_phase_handoff"},
+                run_id=reclaimed_run_id,
+            )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,

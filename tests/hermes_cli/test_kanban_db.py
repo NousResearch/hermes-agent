@@ -484,6 +484,45 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         assert task.last_failure_error is None
 
 
+def test_recompute_ready_keeps_worker_done_blocked(kanban_home):
+    """worker_done is a verifier handoff, not dependency-waiting blocked work."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker done handoff", assignee="verifier")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', "
+            "closeout_evidence=?, consecutive_failures=0, last_failure_error=NULL "
+            "WHERE id=?",
+            ('{"schema":"kanban_closeout_evidence.v1"}', task_id),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+
+        assert promoted == 0
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+
+
+def test_recompute_ready_demotes_stale_ready_worker_done(kanban_home):
+    """A stale ready+worker_done row should self-heal before dispatch sees it."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker done leaked ready", assignee="verifier")
+        conn.execute(
+            "UPDATE tasks SET status='ready', review_phase='worker_done', "
+            "closeout_evidence=? WHERE id=?",
+            ('{"schema":"kanban_closeout_evidence.v1"}', task_id),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+
+        assert promoted == 0
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+
+
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")
@@ -526,6 +565,54 @@ def test_claim_fails_on_non_ready(kanban_home):
         kb.link_tasks(conn, p, t)
         assert kb.get_task(conn, t).status == "todo"
         assert kb.claim_task(conn, t) is None
+
+
+def test_claim_rejects_worker_done_even_if_status_ready(kanban_home):
+    """Stale ready status must not let dispatcher rerun a verifier handoff."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker done leaked ready", assignee="verifier")
+        conn.execute(
+            "UPDATE tasks SET status='ready', review_phase='worker_done', "
+            "closeout_evidence=? WHERE id=?",
+            ('{"schema":"kanban_closeout_evidence.v1"}', task_id),
+        )
+        conn.commit()
+
+        assert kb.claim_task(conn, task_id, claimer="host:1") is None
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+        events = kb.list_events(conn, task_id)
+        assert any(
+            e.kind == "claim_rejected"
+            and e.payload.get("reason") == "review_phase_handoff"
+            for e in events
+        )
+
+
+def test_claim_rejects_worker_done_ready_and_reclaims_stale_run(kanban_home):
+    """The defensive demotion must not leave a stale current_run_id behind."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker done leaked ready", assignee="verifier")
+        claimed = kb.claim_task(conn, task_id, claimer="host:first")
+        assert claimed is not None
+        run_id = kb.get_task(conn, task_id).current_run_id
+        conn.execute(
+            "UPDATE tasks SET status='ready', review_phase='worker_done', "
+            "closeout_evidence=?, claim_lock=NULL, claim_expires=NULL, worker_pid=NULL "
+            "WHERE id=?",
+            ('{"schema":"kanban_closeout_evidence.v1"}', task_id),
+        )
+        conn.commit()
+
+        assert kb.claim_task(conn, task_id, claimer="host:second") is None
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.review_phase == "worker_done"
+        assert task.current_run_id is None
+        run = conn.execute("SELECT status, outcome FROM task_runs WHERE id=?", (run_id,)).fetchone()
+        assert dict(run) == {"status": "reclaimed", "outcome": "reclaimed"}
 
 
 def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):

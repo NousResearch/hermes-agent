@@ -347,7 +347,7 @@ def _run_voice_research(question: str, user: str | None = None) -> str:
     env = os.environ.copy()
     env.setdefault("HERMES_HOME", str(get_hermes_home()))
     proc = subprocess.run(
-        ["hermes", "chat", "-q", prompt, "--source", "dashboard-voice", "-Q"],
+        [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "--source", "dashboard-voice", "-Q"],
         cwd=str(PROJECT_ROOT),
         env=env,
         text=True,
@@ -384,7 +384,10 @@ async def run_voice_tool(payload: VoiceToolRequest, request: Request):
     question = str(payload.arguments.get("request") or payload.arguments.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="Missing question")
-    result = _run_voice_research(question, user=_voice_auth_context(request))
+    try:
+        result = _run_voice_research(question, user=_voice_auth_context(request))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:700]) from exc
     return {"ok": True, "result": result, "error": None}
 
 

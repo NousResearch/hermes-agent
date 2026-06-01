@@ -143,6 +143,6 @@ def test_run_voice_research_uses_cli_bridge(monkeypatch, voice_client):
     result = web_server._run_voice_research("who am I?", user="deniz")
 
     assert result == "spoken answer"
-    assert calls[0][0][:3] == ["hermes", "chat", "-q"]
-    assert "Dashboard voice user: deniz" in calls[0][0][3]
+    assert calls[0][0][1:5] == ["-m", "hermes_cli.main", "chat", "-q"]
+    assert "Dashboard voice user: deniz" in calls[0][0][5]
     assert calls[0][0][-3:] == ["--source", "dashboard-voice", "-Q"]

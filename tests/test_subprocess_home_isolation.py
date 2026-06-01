@@ -155,6 +155,56 @@ class TestMakeRunEnvHomeInjection:
 
         assert result["HOME"] == "/home/user"
 
+    def test_appends_user_local_bin_when_usr_bin_already_present(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        user_bin = home / ".local" / "bin"
+        user_bin.mkdir(parents=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        from tools.environments.local import _make_run_env
+        result = _make_run_env({})
+
+        path_parts = result["PATH"].split(os.pathsep)
+        assert str(user_bin) in path_parts
+        assert path_parts.index(str(user_bin)) > path_parts.index("/bin")
+
+    def test_appends_real_and_profile_user_bins(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real-home"
+        real_bin = real_home / ".local" / "bin"
+        real_bin.mkdir(parents=True)
+
+        hermes_home = tmp_path / "hermes"
+        profile_home = hermes_home / "home"
+        profile_bin = profile_home / ".local" / "bin"
+        profile_bin.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        from tools.environments.local import _make_run_env
+        result = _make_run_env({})
+
+        assert result["HOME"] == str(profile_home)
+        path_parts = result["PATH"].split(os.pathsep)
+        assert str(real_bin) in path_parts
+        assert str(profile_bin) in path_parts
+
+    def test_does_not_duplicate_existing_user_bin(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        user_bin = home / ".local" / "bin"
+        user_bin.mkdir(parents=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("PATH", f"/usr/bin:{user_bin}:/bin")
+
+        from tools.environments.local import _make_run_env
+        result = _make_run_env({})
+
+        assert result["PATH"].split(os.pathsep).count(str(user_bin)) == 1
+
     def test_context_override_bridges_to_subprocess_env(self, tmp_path, monkeypatch):
         root = tmp_path / "root"
         profile = tmp_path / "profile"

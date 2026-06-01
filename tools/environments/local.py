@@ -298,6 +298,32 @@ _SANE_PATH = (
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
+_USER_BIN_SUBDIRS = (".local/bin", "bin", ".bun/bin")
+
+
+def _append_user_bin_dirs(path_value: str, homes: list[str | None]) -> str:
+    """Append existing per-user bin dirs without shadowing system commands."""
+    if _IS_WINDOWS:
+        return path_value
+
+    parts = [part for part in (path_value or "").split(os.pathsep) if part]
+    seen = set(parts)
+
+    for home in homes:
+        if not home:
+            continue
+        try:
+            expanded_home = os.path.expanduser(os.path.expandvars(str(home)))
+        except Exception:
+            continue
+        for rel in _USER_BIN_SUBDIRS:
+            candidate = os.path.join(expanded_home, rel)
+            if candidate not in seen and os.path.isdir(candidate):
+                parts.append(candidate)
+                seen.add(candidate)
+
+    return os.pathsep.join(parts)
+
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
@@ -315,6 +341,7 @@ def _make_run_env(env: dict) -> dict:
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
+    original_home = run_env.get("HOME")
     # The "/usr/bin not already present → inject sane POSIX path" heuristic
     # only makes sense on POSIX.  On Windows the PATH separator is ";"
     # (the split(":") above turns a full Windows PATH into a single
@@ -335,6 +362,11 @@ def _make_run_env(env: dict) -> dict:
     _profile_home = get_subprocess_home()
     if _profile_home:
         run_env["HOME"] = _profile_home
+
+    run_env["PATH"] = _append_user_bin_dirs(
+        run_env.get("PATH", ""),
+        [original_home, run_env.get("HOME")],
+    )
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.

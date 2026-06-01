@@ -17,6 +17,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: develop # 👈 OBLIGATORIO: Le dice a GitHub que empiece trabajando en tu rama develop
+          token: ${{ secrets.GH_TOKEN_SYNC_PAT }}
 
       - name: Sync Process
         env:
@@ -25,8 +26,11 @@ jobs:
           # 1. Configurar la identidad del bot
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # 2. Configurar git para usar el token PAT en todas las URLs de GitHub
+          git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-          # 2. Configurar el repositorio original y descargar el historial completo de ambos lados
+          # 3. Configurar el repositorio original y descargar el historial completo de ambos lados
           git remote add upstream https://github.com/NousResearch/hermes-agent.git
           git fetch --all --tags --prune
 

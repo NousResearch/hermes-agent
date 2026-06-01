@@ -1415,10 +1415,10 @@ export default function MissionControlPage() {
           </div>
         )}
 
+        <ProjectRoomsPanel />
         <TodayView status={status} activeJobs={activeJobs} jobs={jobs} approvalSummary={approvalSummary} />
         <MemoryStatusPanel memoryStatus={memoryStatus} />
         <AutomationPosturePanel jobs={jobs} />
-        <ProjectRoomsPanel />
         <MissionPacketsPanel />
         </div>
 

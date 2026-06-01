@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 API_TS = ROOT / "web" / "src" / "lib" / "api.ts"
+APP_TSX = ROOT / "web" / "src" / "App.tsx"
 PANEL_TSX = ROOT / "web" / "src" / "components" / "ProjectRoomsPanel.tsx"
 MISSION_TSX = ROOT / "web" / "src" / "pages" / "MissionControlPage.tsx"
 
@@ -72,3 +73,13 @@ def test_mission_control_page_mounts_project_rooms_panel():
 
     assert "ProjectRoomsPanel" in source
     assert "<ProjectRoomsPanel />" in source
+    assert source.index("<ProjectRoomsPanel />") < source.index("<TodayView")
+
+
+def test_vendorproof_stays_project_not_primary_sidebar_route():
+    app_source = _read(APP_TSX)
+    mission_source = _read(MISSION_TSX)
+
+    assert 'path: "/vendorproof"' not in app_source
+    assert 'label: "VendorProof"' not in app_source
+    assert 'name: "VendorProof"' in mission_source

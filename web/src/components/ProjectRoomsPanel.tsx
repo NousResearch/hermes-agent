@@ -12,6 +12,7 @@ const panel = "rounded-xl border border-[#284848] bg-black/30 p-4";
 const field =
   "w-full rounded-lg border border-[#284848] bg-black/45 p-3 text-sm text-text-primary outline-none focus:border-emerald-400/60";
 const safetyBadge = "border-red-400/35 bg-red-500/10 text-red-100";
+const actionButton = "min-h-9 whitespace-normal text-center leading-5 tracking-normal";
 
 function splitLines(value: string): string[] {
   return value
@@ -220,7 +221,7 @@ export function ProjectRoomsPanel() {
                   <div className="text-lg font-semibold text-text-primary">{selectedRoom?.title || "No Project Room selected"}</div>
                   <div className="mt-1 text-sm leading-6 text-text-secondary">{selectedRoom?.description || "Rooms are stored locally under Mission Control state."}</div>
                 </div>
-                <Button ghost onClick={copyText} className="gap-2" disabled={!selectedRoom}>
+                <Button ghost onClick={copyText} className={cn(actionButton, "gap-2")} disabled={!selectedRoom}>
                   <Clipboard className="h-4 w-4" />
                   Copy text
                 </Button>
@@ -246,7 +247,7 @@ export function ProjectRoomsPanel() {
                 </label>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                <Button onClick={addNote} disabled={!selectedRoom || !noteText.trim() || busy === "note"}>
+                <Button onClick={addNote} disabled={!selectedRoom || !noteText.trim() || busy === "note"} className={actionButton}>
                   {busy === "note" ? "Saving" : "Add note"}
                 </Button>
                 <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-[#284848] bg-black/35 px-3 py-2 text-sm text-text-primary hover:border-emerald-400/40">
@@ -271,7 +272,7 @@ export function ProjectRoomsPanel() {
                           </div>
                           <div className="mt-1 break-all font-mono text-xs leading-5 text-text-secondary">sha256 {attachment.sha256}</div>
                         </div>
-                        <Button ghost size="sm" onClick={() => downloadAttachment(attachment)} disabled={busy === attachment.id} className="w-fit shrink-0 gap-2">
+                        <Button ghost size="sm" onClick={() => downloadAttachment(attachment)} disabled={busy === attachment.id} className={cn(actionButton, "w-fit shrink-0 gap-2")}>
                           <Download className="h-4 w-4" />
                           Download
                         </Button>

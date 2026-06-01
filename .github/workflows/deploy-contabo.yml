@@ -22,7 +22,8 @@ jobs:
           set -euo pipefail
           cd /opt/hermes/app
           git config --global --add safe.directory /opt/hermes/app
-          git pull origin main
+          git fetch origin main
+          git reset --hard origin/main
           docker build -t hermes-agent:local .
           docker compose -f /opt/hermes/docker-compose.yml up -d
           echo "Deploy complete"

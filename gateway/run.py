@@ -1729,6 +1729,11 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        # Last editable status/progress bubbles per running session.  Used at
+        # shutdown/restart time to replace transient "Still working"/tool
+        # progress messages with a terminal state so users never see a stale
+        # in-progress bubble after the gateway process exits.
+        self._active_status_messages: Dict[str, List[Dict[str, Any]]] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
@@ -2778,6 +2783,111 @@ class GatewayRunner:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
 
+    def _register_active_status_message(
+        self,
+        *,
+        session_key: str,
+        platform: Platform,
+        chat_id: str,
+        message_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        kind: str = "status",
+    ) -> None:
+        """Track an editable in-progress bubble for shutdown/restart finalization."""
+        if not session_key or not message_id:
+            return
+        records = getattr(self, "_active_status_messages", None)
+        if records is None:
+            self._active_status_messages = {}
+            records = self._active_status_messages
+        entry = {
+            "platform": platform,
+            "chat_id": str(chat_id),
+            "message_id": str(message_id),
+            "metadata": metadata,
+            "kind": kind,
+        }
+        bucket = records.setdefault(session_key, [])
+        # One latest editable bubble per kind is enough; replacing avoids
+        # editing old progress bubbles after stream segment resets.
+        bucket[:] = [item for item in bucket if item.get("kind") != kind]
+        bucket.append(entry)
+
+    def _clear_active_status_messages(self, session_key: str) -> None:
+        records = getattr(self, "_active_status_messages", None)
+        if records is not None and session_key:
+            records.pop(session_key, None)
+
+    async def _finalize_active_status_messages(
+        self,
+        session_keys: Optional[set[str]] = None,
+    ) -> None:
+        """Edit active progress/status bubbles to a terminal restart/shutdown state.
+
+        This runs while adapters are still connected.  It prevents Telegram (and
+        other editable platforms) from being left with a forever-visible
+        "Still working" or tool-progress message if a restart interrupts the
+        final response delivery path.
+        """
+        records = getattr(self, "_active_status_messages", None) or {}
+        if not records:
+            return
+        keys = set(session_keys or records.keys())
+        action = "restarting" if self._restart_requested else "shutting down"
+        if self._restart_requested:
+            content = (
+                "⚠️ Gateway restarting — progress reporting paused; the gateway "
+                "is restarting now. Send any message after restart and I'll "
+                "resume from the saved session."
+            )
+        else:
+            content = (
+                "⚠️ Gateway shutting down — progress reporting stopped because "
+                "the gateway is shutting down."
+            )
+
+        for session_key in list(keys):
+            bucket = list(records.get(session_key, []))
+            for item in bucket:
+                try:
+                    platform = item.get("platform")
+                    if not isinstance(platform, Platform):
+                        platform = Platform(str(platform))
+                    adapter = self.adapters.get(platform)
+                    if not adapter:
+                        continue
+                    chat_id = item.get("chat_id")
+                    message_id = item.get("message_id")
+                    if not chat_id or not message_id:
+                        continue
+                    result = await adapter.edit_message(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        content=content,
+                    )
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.debug(
+                            "Failed to edit active %s message during gateway %s: %s",
+                            item.get("kind") or "status",
+                            action,
+                            getattr(result, "error", "edit returned success=False"),
+                        )
+                        # Fallback: send a terminal bubble so the user still sees
+                        # a current state even if the old message is not editable.
+                        await adapter.send(
+                            chat_id,
+                            content,
+                            metadata=item.get("metadata"),
+                        )
+                except Exception as e:
+                    logger.debug(
+                        "Failed to finalize active status message for %s during gateway %s: %s",
+                        session_key,
+                        action,
+                        e,
+                    )
+            records.pop(session_key, None)
+
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -3480,6 +3590,7 @@ class GatewayRunner:
         logged and swallowed so they never block the shutdown sequence.
         """
         active = self._snapshot_running_agents()
+        await self._finalize_active_status_messages(set(active.keys()))
 
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
@@ -16922,6 +17033,15 @@ class GatewayRunner:
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                            if session_key:
+                                self._register_active_status_message(
+                                    session_key=session_key,
+                                    platform=source.platform,
+                                    chat_id=str(source.chat_id),
+                                    message_id=str(progress_msg_id),
+                                    metadata=_progress_metadata,
+                                    kind="tool_progress",
+                                )
 
                     _last_edit_ts = time.monotonic()
 
@@ -18120,6 +18240,20 @@ class GatewayRunner:
                             _heartbeat_msg_id = str(_notify_res.message_id)
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    if (
+                        session_key
+                        and _notify_res is not None
+                        and getattr(_notify_res, "success", True)
+                        and (_heartbeat_msg_id or getattr(_notify_res, "message_id", None))
+                    ):
+                        self._register_active_status_message(
+                            session_key=session_key,
+                            platform=source.platform,
+                            chat_id=str(source.chat_id),
+                            message_id=str(_heartbeat_msg_id or _notify_res.message_id),
+                            metadata=_status_thread_metadata,
+                            kind="long_running",
+                        )
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
@@ -18580,6 +18714,8 @@ class GatewayRunner:
                 self._release_running_agent_state(
                     session_key, run_generation=run_generation
                 )
+                if not self._draining:
+                    self._clear_active_status_messages(session_key)
             if self._draining:
                 self._update_runtime_status("draining")
             

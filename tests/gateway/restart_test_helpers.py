@@ -14,6 +14,7 @@ class RestartTestAdapter(BasePlatformAdapter):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
+        self.edited_calls: list[tuple[str, str, str]] = []
 
     async def connect(self):
         return True
@@ -28,6 +29,10 @@ class RestartTestAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id, metadata=None):
         return None
+
+    async def edit_message(self, chat_id, message_id, content):
+        self.edited_calls.append((chat_id, message_id, content))
+        return SendResult(success=True, message_id=message_id)
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
@@ -59,6 +64,7 @@ def make_restart_runner(
     runner._exit_reason = None
     runner._exit_code = None
     runner._running_agents = {}
+    runner._active_status_messages = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
@@ -123,6 +129,15 @@ def make_restart_runner(
     )
     runner._get_cached_session_source = GatewayRunner._get_cached_session_source.__get__(
         runner, GatewayRunner
+    )
+    runner._register_active_status_message = (
+        GatewayRunner._register_active_status_message.__get__(runner, GatewayRunner)
+    )
+    runner._clear_active_status_messages = (
+        GatewayRunner._clear_active_status_messages.__get__(runner, GatewayRunner)
+    )
+    runner._finalize_active_status_messages = (
+        GatewayRunner._finalize_active_status_messages.__get__(runner, GatewayRunner)
     )
     runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
         runner, GatewayRunner

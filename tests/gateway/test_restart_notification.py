@@ -351,6 +351,40 @@ async def test_send_home_channel_startup_notification_ignores_false_send_result(
     adapter.send.assert_called_once()
 
 
+# ── active status/progress finalization during restart ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_restart_finalizes_active_status_messages_before_shutdown_notice():
+    """A restart edits active 'Still working' bubbles so they cannot remain stale forever."""
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    source = make_restart_source(chat_id="42", thread_id="topic_7")
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+
+    runner._register_active_status_message(
+        session_key=session_key,
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+        message_id="still_1",
+        metadata={"thread_id": "topic_7"},
+        kind="long_running",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.edited_calls == [
+        (
+            "42",
+            "still_1",
+            "⚠️ Gateway restarting — progress reporting paused; the gateway is restarting now. Send any message after restart and I'll resume from the saved session.",
+        )
+    ]
+    assert "Gateway restarting" in adapter.sent[-1]
+    assert runner._active_status_messages == {}
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 

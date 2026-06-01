@@ -2215,7 +2215,7 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
 
 
 
-def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> bool:
     """Append any pending /steer text to the last tool result in this turn.
 
     Called at the end of a tool-call batch, before the next API call.
@@ -2228,12 +2228,15 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         messages: The running messages list.
         num_tool_msgs: Number of tool results appended in this batch;
             used to locate the tail slice safely.
+
+    Returns:
+        True if a steer was consumed and injected, False otherwise.
     """
     if num_tool_msgs <= 0 or not messages:
-        return
+        return False
     steer_text = agent._drain_pending_steer()
     if not steer_text:
-        return
+        return False
     # Find the last tool-role message in the recent tail. Skipping
     # non-tool messages defends against future code appending
     # something else at the boundary.
@@ -2257,7 +2260,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         else:
             existing = getattr(agent, "_pending_steer", None)
             agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
-        return
+        return False
     marker = f"\n\nUser guidance: {steer_text}"
     existing_content = messages[target_idx].get("content", "")
     if not isinstance(existing_content, str):
@@ -2277,6 +2280,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
+    return True
 
 
 

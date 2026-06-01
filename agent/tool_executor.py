@@ -399,6 +399,26 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
+                    # Check for pending steer — cancel futures that haven't
+                    # started yet so the model processes the steer sooner.
+                    # Already-running tools will complete normally; their
+                    # results are still collected but subsequent unstarted
+                    # tools are deferred.  Partial fix for #28172.
+                    if getattr(agent, "_pending_steer", None) is not None:
+                        _steer_cancelled = 0
+                        for f in not_done:
+                            if f.cancel():
+                                _steer_cancelled += 1
+                        if _steer_cancelled:
+                            agent._vprint(
+                                f"{agent.log_prefix}🧭 Steer pending — "
+                                f"cancelled {_steer_cancelled} unstarted concurrent tool(s)",
+                                force=True,
+                            )
+                        # Wait for already-running tools to finish.
+                        concurrent.futures.wait(not_done, timeout=3.0)
+                        break
+
                     _conc_elapsed = int(time.time() - _conc_start)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
@@ -523,7 +543,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
         agent._apply_pending_steer_to_tool_results(messages, 1)
-
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools = len(parsed_calls)
     if num_tools > 0:
@@ -970,7 +989,29 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Drain pending steer BETWEEN individual tool calls so the
         # injection lands as soon as a tool finishes — not after the
         # entire batch.  The model sees it on the next API iteration.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
+        _steer_consumed = agent._apply_pending_steer_to_tool_results(messages, 1)
+
+        # If a steer was consumed, break out of the tool-execution loop
+        # so the model can process the steer guidance before more tools
+        # run. Without this, all remaining tools execute first, defeating
+        # the purpose of /steer.  Fixes #28172.
+        if _steer_consumed and i < len(assistant_message.tool_calls):
+            remaining = len(assistant_message.tool_calls) - i
+            agent._vprint(
+                f"{agent.log_prefix}🧭 Steer consumed — skipping {remaining} "
+                f"remaining tool call(s) so the model can process the steer",
+                force=True,
+            )
+            for skipped_tc in assistant_message.tool_calls[i:]:
+                skipped_name = skipped_tc.function.name
+                skip_msg = {
+                    "role": "tool",
+                    "name": skipped_name,
+                    "content": f"[Tool execution deferred — user /steer was consumed, model will process it first]",
+                    "tool_call_id": skipped_tc.id,
+                }
+                messages.append(skip_msg)
+            break
 
         if not agent.quiet_mode:
             if agent.verbose_logging:

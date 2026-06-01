@@ -1,7 +1,10 @@
 # SimpleX Streaming Voice — Reflex Foundation (Slice 1) Design
 
 Date: 2026-05-31
-Status: Approved design — ready for implementation planning
+Status: IMPLEMENTED (Slice 1 complete) — 2026-05-31. Reflex core proven in simulation
+(scenarios A–E,G + F); 240 passed / 1 skipped (deferred pipecat smoke); default engine
+turn_based (zero behavior change). Pipecat install + real STT/TTS/VAD + live device test
+are follow-on slices (see §9). Original design below.
 Author: Bryan Murphy + Claude (brainstorming session)
 Supersedes-context: `docs/plans/2026-05-31-simplex-native-voice-handoff.md` (current turn-based native call path)
 

@@ -34,7 +34,10 @@ class VirtualClock:
         return self._now
 
     def sleep(self, ms: int) -> "asyncio.Future[None]":
-        loop = asyncio.get_event_loop()
+        # sleep() is only ever called from within a running coroutine, so
+        # get_running_loop() is correct and avoids the get_event_loop()
+        # deprecation / no-current-loop error on Python 3.12+.
+        loop = asyncio.get_running_loop()
         fut: asyncio.Future[None] = loop.create_future()
         deadline = self._now + max(0, ms)
         self._counter += 1

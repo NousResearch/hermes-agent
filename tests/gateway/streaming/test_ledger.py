@@ -63,3 +63,34 @@ def test_turn_index_passthrough():
     full = "anything"
     rec = led.record(user_transcript="u", full_text=full, reason=TurnEndReason.COMPLETED)
     assert rec.turn_index == 3
+
+
+def test_note_flush_with_mark_advances_heard_span():
+    # The mark-carrying flush path (real transports return a non-None last_sent_mark).
+    led = HeardSpanLedger("call")
+    full = "alpha beta gamma delta"
+    flush = FlushResult(
+        dropped_frames=2,
+        dropped_ms=40,
+        last_sent_mark=PlaybackMark("call", char_offset=10, text_so_far="alpha beta", at_ms=70),
+    )
+    led.note_flush(flush, full)
+    rec = led.record(user_transcript="u", full_text=full, reason=TurnEndReason.BARGED_IN)
+    assert rec.assistant_heard_text == "alpha beta"
+    assert rec.assistant_abandoned_text == full[10:]
+    assert rec.interrupted is True
+
+
+def test_note_flush_mark_does_not_regress_existing_span():
+    # A flush mark behind an already-recorded mark must not shrink the heard span.
+    led = HeardSpanLedger("call")
+    full = "alpha beta gamma delta"
+    led.note_mark(PlaybackMark("call", char_offset=16, text_so_far="alpha beta gamma", at_ms=80))
+    flush = FlushResult(
+        dropped_frames=1,
+        dropped_ms=20,
+        last_sent_mark=PlaybackMark("call", char_offset=5, text_so_far="alpha", at_ms=90),
+    )
+    led.note_flush(flush, full)
+    rec = led.record(user_transcript="u", full_text=full, reason=TurnEndReason.BARGED_IN)
+    assert rec.assistant_heard_text == "alpha beta gamma"  # not regressed to "alpha"

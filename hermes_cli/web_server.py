@@ -3657,6 +3657,31 @@ async def delete_session_endpoint(session_id: str):
         db.close()
 
 
+class SessionRename(BaseModel):
+    title: Optional[str] = None
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session_endpoint(session_id: str, body: SessionRename):
+    """Rename a session (or clear its title when ``title`` is empty/null)."""
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        try:
+            updated = db.set_session_title(sid, body.title or "")
+        except ValueError as e:
+            # Title too long, invalid characters, or already in use.
+            raise HTTPException(status_code=400, detail=str(e))
+        if not updated:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True, "title": db.get_session_title(sid) or ""}
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Log viewer endpoint
 # ---------------------------------------------------------------------------

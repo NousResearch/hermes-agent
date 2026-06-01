@@ -66,6 +66,68 @@ class TestMattermostConfigLoading:
 
 
 # ---------------------------------------------------------------------------
+# Gateway progress routing
+# ---------------------------------------------------------------------------
+
+class TestMattermostProgressRouting:
+    def test_top_level_message_anchors_progress_to_triggering_post(self):
+        """Progress/status bubbles should use the same root as the final reply."""
+        from gateway.run import _progress_thread_id_for_source
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="channel_1",
+            chat_type="channel",
+        )
+
+        assert _progress_thread_id_for_source(source, "trigger_post") == "trigger_post"
+
+    def test_thread_reply_keeps_existing_thread_root(self):
+        from gateway.run import _progress_thread_id_for_source
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="channel_1",
+            chat_type="channel",
+            thread_id="root_post",
+        )
+
+        assert _progress_thread_id_for_source(source, "reply_post") == "root_post"
+
+    @pytest.mark.asyncio
+    async def test_status_fallback_forwards_reply_anchor(self):
+        """Status side-channels pass reply_to when the adapter has no updater."""
+        from types import SimpleNamespace
+
+        from gateway.platforms.base import SendResult
+        from gateway.run import _send_or_update_status_coro
+
+        adapter = SimpleNamespace(
+            send=AsyncMock(return_value=SendResult(success=True, message_id="status_post"))
+        )
+        metadata = {"thread_id": "root_post"}
+
+        result = await _send_or_update_status_coro(
+            adapter,
+            "channel_1",
+            "lifecycle",
+            "Working...",
+            metadata,
+            reply_to="trigger_post",
+        )
+
+        assert result.success is True
+        adapter.send.assert_awaited_once_with(
+            "channel_1",
+            "Working...",
+            reply_to="trigger_post",
+            metadata=metadata,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
 
@@ -212,6 +274,38 @@ class TestMattermostSend:
         self.adapter._session.get = MagicMock(return_value=mock_get_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_thread_id_for_status_side_channels(self):
+        """Progress/status sends can thread via metadata when reply_to is absent."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "progress_post"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_get_resp = AsyncMock()
+        mock_get_resp.status = 200
+        mock_get_resp.json = AsyncMock(return_value={"id": "root_post", "root_id": ""})
+        mock_get_resp.text = AsyncMock(return_value="")
+        mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
+        mock_get_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "🔧 terminal...",
+            metadata={"thread_id": "root_post"},
+        )
 
         assert result.success is True
         payload = self.adapter._session.post.call_args[1]["json"]

@@ -286,11 +286,17 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
+            # Thread support: reply_to is the root post ID.  Gateway
+            # side-channel sends (tool progress, status, heartbeats) often
+            # carry only generic metadata, so accept metadata.thread_id as the
+            # same thread target when no explicit reply anchor was supplied.
+            thread_target = reply_to
+            if not thread_target and metadata:
+                thread_target = metadata.get("thread_id")
+            if thread_target and self._reply_mode == "thread":
                 # Ensure root_id points to the thread root, not a reply.
                 # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
+                resolved_root = await self._resolve_root_id(str(thread_target))
                 payload["root_id"] = resolved_root
 
             data = await self._api_post("posts", payload)

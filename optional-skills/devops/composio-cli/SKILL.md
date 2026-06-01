@@ -43,6 +43,18 @@ curl -fsSL https://composio.dev/install | bash
 
 No Hermes-managed API key is needed — the CLI owns its own credentials.
 
+**Headless setup (servers, gateway, cron):** `composio login` defaults to an interactive browser flow, which won't work where there's no GUI. Authenticate one of these ways instead, before Hermes runs there:
+
+```bash
+# Option A — paste an API key from https://dashboard.composio.dev (no browser)
+composio login --user-api-key <KEY>
+
+# Option B — open the browser on another machine
+composio login --no-browser --no-wait   # prints a login URL + session key, then exits
+# open the URL on your laptop, authenticate, then finish on the server:
+composio login --key <session-key>
+```
+
 ## How to Run
 
 Invoke every `composio` command through the `terminal` tool. Start each session by checking auth and what is already connected:

@@ -12201,8 +12201,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Backward-compat semantics live in
         :func:`gateway.slash_access.policy_for_source` — when the operator
-        hasn't set ``allow_admin_from`` for the scope, the policy returns
-        ``enabled=False`` and this method always returns None.
+        hasn't set a scope admin list and no channel allowlist matches, the
+        policy returns ``enabled=False`` and this method always returns None.
         """
         from gateway.slash_access import policy_for_source as _policy_for_source
 

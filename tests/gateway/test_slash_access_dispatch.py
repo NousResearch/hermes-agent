@@ -342,6 +342,41 @@ async def test_channel_allowlist_allows_configured_command_in_restricted_group()
 
 
 @pytest.mark.asyncio
+async def test_channel_allowlist_allows_configured_command_for_any_group_user():
+    """A channel allowlist grants listed commands to any user in that channel.
+
+    Broader group admin/user slash tiers must not re-deny a command that the
+    operator explicitly exposed through ``channel_command_access`` for the
+    channel. The channel allowlist is both the hard cap and the authorization
+    surface for that channel.
+    """
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "group_allow_admin_from": ["admin-user"],
+            "group_user_allowed_commands": [],
+            "channel_command_access": {
+                "group:ops-room": {
+                    "allowed_slash_commands": ["restart"],
+                }
+            },
+        },
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-group-user",
+        chat_type="group",
+        chat_id="group:ops-room",
+    )
+
+    result = await runner._handle_message(_make_event("/restart", source))
+
+    assert result == "restart-handled"
+    assert "⛔" not in (result or "")
+
+
+@pytest.mark.asyncio
 async def test_channel_allowlist_matches_signal_raw_group_id_alt():
     """Signal sources expose both chat_id='group:<id>' and chat_id_alt='<id>'.
 

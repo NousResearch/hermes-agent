@@ -59,9 +59,10 @@ class ChannelCommandAccessRule:
 
     When present, this rule caps the command surface before the broader
     admin/user split is considered: only commands named here may continue to
-    the normal slash-command handlers. Operators configure these by channel
-    selector (opaque id or human-readable chat/group name) in
-    ``PlatformConfig.extra["channel_command_access"]``.
+    the normal slash-command handlers, and those named commands are available
+    to any authorized participant in the matched channel/group. Operators
+    configure these by channel selector (opaque id or human-readable
+    chat/group name) in ``PlatformConfig.extra["channel_command_access"]``.
     """
 
     channel_id: str
@@ -102,8 +103,12 @@ class SlashAccessPolicy:
         return str(user_id) in self.admin_user_ids
 
     def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
-        if self.channel_rule is not None and not self.channel_rule.can_run(canonical_cmd):
-            return False
+        if self.channel_rule is not None:
+            # A channel rule is both the hard cap and the per-channel grant:
+            # commands on allowed_slash_commands are available to any
+            # authorized participant in that channel, even if broader
+            # admin/user slash tiers are configured for the platform scope.
+            return self.channel_rule.can_run(canonical_cmd)
         if not self.enabled:
             return True
         if not self.admin_user_ids:
@@ -307,7 +312,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     Returns a "disabled" policy (gating off, allow everything) when:
       - gateway_config is None
       - the platform has no PlatformConfig
-      - the platform's PlatformConfig has no admin list set for the scope
+      - neither the scope admin list nor a matching channel allowlist is set
 
     Callers should treat the returned policy as authoritative for slash
     command gating only. It does not gate plain chat messages.

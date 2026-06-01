@@ -5,6 +5,7 @@ configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
 
+import json
 import logging
 import os
 import re
@@ -329,8 +330,14 @@ _BASE_SECURITY_ARGS = [
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
+
+# /run is split out from _BASE_SECURITY_ARGS because s6-overlay images need it
+# mounted ``exec``: s6 stage0 later runs ``exec /run/s6/basedir/bin/init``, which
+# fails with "Permission denied" (exit 126) on a ``noexec`` mount. For all other
+# images we keep the hardened ``noexec`` default.
+_RUN_TMPFS_NOEXEC = "--tmpfs", "/run:rw,noexec,nosuid,size=64m"
+_RUN_TMPFS_EXEC = "--tmpfs", "/run:rw,exec,nosuid,size=64m"
 
 # Extra caps needed when the container starts as root and an init/entrypoint
 # must drop privileges (via `s6-setuidgid`, `gosu`, `su`, or similar).
@@ -342,11 +349,63 @@ _PRIVDROP_CAP_ARGS = [
 ]
 
 
-def _build_security_args(run_as_host_user: bool) -> list[str]:
-    """Return the security/cap/tmpfs args tailored to the privilege mode."""
+def _build_security_args(run_as_host_user: bool, run_exec: bool = False) -> list[str]:
+    """Return the security/cap/tmpfs args tailored to the privilege mode.
+
+    ``run_exec`` mounts ``/run`` with ``exec`` instead of the hardened
+    ``noexec`` default. This is required for s6-overlay images whose ``/init``
+    entrypoint execs ``/run/s6/basedir/bin/init`` during startup; see
+    ``_image_uses_init_entrypoint``.
+    """
+    run_tmpfs = list(_RUN_TMPFS_EXEC if run_exec else _RUN_TMPFS_NOEXEC)
+    args = list(_BASE_SECURITY_ARGS) + run_tmpfs
     if run_as_host_user:
-        return list(_BASE_SECURITY_ARGS)
-    return list(_BASE_SECURITY_ARGS) + list(_PRIVDROP_CAP_ARGS)
+        return args
+    return args + list(_PRIVDROP_CAP_ARGS)
+
+
+def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
+    """Return True if ``image``'s entrypoint is the s6-overlay ``/init``.
+
+    Such images (e.g. anything built on ``s6-overlay``, including
+    ``hermes-agent:latest``) already provide their own PID-1 init and execute
+    ``/run/s6/basedir/bin/init`` during stage0 startup. They are incompatible
+    with Docker's ``--init`` (two competing PID-1 inits) and with a ``noexec``
+    ``/run`` mount. Detection is best-effort: on any inspection failure we
+    return False and keep the hardened defaults.
+    """
+    try:
+        result = subprocess.run(
+            [docker_exe, "image", "inspect", image,
+             "--format", "{{json .Config.Entrypoint}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("Docker: could not inspect entrypoint for %s: %s", image, e)
+        return False
+    if result.returncode != 0:
+        # Image may not be pulled yet; the run will pull it. Defaults are safe
+        # for non-s6 images, so don't block on this.
+        logger.debug(
+            "Docker: image inspect for %s returned %d (stderr=%s)",
+            image, result.returncode, result.stderr.strip(),
+        )
+        return False
+    raw = (result.stdout or "").strip()
+    if not raw or raw == "null":
+        return False
+    try:
+        entrypoint = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(entrypoint, str):
+        entrypoint = [entrypoint]
+    if not isinstance(entrypoint, list) or not entrypoint:
+        return False
+    first = str(entrypoint[0]).strip()
+    return first in ("/init", "/package/admin/s6-overlay/command/init")
 
 
 def _resolve_host_user_spec() -> Optional[str]:
@@ -672,7 +731,28 @@ class DockerEnvironment(BaseEnvironment):
                 )
                 # Fall back to the full cap set — without --user, an image's
                 # init may still need s6-setuidgid/gosu/su to drop privileges.
-        security_args = _build_security_args(run_as_host_user and bool(user_args))
+
+        # Resolve the docker executable once so it works even when
+        # /usr/local/bin is not in PATH (common on macOS gateway/service).
+        self._docker_exe = find_docker() or "docker"
+
+        # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1
+        # and exec /run/s6/basedir/bin/init during startup. For those images we
+        # must (a) skip Docker's --init (two competing PID-1 inits) and (b) mount
+        # /run with exec instead of noexec, or s6 stage0 dies with exit 126
+        # "Permission denied". Detected once here; defaults are kept on any
+        # inspection failure. See issue #34628.
+        image_uses_s6_init = _image_uses_init_entrypoint(self._docker_exe, image)
+        if image_uses_s6_init:
+            logger.info(
+                "Docker: image %s uses /init (s6-overlay) as entrypoint — "
+                "skipping --init and mounting /run with exec.",
+                image,
+            )
+        security_args = _build_security_args(
+            run_as_host_user and bool(user_args),
+            run_exec=image_uses_s6_init,
+        )
 
         logger.info(f"Docker volume_args: {volume_args}")
         # User-supplied extra docker run flags (docker_extra_args in config.yaml).
@@ -694,10 +774,6 @@ class DockerEnvironment(BaseEnvironment):
             + validated_extra
         )
         logger.info(f"Docker run_args: {all_run_args}")
-
-        # Resolve the docker executable once so it works even when
-        # /usr/local/bin is not in PATH (common on macOS gateway/service).
-        self._docker_exe = find_docker() or "docker"
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
@@ -763,9 +839,13 @@ class DockerEnvironment(BaseEnvironment):
                     reused = True
 
         if not reused:
+            # tini/catatonit as PID 1 reaps zombie children — but s6-overlay
+            # images already provide their own /init PID 1, so adding --init
+            # there creates two competing inits and breaks startup (#34628).
+            init_args = [] if image_uses_s6_init else ["--init"]
             run_cmd = [
                 self._docker_exe, "run", "-d",
-                "--init",           # tini/catatonit as PID 1 — reaps zombie children
+                *init_args,
                 "--name", container_name,
                 *label_args,
                 "-w", cwd,

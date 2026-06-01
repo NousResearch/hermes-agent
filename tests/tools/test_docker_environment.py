@@ -1517,3 +1517,115 @@ def test_credential_mount_works_when_source_is_valid_file(monkeypatch, tmp_path)
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert "token.json" in run_args_str
+
+
+# ── s6-overlay /init image handling (issue #34628) ────────────────
+
+
+def _mock_subprocess_run_with_entrypoint(monkeypatch, entrypoint_json):
+    """Like _mock_subprocess_run, but `docker image inspect` returns the given
+    entrypoint JSON so _image_uses_init_entrypoint can be exercised end-to-end.
+    """
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "image" and len(cmd) >= 3 and cmd[2] == "inspect":
+                return subprocess.CompletedProcess(cmd, 0, stdout=entrypoint_json + "\n", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return calls
+
+
+def test_image_uses_init_entrypoint_detects_s6_init(monkeypatch):
+    """An image whose entrypoint is /init is detected as an s6-overlay image."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout='["/init"]', stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "hermes-agent:latest") is True
+
+
+def test_image_uses_init_entrypoint_false_for_plain_image(monkeypatch):
+    """A normal image (no /init entrypoint) is not treated as s6-overlay."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout='["/bin/sh","-c"]', stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "python:3.11") is False
+
+
+def test_image_uses_init_entrypoint_false_for_null_entrypoint(monkeypatch):
+    """Images with no declared entrypoint (null) keep hardened defaults."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="null", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "alpine") is False
+
+
+def test_image_uses_init_entrypoint_false_on_inspect_failure(monkeypatch):
+    """An inspect failure (e.g. image not pulled) is best-effort -> defaults kept."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="No such image")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "missing:tag") is False
+
+
+def test_image_uses_init_entrypoint_false_on_exception(monkeypatch):
+    """A subprocess error never raises out of detection — defaults kept."""
+    def _run(cmd, **kwargs):
+        raise OSError("docker daemon down")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "x") is False
+
+
+def test_s6_image_skips_docker_init_and_mounts_run_exec(monkeypatch):
+    """For an s6-overlay /init image, docker run must omit --init and mount
+    /run with exec (issue #34628)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run_with_entrypoint(monkeypatch, '["/init"]')
+
+    _make_dummy_env(image="hermes-agent:latest")
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    assert "--init" not in run_args, "s6 /init image must not get Docker --init"
+
+    tmpfs_vals = [run_args[i + 1] for i, a in enumerate(run_args[:-1]) if a == "--tmpfs"]
+    run_mounts = [v for v in tmpfs_vals if v.startswith("/run:")]
+    assert run_mounts, f"no /run tmpfs mount found in {tmpfs_vals}"
+    assert "exec" in run_mounts[0] and "noexec" not in run_mounts[0], (
+        f"/run must be mounted exec for s6 images, got: {run_mounts[0]}"
+    )
+
+
+def test_plain_image_keeps_docker_init_and_run_noexec(monkeypatch):
+    """A non-s6 image keeps the hardened defaults: Docker --init and noexec /run."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run_with_entrypoint(monkeypatch, '["/bin/sh","-c"]')
+
+    _make_dummy_env(image="python:3.11")
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    assert "--init" in run_args, "non-s6 image must keep Docker --init"
+
+    tmpfs_vals = [run_args[i + 1] for i, a in enumerate(run_args[:-1]) if a == "--tmpfs"]
+    run_mounts = [v for v in tmpfs_vals if v.startswith("/run:")]
+    assert run_mounts, f"no /run tmpfs mount found in {tmpfs_vals}"
+    assert "noexec" in run_mounts[0], (
+        f"/run must stay noexec for non-s6 images, got: {run_mounts[0]}"
+    )

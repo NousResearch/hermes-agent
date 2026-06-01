@@ -5,6 +5,11 @@ version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: GITHUB_TOKEN
+    prompt: "GitHub personal access token"
+    required_for: "HTTPS token and curl fallback"
+    optional: true
 metadata:
   hermes:
     tags: [GitHub, Authentication, Git, gh-cli, SSH, Setup]
@@ -189,6 +194,8 @@ gh auth status
 ## Using the GitHub API Without gh
 
 When `gh` is not available, you can still access the full GitHub API using `curl` with a personal access token. This is how the other GitHub skills implement their fallbacks.
+
+If Hermes is using Bitwarden Secrets Manager, keep `GITHUB_TOKEN` there and let it inject into the environment at startup; the `~/.hermes/.env` branch below is only for local-only setups.
 
 ### Setting the Token for API Calls
 

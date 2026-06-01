@@ -5,6 +5,8 @@ version: 1.0.0
 author: Hermes Agent (Nous Research)
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - TELEGRAM_BOT_TOKEN
 metadata:
   hermes:
     tags: [Migration, OpenClaw, Hermes, Memory, Persona, Import]

@@ -5,6 +5,8 @@ version: 1.3.0
 author: gamedevCloudy
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - FIRECRAWL_API_KEY
 metadata:
   hermes:
     tags: [search, duckduckgo, web-search, free, fallback]

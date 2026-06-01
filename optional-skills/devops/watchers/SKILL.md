@@ -5,6 +5,11 @@ version: 1.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos]
+required_environment_variables:
+  - name: GITHUB_TOKEN
+    prompt: "GitHub personal access token"
+    required_for: "GitHub API access"
+    optional: true
 metadata:
   hermes:
     tags: [cron, polling, rss, github, http, automation, monitoring]
@@ -62,7 +67,7 @@ python $HERMES_HOME/skills/devops/watchers/scripts/watch_rss.py \
   --name hn --url https://news.ycombinator.com/rss --max 5
 ```
 
-Watch a GitHub repo (set `GITHUB_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` to avoid the 60 req/hr anonymous rate limit):
+Watch a GitHub repo (set `GITHUB_TOKEN` via Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env` to avoid the 60 req/hr anonymous rate limit):
 
 ```bash
 python $HERMES_HOME/skills/devops/watchers/scripts/watch_github.py \

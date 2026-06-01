@@ -5,6 +5,11 @@ version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: GITHUB_TOKEN
+    prompt: "GitHub personal access token"
+    required_for: "HTTPS token and curl fallback"
+    optional: true
 metadata:
   hermes:
     tags: [GitHub, Repositories, Git, Releases, Secrets, Configuration]
@@ -18,6 +23,7 @@ Create, clone, fork, configure, and manage GitHub repositories. Each section sho
 ## Prerequisites
 
 - Authenticated with GitHub (see `github-auth` skill)
+- If Hermes is using Bitwarden Secrets Manager, `GITHUB_TOKEN` will already be injected into the environment at startup; the `~/.hermes/.env` fallback below is only for local-only setups.
 
 ### Setup
 

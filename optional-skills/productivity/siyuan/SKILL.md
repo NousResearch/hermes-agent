@@ -30,7 +30,7 @@ Use the [SiYuan](https://github.com/siyuan-note/siyuan) kernel API via curl to s
 
 1. Install and run SiYuan (desktop or Docker)
 2. Get your API token: **Settings > About > API token**
-3. Store it in `${HERMES_HOME:-~/.hermes}/.env`:
+3. Store it in Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`:
    ```
    SIYUAN_TOKEN=your_token_here
    SIYUAN_URL=http://127.0.0.1:6806

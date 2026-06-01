@@ -7,6 +7,11 @@ license: MIT
 prerequisites:
   env_vars: [MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET]
   commands: [hermes]
+required_environment_variables:
+  - MSGRAPH_TENANT_ID
+  - MSGRAPH_CLIENT_ID
+  - MSGRAPH_CLIENT_SECRET
+  - MSGRAPH_WEBHOOK_CLIENT_STATE
 metadata:
   hermes:
     tags: [Teams, Microsoft Graph, Meetings, Productivity, Operations]
@@ -39,7 +44,7 @@ Multilingual trigger examples (not exhaustive):
 
 ## Prerequisites
 
-Before using the pipeline, verify these are set in `${HERMES_HOME:-~/.hermes}/.env`:
+Before using the pipeline, verify these are set via Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`:
 
 ```bash
 MSGRAPH_TENANT_ID=...

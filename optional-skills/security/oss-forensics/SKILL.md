@@ -23,6 +23,12 @@ toolsets:
   - web
   - file
   - delegation
+required_environment_variables:
+  - name: GITHUB_TOKEN
+    prompt: "GitHub token for API access"
+    required_for: "GitHub API access"
+    optional: true
+
 ---
 
 # OSS Security Forensics Skill

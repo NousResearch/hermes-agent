@@ -5,6 +5,8 @@ version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - PARALLEL_API_KEY
 metadata:
   hermes:
     tags: [Research, Web, Search, Deep-Research, Enrichment, CLI]

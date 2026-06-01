@@ -80,7 +80,7 @@ hyperliquid_client.py export <coin> [--interval 1h] [--hours N] [--output PATH]
 ```
 
 For `state`, `spot-balances`, `fills`, `orders`, and `review`, the address is
-optional when `HYPERLIQUID_USER_ADDRESS` is set in `${HERMES_HOME:-~/.hermes}/.env`.
+optional when `HYPERLIQUID_USER_ADDRESS` is set via Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env`.
 
 ---
 

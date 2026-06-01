@@ -5,6 +5,8 @@ version: 0.1.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - PINGGY_TOKEN
 metadata:
   hermes:
     tags: [Pinggy, Tunnel, Networking, SSH, Webhook, Localhost]

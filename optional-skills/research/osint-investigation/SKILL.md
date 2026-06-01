@@ -4,6 +4,10 @@ description: Public-records OSINT investigation framework — SEC EDGAR filings,
 version: 0.1.0
 platforms: [linux, macos, windows]
 author: Hermes Agent (adapted from ShinMegamiBoson/OpenPlanter, MIT)
+required_environment_variables:
+  - COURTLISTENER_TOKEN
+  - OPENCORPORATES_API_TOKEN
+  - SENATE_LDA_TOKEN
 metadata:
   hermes:
     tags: [osint, investigation, public-records, sec, sanctions, corporate-registry, property, courts, due-diligence, journalism]

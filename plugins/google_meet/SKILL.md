@@ -63,7 +63,7 @@ pip install playwright websockets && python -m playwright install chromium
 #   Linux:  sudo apt install pulseaudio-utils
 #   macOS:  brew install blackhole-2ch ffmpeg
 #           → System Settings → Sound → Input → BlackHole 2ch
-#   Then set OPENAI_API_KEY or HERMES_MEET_REALTIME_KEY in ~/.hermes/.env
+#   Then set OPENAI_API_KEY or HERMES_MEET_REALTIME_KEY via Bitwarden Secrets Manager (preferred) or `~/.hermes/.env`
 ```
 
 For a remote node:

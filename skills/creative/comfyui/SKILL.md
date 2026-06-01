@@ -10,6 +10,11 @@ prerequisites:
   commands: ["python3"]
 setup:
   help: "Run scripts/hardware_check.py FIRST to decide local vs Comfy Cloud; then scripts/comfyui_setup.sh auto-installs locally (or use Cloud API key for platform.comfy.org)."
+required_environment_variables:
+  - name: COMFY_CLOUD_API_KEY
+    prompt: "Comfy Cloud API key"
+    required_for: "Comfy Cloud mode"
+    optional: true
 metadata:
   hermes:
     tags:

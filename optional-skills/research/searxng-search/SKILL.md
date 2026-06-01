@@ -5,6 +5,8 @@ version: 1.0.0
 author: hermes-agent
 license: MIT
 platforms: [linux, macos]
+required_environment_variables:
+  - FIRECRAWL_API_KEY
 metadata:
   hermes:
     tags: [search, searxng, meta-search, self-hosted, free, fallback]

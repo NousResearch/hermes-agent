@@ -3,6 +3,8 @@ name: agentmail
 description: Give the agent its own dedicated email inbox via AgentMail. Send, receive, and manage email autonomously using agent-owned email addresses (e.g. hermes-agent@agentmail.to).
 version: 1.0.0
 platforms: [linux, macos, windows]
+required_environment_variables:
+  - AGENTMAIL_API_KEY
 metadata:
   hermes:
     tags: [email, communication, agentmail, mcp]

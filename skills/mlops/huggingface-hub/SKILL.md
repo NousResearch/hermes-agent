@@ -6,6 +6,13 @@ author: Hugging Face
 license: MIT
 tags: [huggingface, hf, models, datasets, hub, mlops]
 platforms: [linux, macos, windows]
+
+required_environment_variables:
+  - name: HF_TOKEN
+    prompt: "Hugging Face access token"
+    required_for: "noninteractive login"
+    optional: true
+
 ---
 
 # Hugging Face CLI (`hf`) Reference Guide

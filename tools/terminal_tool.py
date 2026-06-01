@@ -37,6 +37,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import time
 import threading
 import atexit
@@ -1497,15 +1498,220 @@ _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
 )
 
-_LONG_RUNNING_CODING_AGENT_PATTERNS = (
-    re.compile(
-        r"(?:^|[;&|]\s*)"
-        r"(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?"
-        r"(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*"
-        r"(?:\S*/)?codex(?:-yuna)?\s+exec\b",
-        re.IGNORECASE,
-    ),
-)
+_CODEX_EXECUTABLES = {"codex", "codex-yuna"}
+_CODEX_FOREGROUND_BYPASS_ENV = "HERMES_ALLOW_FOREGROUND_CODEX_EXEC"
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove shell heredoc bodies so executable detection ignores data text."""
+    lines = command.splitlines(keepends=True)
+    if not lines:
+        return command
+
+    heredoc_re = re.compile(r"<<(?P<strip>-)?\s*(?P<quote>['\"]?)(?P<delim>[A-Za-z0-9_./-]+)(?P=quote)")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        delimiters = [
+            (match.group("delim"), bool(match.group("strip")))
+            for match in heredoc_re.finditer(line)
+        ]
+        i += 1
+
+        for delimiter, strip_tabs in delimiters:
+            while i < len(lines):
+                body_line = lines[i]
+                candidate = body_line.rstrip("\r\n")
+                if strip_tabs:
+                    candidate = candidate.lstrip("\t")
+                i += 1
+                if candidate == delimiter:
+                    break
+
+    return "".join(out)
+
+
+def _shell_token_to_word(token: str) -> str:
+    """Return the shell word represented by one token, or the raw token."""
+    try:
+        words = shlex.split(token, posix=True)
+    except ValueError:
+        return token
+    if len(words) == 1:
+        return words[0]
+    return token
+
+
+def _iter_simple_command_words(command: str):
+    """Yield shell words for each simple command at command boundaries.
+
+    This deliberately looks only at executable-position words and their
+    leading env prefixes, so text mentions like ``echo codex-yuna exec`` and
+    ``python -c 'print("codex-yuna exec")'`` are not treated as Codex launches.
+    """
+    command = _strip_heredoc_bodies(command)
+    i = 0
+    n = len(command)
+    words: list[str] = []
+
+    def flush():
+        nonlocal words
+        if words:
+            yield_words = words
+            words = []
+            return yield_words
+        return None
+
+    while i < n:
+        ch = command[i]
+
+        if ch.isspace():
+            if ch == "\n":
+                yielded = flush()
+                if yielded is not None:
+                    yield yielded
+            i += 1
+            continue
+
+        if ch == "#":
+            comment_end = command.find("\n", i)
+            if comment_end == -1:
+                break
+            i = comment_end
+            continue
+
+        if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
+            yielded = flush()
+            if yielded is not None:
+                yield yielded
+            i += 2
+            continue
+
+        if ch in ";|&()":
+            yielded = flush()
+            if yielded is not None:
+                yield yielded
+            i += 1
+            continue
+
+        token, next_i = _read_shell_token(command, i)
+        words.append(_shell_token_to_word(token))
+        i = next_i
+
+    yielded = flush()
+    if yielded is not None:
+        yield yielded
+
+
+def _codex_executable_name(word: str) -> str:
+    """Return codex executable basename if *word* names Codex, else empty."""
+    if not word:
+        return ""
+    basename = os.path.basename(word)
+    return basename if basename in _CODEX_EXECUTABLES else ""
+
+
+def _codex_command_after_prefixes(words: list[str]) -> list[str]:
+    """Drop leading VAR=... and env prefixes before a command executable."""
+    idx = 0
+    while idx < len(words) and _looks_like_env_assignment(words[idx]):
+        idx += 1
+
+    if idx < len(words) and words[idx] == "env":
+        idx += 1
+        while idx < len(words):
+            word = words[idx]
+            if _looks_like_env_assignment(word):
+                idx += 1
+                continue
+            if word == "-u":
+                idx += 2
+                continue
+            if word in {"-i", "-0"} or word.startswith("-u"):
+                idx += 1
+                continue
+            break
+
+    while idx < len(words) and _looks_like_env_assignment(words[idx]):
+        idx += 1
+
+    return words[idx:]
+
+
+def _is_harmless_codex_args(args: list[str]) -> bool:
+    """Return True for short informational Codex invocations."""
+    if not args:
+        return False
+    lowered = [arg.lower() for arg in args]
+    help_tokens = {"help", "--help", "-h"}
+    version_tokens = {"version", "--version", "-v"}
+
+    if len(lowered) == 1 and lowered[0] in help_tokens | version_tokens:
+        return True
+    if lowered[0] == "exec":
+        return len(lowered) == 2 and lowered[1] in help_tokens | version_tokens
+    return False
+
+
+def _codex_launch_info(command: str) -> dict[str, Any]:
+    """Classify executable-position Codex invocations in a shell command."""
+    saw_codex = False
+    saw_harmless = False
+    for words in _iter_simple_command_words(command):
+        executable_and_args = _codex_command_after_prefixes(words)
+        if not executable_and_args:
+            continue
+        executable = executable_and_args[0]
+        if not _codex_executable_name(executable):
+            continue
+        saw_codex = True
+        args = executable_and_args[1:]
+        if _is_harmless_codex_args(args):
+            saw_harmless = True
+            continue
+        if args and args[0].lower() == "exec":
+            return {
+                "is_codex": True,
+                "is_codex_exec": True,
+                "is_harmless": False,
+                "executable": executable,
+                "args": args,
+            }
+
+    return {
+        "is_codex": saw_codex,
+        "is_codex_exec": False,
+        "is_harmless": saw_harmless,
+        "executable": "",
+        "args": [],
+    }
+
+
+def _codex_exec_policy_error(command: str, *, background: bool, pty: bool) -> str | None:
+    """Return a structured-error message for unsafe Codex exec launches."""
+    info = _codex_launch_info(command)
+    if not info["is_codex_exec"] or info["is_harmless"]:
+        return None
+
+    if not pty:
+        return (
+            "Codex exec must be launched with pty=true through the Hermes terminal tool. "
+            "For substantial Codex exec work, use background=true, notify_on_complete=true, "
+            "and pty=true so Hermes can track the session safely."
+        )
+
+    if not background and not env_var_enabled(_CODEX_FOREGROUND_BYPASS_ENV):
+        return (
+            "Foreground Codex exec is blocked because it can run for a long time, keep "
+            "writing files, or continue summarizing after large output. Re-run with "
+            "background=true, notify_on_complete=true, and pty=true. Advanced/debug "
+            f"escape hatch: set {_CODEX_FOREGROUND_BYPASS_ENV}=1 to bypass only this "
+            "foreground Codex guard."
+        )
+
+    return None
 
 
 def _looks_like_help_or_version_command(command: str) -> bool:
@@ -1551,17 +1757,6 @@ def _foreground_background_guidance(command: str) -> str | None:
                 "This foreground command appears to start a long-lived server/watch process. "
                 "Run it with background=true, verify readiness (health endpoint/log signal), "
                 "then execute tests in a separate command."
-            )
-
-    for pattern in _LONG_RUNNING_CODING_AGENT_PATTERNS:
-        if pattern.search(unquoted):
-            return (
-                "This foreground command starts Codex CLI, which can keep writing files or "
-                "summarizing after long output and may not exit before the foreground timeout. "
-                "Run Codex with background=true and notify_on_complete=true, then inspect "
-                "git status/diff and logs after it exits or times out. Ask Codex to avoid "
-                "large recursive grep output, avoid full diffs in stdout, and run only "
-                "focused tests; Hermes should run final verification separately."
             )
 
     return None
@@ -1689,6 +1884,17 @@ def terminal_tool(
                 ),
             }, ensure_ascii=False)
 
+        codex_launch_info = _codex_launch_info(command)
+        codex_policy_error = _codex_exec_policy_error(command, background=background, pty=pty)
+        if codex_policy_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": codex_policy_error,
+                "status": "error",
+                "codex_exec_policy": "blocked",
+            }, ensure_ascii=False)
+
         # Guardrail: long-lived server/watch commands should run as managed
         # background sessions, not foreground shell hacks.
         if not background:
@@ -1703,6 +1909,15 @@ def terminal_tool(
 
         # Start cleanup thread
         _start_cleanup_thread()
+
+        codex_notify_defaulted = False
+        if (
+            background
+            and codex_launch_info["is_codex_exec"]
+            and not notify_on_complete
+        ):
+            notify_on_complete = True
+            codex_notify_defaulted = True
 
         # Get or create environment.
         # Use a per-task creation lock so concurrent tool calls for the same
@@ -1895,6 +2110,14 @@ def terminal_tool(
                     result_data["approval"] = approval_note
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
+                if codex_notify_defaulted:
+                    result_data["codex_exec_policy"] = "notify_on_complete_defaulted"
+                    result_data["notify_on_complete_defaulted"] = True
+                    result_data["hint"] = (
+                        "Codex exec is a bounded coding-agent task; Hermes defaulted "
+                        "notify_on_complete=true. The safe wrapper shape is "
+                        "background=true, notify_on_complete=true, and pty=true."
+                    )
 
                 # Nudge: background=True without notify_on_complete=True OR
                 # watch_patterns is a silent process. The agent has NO way to
@@ -1920,6 +2143,23 @@ def terminal_tool(
                         "/ process(action='wait') yourself to learn the outcome. "
                         "Only ignore this hint for genuine long-lived processes "
                         "that never exit (servers, watchers, daemons)."
+                    )
+
+                if (
+                    background
+                    and not notify_on_complete
+                    and not watch_patterns
+                    and codex_launch_info["is_codex_exec"]
+                ):
+                    existing = result_data.get("hint", "")
+                    codex_hint = (
+                        "Codex exec is a bounded coding-agent task; re-launch "
+                        "with notify_on_complete=true so Hermes notifies you "
+                        "when it exits. The safe wrapper shape is "
+                        "background=true, notify_on_complete=true, and pty=true."
+                    )
+                    result_data["hint"] = (
+                        existing + "\n\n" + codex_hint if existing else codex_hint
                     )
 
                 # Nudge: homebrewed CI watcher built from `gh pr view`

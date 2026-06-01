@@ -511,13 +511,20 @@ class MemoryManager:
         """
         if not new_session_id:
             return
+        # Only forward ``rewound`` when it's actually set. Passing it
+        # unconditionally would inject ``rewound=False`` into every
+        # provider's **kwargs for the common /resume, /branch, /new, and
+        # compression paths, polluting providers that capture extra kwargs
+        # (and breaking exact-dict assertions). The /undo path sets
+        # rewound=True explicitly; everyone else stays clean.
+        if rewound:
+            kwargs["rewound"] = True
         for provider in self._providers:
             try:
                 provider.on_session_switch(
                     new_session_id,
                     parent_session_id=parent_session_id,
                     reset=reset,
-                    rewound=rewound,
                     **kwargs,
                 )
             except Exception as e:

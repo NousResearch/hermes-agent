@@ -1461,6 +1461,21 @@ def run_doctor(args):
         for npm_dir, label in npm_dirs:
             if not (npm_dir / "node_modules").exists():
                 continue
+            # `npm audit` requires a `package-lock.json`. Some Hermes-managed
+            # installs (e.g. Windows native, where agent-browser is vendored
+            # into %LOCALAPPDATA%\hermes\hermes-agent\node_modules) ship the
+            # node_modules folder without a lockfile. Running `npm audit` in
+            # that case still produces a non-empty vulnerabilities dict
+            # (advisories are matched against installed package versions in
+            # node_modules), but the only safe remediation — `npm audit fix`
+            # — cannot run without a lockfile, and we do not want users
+            # hand-editing the Hermes-managed install. Skip the audit and
+            # explain the situation instead. Issue #36893.
+            if not (npm_dir / "package-lock.json").exists():
+                check_info(f"{label}: skipping npm audit (no package-lock.json in this Hermes-managed install)")
+                check_info("Vulnerabilities, if any, are managed by the Hermes release pipeline")
+                check_info(f"Do not run `npm audit fix` inside {npm_dir} — it is regenerated on upgrade")
+                continue
             try:
                 # Use resolved absolute path so Windows can execute
                 # npm.cmd (CreateProcessW can't run bare .cmd names).

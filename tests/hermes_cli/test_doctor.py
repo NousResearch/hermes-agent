@@ -1358,3 +1358,140 @@ class TestDoctorStaleMaxIterationsDrift:
             monkeypatch, tmp_path, fix=False, ghost=None, cfg_turns=400,
         )
         assert "shadows" not in out
+
+
+# ---------------------------------------------------------------------------
+# Regression: hermes doctor must not flag npm vulnerabilities when the
+# Hermes-managed install has no package-lock.json (Windows native ships
+# `agent-browser` as a vendored node_modules folder without a lockfile).
+# The user's "fix path" must explain why, not just say "run npm audit fix".
+# Issue #36893.
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_npm_audit(npm_calls: list) -> object:
+    """Subprocess.run stub that records calls and returns a clean audit JSON."""
+
+    def fake_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[0].endswith("npm") and cmd[1] == "audit":
+            npm_calls.append((cmd, kwargs.get("cwd")))
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"metadata":{"vulnerabilities":{"critical":2,"high":1,"moderate":3}}}',
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return fake_run
+
+
+def test_run_doctor_skips_npm_audit_when_no_lockfile(monkeypatch, tmp_path):
+    """When `node_modules/agent-browser` exists but `package-lock.json` does
+    not (Windows native install), doctor must NOT report vulnerabilities and
+    must NOT suggest `npm audit fix` — both are un-actionable for the user.
+    Regression for #36893."""
+
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    (project / "node_modules" / "agent-browser").mkdir(parents=True)
+    (project / "node_modules" / "agent-browser" / "package.json").write_text(
+        '{"name":"agent-browser","version":"0.26.0"}', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None)
+    monkeypatch.setattr(doctor_mod, "_safe_which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None)
+
+    npm_calls: list = []
+    monkeypatch.setattr(doctor_mod.subprocess, "run", _make_fake_npm_audit(npm_calls))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert npm_calls == [], f"npm audit was called despite missing lockfile: {npm_calls}"
+    assert "npm vulnerabilities" not in out, (
+        f"Doctor reported npm vulnerabilities without a lockfile:\n{out}"
+    )
+    assert "has 6 npm vulnerabilities" not in out, (
+        f"Doctor still reports 'has 6 npm vulnerabilities' on the issues list:\n{out}"
+    )
+    assert "skipping npm audit" in out, (
+        f"Doctor did not explain the lockfile requirement:\n{out}"
+    )
+    assert "package-lock" in out or "lockfile" in out, (
+        f"Doctor did not mention package-lock/lockfile:\n{out}"
+    )
+    assert "Do not run" in out and "Hermes-managed install" in out, (
+        f"Doctor did not warn against modifying the Hermes-managed install:\n{out}"
+    )
+
+
+def test_run_doctor_runs_npm_audit_when_lockfile_present(monkeypatch, tmp_path):
+    """When `package-lock.json` IS present, the audit must run normally —
+    the new no-lockfile path must not regress the normal case."""
+
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    (project / "node_modules" / "agent-browser").mkdir(parents=True)
+    (project / "node_modules" / "agent-browser" / "package.json").write_text(
+        '{"name":"agent-browser","version":"0.26.0"}', encoding="utf-8"
+    )
+    (project / "package-lock.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None)
+    monkeypatch.setattr(doctor_mod, "_safe_which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None)
+
+    npm_calls: list = []
+    monkeypatch.setattr(doctor_mod.subprocess, "run", _make_fake_npm_audit(npm_calls))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert len(npm_calls) >= 1, f"npm audit was NOT called despite a lockfile being present"
+    assert "Browser tools" in out
+    assert "critical" in out

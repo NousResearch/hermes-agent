@@ -46,6 +46,64 @@ from agent.models_dev import (
 logger = logging.getLogger(__name__)
 
 
+# Copilot auto-picker (MVP): deterministic preference order used when the
+# user requests `/model auto --provider copilot` (or shorthand `copilot:auto`).
+# Keep this list conservative and provider-local for the first iteration.
+_COPILOT_AUTO_MODEL_PREFERENCES: tuple[str, ...] = (
+    "gpt-5.4",
+    "claude-sonnet-4.6",
+    "gpt-5.4-mini",
+    "gpt-4.1",
+    "gpt-4o",
+)
+
+
+def _is_copilot_provider(provider_id: str) -> bool:
+    return (provider_id or "").strip().lower() in {"copilot", "github-copilot"}
+
+
+def _select_copilot_auto_model(
+    *,
+    provider_id: str,
+    current_model: str,
+) -> tuple[str, str]:
+    """Return (model_id, warning_text) for Copilot auto-picker mode.
+
+    The MVP uses a deterministic preference list and the provider's live catalog
+    (when available). If no catalog is available, we fall back to the first
+    preference to keep `/model` responsive in degraded network conditions.
+    """
+    available = list_provider_models(provider_id) or []
+    available_lc = {m.lower(): m for m in available if isinstance(m, str) and m.strip()}
+
+    for preferred in _COPILOT_AUTO_MODEL_PREFERENCES:
+        picked = available_lc.get(preferred.lower())
+        if picked:
+            return picked, f"Auto picker selected `{picked}` for Copilot."
+
+    # If none of the preferred models are visible but the current model is still
+    # available on Copilot, keep the user on their current model.
+    current = (current_model or "").strip()
+    if current and current.lower() in available_lc:
+        picked = available_lc[current.lower()]
+        return picked, (
+            f"Auto picker kept current model `{picked}` on Copilot "
+            f"(preferred candidates unavailable)."
+        )
+
+    if available:
+        picked = available[0]
+        return picked, (
+            f"Auto picker selected `{picked}` from Copilot catalog "
+            f"(preferred candidates unavailable)."
+        )
+
+    picked = _COPILOT_AUTO_MODEL_PREFERENCES[0]
+    return picked, (
+        f"Auto picker selected fallback `{picked}` (Copilot catalog unavailable)."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Non-agentic model warning
 # ---------------------------------------------------------------------------
@@ -665,6 +723,14 @@ def switch_model(
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
+    auto_warning = ""
+
+    # Shorthand: /model copilot:auto (or github-copilot:auto) implies an
+    # explicit provider switch to Copilot plus auto model selection.
+    lowered = new_model.lower()
+    if not explicit_provider and lowered in {"copilot:auto", "github-copilot:auto"}:
+        explicit_provider = "copilot"
+        new_model = "auto"
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -734,6 +800,21 @@ def switch_model(
         alias_result = resolve_alias(new_model, target_provider)
         if alias_result is not None:
             _, new_model, resolved_alias = alias_result
+
+        # Copilot auto-picker: /model auto --provider copilot
+        if _is_copilot_provider(target_provider) and new_model.strip().lower() == "auto":
+            try:
+                new_model, auto_warning = _select_copilot_auto_model(
+                    provider_id=target_provider,
+                    current_model=current_model,
+                )
+            except Exception:
+                # Keep behavior robust; if auto-pick fails unexpectedly,
+                # fall back to deterministic default.
+                new_model = _COPILOT_AUTO_MODEL_PREFERENCES[0]
+                auto_warning = (
+                    f"Auto picker selected fallback `{new_model}` after internal error."
+                )
 
     # =================================================================
     # PATH B: No explicit provider — resolve from model input
@@ -1012,6 +1093,8 @@ def switch_model(
     warnings: list[str] = []
     if validation.get("message"):
         warnings.append(validation["message"])
+    if auto_warning:
+        warnings.append(auto_warning)
     hermes_warn = _check_hermes_model_warning(new_model)
     if hermes_warn:
         warnings.append(hermes_warn)

@@ -2117,10 +2117,20 @@ class AIAgent:
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
             return
+        landed = file_mutation_result_landed(tool_name, result)
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:
+            if is_error and not landed:
+                preview = _extract_error_preview(result)
+                state.setdefault(
+                    f"__unknown_target__:{tool_name}",
+                    {
+                        "tool": tool_name,
+                        "error_preview": preview,
+                        "display_path": "(unknown target)",
+                    },
+                )
             return
-        landed = file_mutation_result_landed(tool_name, result)
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
@@ -2135,6 +2145,13 @@ class AIAgent:
         else:
             for path in targets:
                 state.pop(path, None)
+            # If the model first called a mutating tool with invalid or
+            # missing target arguments, then later landed a valid mutation
+            # with that same tool, the earlier unknown-target failure should
+            # not keep poisoning the final response.
+            for key in list(state):
+                if key.startswith(f"__unknown_target__:{tool_name}"):
+                    state.pop(key, None)
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
@@ -2220,10 +2237,14 @@ class AIAgent:
                 break
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
+            display_path = (info.get("display_path") or path or "(unknown target)").strip()
+            display_path_text = (
+                display_path if display_path == "(unknown target)" else f"`{display_path}`"
+            )
             if preview:
-                lines.append(f"  • `{path}` — [{tool}] {preview}")
+                lines.append(f"  • {display_path_text} — [{tool}] {preview}")
             else:
-                lines.append(f"  • `{path}` — [{tool}] failed")
+                lines.append(f"  • {display_path_text} — [{tool}] failed")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:
@@ -2232,6 +2253,27 @@ class AIAgent:
         # already backticked above; the lookbehind keeps it from being
         # double-wrapped).
         return cls._neutralize_footer_paths("\n".join(lines))
+
+    @staticmethod
+    def _apply_file_mutation_failure_footer(final_response: str, footer: str) -> str:
+        """Put verifier failures before the model's final wording.
+
+        Appending the verifier after the model response still lets users see
+        a false "done" claim first. Failure-first rendering makes the real
+        state unambiguous while preserving the original model draft for
+        debugging context.
+        """
+        if not footer:
+            return final_response
+        response = (final_response or "").rstrip()
+        if not response:
+            return footer
+        return (
+            footer
+            + "\n\n"
+            + "Assistant draft before verifier (not confirmed because a file mutation failed):\n"
+            + response
+        )
 
     def _turn_completion_explainer_enabled(self) -> bool:
         """Check whether the end-of-turn completion explainer footer is on.

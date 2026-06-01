@@ -946,6 +946,17 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
         c.print(format_scan_report(result))
 
+        from tools.audit_hermes_skill_security import (
+            audit_skill_security,
+            format_audit_report,
+        )
+
+        op_audit = audit_skill_security(
+            skill_path,
+            expected_hash=entry.get("content_hash", ""),
+        )
+        c.print(format_audit_report(op_audit))
+
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
 

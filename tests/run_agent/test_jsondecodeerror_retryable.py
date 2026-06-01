@@ -29,19 +29,15 @@ def _mirror_agent_predicate(err: BaseException) -> bool:
     sites import it.
     """
     import ssl
+    from agent.conversation_loop import _is_retryable_sdk_parse_type_error
 
     return (
         isinstance(err, (ValueError, TypeError))
         and not isinstance(err, (UnicodeEncodeError, json.JSONDecodeError))
         and not isinstance(err, ssl.SSLError)
-        # NoneType-is-not-iterable shape errors come from upstream SDK /
-        # provider response mismatches, not local programming bugs. See
-        # the agent/conversation_loop.py inline comment for #33136.
-        and not (
-            isinstance(err, TypeError)
-            and "nonetype" in str(err).lower()
-            and "not iterable" in str(err).lower()
-        )
+        # SDK/provider parse-shaped TypeErrors come from upstream response
+        # mismatches, not local programming bugs. See conversation_loop.py.
+        and not _is_retryable_sdk_parse_type_error(err)
     )
 
 
@@ -123,12 +119,14 @@ class TestNoneTypeNotIterableIsRetryable:
             "not a local bug. See #33136."
         )
 
-    def test_nonetype_not_iterable_uppercase_variants_still_retryable(self):
+    def test_sdk_parse_typeerror_variants_still_retryable(self):
         # The carve-out is case-insensitive; SDK message phrasing can vary.
         for msg in [
             "'NoneType' object is not iterable",
             "NoneType object is not iterable",
             "argument of type 'NoneType' is not iterable",
+            "'NoneType' object is not subscriptable",
+            "'ResponseCompletedEvent' object is not subscriptable",
         ]:
             err = TypeError(msg)
             assert not _mirror_agent_predicate(err), (
@@ -149,8 +147,8 @@ class TestAgentLoopSourceHasNoneTypeCarveOut:
         from agent import conversation_loop
         src = inspect.getsource(conversation_loop)
         assert "is_local_validation_error" in src
-        # The specific check must be present.
-        assert "nonetype" in src.lower() and "not iterable" in src.lower(), (
-            "agent/conversation_loop.py must carve out 'NoneType is not iterable' "
+        # The specific parse-shape helper must be present.
+        assert "_is_retryable_sdk_parse_type_error" in src, (
+            "agent/conversation_loop.py must carve out SDK parse-shaped "
             "TypeErrors from the is_local_validation_error classification — see #33136."
         )

@@ -143,6 +143,21 @@ def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
     return True
 
 
+_SDK_PARSE_TYPEERROR_SIGNALS = (
+    "not iterable",
+    "nonetype",
+    "object is not subscriptable",
+)
+
+
+def _is_retryable_sdk_parse_type_error(error: BaseException) -> bool:
+    """Whether a TypeError looks like upstream SDK/provider shape drift."""
+    if not isinstance(error, TypeError):
+        return False
+    err_text = str(error).lower()
+    return any(signal in err_text for signal in _SDK_PARSE_TYPEERROR_SIGNALS)
+
+
 def _is_nous_inference_route(provider: str, base_url: str) -> bool:
     provider = (provider or "").strip().lower()
     if provider == "nous":
@@ -3047,21 +3062,11 @@ def run_conversation(
                     # ssl.SSLError explicitly so the error classifier's
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
-                    # Provider/SDK "NoneType is not iterable" failures are
-                    # shape mismatches from upstream (e.g. chatgpt.com Codex
-                    # backend response.completed.output=null) — not local
-                    # programming bugs.  Even after #33042 made our own
-                    # consumer immune, third-party shims and mocked clients
-                    # can still surface this shape via TypeError.  Treat
-                    # them as retryable so the error classifier's normal
-                    # retry/fallback path runs instead of killing the turn
-                    # as non-retryable (which left Telegram users staring
-                    # at a bare "Non-retryable error" with no recovery).
-                    and not (
-                        isinstance(api_error, TypeError)
-                        and "nonetype" in str(api_error).lower()
-                        and "not iterable" in str(api_error).lower()
-                    )
+                    # Provider/SDK parse-shaped TypeErrors are upstream shape
+                    # mismatches (e.g. chatgpt.com Codex backend event drift),
+                    # not local programming bugs.  Treat them as retryable so
+                    # the error classifier's normal retry/fallback path runs.
+                    and not _is_retryable_sdk_parse_type_error(api_error)
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:

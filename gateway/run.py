@@ -19068,7 +19068,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+            logger.warning("Cron tick error: %s", e, exc_info=True)
+        except BaseException as e:
+            # Keep the gateway's background cron thread alive even if a
+            # non-Exception escapes one tick (for example from lower-level
+            # worker/runtime primitives). One bad tick must not permanently
+            # stop all cron scheduling.
+            logger.error("Cron tick fatal error: %s", e, exc_info=True)
 
         tick_count += 1
 

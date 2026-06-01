@@ -346,6 +346,30 @@ def resolve_secret_input(value: Any, env: Optional[Dict[str, str]] = None) -> Op
     return None
 
 
+def _safe_is_dir(path: Path) -> bool:
+    """Like ``Path.is_dir()`` but never raises.
+
+    ``pathlib.Path.is_dir()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP — a
+    ``PermissionError`` (EACCES) is re-raised. A non-root user running
+    ``hermes claw migrate`` whose ``openclaw.json`` carries a stale absolute
+    workspace path under ``/root/`` (left over from a root install) would
+    otherwise crash the whole preview (#36831). Treat any inaccessible path
+    as "not a usable directory" instead.
+    """
+    try:
+        return os.path.isdir(path)
+    except OSError:
+        return False
+
+
+def _safe_exists(path: Path) -> bool:
+    """Like ``Path.exists()`` but never raises (see ``_safe_is_dir``)."""
+    try:
+        return os.path.exists(path)
+    except OSError:
+        return False
+
+
 def load_yaml_file(path: Path) -> Dict[str, Any]:
     if yaml is None or not path.exists():
         return {}
@@ -755,10 +779,16 @@ class Migrator:
         oc_config = self.load_openclaw_config()
         ws = (oc_config.get("agents", {}).get("defaults", {}).get("workspace") or "").strip()
         if ws:
-            ws_path = Path(ws).expanduser().resolve()
+            try:
+                ws_path = Path(ws).expanduser().resolve()
+            except OSError:
+                ws_path = None
             # Only use it if it exists and is outside the source_root tree
             # (otherwise the standard relative-path logic already covers it).
-            if ws_path.is_dir():
+            # _safe_is_dir tolerates a stale/inaccessible path in openclaw.json
+            # (e.g. a /root/ workspace from a prior root install) so a non-root
+            # migration doesn't crash on PermissionError (#36831).
+            if ws_path is not None and _safe_is_dir(ws_path):
                 try:
                     ws_path.relative_to(self.source_root)
                 except ValueError:
@@ -839,7 +869,7 @@ class Migrator:
     def source_candidate(self, *relative_paths: str) -> Optional[Path]:
         for rel in relative_paths:
             candidate = self.source_root / rel
-            if candidate.exists():
+            if _safe_exists(candidate):
                 return candidate
             # OpenClaw renamed workspace/ to workspace-main/ (and workspace-{agentId}
             # for multi-agent).  Try the new path as a fallback.
@@ -847,12 +877,12 @@ class Migrator:
                 suffix = rel[len("workspace/"):]
                 for variant in ("workspace-main", "workspace-assistant"):
                     alt = self.source_root / variant / suffix
-                    if alt.exists():
+                    if _safe_exists(alt):
                         return alt
             elif rel.startswith("workspace.default/"):
                 suffix = rel[len("workspace.default/"):]
                 alt = self.source_root / "workspace-main" / suffix
-                if alt.exists():
+                if _safe_exists(alt):
                     return alt
 
         # Final fallback: check the configured workspace directory from
@@ -867,7 +897,7 @@ class Migrator:
                     if rel.startswith(prefix):
                         suffix = rel[len(prefix):]
                         alt = self._custom_workspace / suffix
-                        if alt.exists():
+                        if _safe_exists(alt):
                             return alt
                         break
 

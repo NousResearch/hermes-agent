@@ -23,7 +23,11 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The full suite (~23.8k tests, -n auto) runs ~12.5m on fast 2-worker
+    # hardware; on GitHub's slower 2-vCPU runners it lands just over the old
+    # 20m cap and was being killed mid-run (tests still passing, not failing).
+    # Raise the cap so the job completes and reports a real result.
+    timeout-minutes: 35
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4

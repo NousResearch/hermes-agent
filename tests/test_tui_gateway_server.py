@@ -580,6 +580,10 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
 
 
 def test_history_to_messages_renders_multimodal_content():
+    # bb/gui preserves image URLs in the resume payload so the desktop
+    # renderer's extractEmbeddedImages can pull them back out and display
+    # the actual image instead of a placeholder. This also keeps the
+    # resume payload in sync with the cached message.
     history = [
         {
             "role": "user",
@@ -592,7 +596,7 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "look here\n[image]"},
+        {"role": "user", "text": "look here\ndata:image/png;base64,abc"},
         {"role": "assistant", "text": "saw it"},
     ]
 
@@ -630,7 +634,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     monkeypatch.setattr(
         server,
         "_session_info",
-        lambda agent: {"model": "test", "tools": {}, "skills": {}},
+        lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
         server, "_init_session", lambda sid, key, agent, history, cols=80: None
@@ -1205,7 +1209,7 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     monkeypatch.setattr(
         server, "_write_config_key", lambda path, value: writes.append((path, value))
     )
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
@@ -1609,6 +1613,57 @@ def test_setup_status_reports_provider_config(monkeypatch):
     resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
 
     assert resp["result"]["provider_configured"] is False
+
+
+def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openrouter",
+            "api_key": "",
+            "source": "env/config",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is False
+    assert resp["result"]["provider"] == "openrouter"
+
+
+def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "custom",
+            "api_key": "no-key-required",
+            "source": "env/config",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is True
+    assert resp["result"]["provider"] == "custom"
+
+
+def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "bedrock",
+            "api_key": "aws-sdk",
+            "source": "iam-role",
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is False
+    assert resp["result"]["provider"] == "bedrock"
 
 
 def test_complete_slash_includes_provider_alias():
@@ -2042,7 +2097,7 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
         lambda cfg=None: {"helpful": "You are helpful."},
     )
     monkeypatch.setattr(
-        server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")}
+        server, "_session_info", lambda agent, *a: {"model": getattr(agent, "model", "?")}
     )
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(server, "_write_config_key", lambda path, value: None)
@@ -2079,7 +2134,7 @@ def test_session_compress_uses_compress_helper(monkeypatch):
         "_compress_session_history",
         lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
     )
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
 
     with patch("tui_gateway.server._emit") as emit:
         resp = server.handle_request(
@@ -2111,7 +2166,7 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
         "_compress_session_history",
         lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
     )
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     restart_calls = []
     monkeypatch.setattr(
         server, "_restart_slash_worker", lambda s: restart_calls.append(s)
@@ -2889,6 +2944,83 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
+    """Desktop user-message edits should restart the turn from the edited user."""
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "edited reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "edited reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    original_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+    server._sessions["sid"] = _session(agent=_Agent(), history=original_history)
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited second",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        assert seen["prompt"] == "edited second"
+        assert seen["history"] == original_history[:2]
+        assert server._sessions["sid"]["history"] == [
+            *original_history[:2],
+            {"role": "user", "content": "edited second"},
+            {"role": "assistant", "content": "edited reply"},
+        ]
+        assert server._sessions["sid"]["history_version"] == 2
+        assert stub_db.replaced == [("session-key", original_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ---------------------------------------------------------------------------
 # session.interrupt must only cancel pending prompts owned by the calling
 # session — it must not blast-resolve clarify/sudo/secret prompts on
@@ -3162,7 +3294,7 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
 
     monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
     monkeypatch.setattr(server, "_sync_session_key_after_compress", _fake_sync)
-    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
 
     session = _session(running=False)
@@ -3235,7 +3367,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
         "_get_db",
         lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None),
     )
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
@@ -3336,7 +3468,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         "_get_db",
         lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None),
     )
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
@@ -3416,7 +3548,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_make_agent", lambda sid, key: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emits.append(a))
@@ -3438,6 +3570,33 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     assert not any(args and args[0] == "error" for args in emits)
 
     server._sessions.pop(sid, None)
+
+
+def test_session_create_lazy_info_reports_desktop_contract(monkeypatch):
+    """The lazy session.create info payload must carry desktop_contract, else
+    the desktop GUI reads it as undefined and falsely warns "Backend out of
+    date" on every launch even against a current backend."""
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **kw: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    info = resp["result"]["info"]
+
+    assert info["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+
+    server._sessions.pop(resp["result"]["session_id"], None)
 
 
 def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypatch):
@@ -5114,6 +5273,8 @@ def test_notification_poller_skips_consumed(monkeypatch):
 
 def test_notification_poller_requeues_when_busy(monkeypatch):
     """When the agent is busy, the poller requeues the event."""
+    import queue as _queue_mod
+
     from tools.process_registry import process_registry
 
     emitted = []
@@ -5122,8 +5283,13 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     server._sessions["sid_busy"] = sess
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
 
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
+    # Isolate the completion queue for the duration of this test. The poller
+    # reads process_registry.completion_queue by attribute at runtime, so a
+    # fresh Queue here means no concurrently-running test in the same xdist
+    # worker can put/get on the shared singleton mid-run and drain the event
+    # we expect to be requeued. monkeypatch restores the original on teardown.
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_busy_test")
 
     evt = {
@@ -5133,7 +5299,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         "exit_code": 0,
         "output": "ok",
     }
-    process_registry.completion_queue.put(evt)
+    isolated_queue.put(evt)
 
     stop = threading.Event()
     stop.set()
@@ -5146,10 +5312,8 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert len(status_calls) == 1
 
         # Event was requeued (agent was busy, no turn triggered)
-        assert not process_registry.completion_queue.empty()
-        requeued = process_registry.completion_queue.get_nowait()
+        assert not isolated_queue.empty()
+        requeued = isolated_queue.get_nowait()
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
-        while not process_registry.completion_queue.empty():
-            process_registry.completion_queue.get_nowait()

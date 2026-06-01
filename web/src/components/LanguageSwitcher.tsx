@@ -2,9 +2,9 @@ import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { BottomPickSheet } from "@/components/BottomPickSheet";
-import { Typography } from "@/components/NouiTypography";
-import { useBelowBreakpoint } from "@/hooks/useBelowBreakpoint";
+import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useI18n } from "@/i18n/context";
 import { LOCALE_META } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -87,7 +87,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
       </Button>
 
       {useMobileSheet && (
-        <BottomPickSheet
+        <BottomSheet
           backdropDismissLabel={t.common.close}
           onClose={() => setOpen(false)}
           open={open}
@@ -101,7 +101,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
               setOpen={setOpen}
             />
           </div>
-        </BottomPickSheet>
+        </BottomSheet>
       )}
 
       {open && !useMobileSheet && (() => {

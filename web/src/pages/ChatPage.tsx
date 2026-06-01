@@ -23,7 +23,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Typography } from "@/components/NouiTypography";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
@@ -119,8 +119,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
+  // In gated (OAuth) mode the server intentionally omits the session token —
+  // the SPA authenticates the WS via a single-use ticket (buildWsAuthParam),
+  // so a missing token there is expected, not an error.
   const [banner, setBanner] = useState<string | null>(() =>
-    typeof window !== "undefined" && !window.__HERMES_SESSION_TOKEN__
+    typeof window !== "undefined" &&
+    !window.__HERMES_SESSION_TOKEN__ &&
+    !window.__HERMES_AUTH_REQUIRED__
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
@@ -273,8 +278,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!host) return;
 
     const token = window.__HERMES_SESSION_TOKEN__;
+    const gated = !!window.__HERMES_AUTH_REQUIRED__;
     // Banner already initialised above; just bail before wiring xterm/WS.
-    if (!token) {
+    // In gated mode the token is absent by design — buildWsAuthParam() mints
+    // a WS ticket instead, so don't bail; let the effect reach that path.
+    if (!token && !gated) {
       return;
     }
 
@@ -876,5 +884,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_AUTH_REQUIRED__?: boolean;
   }
 }

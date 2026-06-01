@@ -1115,14 +1115,20 @@ def _resolve_explicit_runtime(
             explicit_base_url
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
-        # Only use the agent_key compatibility field for inference. It may be
-        # either a NAS invoke JWT or a legacy opaque session key; raw OAuth
-        # access_token fallback is handled by resolve_nous_runtime_credentials().
-        api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
+        # Only use the agent_key compatibility field for inference when it
+        # contains a NAS invoke JWT; raw OAuth access_token fallback is handled
+        # by resolve_nous_runtime_credentials().
+        api_key = explicit_api_key or (
+            str(state.get("agent_key") or "").strip()
+            if _agent_key_is_usable(
+                state,
+                max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+            )
+            else ""
+        )
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
             )
             api_key = creds.get("api_key", "")
@@ -1309,12 +1315,11 @@ def resolve_runtime_provider(
                 or getattr(entry, "access_token", "")
             )
         # For Nous, the pool entry's runtime_api_key is the agent_key
-        # compatibility field: either an invoke JWT or legacy opaque key.
-        # The pool doesn't
+        # compatibility field. It must be an invoke JWT. The pool doesn't
         # refresh it during selection (that would trigger network calls in
         # non-runtime contexts like `hermes auth list`).  If the key is
         # expired, clear pool_api_key so we fall through to
-        # resolve_nous_runtime_credentials() which handles refresh + fallback.
+        # resolve_nous_runtime_credentials() which handles refresh.
         if provider == "nous" and entry is not None and pool_api_key:
             min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
             nous_state = {
@@ -1338,7 +1343,6 @@ def resolve_runtime_provider(
     if provider == "nous":
         try:
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
             )
             return {

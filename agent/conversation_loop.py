@@ -27,8 +27,6 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from agent.anthropic_adapter import _is_oauth_token
-from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -49,25 +47,17 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
-    get_next_probe_tier,
+    get_context_length_from_provider_error,
     parse_available_output_tokens_from_error,
-    parse_context_limit_from_error,
     save_context_length,
-)
-from agent.nous_rate_guard import (
-    clear_nous_rate_limit,
-    is_genuine_nous_rate_limit,
-    nous_rate_limit_remaining,
-    record_nous_rate_limit,
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
+from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
-from tools.schema_sanitizer import strip_pattern_and_format
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
@@ -213,15 +203,13 @@ def _print_billing_or_entitlement_guidance(
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
-        from hermes_cli.auth import NOUS_INFERENCE_AUTH_MODE_LEGACY
         from hermes_cli.nous_account import get_nous_portal_account_info
 
         account_info = get_nous_portal_account_info(force_fresh=True)
         if account_info.paid_service_access is not True:
             return False
         return agent._try_refresh_nous_client_credentials(
-            force=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+            force=True,
         )
     except Exception:
         return False
@@ -404,13 +392,15 @@ def run_conversation(
         set_runtime_main(
             getattr(agent, "provider", "") or "",
             getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=getattr(agent, "api_key", "") or "",
+            api_mode=getattr(agent, "api_mode", "") or "",
         )
     except Exception:
         pass
 
     # Tag all log records on this thread with the session ID so
     # ``hermes logs --session <id>`` can filter a single conversation.
-    from hermes_logging import set_session_context
     set_session_context(agent.session_id)
 
     # Bind the skill write-origin ContextVar for this thread so tool
@@ -419,7 +409,6 @@ def run_conversation(
     # a foreground user-directed turn. Set at the top of each call;
     # the review fork runs on its own thread with a fresh context,
     # so the foreground value here does not leak into it.
-    from tools.skill_provenance import set_current_write_origin
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
     # If the previous turn activated fallback, restore the primary
@@ -614,18 +603,50 @@ def run_conversation(
             system_prompt=active_system_prompt or "",
             tools=agent.tools or None,
         )
+        _compressor = agent.context_compressor
+        _defer_preflight = getattr(
+            _compressor,
+            "should_defer_preflight_to_real_usage",
+            lambda _tokens: False,
+        )
+        _preflight_deferred = _defer_preflight(_preflight_tokens)
 
-        if agent.context_compressor.should_compress(_preflight_tokens):
+        if not _preflight_deferred:
+            # Keep the CLI/ACP context display in sync with what preflight
+            # actually measured.  The status bar reads
+            # ``compressor.last_prompt_tokens``, which otherwise only updates
+            # from a *successful* API response.  When the conversation has grown
+            # since the last successful call — or when compression then fails
+            # (e.g. the auxiliary summary model times out) and no fresh usage
+            # arrives — the bar stays stuck at the old, smaller value while
+            # preflight reports a much larger number, looking out of sync.
+            # Seed it with the fresh estimate (only ever revising upward; a real
+            # ``update_from_response`` will correct it after the next API call).
+            # Skipped when deferring — a deferred estimate is known to over-count
+            # vs the last real provider prompt, so trusting it for the display
+            # would re-introduce the very desync we're avoiding.
+            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+                _compressor.last_prompt_tokens = _preflight_tokens
+
+        if _preflight_deferred:
+            logger.info(
+                "Skipping preflight compression: rough estimate ~%s >= %s, "
+                "but last real provider prompt was %s after compression",
+                f"{_preflight_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
+                f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
-                f"{agent.context_compressor.threshold_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
                 agent.model,
-                f"{agent.context_compressor.context_length:,}",
+                f"{_compressor.context_length:,}",
             )
             agent._emit_status(
                 f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {agent.context_compressor.threshold_tokens:,} threshold. "
+                f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
             # May need multiple passes for very large sessions with small
@@ -660,8 +681,8 @@ def run_conversation(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if _preflight_tokens < agent.context_compressor.threshold_tokens:
-                    break  # Under threshold
+                if not _compressor.should_compress(_preflight_tokens):
+                    break  # Under threshold or anti-thrash guard stopped it
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
@@ -1471,7 +1492,8 @@ def run_conversation(
                     
                     if retry_count >= max_retries:
                         # Try fallback before giving up
-                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                        if agent._has_pending_fallback():
+                            agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                         if agent._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -1717,20 +1739,52 @@ def run_conversation(
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
-                            if truncated_tool_call_retries < 1:
+                            _is_stub_stall = (
+                                getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
+                            )
+                            if truncated_tool_call_retries < 3:
                                 truncated_tool_call_retries += 1
-                                agent._buffer_vprint(
-                                    f"⚠️  Truncated tool call detected — retrying API call..."
-                                )
+                                if _is_stub_stall:
+                                    # The stream broke mid tool-call (network /
+                                    # peer-closed connection), not a real output
+                                    # cap — say so instead of "max output tokens".
+                                    agent._buffer_vprint(
+                                        f"⚠️  Stream interrupted mid tool-call — "
+                                        f"retrying ({truncated_tool_call_retries}/3)..."
+                                    )
+                                else:
+                                    agent._buffer_vprint(
+                                        f"⚠️  Truncated tool call detected — "
+                                        f"retrying API call "
+                                        f"({truncated_tool_call_retries}/3)..."
+                                    )
+                                # Boost max_tokens on each retry so the model has
+                                # more room to complete the tool-call JSON. A
+                                # network stall doesn't need a bigger budget, but
+                                # a genuine output-cap truncation does, and the
+                                # boost is harmless for the stall case.
+                                _tc_boost_base = agent.max_tokens if agent.max_tokens else 4096
+                                _tc_boost = _tc_boost_base * (truncated_tool_call_retries + 1)
+                                _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+                                if _tc_requested_cap is not None:
+                                    _tc_boost = max(_tc_boost, _tc_requested_cap)
+                                _tc_boost_cap = max(32768, _tc_requested_cap or 0)
+                                agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_boost_cap)
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
                                 # message state, giving the model another chance.
                                 continue
                             agent._flush_status_buffer()
-                            agent._vprint(
-                                f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
-                                force=True,
-                            )
+                            if _is_stub_stall:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 3 retries — the action was not executed.",
+                                    force=True,
+                                )
+                            else:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
+                                    force=True,
+                                )
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -1739,7 +1793,12 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response truncated due to output length limit",
+                                "error": (
+                                    "Stream repeatedly dropped mid tool-call (network); "
+                                    "the tool was not executed"
+                                    if _is_stub_stall
+                                    else "Response truncated due to output length limit"
+                                ),
                             }
 
                     # If we have prior messages, roll back to last complete state
@@ -2900,9 +2959,13 @@ def run_conversation(
                         restart_with_compressed_messages = True
                         break
 
-                    # Error is about the INPUT being too large — reduce context_length.
-                    # Try to parse the actual limit from the error message
-                    parsed_limit = parse_context_limit_from_error(error_msg)
+                    # Error is about the INPUT being too large.  Only reduce
+                    # context_length when the provider explicitly reports the
+                    # real lower limit.  If the provider only says "input
+                    # exceeds the context window", keep the configured window
+                    # and try compression; guessing probe tiers can incorrectly
+                    # turn a user-configured 1M window into 256K/128K/64K.
+                    new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
                     _provider_lower = (getattr(agent, "provider", "") or "").lower()
                     _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
                     is_minimax_provider = (
@@ -2914,23 +2977,12 @@ def run_conversation(
                     )
                     minimax_delta_only_overflow = (
                         is_minimax_provider
-                        and parsed_limit is None
+                        and new_ctx is None
                         and "context window exceeds limit (" in error_msg
                     )
-                    if parsed_limit and parsed_limit < old_ctx:
-                        new_ctx = parsed_limit
-                        agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
-                    elif minimax_delta_only_overflow:
-                        new_ctx = old_ctx
-                        agent._buffer_vprint(
-                            f"Provider reported overflow amount only; "
-                            f"keeping context_length at {old_ctx:,} tokens and compressing."
-                        )
-                    else:
-                        # Step down to the next probe tier
-                        new_ctx = get_next_probe_tier(old_ctx)
 
-                    if new_ctx and new_ctx < old_ctx:
+                    if new_ctx is not None:
+                        agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
                         compressor.update_model(
                             model=agent.model,
                             context_length=new_ctx,
@@ -2940,20 +2992,22 @@ def run_conversation(
                             api_mode=agent.api_mode,
                         )
                         # Context probing flags — only set on built-in
-                        # compressor (plugin engines manage their own).
+                        # compressor (plugin engines manage their own).  This
+                        # value came from the provider, so it is safe to cache.
                         if hasattr(compressor, "_context_probed"):
                             compressor._context_probed = True
-                            # Only persist limits parsed from the provider's
-                            # error message (a real number).  Guessed fallback
-                            # tiers from get_next_probe_tier() should stay
-                            # in-memory only — persisting them pollutes the
-                            # cache with wrong values.
-                            compressor._context_probe_persistable = bool(
-                                parsed_limit and parsed_limit == new_ctx
-                            )
-                        agent._buffer_vprint(f"⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens")
+                            compressor._context_probe_persistable = True
+                        agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
+                    elif minimax_delta_only_overflow:
+                        agent._buffer_vprint(
+                            f"Provider reported overflow amount only; "
+                            f"keeping context_length at {old_ctx:,} tokens and compressing."
+                        )
                     else:
-                        agent._buffer_vprint(f"⚠️  Context length exceeded at minimum tier — attempting compression...")
+                        agent._buffer_vprint(
+                            f"⚠️  Context length exceeded, but provider did not report a max context length; "
+                            f"keeping context_length at {old_ctx:,} tokens and compressing."
+                        )
 
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
@@ -3078,12 +3132,17 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
-                    # Try fallback before aborting — a different provider
-                    # may not have the same issue (rate limit, auth, etc.)
-                    if classified.reason == FailoverReason.content_policy_blocked:
-                        agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
-                    else:
-                        agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    # Try fallback before aborting — a different provider may
+                    # not have the same issue (rate limit, auth, etc.). Only
+                    # announce the attempt when a fallback chain actually
+                    # exists; otherwise "trying fallback..." is a lie and the
+                    # session looks like it's recovering when it's about to
+                    # abort silently (#35314, #17446).
+                    if agent._has_pending_fallback():
+                        if classified.reason == FailoverReason.content_policy_blocked:
+                            agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
+                        else:
+                            agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -3226,7 +3285,8 @@ def run_conversation(
                         retry_count = 0
                         continue
                     # Try fallback before giving up entirely
-                    agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                    if agent._has_pending_fallback():
+                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -3389,9 +3449,16 @@ def run_conversation(
             # Progressively boost the output token budget on each retry.
             # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
             # Applies to all providers via _ephemeral_max_output_tokens.
+            # If the original request already used a larger provider/model
+            # default budget, keep that floor so continuation retries do
+            # not accidentally downshift to a much smaller cap.
             _boost_base = agent.max_tokens if agent.max_tokens else 4096
             _boost = _boost_base * (length_continue_retries + 1)
-            agent._ephemeral_max_output_tokens = min(_boost, 32768)
+            _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+            if _requested_cap is not None:
+                _boost = max(_boost, _requested_cap)
+            _boost_cap = max(32768, _requested_cap or 0)
+            agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
             continue
 
         # Guard: if all retries exhausted without a successful response
@@ -3881,6 +3948,11 @@ def run_conversation(
                     # inflate completion_tokens with reasoning,
                     # causing premature compression.  (#12026)
                     _real_tokens = _compressor.last_prompt_tokens
+                elif _compressor.last_prompt_tokens == -1:
+                    # Compression just ran and no API-reported prompt count
+                    # has arrived yet. Avoid treating a schema-heavy rough
+                    # post-compression estimate as real context pressure.
+                    _real_tokens = 0
                 else:
                     # Include tool schemas — with 50+ tools enabled
                     # these add 20-30K tokens the messages-only
@@ -4320,36 +4392,54 @@ def run_conversation(
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
 
-        # If running as a kanban worker, block the task so the dispatcher
-        # knows the worker could not complete (rather than treating it as a
+        # If running as a kanban worker, signal the dispatcher that the
+        # worker could not complete (rather than treating it as a
         # protocol violation).  The agent loop strips tools before calling
         # _handle_max_iterations, so the model cannot call kanban_block
         # itself — we must do it on its behalf.
+        #
+        # We route through ``_record_task_failure(outcome="timed_out")``
+        # rather than ``kanban_block`` so this counts toward the
+        # ``consecutive_failures`` counter and the dispatcher's
+        # ``failure_limit`` circuit breaker (#29747 gap 2).  Without this,
+        # a task whose worker keeps exhausting its budget would block
+        # silently each run, get auto-promoted by the operator (or never
+        # surface), and re-block in an endless loop with no signal.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
-                _ra().handle_function_call(
-                    "kanban_block",
-                    {
-                        "task_id": _kanban_task,
-                        "reason": (
+                from hermes_cli import kanban_db as _kb
+                _conn = _kb.connect()
+                try:
+                    _kb._record_task_failure(
+                        _conn,
+                        _kanban_task,
+                        error=(
                             f"Iteration budget exhausted "
                             f"({api_call_count}/{agent.max_iterations}) — "
                             "task could not complete within the allowed "
                             "iterations"
                         ),
-                    },
-                    task_id=effective_task_id,
-                )
-                logger.info(
-                    "kanban_block called for task %s after iteration "
-                    "exhaustion (%d/%d)",
-                    _kanban_task, api_call_count, agent.max_iterations,
-                )
+                        outcome="timed_out",
+                        release_claim=True,
+                        end_run=True,
+                        event_payload_extra={
+                            "budget_used": api_call_count,
+                            "budget_max": agent.max_iterations,
+                        },
+                    )
+                    logger.info(
+                        "recorded budget-exhausted failure for task %s (%d/%d)",
+                        _kanban_task, api_call_count, agent.max_iterations,
+                    )
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
             except Exception:
                 logger.warning(
-                    "Failed to call kanban_block after iteration "
-                    "exhaustion for task %s",
+                    "Failed to record budget-exhausted failure for task %s",
                     _kanban_task,
                     exc_info=True,
                 )
@@ -4443,6 +4533,55 @@ def run_conversation(
                     final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
+
+    # Turn-completion explainer.
+    # When a turn ends abnormally after substantive work — empty content
+    # after retries, a partial/truncated stream, a still-pending tool
+    # result, or an iteration/budget limit — the user otherwise gets a
+    # blank or fragmentary response box with no consolidated reason why
+    # the agent stopped (#34452).  Surface a single user-visible
+    # explanation derived from ``_turn_exit_reason``, mirroring the
+    # file-mutation verifier footer pattern above.
+    #
+    # Gate carefully so healthy turns stay quiet:
+    #   - ``text_response(...)`` exits never produce an explanation
+    #     (handled inside the formatter), so a terse ``Done.`` is silent.
+    #   - We only ACT when there is no genuinely usable reply this turn:
+    #     an empty response, the "(empty)" terminal sentinel, or a
+    #     suspiciously short partial fragment with no terminating
+    #     punctuation (e.g. "The").  A real short answer keeps its text.
+    if not interrupted:
+        try:
+            if agent._turn_completion_explainer_enabled():
+                _stripped = (final_response or "").strip()
+                _is_empty_terminal = _stripped == "" or _stripped == "(empty)"
+                # A short fragment that is not a normal text_response exit
+                # and lacks sentence-ending punctuation is treated as a
+                # truncated partial (the "The" case from #34452).
+                _is_partial_fragment = (
+                    not _is_empty_terminal
+                    and not str(_turn_exit_reason).startswith("text_response")
+                    and len(_stripped) <= 24
+                    and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
+                )
+                if _is_empty_terminal or _is_partial_fragment:
+                    _explanation = agent._format_turn_completion_explanation(
+                        _turn_exit_reason
+                    )
+                    if _explanation:
+                        if _is_empty_terminal:
+                            # Replace the bare "(empty)"/blank sentinel with
+                            # the actionable explanation.
+                            final_response = _explanation
+                        else:
+                            # Keep the partial fragment, append the reason so
+                            # the user sees both what arrived and why it
+                            # stopped.
+                            final_response = (
+                                _stripped + "\n\n" + _explanation
+                            )
+        except Exception as _exp_err:
+            logger.debug("turn-completion explainer failed: %s", _exp_err)
 
     _response_transformed = False
 
@@ -4567,6 +4706,7 @@ def run_conversation(
         original_user_message=original_user_message,
         final_response=final_response,
         interrupted=interrupted,
+        messages=messages,
     )
 
     # Background memory/skill review — runs AFTER the response is delivered

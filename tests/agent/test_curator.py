@@ -7,7 +7,6 @@ tests run fully offline and the curator module doesn't need real credentials.
 from __future__ import annotations
 
 import importlib
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,6 +31,11 @@ def curator_env(tmp_path, monkeypatch):
 
     # Default: no config file → curator defaults. Tests can override.
     monkeypatch.setattr(curator, "_load_config", lambda: {})
+    # Pin prune_builtins OFF by default so transition tests don't pick up
+    # built-ins unless they explicitly enable it. Both config-reading paths
+    # are pinned (curator reads via _load_config; skill_usage reads config
+    # directly). Tests opt in with _enable_prune_builtins(...).
+    monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
 
     return {"home": home, "curator": curator, "usage": usage}
 
@@ -284,6 +288,126 @@ def test_bundled_skill_not_touched_by_transitions(curator_env):
     # bundled skills are excluded from the agent-created list entirely
     assert counts["checked"] == 0
     assert (skills_dir / "bundled").exists()  # never moved
+
+
+# ---------------------------------------------------------------------------
+# prune_builtins: curator may archive bundled built-ins after inactivity
+# ---------------------------------------------------------------------------
+
+def _enable_prune_builtins(curator_env, monkeypatch):
+    """Flip curator.prune_builtins on for both config-reading paths."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": True})
+    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: True)
+
+
+def _disable_prune_builtins(curator_env, monkeypatch):
+    """Flip curator.prune_builtins off for both config-reading paths."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": False})
+    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
+
+
+def test_prune_builtins_default_on(curator_env):
+    # Shipped default is ON: with no explicit config, built-ins are eligible.
+    c = curator_env["curator"]
+    # _load_config returns {} (fixture) → default True surfaces.
+    assert c.get_prune_builtins() is True
+
+
+def test_prune_builtins_off_excludes_bundled(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+
+    # Explicitly off → bundled is not a candidate (the opt-out path).
+    _disable_prune_builtins(curator_env, monkeypatch)
+    assert c.get_prune_builtins() is False
+    counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 0
+    assert (skills_dir / "bundled").exists()
+
+
+def test_prune_builtins_seeds_clock_on_first_sight(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # First pass: built-in has no record yet → it's seeded, NOT archived,
+    # even though it's "old" on disk. The inactivity clock starts now.
+    counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 1
+    assert counts["seeded"] == 1
+    assert counts["archived"] == 0
+    assert (skills_dir / "bundled").exists()
+    # A record now exists with created_at ~ now.
+    assert isinstance(u.load_usage().get("bundled"), dict)
+
+
+def test_prune_builtins_archives_stale_bundled_and_suppresses(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Seed a record whose last activity is far past the archive cutoff.
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    data["bundled"] = u._empty_record()
+    data["bundled"]["last_used_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 1
+    # Directory moved into .archive/, suppression recorded so update won't restore.
+    assert not (skills_dir / "bundled").exists()
+    assert (skills_dir / ".archive" / "bundled").exists()
+    assert "bundled" in u.read_suppressed_names()
+
+
+def test_prune_builtins_restore_clears_suppression(curator_env, monkeypatch):
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    ok, _ = u.archive_skill("bundled")
+    assert ok
+    assert "bundled" in u.read_suppressed_names()
+
+    ok, _ = u.restore_skill("bundled")
+    assert ok
+    assert (skills_dir / "bundled").exists()
+    assert "bundled" not in u.read_suppressed_names()
+
+
+def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "hubskill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    (hub_dir / "lock.json").write_text(
+        '{"version": 1, "installed": {"hubskill": {"install_path": "hubskill"}}}',
+        encoding="utf-8",
+    )
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Even with prune_builtins on, hub-installed skills stay off-limits.
+    assert u.is_curation_eligible("hubskill") is False
+    ok, msg = u.archive_skill("hubskill")
+    assert ok is False
+    assert "hub-installed" in msg
+    assert (skills_dir / "hubskill").exists()
 
 
 # ---------------------------------------------------------------------------

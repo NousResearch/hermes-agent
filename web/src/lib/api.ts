@@ -41,7 +41,11 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
-export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T>(
+  url: string,
+  init?: RequestInit,
+  options?: FetchJSONOptions,
+): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -100,7 +104,7 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
     // that reload once on the first stale-token 401 — gated mode is
     // handled above, so reaching here in gated mode means a real
     // middleware failure that should not reload-loop.
-    if (!window.__HERMES_AUTH_REQUIRED__) {
+    if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
       let alreadyReloaded = false;
       try {
         alreadyReloaded =
@@ -198,8 +202,19 @@ export const api = {
    * still exists but is never useful there (no Session, no cookie). The
    * AuthWidget component swallows 401s from this call: if the gate isn't
    * engaged, /api/auth/me returns 401 and the widget renders nothing.
+   *
+   * ``allowUnauthorized`` is load-bearing: in loopback mode this endpoint
+   * 401s by design, and fetchJSON's default loopback behaviour treats a
+   * 401 as a rotated session token and full-page-reloads to pick up a
+   * fresh one. Because every *other* dashboard request succeeds (and so
+   * clears the one-shot reload guard), that turns this expected 401 into
+   * an infinite reload loop. Opting out keeps the 401 a plain throw the
+   * widget can catch.
    */
-  getAuthMe: () => fetchJSON<AuthMeResponse>("/api/auth/me"),
+  getAuthMe: () =>
+    fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
+      allowUnauthorized: true,
+    }),
   logout: () =>
     fetch(`${BASE}/auth/logout`, {
       method: "POST",
@@ -489,6 +504,137 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+
+  // ── Admin: MCP servers ──────────────────────────────────────────────
+  getMcpServers: () => fetchJSON<{ servers: McpServer[] }>("/api/mcp/servers"),
+  addMcpServer: (body: McpServerCreate) =>
+    fetchJSON<McpServer>("/api/mcp/servers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  removeMcpServer: (name: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  testMcpServer: (name: string) =>
+    fetchJSON<McpTestResult>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/test`,
+      { method: "POST" },
+    ),
+
+  // ── Admin: Pairing ──────────────────────────────────────────────────
+  getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
+  approvePairing: (platform: string, code: string) =>
+    fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, code }),
+    }),
+  revokePairing: (platform: string, user_id: string) =>
+    fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, user_id }),
+    }),
+  clearPendingPairing: () =>
+    fetchJSON<{ ok: boolean; cleared: number }>("/api/pairing/clear-pending", {
+      method: "POST",
+    }),
+
+  // ── Admin: Webhooks ─────────────────────────────────────────────────
+  getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  createWebhook: (body: WebhookCreate) =>
+    fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteWebhook: (name: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/webhooks/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+
+  // ── Admin: Credential pool ──────────────────────────────────────────
+  getCredentialPool: () =>
+    fetchJSON<{ providers: CredentialPoolProvider[] }>("/api/credentials/pool"),
+  addCredentialPoolEntry: (
+    provider: string,
+    api_key: string,
+    label?: string,
+  ) =>
+    fetchJSON<{ ok: boolean; provider: string; count: number }>(
+      "/api/credentials/pool",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, api_key, label }),
+      },
+    ),
+  removeCredentialPoolEntry: (provider: string, index: number) =>
+    fetchJSON<{ ok: boolean; provider: string; count: number }>(
+      `/api/credentials/pool/${encodeURIComponent(provider)}/${index}`,
+      { method: "DELETE" },
+    ),
+
+  // ── Admin: Memory provider ──────────────────────────────────────────
+  getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  setMemoryProvider: (provider: string) =>
+    fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    }),
+  resetMemory: (target: "all" | "memory" | "user") =>
+    fetchJSON<{ ok: boolean; deleted: string[] }>("/api/memory/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    }),
+
+  // ── Admin: Gateway lifecycle ────────────────────────────────────────
+  startGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
+  stopGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
+
+  // ── Admin: Operations ───────────────────────────────────────────────
+  runDoctor: () =>
+    fetchJSON<ActionResponse>("/api/ops/doctor", { method: "POST" }),
+  runSecurityAudit: () =>
+    fetchJSON<ActionResponse>("/api/ops/security-audit", { method: "POST" }),
+  runBackup: (output?: string) =>
+    fetchJSON<ActionResponse>("/api/ops/backup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ output }),
+    }),
+  runImport: (archive: string) =>
+    fetchJSON<ActionResponse>("/api/ops/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archive }),
+    }),
+  getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
+  getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
+  pruneCheckpoints: () =>
+    fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
+
+  // ── Admin: Skills hub ───────────────────────────────────────────────
+  installSkillFromHub: (identifier: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier }),
+    }),
+  uninstallSkillFromHub: (name: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  updateSkillsFromHub: () =>
+    fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -511,7 +657,145 @@ export interface AuthMeResponse {
 export interface ActionResponse {
   name: string;
   ok: boolean;
-  pid: number;
+  pid: number | null;
+  error?: string;
+  message?: string;
+  update_command?: string;
+}
+
+// ── Admin types ───────────────────────────────────────────────────────
+
+export interface McpServer {
+  name: string;
+  transport: "http" | "stdio" | "unknown";
+  url: string | null;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  auth: string | null;
+  enabled: boolean;
+  tools: string[] | null;
+}
+
+export interface McpServerCreate {
+  name: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  auth?: string;
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  error?: string;
+  tools: Array<{ name: string; description: string }>;
+}
+
+export interface PairingUser {
+  platform: string;
+  user_id: string;
+  user_name?: string;
+  code?: string;
+  age_minutes?: number;
+}
+
+export interface PairingResponse {
+  pending: PairingUser[];
+  approved: PairingUser[];
+}
+
+export interface WebhookRoute {
+  name: string;
+  description: string;
+  events: string[];
+  deliver: string;
+  deliver_only: boolean;
+  prompt: string;
+  skills: string[];
+  created_at: string | null;
+  url: string;
+  secret_set: boolean;
+}
+
+export interface WebhooksResponse {
+  enabled: boolean;
+  base_url: string;
+  subscriptions: WebhookRoute[];
+}
+
+export interface WebhookCreate {
+  name: string;
+  description?: string;
+  events?: string[];
+  prompt?: string;
+  skills?: string[];
+  deliver?: string;
+  deliver_only?: boolean;
+  deliver_chat_id?: string;
+}
+
+export interface CredentialPoolEntry {
+  index: number;
+  id: string | null;
+  label: string | null;
+  auth_type: string | null;
+  source: string | null;
+  priority: number;
+  last_status: string | null;
+  request_count: number;
+  token_preview: string;
+  has_refresh: boolean;
+}
+
+export interface CredentialPoolProvider {
+  provider: string;
+  entries: CredentialPoolEntry[];
+}
+
+export interface MemoryProviderInfo {
+  name: string;
+  description: string;
+  configured: boolean;
+}
+
+export interface MemoryStatus {
+  active: string;
+  providers: MemoryProviderInfo[];
+  builtin_files: { memory: number; user: number };
+}
+
+export interface HookEntry {
+  event: string;
+  matcher: string | null;
+  command: string | null;
+  timeout: number | null;
+  allowed: boolean;
+}
+
+export interface HooksResponse {
+  hooks: HookEntry[];
+  allowlist: string[];
+}
+
+export interface CheckpointSession {
+  session: string;
+  files: number;
+  bytes: number;
+}
+
+export interface CheckpointsResponse {
+  sessions: CheckpointSession[];
+  total_bytes: number;
+}
+
+/** Per-call overrides for {@link fetchJSON}. */
+interface FetchJSONOptions {
+  /** When true, a 401 response is surfaced as a normal thrown error rather
+   *  than triggering the loopback stale-token page reload. Use for probes
+   *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
+   *  rather than evidence of a rotated session token. */
+  allowUnauthorized?: boolean;
 }
 
 export interface ActionStatusResponse {

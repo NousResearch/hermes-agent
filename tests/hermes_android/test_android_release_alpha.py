@@ -39,7 +39,12 @@ def test_android_release_workflow_restores_signing_material_and_builds_release_a
     assert 'ANDROID_KEYSTORE_PASSWORD' in workflow
     assert 'ANDROID_KEY_ALIAS' in workflow
     assert 'ANDROID_KEY_PASSWORD' in workflow
-    assert './gradlew :app:assembleRelease :app:bundleRelease' in workflow
+    assert './gradlew :app:assembleRelease' in workflow
+    assert './gradlew :app:bundleRelease' in workflow
+    assert 'app-release-unsigned.apk' in workflow
+    assert '--v2-signing-enabled true' in workflow
+    assert '--ks-pass env:ANDROID_KEYSTORE_PASSWORD' in workflow
+    assert 'edit_args=(--target "$GITHUB_SHA" --title "$title")' in workflow
     assert 'scripts/android_release_manifest.py --tag' in workflow
     assert 'HERMES_RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}' in workflow
     assert 'gh release upload "$HERMES_RELEASE_TAG"' in workflow

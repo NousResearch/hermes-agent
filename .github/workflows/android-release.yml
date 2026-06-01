@@ -49,25 +49,49 @@ jobs:
           test -n "$ANDROID_KEY_ALIAS"
           test -n "$ANDROID_KEY_PASSWORD"
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/release.keystore
-          cat > android/keystore.properties <<EOF
+
+      - name: Ensure Gradle wrapper is executable
+        run: chmod +x android/gradlew
+
+      - name: Build and sign Android artifacts
+        working-directory: android
+        env:
+          HERMES_RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          SOURCE_DATE_EPOCH: "315532800"
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          rm -rf ../build
+          rm -f keystore.properties
+          export PYTHON_FOR_BUILD="$(command -v python3.13 || command -v python3 || command -v python)"
+          ./gradlew :app:assembleRelease
+          cat > keystore.properties <<EOF
           storeFile=release.keystore
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-
-      - name: Ensure Gradle wrapper is executable
-        run: chmod +x android/gradlew
-
-      - name: Build signed Android artifacts
-        working-directory: android
-        env:
-          HERMES_RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
-          SOURCE_DATE_EPOCH: "315532800"
-        run: |
-          rm -rf ../build
-          export PYTHON_FOR_BUILD="$(command -v python3.13 || command -v python3 || command -v python)"
-          ./gradlew :app:assembleRelease :app:bundleRelease
+          ./gradlew :app:bundleRelease
+          sdk_root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          build_tools_dir="$(find "$sdk_root/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          apksigner="$build_tools_dir/apksigner"
+          unsigned_apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+          test -x "$apksigner"
+          test -f "$unsigned_apk"
+          "$apksigner" sign \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled false \
+            --v4-signing-enabled false \
+            --ks release.keystore \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$signed_apk" \
+            "$unsigned_apk"
+          "$apksigner" verify --verbose "$signed_apk"
 
       - name: Rename artifacts and write checksums
         env:
@@ -94,7 +118,7 @@ jobs:
           title="Hermes Agent Fork ${HERMES_RELEASE_TAG}"
           notes_file="RELEASE_${HERMES_RELEASE_TAG}.md"
           if gh release view "$HERMES_RELEASE_TAG" >/dev/null 2>&1; then
-            edit_args=(--title "$title")
+            edit_args=(--target "$GITHUB_SHA" --title "$title")
             if [ -f "$notes_file" ]; then
               edit_args+=(--notes-file "$notes_file")
             fi

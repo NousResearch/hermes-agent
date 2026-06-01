@@ -14,6 +14,7 @@ from gateway.platforms.base import (
     utf16_len,
     _log_safe_path,
     _prefix_within_utf16_limit,
+    cache_audio_from_bytes,
 )
 
 
@@ -47,6 +48,26 @@ class TestSafeUrlForLog:
         assert safe_url_for_log(url, max_len=3) == "..."
         assert safe_url_for_log(url, max_len=2) == ".."
         assert safe_url_for_log(url, max_len=0) == ""
+
+
+class TestCacheAudioFromBytes:
+    def test_sniffs_mp4_quicktime_audio_even_when_ext_is_ogg(self, tmp_path):
+        payload = b"\x00\x00\x00\x14ftypqt  " + b"\x00" * 32
+        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+            result = cache_audio_from_bytes(payload, ext=".ogg")
+
+        saved = tmp_path / os.path.basename(result)
+        assert saved.suffix == ".m4a"
+        assert saved.read_bytes() == payload
+
+    def test_preserves_fallback_ext_when_audio_header_is_unknown(self, tmp_path):
+        payload = b"not-a-known-audio-header"
+        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+            result = cache_audio_from_bytes(payload, ext=".aac")
+
+        saved = tmp_path / os.path.basename(result)
+        assert saved.suffix == ".aac"
+        assert saved.read_bytes() == payload
 
 
 # ---------------------------------------------------------------------------

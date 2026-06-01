@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 
 def _request(url: str, *, api_key: str = "", method: str = "GET", timeout: float = 5.0):
@@ -108,9 +109,10 @@ def _kill_pids(pids: list[int], grace: float) -> bool:
         if not any(_pid_exists(pid) for pid in pids):
             return True
         time.sleep(0.2)
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
     for pid in pids:
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, sigkill)
         except ProcessLookupError:
             pass
     return True
@@ -118,12 +120,11 @@ def _kill_pids(pids: list[int], grace: float) -> bool:
 
 def _pid_exists(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        return Path(f"/proc/{pid}").exists()
 
 
 def main(argv: list[str] | None = None) -> int:

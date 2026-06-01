@@ -43,8 +43,9 @@ def _install_oneshot_timeout_diagnostics() -> None:
         return
     try:
         faulthandler.enable(file=sys.stderr, all_threads=True)
-        if hasattr(signal, "SIGUSR1"):
-            faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True, chain=False)
+        sigusr1 = getattr(signal, "SIGUSR1", None)
+        if sigusr1 is not None:
+            faulthandler.register(sigusr1, file=sys.stderr, all_threads=True, chain=False)
     except Exception:
         pass
 

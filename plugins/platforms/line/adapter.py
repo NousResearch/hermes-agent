@@ -1496,17 +1496,27 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
 # Plugin entry-point hooks
 # ---------------------------------------------------------------------------
 
-def check_requirements() -> bool:
+def _check_requirements(env_prefix: str) -> bool:
     """Plugin gate: require credentials AND aiohttp at runtime."""
-    if not os.getenv("LINE_CHANNEL_ACCESS_TOKEN"):
+    if not os.getenv(f"{env_prefix}_CHANNEL_ACCESS_TOKEN"):
         return False
-    if not os.getenv("LINE_CHANNEL_SECRET"):
+    if not os.getenv(f"{env_prefix}_CHANNEL_SECRET"):
         return False
     try:
         import aiohttp  # noqa: F401
     except ImportError:
         return False
     return True
+
+
+def check_requirements() -> bool:
+    """Plugin gate: require credentials AND aiohttp at runtime."""
+    return _check_requirements("LINE")
+
+
+def check_requirements_admin() -> bool:
+    """Plugin gate for the internal LINE admin channel."""
+    return _check_requirements("LINE_ADMIN_CHANNEL")
 
 
 def validate_config(config) -> bool:

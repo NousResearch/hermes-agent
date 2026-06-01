@@ -20,27 +20,32 @@ prompt_caching:
   cache_ttl: "5m"   # use "1h" for long sessions with pauses between turns
 ```
 
+> **Config path:** `~/.hermes/config.yaml` is the default. If `HERMES_HOME` is set (e.g. on a server install), the file is at `$HERMES_HOME/config.yaml` instead.
+
 `cache_ttl` is the only setting. The cache prefix is reused for this long after each request; subsequent requests within the window get a cache hit. Only `"5m"` and `"1h"` are valid — any other value falls back to `"5m"`.
 
 Hermes handles the rest: it sends the provider's `cache_control` markers automatically and only when the active model supports caching. You don't configure anything per model.
 
 ## Supported Providers
 
-Caching activates automatically when your model and provider support it:
+`cache_ttl` only takes effect for providers where Hermes injects `cache_control` markers. That's **Claude models** and **Qwen/Alibaba models**:
 
-| Provider | Caching |
-|----------|---------|
-| **Anthropic Claude** (native API or via OpenRouter) | Yes — controlled by `cache_ttl` |
-| **DeepSeek** | Yes |
-| **Cerebras** | Yes — automatic, no config needed |
+| Provider | `cache_ttl` effect |
+|----------|--------------------|
+| **Anthropic Claude** — native API, or via OpenRouter / Nous Portal | Yes — Hermes injects `cache_control` markers controlled by `cache_ttl` |
+| **Qwen / Alibaba** — on OpenCode / DashScope | Yes — Hermes injects `cache_control` markers controlled by `cache_ttl` |
+| **Other providers** (DeepSeek, Llama, etc.) | No effect — caching, if any, is handled by the provider's own infrastructure |
+| **Cerebras** | No effect — automatic server-side KV caching, independent of this config |
 
-When caching is active, the CLI shows it at startup:
+For Claude and Qwen, Hermes attaches the markers automatically and the CLI confirms it at startup:
 
 ```
 💾 Prompt caching: ENABLED (Claude via OpenRouter, 5m TTL)
 ```
 
-If your model doesn't support caching, the setting is simply ignored — it's safe to leave in your config.
+This message only appears for supported providers (Claude / Qwen). You won't see it for DeepSeek, Cerebras, or other providers — that's expected, and `cache_ttl` is safe to leave in your config either way.
+
+DeepSeek and Cerebras still get caching — DeepSeek via OpenRouter's infrastructure, Cerebras via automatic server-side KV caching of repeated system-prompt prefixes — but neither is driven by `cache_ttl`, and Hermes sends no `cache_control` markers to them.
 
 ## Why It Helps
 

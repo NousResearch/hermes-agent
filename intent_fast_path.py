@@ -170,7 +170,10 @@ _WEATHER_RE = re.compile(
     + r"(?:"
     + _FILLER  # (a) keyword + optional filler ...
     + r"|"
-    + _LIKE + r"\s+" + _CONNECTOR + r"\s+(?P<loc1>[^?]+?)"  # (b) keyword [like] connector loc
+    + _LIKE
+    + r"\s+"
+    + _CONNECTOR
+    + r"\s+(?P<loc1>[^?]+?)"  # (b) keyword [like] connector loc
     + r")"
     + r"\s*\??\s*$",  # ... + EOL (shared by both branches)
     re.IGNORECASE,
@@ -188,10 +191,7 @@ _IS_IT_RE = re.compile(
 # 4 tokens.  This catches "weather woodstock il" / "temperature austin tx"
 # while rejecting "weather affects my mood" (has the stopword-y verb "affects").
 _NO_CONNECTOR_RE = re.compile(
-    r"^\s*"
-    + _WEATHER_KEYWORD
-    + r"\s+(?P<loc3>[A-Za-z][A-Za-z .'-]*?)"
-    + r"\s*\??\s*$",
+    r"^\s*" + _WEATHER_KEYWORD + r"\s+(?P<loc3>[A-Za-z][A-Za-z .'-]*?)" + r"\s*\??\s*$",
     re.IGNORECASE,
 )
 # Words that, if present in a trailing "location" phrase (either the
@@ -201,21 +201,96 @@ _NO_CONNECTOR_RE = re.compile(
 # far worse than a missed fast-path.
 _NON_PLACE_WORDS = {
     # grammar / pronouns / articles
-    "affects", "affect", "is", "was", "were", "are", "my", "your", "his",
-    "her", "their", "our", "the", "a", "an", "and", "or", "but", "of",
-    "about", "when", "we", "i", "you", "they", "it", "this", "that", "next",
+    "affects",
+    "affect",
+    "is",
+    "was",
+    "were",
+    "are",
+    "my",
+    "your",
+    "his",
+    "her",
+    "their",
+    "our",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "but",
+    "of",
+    "about",
+    "when",
+    "we",
+    "i",
+    "you",
+    "they",
+    "it",
+    "this",
+    "that",
+    "next",
     "permitting",
     # time / vibe words that aren't places
-    "mood", "today", "tomorrow", "yesterday", "here", "there", "nice", "bad",
-    "good", "like", "love", "hate", "now", "outside", "feels", "feel",
-    "looks", "look", "story", "world", "worlds", "fantasy",
+    "mood",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "here",
+    "there",
+    "nice",
+    "bad",
+    "good",
+    "like",
+    "love",
+    "hate",
+    "now",
+    "outside",
+    "feels",
+    "feel",
+    "looks",
+    "look",
+    "story",
+    "world",
+    "worlds",
+    "fantasy",
     # business / office / non-place nouns that geocoders wrongly resolve
-    "meeting", "lab", "code", "budget", "sales", "quarter", "report",
-    "market", "stock", "project", "team", "call", "email", "deadline",
-    "sprint", "standup", "review", "roadmap", "backlog", "ticket", "issue",
-    "demo", "launch", "release", "metrics", "revenue", "kpi", "okr",
+    "meeting",
+    "lab",
+    "code",
+    "budget",
+    "sales",
+    "quarter",
+    "report",
+    "market",
+    "stock",
+    "project",
+    "team",
+    "call",
+    "email",
+    "deadline",
+    "sprint",
+    "standup",
+    "review",
+    "roadmap",
+    "backlog",
+    "ticket",
+    "issue",
+    "demo",
+    "launch",
+    "release",
+    "metrics",
+    "revenue",
+    "kpi",
+    "okr",
     # abstract location nouns — not geocodable; fall through to agent for clarification
-    "work", "school", "office", "class", "gym", "church", "home",
+    "work",
+    "school",
+    "office",
+    "class",
+    "gym",
+    "church",
+    "home",
 }
 
 # Time expressions that may appear after a connector (e.g. "forecast for this
@@ -223,19 +298,77 @@ _NON_PLACE_WORDS = {
 # non-weather.  When a connector group captures one of these we treat the whole
 # query as a weather request for the default home location (no geocoding).
 _TIME_QUALIFIERS: frozenset = frozenset({
-    "today", "tonight", "tomorrow", "now", "right now",
-    "this week", "this weekend", "this morning", "this afternoon", "this evening",
-    "next week", "next weekend", "this month", "the week", "the weekend",
+    "today",
+    "tonight",
+    "tomorrow",
+    "now",
+    "right now",
+    "this week",
+    "this weekend",
+    "this morning",
+    "this afternoon",
+    "this evening",
+    "next week",
+    "next weekend",
+    "this month",
+    "the week",
+    "the weekend",
 })
 
 # State abbreviations / tokens we strip from a parsed location so geocoding
 # (which chokes on "City, ST ZIP") gets a clean city name.
 _US_STATE_ABBRS = {
-    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id",
-    "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms",
-    "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh", "ok",
-    "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv",
-    "wi", "wy", "dc",
+    "al",
+    "ak",
+    "az",
+    "ar",
+    "ca",
+    "co",
+    "ct",
+    "de",
+    "fl",
+    "ga",
+    "hi",
+    "id",
+    "il",
+    "in",
+    "ia",
+    "ks",
+    "ky",
+    "la",
+    "me",
+    "md",
+    "ma",
+    "mi",
+    "mn",
+    "ms",
+    "mo",
+    "mt",
+    "ne",
+    "nv",
+    "nh",
+    "nj",
+    "nm",
+    "ny",
+    "nc",
+    "nd",
+    "oh",
+    "ok",
+    "or",
+    "pa",
+    "ri",
+    "sc",
+    "sd",
+    "tn",
+    "tx",
+    "ut",
+    "vt",
+    "va",
+    "wa",
+    "wv",
+    "wi",
+    "wy",
+    "dc",
 }
 
 _ZIP_RE = re.compile(r"\b\d{5}(?:-\d{4})?\b")
@@ -491,10 +624,7 @@ async def _geocode(client: "object", city: str) -> Optional[Tuple[float, float, 
     Test: Monkeypatch the client to return ``{"results": []}`` -> None; to return
     one result -> (lat, lon, name).
     """
-    url = (
-        f"{_GEOCODE_URL}?name={quote(city)}"
-        "&count=1&language=en&format=json"
-    )
+    url = f"{_GEOCODE_URL}?name={quote(city)}&count=1&language=en&format=json"
     try:
         resp = await client.get(url)  # type: ignore[attr-defined]
         if resp.status_code >= 400:
@@ -592,9 +722,7 @@ def _render_weather(display_name: str, data: dict) -> Optional[str]:
     return "\n".join(lines)
 
 
-async def _fetch_forecast(
-    client: "object", lat: float, lon: float
-) -> Optional[dict]:
+async def _fetch_forecast(client: "object", lat: float, lon: float) -> Optional[dict]:
     """Fetch the Open-Meteo 3-day forecast JSON for coordinates, or None.
 
     Why: Both the default and named-location paths need the same forecast call;
@@ -622,9 +750,7 @@ async def _fetch_forecast(
     return data if isinstance(data, dict) else None
 
 
-async def _named_location_weather(
-    client: "object", location: str
-) -> Optional[str]:
+async def _named_location_weather(client: "object", location: str) -> Optional[str]:
     """Geocode ``location`` then fetch+render its forecast, or None.
 
     Why: The named path makes TWO HTTP calls (geocode + forecast); isolating it
@@ -666,8 +792,10 @@ async def _weather_handler(text: str) -> Optional[str]:
 
     location = _extract_location(text)
     timeout = httpx.Timeout(
-        connect=_HTTP_TIMEOUT_CONNECT, read=_HTTP_TIMEOUT_READ,
-        write=_HTTP_TIMEOUT_READ, pool=_HTTP_TIMEOUT_CONNECT,
+        connect=_HTTP_TIMEOUT_CONNECT,
+        read=_HTTP_TIMEOUT_READ,
+        write=_HTTP_TIMEOUT_READ,
+        pool=_HTTP_TIMEOUT_CONNECT,
     )
 
     async with httpx.AsyncClient(timeout=timeout) as client:

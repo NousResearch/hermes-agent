@@ -1412,6 +1412,7 @@ AUTHOR_MAP = {
     "116212274+amathxbt@users.noreply.github.com": "amathxbt",  # PR #22155 (cache tool_output_limits)
     "takis312@hotmail.com": "ErnestHysa",  # PRs #32636/#32708 (MCP asyncio.sleep + O(n^2) watcher drain)
     "me@simontaggart.com": "SiTaggart",  # PR #35583 (docker_forward_env empty-secret .env fallback)
+    "2663402852@qq.com": "x1am1",  # PR #35098 (chown root-owned top-level HERMES_HOME state files)
 }
 
 

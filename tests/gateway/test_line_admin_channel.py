@@ -167,6 +167,83 @@ async def test_missing_credentials_error_uses_adapter_env_names(monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_lifecycle_lock_namespace_uses_adapter_platform(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    import gateway.status as gateway_status
+
+    class _FakeClient:
+        def __init__(self, token):
+            self.token = token
+
+        async def get_bot_user_id(self):
+            return "bot-user"
+
+    acquire_calls = []
+    release_calls = []
+
+    def _acquire(namespace, key):
+        acquire_calls.append((namespace, key))
+        return True
+
+    def _release(namespace, key):
+        release_calls.append((namespace, key))
+
+    monkeypatch.setattr(_line, "_LineClient", _FakeClient)
+    monkeypatch.setattr(gateway_status, "acquire_scoped_lock", _acquire)
+    monkeypatch.setattr(gateway_status, "release_scoped_lock", _release)
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        customer = LineAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "channel_access_token": "customer-token",
+                    "channel_secret": "customer-secret",
+                    "port": 0,
+                },
+            )
+        )
+        admin = LineAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "channel_access_token": "admin-token",
+                    "channel_secret": "admin-secret",
+                    "port": 0,
+                },
+            ),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    try:
+        assert await customer.connect() is True
+        assert await admin.connect() is True
+    finally:
+        await admin.disconnect()
+        await customer.disconnect()
+
+    assert acquire_calls[0][0] == "line"
+    assert acquire_calls[1][0] == "line_admin"
+    assert release_calls[0][0] == "line_admin"
+    assert release_calls[1][0] == "line"
+
+
 def test_hmac_signatures_are_isolated_by_channel_secret(monkeypatch):
     from gateway.config import PlatformConfig
     from gateway.platform_registry import PlatformEntry, platform_registry

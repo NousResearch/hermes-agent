@@ -293,6 +293,27 @@ def build_fingerprint_map(
     return result
 
 
-def get_fingerprint_path(project_root: str) -> str:
-    """Return the fingerprints.json path within the project root."""
-    return os.path.join(project_root, ".hermes", "code-state", "fingerprints.json")
+def get_fingerprint_path(project_root: str, *, in_repo: bool = True,
+                         external_dir: Optional[str] = None) -> str:
+    """Return the fingerprints.json path.
+
+    When *in_repo* is True (default), returns the legacy path inside the
+    target repo at ``.hermes/code-state/fingerprints.json``.
+
+    When *in_repo* is False, fingerprints are stored outside the target repo.
+    If *external_dir* is provided it is used as the parent directory; otherwise
+    the current working directory is used with a derived name based on the
+    target root.
+    """
+    if in_repo:
+        return os.path.join(project_root, ".hermes", "code-state",
+                            "fingerprints.json")
+
+    # External (non-mutating) path
+    if external_dir is None:
+        external_dir = os.getcwd()
+
+    # Derive a safe directory name from the target root path
+    safe_name = os.path.basename(os.path.normpath(project_root))
+    cache_dir = os.path.join(external_dir, ".hermes-cache", safe_name)
+    return os.path.join(cache_dir, "fingerprints.json")

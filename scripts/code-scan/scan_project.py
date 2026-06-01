@@ -205,7 +205,15 @@ def _run_incremental_scan(
 
     Returns 0 on success, non-zero on error.
     """
-    fp_path = get_fingerprint_path(target_dir)
+    # Default: in_repo=True for backward compatibility with existing tests.
+    # --in-repo-cache explicitly sets True; --no-repo-cache forces False.
+    no_repo = getattr(args, 'no_repo_cache', False)
+    in_repo = not no_repo
+    external_dir = getattr(args, 'external_cache_dir', None) or \
+                   os.environ.get('HERMES_CACHE_DIR')
+    fp_path = get_fingerprint_path(
+        target_dir, in_repo=in_repo, external_dir=external_dir,
+    )
     old_fps = load_fingerprint_file(fp_path)
 
     # Walk the project fresh
@@ -337,6 +345,25 @@ def main() -> int:
         '--full',
         action='store_true',
         help='Force a full scan, ignoring existing fingerprints',
+    )
+    parser.add_argument(
+        '--in-repo-cache',
+        action='store_true',
+        default=None,
+        help='Allow writing fingerprints/cache inside the target repo '
+             '(default for standalone scan: in-repo for backward compatibility)',
+    )
+    parser.add_argument(
+        '--no-repo-cache',
+        action='store_true',
+        default=False,
+        help='Force external (non-mutating) fingerprint cache',
+    )
+    parser.add_argument(
+        '--external-cache-dir',
+        default=None,
+        help='Directory for external fingerprint cache '
+             '(default: $HERMES_CACHE_DIR or CWD)',
     )
     args = parser.parse_args()
 

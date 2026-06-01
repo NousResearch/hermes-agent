@@ -1767,16 +1767,31 @@ class APIServerAdapter(BasePlatformAdapter):
                         sse_headers.update(cors)
                     fp_response = web.StreamResponse(status=200, headers=sse_headers)
                     await fp_response.prepare(request)
+                    # Spec-standard 3-chunk stream so strict OpenAI/OpenWebUI
+                    # consumers (the dashboard) parse it cleanly: (1) role-only
+                    # delta, (2) content delta, (3) finish_reason terminator,
+                    # then the [DONE] sentinel.  Packing role+content into one
+                    # delta tripped some strict stream parsers.
                     role_chunk = {
                         "id": _fp_id, "object": "chat.completion.chunk",
                         "created": _fp_created, "model": _fp_model,
                         "choices": [{
                             "index": 0,
-                            "delta": {"role": "assistant", "content": _fp_result},
+                            "delta": {"role": "assistant"},
                             "finish_reason": None,
                         }],
                     }
                     await fp_response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+                    content_chunk = {
+                        "id": _fp_id, "object": "chat.completion.chunk",
+                        "created": _fp_created, "model": _fp_model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": _fp_result},
+                            "finish_reason": None,
+                        }],
+                    }
+                    await fp_response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                     stop_chunk = {
                         "id": _fp_id, "object": "chat.completion.chunk",
                         "created": _fp_created, "model": _fp_model,

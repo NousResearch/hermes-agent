@@ -648,6 +648,30 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_bridges_whatsapp_bridge_settings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "whatsapp:\n"
+            "  bridge_port: 18791\n"
+            "  bridge_script: /tmp/whatsapp-bridge.js\n"
+            "  session_path: /tmp/whatsapp-session\n"
+            "  text_batch_delay_seconds: 1.5\n"
+            "  text_batch_split_delay_seconds: 0.25\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WHATSAPP].extra["bridge_port"] == 18791
+        assert config.platforms[Platform.WHATSAPP].extra["bridge_script"] == "/tmp/whatsapp-bridge.js"
+        assert config.platforms[Platform.WHATSAPP].extra["session_path"] == "/tmp/whatsapp-session"
+        assert config.platforms[Platform.WHATSAPP].extra["text_batch_delay_seconds"] == 1.5
+        assert config.platforms[Platform.WHATSAPP].extra["text_batch_split_delay_seconds"] == 0.25
+
     def test_bridges_telegram_disable_link_previews_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

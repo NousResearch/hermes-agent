@@ -409,7 +409,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         if pid == my_pid or pid in exclude_pids:
                             continue
                         try:
-                            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
+                            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                                cmdline = f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
                             if any(p in cmdline for p in patterns) and (
                                 all_profiles or _matches_current_profile(cmdline)

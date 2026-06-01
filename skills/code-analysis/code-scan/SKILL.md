@@ -68,6 +68,36 @@ python scripts/code-scan/run_ua.py --target <dir> --out <bundle_dir> [--mode <mo
 - Only synthesize name, description, and framework fields. Everything else is deterministic.
 - `--incremental` relies on `.hermes/code-state/fingerprints.json`; omit or use `--full` to force a complete rescan.
 
+## Opt-In Project-State Integration (UA-006)
+
+After a UA bundle run, you may optionally record a compact summary in the
+project's `.hermes/PROJECT_STATE.md` ledger **if it already exists**:
+
+**CLI (automated):**
+
+```bash
+python scripts/code-scan/run_ua.py --target <project> --out <bundle> --record-project-state [--project-root <path>]
+```
+
+- `--record-project-state` enables the hook (disabled by default).
+- `--project-root` explicitly sets the project root; if omitted, `--target` is used.
+
+**CLI (manual, standalone):**
+
+```bash
+python scripts/code-scan/project_state_append.py <project_root> --manifest <bundle>/manifest.json
+```
+
+- The ledger is **appended only** — existing content is never overwritten.
+- When the ledger is absent, no state is written and the manifest reports
+  `project_state_recorded: false` with `ledger_path: null`.  UA runs are not affected by this.
+- Only compact deterministic facts are recorded: run ID, mode, target path,
+  artifact bundle path (linked, not embedded), validation verdict, issue/warning
+  counts, file count, top-5 languages, graph node/edge count, next recommended
+  action.
+- No LLM/ML judgement or large JSON blobs are written to the ledger.
+- Programmatic usage: `from project_state_append import append_project_state`
+
 ## Output Format
 
 ## Project: <name>

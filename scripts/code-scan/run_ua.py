@@ -38,7 +38,7 @@ from extract_imports import build_import_map
 from assemble_graph import assemble_graph
 from graph_schema import validate_graph
 
-# --- Optional enrichers (may be absent if upstream beads not yet available) ---
+# ── Optional enrichers (may be absent if upstream beads not yet available) ---
 try:
     from analyze_graph import analyze_graph
     _HAS_ANALYTICS = True
@@ -50,6 +50,14 @@ try:
     _HAS_CONTEXT = True
 except ImportError:
     _HAS_CONTEXT = False
+
+# ── Optional project-state integration (UA-006) ─────────────────────────
+try:
+    from project_state_append import append_project_state as _append_project_state  # noqa: F401
+    _HAS_PROJECT_STATE = True
+except ImportError:
+    _HAS_PROJECT_STATE = False
+    _append_project_state = None  # type: ignore[misc]
 
 # ── Valid modes ─────────────────────────────────────────────────────────────
 
@@ -126,6 +134,7 @@ class RunUA:
         in_repo_cache: bool = False,
         external_cache_dir: Optional[str] = None,
         prior_manifest: Optional[str] = None,
+        project_root: Optional[str] = None,
     ) -> None:
         self.target_dir = os.path.realpath(target_dir)
         self.out_dir = os.path.realpath(out_dir)
@@ -133,6 +142,7 @@ class RunUA:
         self.in_repo_cache = in_repo_cache
         self.external_cache_dir = external_cache_dir
         self.prior_manifest = prior_manifest
+        self.project_root = os.path.realpath(project_root) if project_root else None
 
         self.artifact_paths: dict[str, str] = {}
         self.scan_data: Optional[dict] = None
@@ -144,6 +154,10 @@ class RunUA:
         self.summary_data: Optional[dict] = None
         self.delta_data: Optional[dict] = None
         self._missing_artifacts: list[str] = []
+        self._project_state_status: dict = {
+            "project_state_recorded": False,
+            "ledger_path": None,
+        }
 
     # ── pipeline stages ────────────────────────────────────────
 
@@ -327,6 +341,33 @@ class RunUA:
         if artifact_name not in self._missing_artifacts:
             self._missing_artifacts.append(artifact_name)
 
+    def _try_record_project_state(self, manifest: dict) -> None:
+        """Attempt to append a compact UA section to the project-state ledger.
+
+        Only runs when a project_root was explicitly provided (opt-in) and
+        the project_state_append helper is available.  Updates the internal
+        project-state status so the manifest can report it.
+        """
+        if not self.project_root or not _HAS_PROJECT_STATE:
+            return
+
+        results = {
+            "manifest": manifest,
+            "scan": self.scan_data or {},
+            "graph": self.graph_data or {},
+            "validation": self.validation_data or {},
+            "context": self.context_data or {},
+        }
+        try:
+            status = _append_project_state(results, self.project_root)  # type: ignore[misc]
+            self._project_state_status.update(status)
+        except Exception:  # noqa: BLE001
+            # Project-state errors are never fatal to the UA run.
+            self._project_state_status = {
+                "project_state_recorded": False,
+                "ledger_path": None,
+            }
+
     def _build_manifest(self, run_id: str) -> dict:
         """Build manifest.json with all required metadata."""
         manifest = {
@@ -350,7 +391,21 @@ class RunUA:
         if self.delta_data:
             manifest["delta_summary"] = self.delta_data
         manifest["artifacts_missing"] = sorted(self._missing_artifacts) if self._missing_artifacts else []
+        # Project-state integration (UA-006) — always present, default false
+        manifest["project_state_recorded"] = self._project_state_status["project_state_recorded"]
+        manifest["ledger_path"] = self._project_state_status["ledger_path"]
         return manifest
+
+    def _build_manifest_into_existing(self, manifest: dict) -> str:
+        """Re-write manifest.json with updated project-state fields.
+
+        Called after _try_record_project_state to persist the final status.
+        """
+        path = os.path.join(self.out_dir, "manifest.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
+        return path
 
     # ── artifact writers ──────────────────────────────────────
 
@@ -382,19 +437,29 @@ class RunUA:
         os.makedirs(self.out_dir, exist_ok=True)
 
         if self.mode == "inventory":
-            return self._mode_inventory(run_id)
+            manifest = self._mode_inventory(run_id)
         elif self.mode == "structure":
-            return self._mode_structure(run_id)
+            manifest = self._mode_structure(run_id)
         elif self.mode == "review":
-            return self._mode_review(run_id)
+            manifest = self._mode_review(run_id)
         elif self.mode == "delta":
-            return self._mode_delta(run_id)
+            manifest = self._mode_delta(run_id)
         elif self.mode == "preflight":
-            return self._mode_preflight(run_id)
+            manifest = self._mode_preflight(run_id)
         elif self.mode == "full":
-            return self._mode_full(run_id)
+            manifest = self._mode_full(run_id)
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
+
+        # Opt-in project-state recording (UA-006) — after all artifacts exist
+        self._try_record_project_state(manifest)
+        if self.project_root and _HAS_PROJECT_STATE:
+            # Update manifest in-place with project-state results, then persist
+            manifest["project_state_recorded"] = self._project_state_status["project_state_recorded"]
+            manifest["ledger_path"] = self._project_state_status["ledger_path"]
+            self._build_manifest_into_existing(manifest)
+
+        return manifest
 
     def _mode_inventory(self, run_id: str) -> dict:
         """inventory: scan + imports only."""
@@ -568,6 +633,7 @@ def run_ua_pipeline(
     in_repo_cache: bool = False,
     external_cache_dir: Optional[str] = None,
     prior_manifest: Optional[str] = None,
+    project_root: Optional[str] = None,
 ) -> dict:
     """Convenience: run the mode-selected UA pipeline and return manifest."""
     ua = RunUA(
@@ -577,6 +643,7 @@ def run_ua_pipeline(
         in_repo_cache=in_repo_cache,
         external_cache_dir=external_cache_dir,
         prior_manifest=prior_manifest,
+        project_root=project_root,
     )
     return ua.run()
 
@@ -620,6 +687,17 @@ def main() -> int:
         default=None,
         help="Path to prior manifest.json (for delta mode comparison)",
     )
+    parser.add_argument(
+        "--record-project-state",
+        action="store_true",
+        default=False,
+        help="Opt-in: append a compact UA section to .hermes/PROJECT_STATE.md",
+    )
+    parser.add_argument(
+        "--project-root",
+        default=None,
+        help="Project root directory for project-state ledger (defaults to --target if --record-project-state is set)",
+    )
     args = parser.parse_args()
 
     target = os.path.realpath(args.target)
@@ -627,6 +705,13 @@ def main() -> int:
         print(f"Error: '{args.target}' is not a valid directory",
               file=sys.stderr)
         return 1
+
+    # Resolve project_root: explicit value, fallback to target if opt-in set
+    project_root = None
+    if args.project_root:
+        project_root = os.path.realpath(args.project_root)
+    elif args.record_project_state:
+        project_root = target
 
     try:
         manifest = run_ua_pipeline(
@@ -636,6 +721,7 @@ def main() -> int:
             in_repo_cache=args.in_repo_cache,
             external_cache_dir=args.external_cache_dir,
             prior_manifest=args.prior_manifest,
+            project_root=project_root,
         )
         print(f"Bundle written to: {args.out}")
         print(f"Mode: {manifest['mode']}")

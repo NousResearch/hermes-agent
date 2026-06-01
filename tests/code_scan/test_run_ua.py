@@ -7,6 +7,7 @@ GREEN: each mode emits expected artifact set and omits expected non-mode artifac
 FULL: delta mode covered by focused pytest (requires prior manifest/baseline).
 """
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -330,3 +331,112 @@ class TestArtifactMetadata:
         assert "analytics.json" not in ap, (
             "inventory mode must not include analytics.json in artifact_paths"
         )
+
+
+# ── UA-006 Project-State Integration ───────────────────────────────────
+
+class TestProjectStateIntegration:
+    """Opt-in project-state ledger append with manifest reporting."""
+
+    PROJECT_STATE_FIXTURES = (
+        PROJECT_ROOT / "tests" / "code_scan" / "fixtures" / "project_state"
+    )
+
+    def test_manifest_reports_false_without_opt_in(self, tmp_path: Path):
+        """Without --record-project-state, manifest reports false/null."""
+        target = str(self.PROJECT_STATE_FIXTURES / "with_ledger")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="inventory")
+        assert rc == 0, f"no opt-in failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert manifest["project_state_recorded"] is False
+        assert manifest["ledger_path"] is None
+
+    def test_manifest_false_when_ledger_absent(self, tmp_path: Path):
+        """Opt-in with no ledger → manifest reports false, ledger_path null."""
+        target = str(self.PROJECT_STATE_FIXTURES / "without_ledger")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(
+            target, out, mode="inventory",
+            extra_args=["--record-project-state"],
+        )
+        assert rc == 0, f"absent ledger failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert manifest["project_state_recorded"] is False
+        assert manifest["ledger_path"] is None
+
+    def test_manifest_true_when_ledger_present(self, tmp_path: Path):
+        """Opt-in with existing ledger → manifest reports true + path.
+
+        Uses a temp copy of the fixture so the on-disk fixture is never mutated.
+        """
+        src = self.PROJECT_STATE_FIXTURES / "with_ledger"
+        target_dir = tmp_path / "with_ledger"
+        shutil.copytree(src, target_dir)
+
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(
+            str(target_dir), out, mode="inventory",
+            extra_args=["--record-project-state"],
+        )
+        assert rc == 0, f"ledger present failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert manifest["project_state_recorded"] is True
+        assert manifest["ledger_path"] is not None
+        assert manifest["ledger_path"].endswith("PROJECT_STATE.md")
+
+    def test_ledger_content_preserved_after_opt_in(self, tmp_path: Path):
+        """Appending must not overwrite existing ledger content.
+
+        Uses a temp copy of the fixture so the on-disk fixture is never mutated.
+        """
+        # Copy fixture into a temp directory so the original is untouched
+        src = self.PROJECT_STATE_FIXTURES / "with_ledger"
+        target_dir = tmp_path / "with_ledger"
+        shutil.copytree(src, target_dir)
+
+        # Capture the original ledger bytes before any append
+        original_ledger_path = src / ".hermes" / "PROJECT_STATE.md"
+        original_content = original_ledger_path.read_text()
+
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(
+            str(target_dir), out, mode="inventory",
+            extra_args=["--record-project-state"],
+        )
+        assert rc == 0, f"preservation failed: {stderr}"
+
+        # Read the ledger from the TEMP copy, not the fixture
+        temp_ledger_path = target_dir / ".hermes" / "PROJECT_STATE.md"
+        content = temp_ledger_path.read_text()
+
+        # Exact prefix preservation: file must start with original content
+        assert content.startswith(original_content), (
+            "Original ledger content was not preserved as an exact prefix"
+        )
+        # New run_id from this invocation should also appear
+        assert "UA Run" in content
+
+    def test_explicit_project_root_overrides_target(self, tmp_path: Path):
+        """--project-root can point to a distinct directory with the ledger.
+
+        Uses a temp copy of the fixture so the on-disk fixture is never mutated.
+        """
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+
+        # Copy the project-state fixture to a temp directory for use as --project-root
+        src = self.PROJECT_STATE_FIXTURES / "with_ledger"
+        ledger_root = str(tmp_path / "ledger_root")
+        shutil.copytree(src, ledger_root)
+
+        rc, _, stderr = run_ua(
+            target, out, mode="inventory",
+            extra_args=["--record-project-state", "--project-root", ledger_root],
+        )
+        assert rc == 0, f"explicit project-root failed: {stderr}"
+        manifest = _load_manifest(out)
+        # The target is sample_repo (different from ledger_root),
+        # but project-state was recorded because --project-root pointed to with_ledger
+        assert manifest["project_state_recorded"] is True
+        assert manifest["ledger_path"] is not None

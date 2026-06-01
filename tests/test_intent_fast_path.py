@@ -39,6 +39,8 @@ class TestWeatherMatcher:
             "temperature in austin tx",
             "weather today",
             "weather for Woodstock, IL 60098",
+            # True positives that MUST keep matching after the HIGH-1/HIGH-2 fix.
+            "weather in New York City",
         ],
     )
     def test_positive_matches(self, text):
@@ -65,6 +67,34 @@ class TestWeatherMatcher:
 
         Test: each parametrized non-weather phrase returns False so the agent
         keeps ownership.
+        """
+        assert ifp._weather_matcher(text) is False
+
+    # ── Adversarial-review regressions ─────────────────────────────────────
+    # HIGH-1 (connector-path false positives) + HIGH-2 (filler+connector
+    # over-matching).  These were CONFIRMED LIVE to leak through and get a bogus
+    # weather answer (e.g. "forecast for the meeting" geocoded to Nenagh,
+    # Ireland; "forecast in the lab" to Indiana).  A false answer is far worse
+    # than a missed match, so each of these MUST return no-match / fall through.
+    ADVERSARIAL_FALSE_POSITIVES = [
+        "forecast for the meeting",
+        "forecast in the lab",
+        "weather report for the Q3 sales",
+        "forecast budget for next quarter",
+        "is it raining in the stock market",
+        "weather in my code",
+        "weather permitting can we meet",
+        "how's the weather in the stock market",
+    ]
+
+    @pytest.mark.parametrize("text", ADVERSARIAL_FALSE_POSITIVES)
+    def test_adversarial_false_positives_do_not_match(self, text):
+        """Non-weather prose with a connector/filler must NOT match.
+
+        Why: the connector path used to accept ANY trailing noun as a location;
+        the filler path used to allow a noun-filler to bridge to a connector.
+        What: assert the matcher returns False so the agent keeps ownership.
+        Test: each confirmed-live false positive returns False.
         """
         assert ifp._weather_matcher(text) is False
 
@@ -103,6 +133,49 @@ class TestLocation:
         Test: 'weather in 12' -> None (no letters), defers to agent.
         """
         assert ifp._extract_location("weather in 12") is None
+
+    @pytest.mark.parametrize(
+        "text",
+        TestWeatherMatcher.ADVERSARIAL_FALSE_POSITIVES,
+    )
+    def test_adversarial_false_positive_extracts_no_location(self, text):
+        """Connector prose must not yield a geocodable location.
+
+        Why: even if a future matcher tweak let one of these through, the handler
+        must still refuse to geocode the prose.
+        What: assert _extract_location returns None for every confirmed-live
+        false positive, so the named-location branch is never entered.
+        Test: each adversarial phrase -> None.
+        """
+        assert ifp._extract_location(text) is None
+
+    def test_connector_location_ok_guard(self):
+        """The connector-location guard accepts places, rejects prose.
+
+        Why: this guard is the backstop behind the matcher restructure.
+        What: real places (incl. ZIP-bearing) pass; "the X" / stopword nouns fail.
+        Test: Denver/New York City/Woodstock, IL 60098 -> True; the meeting/
+        my code/the stock market/budget for next quarter -> False.
+        """
+        assert ifp._connector_location_ok("Denver") is True
+        assert ifp._connector_location_ok("New York City") is True
+        assert ifp._connector_location_ok("Woodstock, IL 60098") is True
+        assert ifp._connector_location_ok("the meeting") is False
+        assert ifp._connector_location_ok("my code") is False
+        assert ifp._connector_location_ok("the stock market") is False
+        assert ifp._connector_location_ok("budget for next quarter") is False
+        assert ifp._connector_location_ok(None) is False
+        assert ifp._connector_location_ok("") is False
+
+    def test_is_place_like_rejects_overlong_single_token(self):
+        """A single absurdly long token can't be treated as a place.
+
+        Why: LOW fix — guard `_is_place_like` against a >60-char single token.
+        What: a 70-char alpha token returns False; a short one returns True.
+        Test: 'a'*70 -> False; 'Denver' -> True.
+        """
+        assert ifp._is_place_like("a" * 70) is False
+        assert ifp._is_place_like("Denver") is True
 
     @pytest.mark.parametrize(
         "raw,clean",
@@ -256,6 +329,63 @@ class TestHandlerFallThrough:
 
         _install_httpx(monkeypatch, _responder)
         assert await ifp._weather_handler("weather") is None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Handler — hard timeout ceiling (named-location branch)
+# ──────────────────────────────────────────────────────────────────────────
+class _SlowClient:
+    """AsyncClient stand-in whose first ``get`` sleeps past the hard ceiling.
+
+    Why: exercise the ``asyncio.wait_for`` wall-clock ceiling around the named
+    (geocode+forecast) branch without real network.
+    """
+
+    def __init__(self, sleep_s, **_kwargs):
+        self._sleep_s = sleep_s
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url):
+        import asyncio as _asyncio
+
+        await _asyncio.sleep(self._sleep_s)  # blows the ceiling
+        return _FakeResponse(payload=_FORECAST_OK)
+
+
+class TestHandlerHardTimeout:
+    """The named-location branch must honour a hard wall-clock ceiling."""
+
+    @pytest.mark.asyncio
+    async def test_named_branch_respects_hard_ceiling(self, monkeypatch):
+        """A slow geocode is cut off by the hard ceiling -> None, fast.
+
+        Why: MEDIUM fix — two stacked per-call timeouts could exceed the
+        sub-second promise; the branch is wrapped in asyncio.wait_for.
+        What: shrink the ceiling, make the client sleep longer than it, assert
+        the handler returns None and returns within a small multiple of the
+        ceiling (so it really was cut off, not run to completion).
+        Test: ceiling=0.1s, client sleeps 5s -> None in well under 5s.
+        """
+        import time
+
+        import httpx
+
+        monkeypatch.setattr(ifp, "_NAMED_BRANCH_CEILING_S", 0.1)
+        monkeypatch.setattr(
+            httpx, "AsyncClient", lambda **kw: _SlowClient(5.0, **kw)
+        )
+
+        t0 = time.monotonic()
+        out = await ifp._weather_handler("what's the weather in Denver")
+        elapsed = time.monotonic() - t0
+
+        assert out is None
+        assert elapsed < 1.0, f"ceiling not enforced; took {elapsed:.2f}s"
 
 
 # ──────────────────────────────────────────────────────────────────────────

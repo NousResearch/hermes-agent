@@ -27,6 +27,7 @@ return an empty or partial string.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Awaitable, Callable, List, Optional, Tuple
@@ -94,6 +95,16 @@ _DEFAULT_NAME = "Woodstock, IL"
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
+# Per-call HTTP budget: 1s to connect, 1.5s to read the body.  The old flat
+# ``timeout=2.0`` applied to BOTH the geocode and the forecast leg, so a named
+# location could burn ~4s — breaking the sub-second promise.  We additionally
+# cap the whole geocode+forecast (named-location) branch with a hard ceiling
+# below.
+_HTTP_TIMEOUT_CONNECT = 1.0
+_HTTP_TIMEOUT_READ = 1.5
+# Hard wall-clock ceiling for the two-call named-location branch.
+_NAMED_BRANCH_CEILING_S = 3.5
+
 # Matcher.  Anchored to end-of-string so it fires on a *question about* the
 # weather, not on conversational sentences that merely contain the word
 # "weather" ("weather affects my mood", "a story about weather in...").
@@ -118,17 +129,41 @@ _LEADIN = (
     r"how(?:'|’)?s?\s+the\s+|tell\s+me\s+the\s+|"
     r"give\s+me\s+the\s+|show\s+me\s+the\s+|current\s+|today(?:'|’)?s?\s+)?"
 )
-# Trivial fillers allowed directly after the keyword with no location.
-_FILLER = r"(?:\s+(?:like|report|today|now|outside|right\s+now|please))*"
+# Trivial fillers allowed directly after the keyword with no location.  NOTE:
+# "like" is handled separately by ``_LIKE`` (below) because it is the one filler
+# that can idiomatically bridge to a connector ("what's the weather LIKE in X");
+# the others (report/today/…) must NEVER bridge to a connector.
+_FILLER = r"(?:\s+(?:report|today|now|outside|right\s+now|please))*"
 
-# Shape 1+2: keyword, then EITHER nothing/filler, OR a connector + location.
+# The idiomatic "what's the weather LIKE in Denver" bridge — the only word
+# permitted between the keyword and a connector.  Optional and singular.
+_LIKE = r"(?:\s+like)?"
+
+# Connector tokens that introduce a trailing location.
+_CONNECTOR = r"(?:in|for|at|near|around)"
+
+# Shape 1+2 — restructured into two NON-optional, end-anchored alternations so a
+# NOUN filler (report/budget/…) can NEVER be followed by a connector+location
+# (that combination is what let "weather report for the Q3 sales" leak through):
+#   (a) keyword + optional filler + EOL        e.g. "weather", "weather report"
+#   (b) keyword + [optional "like"] + connector + location + EOL
+#                                              e.g. "weather in Denver",
+#                                              "what's the weather like in Denver"
+# Branch (a) is tried first; if text remains it backtracks to (b), where the only
+# token allowed between the keyword and the connector is the idiomatic "like".
+# The connector-captured location is independently sanity-checked by
+# ``_connector_location_ok`` before we ever treat it as a real place — that guard
+# is the backstop that rejects "the Q3 sales", "my code", etc.
 _WEATHER_RE = re.compile(
     r"^\s*"
     + _LEADIN
     + _WEATHER_KEYWORD
-    + _FILLER
-    + r"(?:\s+(?:in|for|at|near|around)\s+(?P<loc1>[^?]+?))?"
-    + r"\s*\??\s*$",
+    + r"(?:"
+    + _FILLER  # (a) keyword + optional filler ...
+    + r"|"
+    + _LIKE + r"\s+" + _CONNECTOR + r"\s+(?P<loc1>[^?]+?)"  # (b) keyword [like] connector loc
+    + r")"
+    + r"\s*\??\s*$",  # ... + EOL (shared by both branches)
     re.IGNORECASE,
 )
 _IS_IT_RE = re.compile(
@@ -150,15 +185,26 @@ _NO_CONNECTOR_RE = re.compile(
     + r"\s*\??\s*$",
     re.IGNORECASE,
 )
-# Words that, if present in a no-connector trailing phrase, mark it as prose
-# rather than a place name.
+# Words that, if present in a trailing "location" phrase (either the
+# no-connector shape OR a connector-introduced one), mark it as prose / a
+# non-place noun rather than a real place name.  When any of these appears we
+# REJECT the candidate and fall through to the agent — a false weather answer is
+# far worse than a missed fast-path.
 _NON_PLACE_WORDS = {
+    # grammar / pronouns / articles
     "affects", "affect", "is", "was", "were", "are", "my", "your", "his",
-    "her", "their", "our", "the", "a", "an", "and", "or", "but", "mood",
-    "today", "tomorrow", "yesterday", "here", "there", "nice", "bad", "good",
-    "like", "love", "hate", "report", "now", "outside", "of", "about",
-    "story", "world", "worlds", "fantasy", "feels", "feel", "looks", "look",
-    "when", "we", "i", "you", "they", "it", "this", "that",
+    "her", "their", "our", "the", "a", "an", "and", "or", "but", "of",
+    "about", "when", "we", "i", "you", "they", "it", "this", "that", "next",
+    "permitting",
+    # time / vibe words that aren't places
+    "mood", "today", "tomorrow", "yesterday", "here", "there", "nice", "bad",
+    "good", "like", "love", "hate", "now", "outside", "feels", "feel",
+    "looks", "look", "story", "world", "worlds", "fantasy",
+    # business / office / non-place nouns that geocoders wrongly resolve
+    "meeting", "lab", "code", "budget", "sales", "quarter", "report",
+    "market", "stock", "project", "team", "call", "email", "deadline",
+    "sprint", "standup", "review", "roadmap", "backlog", "ticket", "issue",
+    "demo", "launch", "release", "metrics", "revenue", "kpi", "okr",
 }
 
 # State abbreviations / tokens we strip from a parsed location so geocoding
@@ -226,12 +272,16 @@ def _is_place_like(phrase: str) -> bool:
     Why: "weather woodstock il" should match; "weather affects my mood" should
     not.  Without a connector we need a guard against prose being parsed as a
     location.
-    What: True iff the phrase is 1-4 tokens, every token starts with a letter,
-    and no token is a known non-place stopword/verb.
+    What: True iff the phrase is ≤60 chars and 1-4 tokens, every token starts
+    with a letter, and no token is a known non-place stopword/verb.
     Test: True for "woodstock il", "new york", "austin tx"; False for
-    "affects my mood", "was nice yesterday".
+    "affects my mood", "was nice yesterday", and a single 70-char token.
     """
-    tokens = [t for t in re.split(r"\s+", phrase.strip()) if t]
+    phrase = phrase.strip()
+    # Guard against an arbitrarily long single token sneaking through.
+    if len(phrase) > 60:
+        return False
+    tokens = [t for t in re.split(r"\s+", phrase) if t]
     if not tokens or len(tokens) > 4:
         return False
     for tok in tokens:
@@ -243,20 +293,71 @@ def _is_place_like(phrase: str) -> bool:
     return True
 
 
+def _connector_location_ok(phrase: Optional[str]) -> bool:
+    """Sanity-check a connector-introduced location (loc1/loc2) before trusting it.
+
+    Why: The connector path (``in|for|at|near|around <X>``) would otherwise accept
+    ANY trailing noun as a place, so non-weather prose got geocoded into a bogus
+    weather answer ("forecast for the meeting" -> Nenagh, Ireland; "forecast in the
+    lab" -> Indiana).  A false answer is far worse than a missed match, so when in
+    doubt we REJECT.
+    What: Returns False (reject) when the candidate (a) is empty/letterless, (b)
+    starts with "the ", (c) is longer than 60 chars, (d) has more than 5 tokens,
+    or (e) contains any ``_NON_PLACE_WORDS`` stopword.  Unlike ``_is_place_like``
+    it tolerates digit tokens (ZIP codes) so "Woodstock, IL 60098" still passes.
+    Test: True for "Denver", "New York City", "Woodstock, IL 60098"; False for
+    "the meeting", "the lab", "budget for next quarter", "my code",
+    "the stock market".
+    """
+    if not phrase:
+        return False
+    candidate = phrase.strip()
+    if len(candidate) < 2 or len(candidate) > 60:
+        return False
+    if not re.search(r"[A-Za-z]", candidate):
+        return False
+    # Reject "the <noun>" — almost always prose, never how a place is named here.
+    if re.match(r"(?i)^the\s+", candidate):
+        return False
+    tokens = [t for t in re.split(r"\s+", candidate) if t]
+    if len(tokens) > 5:
+        return False
+    for tok in tokens:
+        low = tok.lower().strip(".,'-")
+        if low in _NON_PLACE_WORDS:
+            return False
+    return True
+
+
 def _weather_matcher(text: str) -> bool:
     """Return True iff ``text`` is a weather question.
 
     Why: Gate the handler so we never even attempt a fast-path on unrelated text.
     What: Matches keyword-alone / connector-introduced-location / "is it
-    <condition>" shapes, plus a guarded no-connector "weather <place>" shape.
+    <condition>" shapes — but the connector-captured location must pass
+    ``_connector_location_ok`` (reject "the meeting", "my code", …) — plus a
+    guarded no-connector "weather <place>" shape.
     Test: True for "weather", "what's the weather in Denver", "is it raining",
     "weather woodstock il"; False for "weather affects my mood",
-    "tell me a story about weather worlds", "/weather".
+    "forecast for the meeting", "forecast in the lab",
+    "weather report for the Q3 sales", "/weather".
     """
-    if _WEATHER_RE.match(text) or _IS_IT_RE.match(text):
-        return True
-    m = _NO_CONNECTOR_RE.match(text)
-    if m and _is_place_like(m.group("loc3")):
+    m = _WEATHER_RE.match(text)
+    if m:
+        loc1 = m.group("loc1")
+        # Branch (a) keyword-only/filler -> no loc -> clean weather question.
+        # Branch (b) connector+loc -> the loc MUST look like a real place.
+        if loc1 is None or _connector_location_ok(loc1):
+            return True
+        return False
+    m2 = _IS_IT_RE.match(text)
+    if m2:
+        loc2 = m2.group("loc2")
+        if loc2 is None or _connector_location_ok(loc2):
+            return True
+        return False
+    m3 = _NO_CONNECTOR_RE.match(text)
+    if m3 and _is_place_like(m3.group("loc3")):
         return True
     return False
 
@@ -267,19 +368,27 @@ def _extract_location(text: str) -> Optional[str]:
     Why: "weather" alone means the default home location; "weather in Denver"
     means Denver.  Distinguishing the two drives whether we geocode.
     What: Reads the location from whichever shape matched (connector group, the
-    is-it group, or the guarded no-connector group), strips trailing punctuation,
-    and rejects noise (empty, <2 chars, no letters).
+    is-it group, or the guarded no-connector group), applies the SAME
+    ``_connector_location_ok`` sanity check used by the matcher to the connector
+    captures, strips trailing punctuation, and rejects noise (empty, <2 chars,
+    no letters).  A connector location that fails the guard yields None so the
+    request defers to the agent rather than geocoding prose.
     Test: "weather" -> None; "weather woodstock il" -> "woodstock il";
-    "what's the weather in Denver" -> "Denver"; "weather 12" -> None.
+    "what's the weather in Denver" -> "Denver"; "weather 12" -> None;
+    "forecast for the meeting" -> None.
     """
     loc: Optional[str] = None
     m = _WEATHER_RE.match(text)
     if m:
-        loc = m.group("loc1")
+        cand = m.group("loc1")
+        if cand and _connector_location_ok(cand):
+            loc = cand
     if not loc:
         m2 = _IS_IT_RE.match(text)
         if m2:
-            loc = m2.group("loc2")
+            cand2 = m2.group("loc2")
+            if cand2 and _connector_location_ok(cand2):
+                loc = cand2
     if not loc:
         m3 = _NO_CONNECTOR_RE.match(text)
         if m3 and _is_place_like(m3.group("loc3")):
@@ -440,50 +549,103 @@ def _render_weather(display_name: str, data: dict) -> Optional[str]:
     return "\n".join(lines)
 
 
+async def _fetch_forecast(
+    client: "object", lat: float, lon: float
+) -> Optional[dict]:
+    """Fetch the Open-Meteo 3-day forecast JSON for coordinates, or None.
+
+    Why: Both the default and named-location paths need the same forecast call;
+    factoring it keeps the timeout/error handling in one place.
+    What: Builds the forecast URL, GETs it, and returns the parsed JSON dict.
+    Returns None on HTTP 4xx/5xx, transport/timeout error, or non-dict JSON
+    (strict fall-through).
+    Test: Monkeypatch the client to return status 500 -> None; to return a dict
+    payload -> that dict.
+    """
+    forecast_url = (
+        f"{_FORECAST_URL}?latitude={lat}&longitude={lon}"
+        "&current=temperature_2m,weathercode,windspeed_10m"
+        "&daily=weathercode,temperature_2m_max,temperature_2m_min"
+        "&temperature_unit=fahrenheit&windspeed_unit=mph"
+        "&forecast_days=3&timezone=auto"
+    )
+    try:
+        resp = await client.get(forecast_url)  # type: ignore[attr-defined]
+        if resp.status_code >= 400:
+            return None
+        data = resp.json()
+    except Exception:  # noqa: BLE001 — timeout, transport, JSON: all fall through
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _named_location_weather(
+    client: "object", location: str
+) -> Optional[str]:
+    """Geocode ``location`` then fetch+render its forecast, or None.
+
+    Why: The named path makes TWO HTTP calls (geocode + forecast); isolating it
+    lets the caller wrap the pair in a single hard wall-clock ceiling so the
+    sub-second promise isn't broken by two stacked per-call timeouts.
+    What: Cleans the location, geocodes it, and renders the forecast.  Returns
+    None on empty/failed geocoding or any forecast failure.
+    Test: Monkeypatch geocode -> empty results -> None; geocode+forecast OK ->
+    rendered string.
+    """
+    city = _clean_location_for_geocode(location)
+    geo = await _geocode(client, city)
+    if geo is None:
+        # Unknown place — defer to the agent, which may know better.
+        return None
+    lat, lon, name = geo
+    data = await _fetch_forecast(client, lat, lon)
+    if data is None:
+        return None
+    return _render_weather(name, data)
+
+
 async def _weather_handler(text: str) -> Optional[str]:
     """Answer a weather question directly from Open-Meteo, or None to fall through.
 
     Why: This is the latency win — a deterministic HTTP answer instead of a
-    multi-second agent loop.
+    multi-second agent loop.  Latency is the whole point, so HTTP is bounded per
+    call (connect 1s / read 1.5s) AND the two-call named-location branch is wrapped
+    in a hard 3.5s wall-clock ceiling; the default Woodstock path is a single call.
     What: Resolves the location (default Woodstock if none named, else geocode),
     fetches a 3-day forecast, and renders a terse reply.  Returns None on ANY
-    failure: no/empty geocoding, httpx timeout (>2s), HTTP 4xx/5xx, JSON/parse
-    error, or missing ``current.temperature_2m``.
+    failure: no/empty geocoding, httpx timeout, HTTP 4xx/5xx, JSON/parse error,
+    missing ``current.temperature_2m``, or the named-branch ceiling being hit.
     Test: Monkeypatch httpx to (a) timeout -> None, (b) HTTP 500 -> None,
     (c) empty geocoding -> None, (d) canned success -> terse °F string with a
-    3-day forecast.
+    3-day forecast, (e) a slow geocode -> None within the hard ceiling.
     """
     import httpx  # local import keeps the module importable without httpx for matcher-only tests
 
     location = _extract_location(text)
+    timeout = httpx.Timeout(
+        connect=_HTTP_TIMEOUT_CONNECT, read=_HTTP_TIMEOUT_READ,
+        write=_HTTP_TIMEOUT_READ, pool=_HTTP_TIMEOUT_CONNECT,
+    )
 
-    async with httpx.AsyncClient(timeout=2.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         if location is None:
-            lat, lon, name = _DEFAULT_LAT, _DEFAULT_LON, _DEFAULT_NAME
-        else:
-            city = _clean_location_for_geocode(location)
-            geo = await _geocode(client, city)
-            if geo is None:
-                # Unknown place — defer to the agent, which may know better.
+            # Default home: single forecast call, no geocoding, no extra ceiling.
+            data = await _fetch_forecast(client, _DEFAULT_LAT, _DEFAULT_LON)
+            if data is None:
                 return None
-            lat, lon, name = geo
+            return _render_weather(_DEFAULT_NAME, data)
 
-        forecast_url = (
-            f"{_FORECAST_URL}?latitude={lat}&longitude={lon}"
-            "&current=temperature_2m,weathercode,windspeed_10m"
-            "&daily=weathercode,temperature_2m_max,temperature_2m_min"
-            "&temperature_unit=fahrenheit&windspeed_unit=mph"
-            "&forecast_days=3&timezone=auto"
-        )
+        # Named location: two stacked HTTP calls — enforce a hard total ceiling so
+        # we never blow the sub-second budget into multi-second territory.
         try:
-            resp = await client.get(forecast_url)
-            if resp.status_code >= 400:
-                return None
-            data = resp.json()
-        except Exception:  # noqa: BLE001 — timeout, transport, JSON: all fall through
+            return await asyncio.wait_for(
+                _named_location_weather(client, location),
+                timeout=_NAMED_BRANCH_CEILING_S,
+            )
+        except Exception:  # noqa: BLE001 — TimeoutError/transport: fall through to agent
+            # asyncio.TimeoutError (the ceiling) is an Exception subclass; a
+            # bare CancelledError (BaseException) intentionally still propagates.
             return None
-
-    return _render_weather(name, data)
 
 
 # Register the weather intent at module load so importers get it for free.

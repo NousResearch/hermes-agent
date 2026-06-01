@@ -1,0 +1,10 @@
+name: obsidian-safe-bridge
+version: 0.1.0
+description: "Opt-in, local-first Obsidian vault bridge with read safeguards, owner-only zone protection, 95-Inbox-Lab/review-only writes, and audit logs."
+author: "Hermes Agent"
+kind: standalone
+provides_tools:
+  - obsidian_safe_read
+  - obsidian_safe_list
+  - obsidian_safe_write_review
+  - obsidian_safe_audit_log

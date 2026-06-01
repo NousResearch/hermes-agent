@@ -22,7 +22,7 @@ import contextlib
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +412,19 @@ def _run_review_in_thread(
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                # Issue #18871: inherit the parent's reasoning/transport
+                # config so the review fork does not fall back to a
+                # transport-local ``medium`` default on Codex Responses or
+                # Ollama routes. Without this, a parent session configured
+                # for ``xhigh`` (or ``none`` on thinking models) can still
+                # spawn a review that costs tokens the user explicitly
+                # opted out of. Same posture as ``enabled_toolsets`` /
+                # ``disabled_toolsets`` above: every runtime field the
+                # parent carries should be cloned, not just the ones the
+                # review path explicitly enumerates.
+                reasoning_config=cast("Optional[Dict[str, Any]]", getattr(agent, "reasoning_config", None)),  # type: ignore[arg-type]
+                service_tier=cast("Optional[str]", getattr(agent, "service_tier", None)),  # type: ignore[arg-type]
+                request_overrides=cast("Optional[Dict[str, Any]]", getattr(agent, "request_overrides", None)),  # type: ignore[arg-type]
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"

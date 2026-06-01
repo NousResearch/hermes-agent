@@ -70,13 +70,6 @@ _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
-    r"|compression\s+summary\s+failed"
-    r"|fallback\s+context\s+marker"
-    r"|configured\s+compression\s+model\s+.+\s+failed"
-    r"|no\s+auxiliary\s+llm\s+provider\s+configured"
-    r"|auto-lowered\s+compression\s+threshold"
-    r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
-    r"|preflight\s+compression"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
@@ -2413,9 +2406,9 @@ class GatewayRunner:
             return None
         return (
             "Started a new Hermes session in this topic.\n\n"
-            "Tip: for parallel work, open All Messages and send a message there "
-            "to create a separate topic instead of using /new here. /new replaces "
-            "the session attached to the current topic."
+            "Tip: for parallel work, send a normal prompt in the main/All "
+            "Messages view to create a separate topic instead of using /new "
+            "here. /new replaces the session attached to the current topic."
         )
 
     def _record_telegram_topic_binding(
@@ -9941,6 +9934,11 @@ class GatewayRunner:
                 try:
                     self._session_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
+                    # Rename the Telegram topic tab immediately when /new <title> is used
+                    if self._is_telegram_topic_lane(source):
+                        self._schedule_telegram_topic_title_rename(
+                            source, new_entry.session_id, sanitized
+                        )
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
                 except Exception:
@@ -13285,21 +13283,58 @@ class GatewayRunner:
             "\n"
             "Usage:\n"
             "  /topic             Enable topic mode, or show status if already on\n"
+            "  /topic new         Create a new thread (named 'Hermes Chat')\n"
+            "  /topic new <name>  Create a new thread with a custom name\n"
             "  /topic help        Show this message\n"
             "  /topic off         Disable topic mode and clear topic bindings\n"
             "  /topic <id>        Inside a topic: restore a previous session by ID\n"
             "\n"
             "How it works:\n"
-            "1. Run /topic once in this DM — Hermes checks BotFather Threads\n"
-            "   Settings are enabled and flips on multi-session mode.\n"
-            "2. Tap All Messages at the top of the bot and send any message.\n"
-            "   Telegram creates a new topic for that message; each topic is\n"
-            "   an independent Hermes session (fresh history, fresh context).\n"
-            "3. The root DM becomes a system lobby — send /topic, /status,\n"
-            "   /help, /usage there. Normal prompts go in a topic.\n"
-            "4. /new inside a topic resets just that topic's session.\n"
-            "5. /topic <id> inside a topic restores an old session into it."
+            "1. Run /topic once to enable multi-session mode.\n"
+            "2. Use /topic new [name] to create a new parallel thread.\n"
+            "   Each thread is an independent Hermes session.\n"
+            "3. /new inside a thread resets just that thread's session.\n"
+            "4. /topic <id> inside a thread restores an old session into it."
         )
+
+    async def _handle_topic_new_command(self, source: SessionSource, topic_name: str) -> str:
+        """Handle /topic new [name] — create a brand-new DM topic thread."""
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None or not source.chat_id:
+            return "Could not reach the Telegram adapter to create a topic."
+        create_topic = getattr(adapter, "_create_dm_topic", None)
+        if not callable(create_topic):
+            return "Topic creation is not supported by this adapter."
+        title = self._sanitize_telegram_topic_title(topic_name)
+        try:
+            thread_id = await create_topic(int(source.chat_id), title)
+        except Exception as exc:
+            logger.warning("Failed to create DM topic %r: %s", title, exc)
+            return f"Failed to create topic \"{title}\": {exc}"
+        if not thread_id:
+            return (
+                f"Telegram declined to create topic \"{title}\". "
+                "Make sure Topics are enabled in BotFather settings for this bot DM."
+            )
+        logger.info(
+            "topic new: chat=%s user=%s thread=%s title=%r",
+            source.chat_id, source.user_id, thread_id, title,
+        )
+        # Send the first message into the new topic so it shows up in the sidebar.
+        # Use telegram_dm_topic_created_for_send=True to bypass the DM-topic reply-anchor
+        # requirement — the topic was just created so there's no anchor message yet.
+        try:
+            await adapter.send(
+                source.chat_id,
+                f"New Hermes session \"{title}\" started. Send your first message here.",
+                metadata={
+                    "thread_id": str(thread_id),
+                    "telegram_dm_topic_created_for_send": True,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to send intro message to new topic %s", thread_id, exc_info=True)
+        return f"✓ Created new thread **{title}** — tap it in your sidebar to start chatting."
 
     def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
@@ -13368,6 +13403,13 @@ class GatewayRunner:
         if args.lower() in {"off", "disable", "stop"}:
             return self._disable_telegram_topic_mode_for_chat(source)
 
+        # /topic new [name] — create a brand-new DM topic thread.
+        if args.lower() == "new" or args.lower().startswith("new "):
+            topic_name = args[4:].strip() if args.lower().startswith("new ") else "Hermes Chat"
+            if not topic_name:
+                topic_name = "Hermes Chat"
+            return await self._handle_topic_new_command(source, topic_name)
+
         if args:
             if not source.thread_id:
                 return t("gateway.topic.restore_needs_topic")
@@ -13386,6 +13428,15 @@ class GatewayRunner:
                     await self._send_telegram_topic_setup_image(source)
                 return t("gateway.topic.topics_user_disallowed")
 
+        was_enabled = False
+        try:
+            was_enabled = self._session_db.is_telegram_topic_mode_enabled(
+                chat_id=str(source.chat_id),
+                user_id=str(source.user_id),
+            )
+        except Exception:
+            logger.debug("Failed to read existing Telegram topic mode before /topic", exc_info=True)
+
         try:
             self._session_db.enable_telegram_topic_mode(
                 chat_id=str(source.chat_id),
@@ -13397,7 +13448,7 @@ class GatewayRunner:
             logger.exception("Failed to enable Telegram topic mode")
             return t("gateway.topic.enable_failed", error=exc)
 
-        if not source.thread_id:
+        if not source.thread_id and not was_enabled:
             await self._ensure_telegram_system_topic(source)
 
         if source.thread_id:

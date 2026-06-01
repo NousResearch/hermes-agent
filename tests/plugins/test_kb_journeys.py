@@ -345,6 +345,7 @@ def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypat
                         }
                     ],
                     "refresh": {"ttl_seconds": 60},
+                    "llm_invoked_by_read_surface": False,
                 }
             },
             "mcp_kb_engine_prod_object_context": {
@@ -352,6 +353,13 @@ def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypat
                     "title": "Acme Launch Decision",
                     "summary": "Choose the next launch note after reviewing stakeholder evidence.",
                     "target_ref": "situations/2026-05-acme-launch-decision",
+                    "request": {"kind": "component_action", "route": "object.context"},
+                    "outcome": {"family": "answer"},
+                    "receipt": {
+                        "state": "answered",
+                        "durable_effect": "none",
+                        "llm_invoked_by_read_surface": False,
+                    },
                 }
             },
         }
@@ -375,6 +383,10 @@ def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypat
 
     assert "Acme Launch Decision" in card["text"]
     assert "Choose the next launch note" in card["text"]
+    assert "Receipt: answered" in card["text"]
+    assert "Effect: none" in card["text"]
+    assert "Read-surface LLM: no" in card["text"]
+    assert "Outcome: answer" in card["text"]
     assert ctx.calls[-1] == (
         "mcp_kb_engine_prod_object_context",
         {"object_path": "situations/2026-05-acme-launch-decision/state.md"},
@@ -1339,6 +1351,13 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
                         "watch_tool": "run.watch",
                         "terminal_summary_tool": "run.summary",
                     },
+                    "outcome": {"family": "workflow_start_plan"},
+                    "receipt": {
+                        "state": "ready_to_confirm",
+                        "durable_effect": "none",
+                        "next_step": "Confirm through workflow.start_confirmed.",
+                        "llm_invoked_by_read_surface": False,
+                    },
                 }
             },
             "mcp_kb_engine_prod_workflow_start_confirmed": {
@@ -1347,6 +1366,11 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
                     "started": True,
                     "run": {"run_id": "gen-123", "workflow_id": "update_kb"},
                     "followthrough_contract": {"recommended_next_action": "watch_until_terminal"},
+                    "receipt": {
+                        "state": "workflow_running",
+                        "durable_effect": "workflow_run",
+                        "llm_invoked_by_read_surface": False,
+                    },
                 }
             },
             "mcp_kb_engine_prod_run_watch": {
@@ -1386,6 +1410,8 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
         },
     )
     assert "Workflow Preview" in adapter.sent[0]["text"]
+    assert "Receipt: ready_to_confirm" in adapter.sent[0]["text"]
+    assert "Outcome: workflow_start_plan" in adapter.sent[0]["text"]
     assert "To start: /kb run kb sync confirm" in adapter.sent[0]["text"]
     assert adapter.sent[0]["actions"] == []
 
@@ -1394,6 +1420,8 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
 
     assert started == {"action": "skip", "reason": "kb_journeys"}
     assert "Workflow start result" in adapter.sent[1]["text"]
+    assert "Receipt: workflow_running" in adapter.sent[1]["text"]
+    assert "Effect: workflow_run" in adapter.sent[1]["text"]
     assert "Run:" not in adapter.sent[1]["text"]
     assert "gen-123" not in adapter.sent[1]["text"]
     assert "Initial progress: Classifying" in adapter.sent[1]["text"]

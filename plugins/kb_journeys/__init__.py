@@ -146,6 +146,65 @@ def _clip(value: Any, limit: int = 220) -> str:
     return text[: max(0, limit - 1)].rstrip() + "..."
 
 
+def _request_receipt(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    receipt = payload.get("receipt") or payload.get("request_receipt")
+    if isinstance(receipt, dict):
+        return receipt
+    if payload.get("packet_type") == "request.receipt":
+        return payload
+    return {}
+
+
+def _request_outcome(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    outcome = payload.get("outcome") or payload.get("request_outcome")
+    return outcome if isinstance(outcome, dict) else {}
+
+
+def _request_envelope(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    request = payload.get("request") or payload.get("request_envelope")
+    return request if isinstance(request, dict) else {}
+
+
+def _receipt_lines(payload: Any, *, include_request: bool = False) -> list[str]:
+    receipt = _request_receipt(payload)
+    outcome = _request_outcome(payload)
+    request = _request_envelope(payload)
+    lines: list[str] = []
+    if not receipt and not outcome and not request:
+        return lines
+    if receipt:
+        state = _short(receipt.get("state") or receipt.get("status"), "")
+        if state:
+            lines.append(f"Receipt: {state}")
+        effect = _short(receipt.get("durable_effect"), "")
+        if effect:
+            lines.append(f"Effect: {effect}")
+        if receipt.get("llm_invoked_by_read_surface") is not None:
+            lines.append(
+                "Read-surface LLM: "
+                + ("yes" if receipt.get("llm_invoked_by_read_surface") else "no")
+            )
+        next_step = _short(receipt.get("next_step"), "")
+        if next_step:
+            lines.append(f"Next: {_clip(next_step, 180)}")
+    if outcome:
+        family = _short(outcome.get("family") or outcome.get("status"), "")
+        if family:
+            lines.append(f"Outcome: {family}")
+    if include_request and request:
+        kind = _short(request.get("kind") or request.get("request_kind"), "")
+        route = _short(request.get("route"), "")
+        if kind or route:
+            lines.append(f"Request: {kind or 'request'}" + (f" via {route}" if route else ""))
+    return lines
+
+
 def _maybe_json(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -400,6 +459,12 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         f"Runtime: {readiness}",
         f"Publication: {publication}",
     ]
+    if data.get("llm_invoked_by_read_surface") is not None:
+        lines.append(
+            "Read-surface LLM: "
+            + ("yes" if data.get("llm_invoked_by_read_surface") else "no")
+        )
+    lines.extend(_receipt_lines(data))
     counts: list[str] = []
     if queue_count is not None:
         counts.append(f"Proposals {queue_count}")
@@ -580,6 +645,7 @@ def _render_readonly_descriptor_action(
         lines.append(f"Status: {status}")
     if target_ref:
         lines.append(f"Ref: {target_ref}")
+    lines.extend(_receipt_lines(payload, include_request=True))
     return {"title": label, "text": "\n".join(lines), "actions": []}
 
 
@@ -1363,6 +1429,7 @@ def _confirmed_text(
                 f"Status: {_short(payload.get('status'))} · ok: {_short(payload.get('ok'))}",
             ]
         )
+        lines.extend(_receipt_lines(payload))
         if publication:
             lines.append(
                 "Publication: "
@@ -1984,6 +2051,7 @@ def _render_publish_preview(
             f"Status: {status}",
             f"Message: {message}",
         ]
+        lines.extend(_receipt_lines(payload))
         if git_line:
             lines.append(f"Git: {git_line}")
         return {"title": "KB Publish", "text": "\n".join(lines), "actions": []}
@@ -1993,6 +2061,7 @@ def _render_publish_preview(
         f"Message: {message}",
         f"Changed paths: {len(changed_paths)}",
     ]
+    lines.extend(_receipt_lines(payload))
     if git_line:
         lines.append(f"Git: {git_line}")
     lines.append("")
@@ -2041,6 +2110,7 @@ def _render_publish_result(preview: Any, commit: Any, push: Any) -> dict[str, An
         f"Committed: {commit_status}",
         f"Pushed: {push_status}",
     ]
+    lines.extend(_receipt_lines(commit))
     if commit_hash:
         lines.append(f"Commit: {commit_hash[:12]}")
     if changed_paths:
@@ -2583,6 +2653,7 @@ def _workflow_status_text(prefix: str, payload: Any, *, include_run_details: boo
         prefix,
         f"Status: {_short(payload.get('status'))}",
     ]
+    lines.extend(_receipt_lines(payload))
     run_id = _workflow_run_id(payload)
     if run_id and include_run_details:
         lines.append(f"Run: {run_id}")
@@ -2621,6 +2692,7 @@ def _render_workflow_plan(
     ]
     if data.get("message"):
         lines.append("Message: " + _short(data.get("message")))
+    lines.extend(_receipt_lines(data, include_request=True))
     if isinstance(data.get("readiness"), dict):
         lines.append("Readiness: " + _short(data["readiness"].get("status")))
     if effects:

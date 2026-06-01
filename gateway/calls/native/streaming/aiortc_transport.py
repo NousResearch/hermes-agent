@@ -25,12 +25,15 @@ No ``time.*`` / ``asyncio.sleep`` appears here: all timing is the injected
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .clock import Clock
 from .types import AudioFrame, FlushResult, MediaFormat
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AiortcStreamingTransport",
@@ -83,13 +86,19 @@ class AiortcStreamingTransport:
         *,
         clock: Clock,
         outbound_sink: OutboundSink,
+        inbound_maxsize: int = 100,
     ) -> None:
         self._media = media
         self._clock = clock
         self._outbound_sink: OutboundSink = outbound_sink
         # Barge-in drop hook is a SEPARATE field (B2), not a sink attribute.
         self._outbound_drop: Any | None = None
-        self._inbound: asyncio.Queue[AudioFrame | None] = asyncio.Queue()
+        # Bounded inbound queue with drop-oldest back-pressure (mirrors the
+        # outbound track): under slow STT the queue can't grow without limit.
+        # The ``None`` close sentinel is NEVER dropped (would hang ``inbound()``).
+        self._inbound: asyncio.Queue[AudioFrame | None] = asyncio.Queue(
+            maxsize=inbound_maxsize
+        )
         self._pending: list[AudioFrame] = []
         self._closed = False
 
@@ -109,7 +118,15 @@ class AiortcStreamingTransport:
         return self._media
 
     async def push_inbound(self, frame: AudioFrame) -> None:
-        await self._inbound.put(frame)
+        # Drop-oldest back-pressure: we manage capacity ourselves so the put is
+        # non-blocking (a slow consumer never stalls the producer).
+        if self._inbound.full():
+            try:
+                self._inbound.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            logger.warning("inbound queue full; dropped oldest frame")
+        self._inbound.put_nowait(frame)
 
     def inbound(self) -> AsyncIterator[AudioFrame]:
         return self._inbound_gen()
@@ -144,7 +161,14 @@ class AiortcStreamingTransport:
     async def close(self) -> None:
         if not self._closed:
             self._closed = True
-            await self._inbound.put(None)
+            # The sentinel must ALWAYS be enqueued (dropping it hangs inbound()).
+            # If the queue is full, drop one oldest frame to make room.
+            if self._inbound.full():
+                try:
+                    self._inbound.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            self._inbound.put_nowait(None)
 
 
 # ---------------------------------------------------------------------------

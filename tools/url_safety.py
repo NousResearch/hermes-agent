@@ -21,6 +21,11 @@ Limitations (documented, not fixable at pre-flight level):
     each redirect target in vision_tools, gateway platform adapters, and
     media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
     where redirect handling is on their servers.
+
+    For a targeted approach, add domains to
+    ``security.trusted_private_hosts`` (a list of hostnames) in
+    config.yaml.  Trusted hosts may resolve to private/benchmark-range
+    IPs over HTTPS without opening all private IPs globally.
 """
 
 import ipaddress
@@ -68,11 +73,48 @@ _ALWAYS_BLOCKED_NETWORKS = (
 )
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
-# This is intentionally narrow: QQ media downloads can legitimately resolve
-# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+# Users behind transparent proxies (Clash TUN, Surge, etc.) see external
+# domains resolve to 198.18.0.0/15 (RFC 2544) or 100.64.0.0/10 (CGNAT).
+# Add trusted domains to ``security.trusted_private_hosts`` in config.yaml.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
 })
+
+# Cached merged set of hardcoded + configured trusted hosts.
+_trusted_config_resolved = False
+_cached_trusted_hosts: frozenset = frozenset()
+
+
+def _get_trusted_private_hosts() -> frozenset:
+    """Return the merged set of trusted hosts (hardcoded + config).
+
+    Reads ``security.trusted_private_hosts`` from config.yaml and
+    merges with the hardcoded ``_TRUSTED_PRIVATE_IP_HOSTS`` set.
+    Result is cached for the process lifetime.
+    """
+    global _trusted_config_resolved, _cached_trusted_hosts
+    if _trusted_config_resolved:
+        return _cached_trusted_hosts
+
+    _trusted_config_resolved = True
+    result = set(_TRUSTED_PRIVATE_IP_HOSTS)
+
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        sec = cfg.get("security", {})
+        if isinstance(sec, dict):
+            configured = sec.get("trusted_private_hosts", [])
+            if isinstance(configured, list):
+                for host in configured:
+                    if isinstance(host, str) and host.strip():
+                        result.add(host.strip().lower())
+    except Exception:
+        pass
+
+    _cached_trusted_hosts = frozenset(result)
+    return _cached_trusted_hosts
 
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
 # ipaddress.is_private — it returns False for both is_private and is_global.
@@ -144,6 +186,13 @@ def _reset_allow_private_cache() -> None:
     global _allow_private_resolved, _cached_allow_private
     _allow_private_resolved = False
     _cached_allow_private = False
+
+
+def _reset_trusted_private_cache() -> None:
+    """Reset the cached trusted hosts — only for tests."""
+    global _trusted_config_resolved, _cached_trusted_hosts
+    _trusted_config_resolved = False
+    _cached_trusted_hosts = frozenset()
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -266,7 +315,9 @@ def is_always_blocked_url(url: str) -> bool:
 
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
-    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+    if scheme != "https":
+        return False
+    return hostname in _get_trusted_private_hosts()
 
 
 def is_safe_url(url: str) -> bool:

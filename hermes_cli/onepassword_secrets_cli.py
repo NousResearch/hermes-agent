@@ -32,7 +32,6 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
 )
-from hermes_cli.secret_prompt import masked_secret_prompt
 
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 _DOCS_URL = "https://developer.1password.com/docs/cli/get-started/"

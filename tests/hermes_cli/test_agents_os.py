@@ -6,6 +6,39 @@ from pathlib import Path
 from hermes_cli import agents_os
 
 
+def test_default_paths_are_upstream_neutral(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("AGENTS_OS_HOME", raising=False)
+    monkeypatch.delenv("AGENTS_OS_VAULT_ROOT", raising=False)
+    paths = agents_os.resolve_paths(None)
+
+    assert paths.root == tmp_path / "home" / "agents_os"
+    assert paths.vault_root == paths.root / "vault_mirror"
+    dumped = str(paths)
+    assert "Hermes-Agent-Doni" not in dumped
+    assert "/home/goran" not in dumped
+
+
+def test_generated_docs_use_profile_neutral_home_placeholder(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    assert agents_os.main(["--vault-root", str(vault), "init", "--no-vault"]) == 0
+    capsys.readouterr()
+
+    assert agents_os.main(["--vault-root", str(vault), "docs", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    command_reference = Path(payload["docs"]["command_reference"]).read_text(encoding="utf-8")
+    recovery_runbook = Path(payload["docs"]["recovery_runbook"]).read_text(encoding="utf-8")
+    safety_policy = Path(payload["docs"]["safety_policy"]).read_text(encoding="utf-8")
+
+    combined = command_reference + recovery_runbook + safety_policy
+    assert "HERMES_HOME=/path/to/hermes-home" in combined
+    assert "/home/goran" not in combined
+    assert "Marija" not in combined
+    assert "ERO" not in combined
+    assert "OpenClaw" not in combined
+
+
 def test_agents_os_local_control_plane_smoke(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     vault = tmp_path / "vault"

@@ -1,8 +1,8 @@
-"""Local Agents OS control plane for Hermes/Doni.
+"""Local Agents OS control plane for Hermes.
 
 This module is deliberately local-first and side-effect bounded:
 - writes only under HERMES_HOME/agents_os by default;
-- optionally mirrors human-readable artifacts into the Doni vault lane;
+- optionally mirrors human-readable artifacts into a local vault/mirror lane;
 - never sends network requests, starts servers, edits runtime config, or touches credentials.
 """
 
@@ -24,9 +24,7 @@ from typing import Any
 
 from hermes_constants import get_hermes_home
 
-DEFAULT_VAULT_ROOT = Path(
-    "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/08-OPERATIONS/ACTIVE-WORK/AGENTS-OS-v0"
-)
+DEFAULT_VAULT_DIRNAME = "vault_mirror"
 SAFE_WORKFLOWS = {
     "youtube-intake": {
         "kind": "source_intake",
@@ -123,7 +121,7 @@ def resolve_paths(args: argparse.Namespace | None = None) -> AgentsOSPaths:
     home = get_hermes_home()
     root = Path(os.environ.get("AGENTS_OS_HOME", home / "agents_os")).expanduser()
     vault_raw = getattr(args, "vault_root", None) if args is not None else None
-    vault_root = Path(os.environ.get("AGENTS_OS_VAULT_ROOT", vault_raw or DEFAULT_VAULT_ROOT)).expanduser()
+    vault_root = Path(os.environ.get("AGENTS_OS_VAULT_ROOT", vault_raw or root / DEFAULT_VAULT_DIRNAME)).expanduser()
     return AgentsOSPaths(
         home=home,
         root=root,
@@ -960,7 +958,7 @@ def doctor(args: argparse.Namespace) -> int:
         "network_side_effects": False,
         "runtime_config_changed": False,
     }
-    ok = all(v is True for k, v in checks.items() if k.endswith("_exists") or k in {"required_tables_present", "schema_current", "policy_home_isolated"}) and orphan_records == 0
+    ok = all(v is True for k, v in checks.items() if (k.endswith("_exists") and k != "vault_root_exists") or k in {"required_tables_present", "schema_current", "policy_home_isolated"}) and orphan_records == 0
     payload = {"ok": ok, "paths": {"db": str(paths.db), "root": str(paths.root), "vault_root": str(paths.vault_root)}, "checks": checks}
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -1437,7 +1435,7 @@ def docs_cmd(args: argparse.Namespace) -> int:
         Safe local verification:
 
         ```bash
-        export HERMES_HOME=/home/goran/.hermes-doni-clean
+        export HERMES_HOME=/path/to/hermes-home
         python -m hermes_cli.agents_os status --json
         python -m hermes_cli.agents_os doctor --json
         python -m hermes_cli.agents_os service status --json
@@ -1457,7 +1455,7 @@ def docs_cmd(args: argparse.Namespace) -> int:
         f"""
         # Agents OS Recovery Runbook
 
-        1. Set `HERMES_HOME=/home/goran/.hermes-doni-clean`.
+        1. Set `HERMES_HOME=/path/to/hermes-home`.
         2. Run `python -m hermes_cli.agents_os doctor --json`.
         3. If dashboard mirror is missing, run `python -m hermes_cli.agents_os mirror rebuild --json`.
         4. Re-run `python -m hermes_cli.agents_os mirror validate --json`.
@@ -1474,8 +1472,8 @@ def docs_cmd(args: argparse.Namespace) -> int:
         - no gateway restart
         - no web UI, TUI, daemon, or server process without explicit approval
         - no credentials, API keys, auth stores, tokens, `.env`, or secrets in reports/dashboard
-        - no Marija, ERO, or OpenClaw memory/auth/session/runtime writes
-        - no `/mnt/d/HermesAgent/home` as active runtime authority
+        - no writes to other Hermes profiles or external agent runtimes
+        - no legacy or unrelated Hermes home as active runtime authority
         - outbound/public/financial/security/destructive work must become approval draft, not execution
         """
     ).strip() + "\n"
@@ -1547,11 +1545,11 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     from hermes_cli.agents_os_tui import tui_cmd
     p.set_defaults(func=tui_cmd)
 
-    p = sub.add_parser("web", help="Open local Mission Control web dashboard")
-    p.add_argument("--host", default="127.0.0.1", help="Bind host; must be 127.0.0.1 or localhost")
-    p.add_argument("--port", type=int, default=18790)
+    p = sub.add_parser("web", help="Open local-only Agents OS Mission Control dashboard")
+    p.add_argument("--host", default="127.0.0.1", help="Local bind host; only 127.0.0.1 or localhost are allowed")
+    p.add_argument("--port", type=int, default=18790, help="Local dashboard port (default: 18790)")
     p.add_argument("--open", action="store_true", help="Open dashboard in the default browser")
-    p.add_argument("--json", action="store_true", help="Print server capability payload without starting server")
+    p.add_argument("--json", action="store_true", help="Print launcher/status payload without starting a server")
     from hermes_cli.agents_os_web import web_cmd
     p.set_defaults(func=web_cmd)
 

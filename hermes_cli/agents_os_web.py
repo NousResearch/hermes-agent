@@ -214,9 +214,9 @@ class MissionControlWebApp:
         rows = [_row(r) for r in conn.execute("SELECT * FROM agents ORDER BY status ASC, created_at ASC").fetchall()]
         existing = {r["id"] for r in rows}
         pseudo = [
-            {"id": "kodi-codex", "name": "Kodi / Codex", "kind": "external-cli", "status": "not_verified", "capabilities": '["code","review"]', "created_at": "", "home": "Codex auth/runtime separate", "memory_boundary": "No Doni memory merge"},
-            {"id": "marija-profile", "name": "Marija", "kind": "separate-profile", "status": "not_verified", "capabilities": '["assistant"]', "created_at": "", "home": "/home/goran/.hermes-marija-clean", "memory_boundary": "Separate memory/session/auth"},
-            {"id": "ero-openclaw", "name": "ERO / OpenClaw", "kind": "reference-runtime", "status": "not_verified", "capabilities": '["reference","runtime"]', "created_at": "", "home": "/home/goran/.openclaw/workspace", "memory_boundary": "Reference layer only"},
+            {"id": "external-code-agent", "name": "External code agent", "kind": "external-cli", "status": "not_verified", "capabilities": '["code","review"]', "created_at": "", "home": "separate auth/runtime", "memory_boundary": "No implicit memory merge"},
+            {"id": "separate-profile-agent", "name": "Separate Hermes profile", "kind": "separate-profile", "status": "not_verified", "capabilities": '["assistant"]', "created_at": "", "home": "profile-specific home", "memory_boundary": "Separate memory/session/auth"},
+            {"id": "reference-runtime-agent", "name": "Reference runtime", "kind": "reference-runtime", "status": "not_verified", "capabilities": '["reference","runtime"]', "created_at": "", "home": "external runtime workspace", "memory_boundary": "Reference layer only"},
         ]
         return rows + [p for p in pseudo if p["id"] not in existing]
 

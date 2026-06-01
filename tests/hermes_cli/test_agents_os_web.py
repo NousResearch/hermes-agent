@@ -7,6 +7,7 @@ import threading
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from pathlib import Path
 
 from hermes_cli import agents_os
 
@@ -46,6 +47,27 @@ def _seed_cron(home):
     cron_dir = home / "cron"
     cron_dir.mkdir(parents=True)
     (cron_dir / "jobs.json").write_text(json.dumps({"jobs": [{"id": "job-1", "name": "Daily check", "schedule_display": "0 9 * * *", "enabled": True, "last_run_at": "2026-06-01T07:00:00Z", "deliver": "local", "no_agent": True}]}), encoding="utf-8")
+
+
+def test_static_shell_uses_upstream_neutral_copy():
+    index = Path(__file__).resolve().parents[2] / "hermes_cli" / "agents_os_web_static" / "index.html"
+    text = index.read_text(encoding="utf-8")
+    assert "Mikac" not in text
+    assert "Doni" not in text
+    assert "Local control-plane" in text
+
+
+def test_default_agent_roster_is_profile_neutral(tmp_path, monkeypatch, capsys):
+    vault = _setup(tmp_path, monkeypatch, capsys)
+    from hermes_cli.agents_os_web import MissionControlWebApp
+
+    app = MissionControlWebApp(agents_os.resolve_paths(argparse.Namespace(vault_root=str(vault))))
+    agents = app.handle_json("GET", "/api/agents")
+    dumped = json.dumps(agents["data"])
+    assert "Marija" not in dumped
+    assert "OpenClaw" not in dumped
+    assert "/home/goran" not in dumped
+    assert any(a["id"] == "external-code-agent" for a in agents["data"])
 
 
 def test_web_payload_routes_are_local_only_and_wrapped(tmp_path, monkeypatch, capsys):

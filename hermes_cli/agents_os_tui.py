@@ -340,7 +340,7 @@ def tui_status_payload(core: MissionControlCore) -> dict[str, Any]:
         "views": VIEWS,
         "counts": core.counts(),
         "paths": {"agents_os_home": str(core.paths.root), "state_db": str(core.paths.db), "vault_root": str(core.paths.vault_root)},
-        "launcher": "export HERMES_HOME=/home/goran/.hermes-doni-clean && hermes agents-os tui",
+        "launcher": "export HERMES_HOME=/path/to/hermes-home && hermes agents-os tui",
         "safety": {"local_only": True, "network_side_effects": False, "deploy": False, "gateway_restart": False, "credentials_touched": False},
     }
 

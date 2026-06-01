@@ -401,6 +401,73 @@ class TestExtractMedia:
         assert media == []
 
 
+class TestMediaInsideSerializedJson:
+    """Regression coverage for #34375 — MEDIA: embedded in serialized JSON
+    string values (e.g. a stored previous reply inside a tool result) must not
+    be re-delivered as a real attachment, while legitimate MEDIA: tags in prose,
+    at line start, indented, or as quoted-path tags keep working.
+    """
+
+    def test_media_in_json_value_not_extracted(self):
+        content = '{"result": "MEDIA:/tmp/stale.png"}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"JSON value MEDIA: leaked: {media}"
+
+    def test_media_in_pretty_json_value_not_extracted(self):
+        content = '{\n  "tool_result": "MEDIA:/var/old.jpg"\n}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"pretty JSON MEDIA: leaked: {media}"
+
+    def test_media_in_json_array_not_extracted(self):
+        content = '["MEDIA:/a/b.png", "other"]'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"JSON array MEDIA: leaked: {media}"
+
+    def test_media_in_nested_json_value_not_extracted(self):
+        content = '{"a":{"b":"see MEDIA:/x/y.pdf here"}}'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"nested JSON MEDIA: leaked: {media}"
+
+    def test_media_in_embedded_serialized_reply_not_extracted(self):
+        """A serialized tool result that embeds a prior reply's MEDIA: tag."""
+        content = (
+            '{"content":"previous reply MEDIA:/Users/ex/.hermes/media/'
+            'generated/stale.png and more text"}'
+        )
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"embedded serialized reply leaked: {media}"
+
+    # --- Legitimate tags must still extract (no regression vs line-start anchor) ---
+
+    def test_media_at_line_start_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/real/file.png")
+        assert len(media) == 1 and media[0][0] == "/real/file.png"
+
+    def test_media_after_prose_same_line_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media(
+            "Here is your file: MEDIA:/out/report.pdf"
+        )
+        assert len(media) == 1 and media[0][0] == "/out/report.pdf"
+
+    def test_media_indented_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("  MEDIA:/tmp/x.png")
+        assert len(media) == 1 and media[0][0] == "/tmp/x.png"
+
+    def test_quoted_path_media_still_extracted(self):
+        """MEDIA:"..." quoted-path form (a real LLM output) is not JSON-masked."""
+        media, _ = BasePlatformAdapter.extract_media(
+            'MEDIA:"/path/with space/file.png"'
+        )
+        assert len(media) == 1 and media[0][0] == "/path/with space/file.png"
+
+    def test_tts_two_line_still_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media(
+            "[[audio_as_voice]]\nMEDIA:/tmp/v.ogg"
+        )
+        assert len(media) == 1 and media[0][0] == "/tmp/v.ogg"
+        assert media[0][1] is True  # voice flag
+
+
 class TestMediaExtensionAllowlistParity:
     """Regression coverage for issue #34517 — the MEDIA: extension black hole.
 

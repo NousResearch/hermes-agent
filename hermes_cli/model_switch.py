@@ -200,6 +200,51 @@ _NOUS_HERMES_NON_AGENTIC_RE = re.compile(
 )
 
 
+# Opaque internal model-ID display
+# ---------------------------------------------------------------------------
+# Some proxies (notably Palantir Foundry's LLM-proxy) identify models by
+# resource-instance IDs that are deeply nested, verbose, and pure noise to
+# read in CLI status output, e.g.:
+#
+#   ri.language-model-service..language-model.anthropic-claude-4-7-opus
+#
+# The provider_label (e.g. "palantir-claude46") already carries the routing
+# context, so the only useful information left in the opaque ID is the
+# trailing slug. Strip the boilerplate prefix for *display* — never for
+# wire-side comparison, persistence, config writes, alias lookup, or
+# anything that round-trips back into the API.
+#
+# Match by substring on a known prefix so we never accidentally truncate
+# a legitimate model name that happens to contain dots.
+
+_OPAQUE_MODEL_PREFIXES: tuple[str, ...] = (
+    "ri.language-model-service..language-model.",
+)
+
+
+def format_model_for_display(model_name: str) -> str:
+    """Return a human-friendly form of *model_name* for CLI status output.
+
+    Strips known opaque proxy prefixes (Palantir Foundry's
+    ``ri.language-model-service..language-model.*``) and returns the
+    trailing slug. Falls through to the original string for everything
+    else, so real model IDs (``claude-4-7-opus-20260101``,
+    ``gpt-5-4``, ``meta-llama/Llama-3.3-70B-Instruct``) are untouched.
+
+    This is a DISPLAY-ONLY helper. Do NOT use the return value for any
+    wire-side operation — the proxy expects the full opaque ID, and
+    callers that compare or persist must keep the original.
+    """
+    if not model_name:
+        return model_name
+    for prefix in _OPAQUE_MODEL_PREFIXES:
+        if model_name.startswith(prefix):
+            tail = model_name[len(prefix):]
+            return tail if tail else model_name
+    return model_name
+
+
+# ---------------------------------------------------------------------------
 def is_nous_hermes_non_agentic(model_name: str) -> bool:
     """Return True if *model_name* is a real Nous Hermes 3/4 chat model.
 

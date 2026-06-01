@@ -30,6 +30,17 @@ Add `--include-desktop` to the [one-line installer](../../README.md#quick-instal
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
 ```
 
+If this machine should only run the Desktop shell and connect to a Hermes
+backend running somewhere else, use desktop-only mode instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --desktop-only
+```
+
+Desktop-only mode builds the app but skips the local setup wizard and gateway
+setup. This is useful for a laptop that should control a server, VM, WSL
+instance, or Tailscale-accessible Hermes runtime.
+
 Already have the Hermes CLI? Just run:
 
 ```bash
@@ -37,6 +48,35 @@ hermes desktop
 ```
 
 It builds and launches the GUI against your existing install — same config, keys, sessions, and skills. On first launch Hermes walks you through picking a provider and model; nothing else to configure.
+
+On macOS, source-built desktop installs also create a user app shortcut at:
+
+```text
+~/Applications/Hermes.app
+```
+
+### Remote gateway
+
+Hermes Desktop can connect to a remote dashboard backend instead of starting a
+local runtime. On the backend machine, run:
+
+```bash
+hermes dashboard --tui --no-open --host 127.0.0.1 --port 9120 --insecure
+```
+
+Expose that port through your preferred private network or reverse proxy, then
+configure the Desktop app from **Settings → Gateway → Remote gateway**. Provide
+the base URL and the dashboard session token. Path prefixes are supported, so a
+URL such as `https://server.example.com/hermes` maps Desktop REST calls to
+`/hermes/api/...` and WebSocket calls to `/hermes/api/ws`.
+
+For scripted launches, set both environment variables before starting Desktop:
+
+```bash
+export HERMES_DESKTOP_REMOTE_URL="https://server.example.com/hermes"
+export HERMES_DESKTOP_REMOTE_TOKEN="<dashboard-session-token>"
+hermes desktop --skip-build
+```
 
 ### Prebuilt installers
 

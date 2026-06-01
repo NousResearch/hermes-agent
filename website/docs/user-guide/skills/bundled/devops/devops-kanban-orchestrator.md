@@ -37,6 +37,8 @@ Hermes setups vary widely. Some users run a single profile that does everything;
 
 Before fanning out, you must ground the decomposition in the profiles that actually exist. The dispatcher silently fails to spawn unknown assignee names — it doesn't autocorrect, doesn't suggest, doesn't fall back. So a card assigned to `researcher` on a setup that only has `docker-worker` remains `working`/queued (internal alias `ready`) forever.
 
+For project-structured communication, status reports should use the generic canonical pair `Self status:` and `Lineage status:`. `Lineage status` is structural parent/child responsibility under a profile, not the same as the task dependency graph you create with `parents=[...]`. Do not use legacy `Blocker status:` / `NOT BLOCKED`, and do not replace the generic pair with role-specific labels such as `Coordinator status:`. Prefer deterministic helper output from `python scripts/render_status_lines.py --self ... --lineage-count ...` when available.
+
 **Step 0: discover available profiles before planning.**
 
 Use one of these:

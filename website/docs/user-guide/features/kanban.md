@@ -82,6 +82,33 @@ Kanban keeps the legacy storage-level workflow states for DB and dispatcher comp
 
 `done` remains valid as task completion history. It is not a live profile/project availability state; a profile with no active work is `dormant`, not `done`.
 
+### Self/Lineage status lines for profile communication
+
+Project-structured profiles that report status in Matrix or other chat surfaces should use two generic lines, not role-specific labels and not legacy `Blocker status` / `NOT BLOCKED` wording:
+
+```text
+Self status: WORKING|WAITING|BLOCKED|DORMANT — <specific status for this profile itself>
+Lineage status: WORKING|WAITING|BLOCKED|DORMANT — <aggregate status for structural descendants>
+```
+
+`Self status` is about the speaker profile's own active action, wait, human blocker, or dormant condition. `Lineage status` is about structurally supervised descendants; it is not the same graph as `task_links` dependencies. A profile with no descendants, or no descendants with active work, reports lineage as `DORMANT`.
+
+Use `scripts/render_status_lines.py` from a source checkout for deterministic copy-paste output instead of recomputing these lines from broad LLM context:
+
+```bash
+python scripts/render_status_lines.py \
+  --self working "updating Kanban status docs" \
+  --lineage-count running 1 \
+  --lineage-count blocked 1
+```
+
+Sample output:
+
+```text
+Self status: WORKING — updating Kanban status docs
+Lineage status: WORKING — working: 1; waiting: 0; blocked: 1; dormant: 0
+```
+
 ## Boards (multi-project)
 
 Boards let you separate unrelated streams of work — one per project, repo,

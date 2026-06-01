@@ -74,6 +74,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
     assert data["message_id"] == "m1"
+    assert isinstance(data["requested_at"], float)
     assert "thread_id" not in data  # no thread → omitted
 
 
@@ -171,7 +172,31 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     names = [name for name, _payload, _kwargs in calls]
     assert names == [".restart_notify.json", ".restart_last_processed.json"]
     assert calls[0][1]["chat_id"] == "42"
+    assert isinstance(calls[0][1]["requested_at"], float)
     assert calls[1][1]["platform"] == "telegram"
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_skips_stale_marker(tmp_path, monkeypatch):
+    """Old restart markers are discarded instead of notifying stale chats."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run.time, "time", lambda: 1_700_001_000.0)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "stale-42",
+        "requested_at": 1_700_000_000.0,
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="late"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
 
 
 @pytest.mark.asyncio

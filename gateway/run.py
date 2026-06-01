@@ -10572,6 +10572,7 @@ class GatewayRunner:
                 "platform": event.source.platform.value if event.source.platform else None,
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
+                "requested_at": time.time(),
             }
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
@@ -15180,6 +15181,19 @@ class GatewayRunner:
             chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
             message_id = data.get("message_id")
+
+            requested_at = data.get("requested_at")
+            if isinstance(requested_at, (int, float)):
+                marker_age = time.time() - float(requested_at)
+            else:
+                marker_age = time.time() - notify_path.stat().st_mtime
+            if marker_age > 600:
+                logger.warning(
+                    "Restart notification skipped: stale marker for %s:%s",
+                    platform_str,
+                    chat_id,
+                )
+                return None
 
             if not platform_str or not chat_id:
                 return None

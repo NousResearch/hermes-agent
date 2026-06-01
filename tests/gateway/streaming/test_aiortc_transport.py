@@ -420,3 +420,127 @@ async def test_build_streaming_pipeline_fake():
 async def test_build_streaming_pipeline_real_not_implemented():
     with pytest.raises(NotImplementedError):
         build_streaming_pipeline({}, cognitive="real")
+
+
+# ---------------------------------------------------------------------------
+# Slice 6b carry-in fixes (B1/B2/B3/I3/M4)
+# ---------------------------------------------------------------------------
+
+
+async def test_pipeline_exposes_transport():
+    transport = SpyTransport(MEDIA_16K)
+    pipe = StreamingPipeline(
+        media=MEDIA_16K,
+        session=_NullSession(),
+        transport=transport,
+        clock=VirtualClock(),
+    )
+    assert pipe.transport is pipe._transport
+    assert pipe.transport is transport
+
+
+async def test_set_outbound_sink_replaces_and_drop_hook_fires():
+    initial = RecordingSink(with_drop=False)
+    transport = AiortcStreamingTransport(
+        MEDIA_16K, clock=VirtualClock(), outbound_sink=initial
+    )
+
+    new_sink = RecordingSink(with_drop=False)
+    drop_calls = {"count": 0}
+
+    async def drop_spy() -> None:
+        drop_calls["count"] += 1
+
+    transport.set_outbound_sink(new_sink, drop=drop_spy)
+
+    f0 = make_frame(0)
+    await transport.emit_outbound(f0)
+    # Routed to the new sink, not the original.
+    assert new_sink.sent == [f0]
+    assert initial.sent == []
+
+    result = await transport.flush_outbound("x")
+    assert isinstance(result, FlushResult)
+    assert result.dropped_frames == 1
+    assert result.dropped_ms == 20
+    assert drop_calls["count"] == 1
+
+
+async def test_set_outbound_sink_sync_drop_hook_fires():
+    transport = AiortcStreamingTransport(
+        MEDIA_16K, clock=VirtualClock(), outbound_sink=RecordingSink(with_drop=False)
+    )
+    drop_calls = {"count": 0}
+
+    def drop_spy() -> int:
+        drop_calls["count"] += 1
+        return 0
+
+    transport.set_outbound_sink(RecordingSink(with_drop=False), drop=drop_spy)
+    await transport.emit_outbound(make_frame(0))
+    await transport.flush_outbound("x")
+    assert drop_calls["count"] == 1
+
+
+async def test_flush_drop_fallback_to_sink_attribute():
+    # No set_outbound_sink: ctor sink with a .drop attr still fires (back-compat).
+    sink = RecordingSink(with_drop=True)
+    transport = AiortcStreamingTransport(
+        MEDIA_16K, clock=VirtualClock(), outbound_sink=sink
+    )
+    await transport.emit_outbound(make_frame(0))
+    await transport.flush_outbound("x")
+    assert sink.drops == 1
+
+
+async def test_build_streaming_pipeline_sink_none_uses_noop():
+    pipe = build_streaming_pipeline({}, cognitive="fake", sink=None)
+    assert isinstance(pipe, StreamingPipeline)
+    # Emitting before set_outbound_sink does not crash (no-op sink buffers).
+    await pipe.transport.emit_outbound(make_frame(0))
+    result = await pipe.transport.flush_outbound("x")
+    assert isinstance(result, FlushResult)
+    assert result.dropped_frames == 1
+    await pipe.aclose()
+
+
+class _RunningSession:
+    """A session whose run() blocks until cancelled."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def run(self) -> None:
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+async def test_aclose_idempotent_and_abort():
+    # Idempotent: second aclose() is a no-op (no re-raise).
+    transport = SpyTransport(MEDIA_16K)
+    pipe = StreamingPipeline(
+        media=MEDIA_16K,
+        session=_NullSession(),
+        transport=transport,
+        clock=VirtualClock(),
+    )
+    samples = int(16000 * 20 / 1000)
+    await pipe.process_pcm16(call_id="c", pcm16=b"\x00" * samples * 2, sample_rate=16000)
+    await pipe.aclose()
+    assert pipe._task is None
+    await pipe.aclose()  # second call: no raise
+    assert pipe._task is None
+
+    # abort=True cancels a still-running session task and returns without raising.
+    transport2 = SpyTransport(MEDIA_16K)
+    session = _RunningSession()
+    pipe2 = StreamingPipeline(
+        media=MEDIA_16K,
+        session=session,
+        transport=transport2,
+        clock=VirtualClock(),
+    )
+    await pipe2.process_pcm16(call_id="c", pcm16=b"\x00" * samples * 2, sample_rate=16000)
+    await asyncio.wait_for(session.started.wait(), timeout=1.0)
+    await pipe2.aclose(abort=True)
+    assert pipe2._task is None

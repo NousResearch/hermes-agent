@@ -40,8 +40,29 @@ __all__ = [
 ]
 
 
-class _OutboundSink(Protocol):
+class OutboundSink(Protocol):
+    """Typed outbound sink contract (M4).
+
+    An async callable consuming one ``AudioFrame``. The barge-in ``drop`` hook is
+    a SEPARATE optional callable passed to ``set_outbound_sink`` — NOT a required
+    attribute on the sink itself (see B2).
+    """
+
     def __call__(self, frame: AudioFrame) -> Awaitable[None]: ...
+
+
+# Back-compat alias for the pre-M4 private name.
+_OutboundSink = OutboundSink
+
+
+async def _noop_sink(frame: AudioFrame) -> None:
+    """Module-level no-op outbound sink (B3).
+
+    Used on the live engine path before ``start()`` swaps in the real aiortc
+    track via ``set_outbound_sink``: frames buffer harmlessly (are discarded)
+    rather than landing in a throwaway recording sink.
+    """
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -61,14 +82,27 @@ class AiortcStreamingTransport:
         media: MediaFormat,
         *,
         clock: Clock,
-        outbound_sink: _OutboundSink,
+        outbound_sink: OutboundSink,
     ) -> None:
         self._media = media
         self._clock = clock
-        self._outbound_sink = outbound_sink
+        self._outbound_sink: OutboundSink = outbound_sink
+        # Barge-in drop hook is a SEPARATE field (B2), not a sink attribute.
+        self._outbound_drop: Any | None = None
         self._inbound: asyncio.Queue[AudioFrame | None] = asyncio.Queue()
         self._pending: list[AudioFrame] = []
         self._closed = False
+
+    def set_outbound_sink(
+        self, sink: OutboundSink, *, drop: Any | None = None
+    ) -> None:
+        """Replace the outbound sink + its barge-in drop hook (B2/M4).
+
+        ``drop`` is stored as a SEPARATE field so a bound method (``track.enqueue``)
+        — which has no ``.drop`` attribute — still gets a working flush hook.
+        """
+        self._outbound_sink = sink
+        self._outbound_drop = drop
 
     @property
     def media(self) -> MediaFormat:
@@ -95,7 +129,8 @@ class AiortcStreamingTransport:
         dropped_frames = len(self._pending)
         dropped_ms = sum(f.duration_ms for f in self._pending)
         self._pending.clear()
-        drop = getattr(self._outbound_sink, "drop", None)
+        # Prefer the explicit drop hook (B2); fall back to a ctor-sink .drop attr.
+        drop = self._outbound_drop or getattr(self._outbound_sink, "drop", None)
         if drop is not None:
             result = drop()
             if asyncio.iscoroutine(result):
@@ -164,7 +199,15 @@ class StreamingPipeline:
         self._seq = 0
         self._task: asyncio.Task[None] | None = None
 
+    @property
+    def transport(self) -> _TransportLike:
+        """Expose the underlying transport (B1) so the engine can swap its sink."""
+        return self._transport
+
     def _ensure_started(self) -> None:
+        # Invariant: NO ``await`` here — process_pcm16's first call must start the
+        # session task and return promptly without yielding to the loop, so the
+        # caller never blocks waiting for the session to drain inbound.
         if self._task is None:
             self._task = asyncio.create_task(self._session.run())
 
@@ -192,10 +235,26 @@ class StreamingPipeline:
         await self._transport.push_inbound(frame)
         return ProcessAck(ok=True, seq=seq)
 
-    async def aclose(self) -> None:
+    async def aclose(self, *, abort: bool = False) -> None:
+        """Drain (or abort) the session task and close the transport (I3).
+
+        Idempotent: a second call no-ops (``_task`` is cleared in ``finally``,
+        no re-raise). ``abort=True`` cancels a still-running task then awaits with
+        ``CancelledError`` suppressed (forced teardown); the default drains.
+        """
         await self._transport.close()
-        if self._task is not None:
-            await self._task
+        task = self._task
+        if task is None:
+            return
+        try:
+            if abort and not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                if not abort:
+                    raise
+        finally:
             self._task = None
 
 
@@ -227,13 +286,22 @@ def _recording_outbound_sink() -> Any:
 
 
 def build_streaming_pipeline(
-    config: Any, *, cognitive: str = "fake", clock: Clock | None = None
+    config: Any,
+    *,
+    cognitive: str = "fake",
+    clock: Clock | None = None,
+    sink: OutboundSink | None = None,
 ) -> StreamingPipeline:
     """Wire a StreamingPipeline for the engine.
 
     ``cognitive="fake"`` (Slice 6 default) builds deterministic Fake cognitive
-    ports on a VirtualClock + a recording outbound sink. ``cognitive="real"``
-    raises NotImplementedError (lands in Slice 7).
+    ports on a VirtualClock. ``cognitive="real"`` raises NotImplementedError
+    (lands in Slice 7).
+
+    ``sink`` (B3): when ``None`` (the live engine path) the transport is built
+    with a module-level no-op sink — frames buffer harmlessly until ``start()``
+    calls ``set_outbound_sink`` with the real aiortc track. Tests pass an explicit
+    recording sink to inspect emitted frames.
     """
     if cognitive == "real":
         raise NotImplementedError(
@@ -261,8 +329,8 @@ def build_streaming_pipeline(
         media=media,
     )
 
-    sink = _recording_outbound_sink()
-    transport = AiortcStreamingTransport(media, clock=vclock, outbound_sink=sink)
+    outbound_sink: OutboundSink = _noop_sink if sink is None else sink
+    transport = AiortcStreamingTransport(media, clock=vclock, outbound_sink=outbound_sink)
     stt = FakeSTT()
     turns = FakeTurnDetection([])
     tts = FakeTTS(vclock)

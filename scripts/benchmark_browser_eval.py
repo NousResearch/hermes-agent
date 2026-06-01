@@ -61,10 +61,15 @@ def main():
     parser.add_argument("--port", type=int, default=9333)
     args = parser.parse_args()
 
+    # Resolve the supervisor before starting Chrome: binding this name inside
+    # the try below let an import failure raise a secondary UnboundLocalError
+    # (a NameError subclass) in the finally — masking the real error and
+    # skipping the Chrome teardown. Doing it here also fails fast, before a
+    # browser is ever spawned.
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
     proc, profile, cdp_url = _start_chrome(args.port)
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
         # Warm up: start the supervisor, navigate to a page.
         supervisor = SUPERVISOR_REGISTRY.get_or_start(
             task_id="bench-eval", cdp_url=cdp_url
@@ -125,7 +130,14 @@ def main():
             print(f"Speedup: {speedup:.1f}x (mean)")
 
     finally:
-        SUPERVISOR_REGISTRY.stop_all()
+        # Tear down each resource independently: a wedged supervisor whose
+        # stop_all() raises must not skip the Chrome process + temp-profile
+        # teardown that follows, or every failed run leaks a browser and an
+        # orphaned /tmp profile dir.
+        try:
+            SUPERVISOR_REGISTRY.stop_all()
+        except Exception as e:
+            print(f"supervisor stop_all() failed during teardown: {e}", file=sys.stderr)
         proc.terminate()
         try:
             proc.wait(timeout=3)

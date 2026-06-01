@@ -1209,6 +1209,30 @@ class TestCompressWithClient:
             "call_123"
         ]
 
+    def test_sanitizer_drops_tool_results_not_adjacent_to_calling_assistant(self, compressor):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search_files", "arguments": "{}"},
+                    }
+                ],
+            },
+            # Any non-tool message between assistant(tool_calls) and tool
+            # result makes the tool message invalid for provider APIs.
+            {"role": "user", "content": "summary boundary marker"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "late result"},
+            {"role": "assistant", "content": "continue"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        assert [m.get("role") for m in sanitized] == ["assistant", "user", "assistant"]
+
     def test_user_role_summary_carries_end_marker(self):
         """When the summary lands as standalone role='user' (e.g. head ends
         with assistant/tool), the message body must include the explicit

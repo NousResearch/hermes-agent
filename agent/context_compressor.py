@@ -1626,7 +1626,47 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
 
-        return messages
+        # 3. Enforce strict ordering: tool results must appear directly after
+        #    the assistant tool_calls block that created them.
+        ordered: List[Dict[str, Any]] = []
+        pending_call_ids: set[str] = set()
+        in_tool_block = False
+        dropped_misordered = 0
+
+        for msg in messages:
+            role = msg.get("role")
+            if role == "assistant":
+                ordered.append(msg)
+                pending_call_ids = {
+                    cid
+                    for tc in (msg.get("tool_calls") or [])
+                    if (cid := self._get_tool_call_id(tc))
+                }
+                in_tool_block = bool(pending_call_ids)
+                continue
+
+            if role == "tool":
+                cid = msg.get("tool_call_id")
+                if in_tool_block and cid and cid in pending_call_ids:
+                    ordered.append(msg)
+                    pending_call_ids.discard(cid)
+                    # Keep consuming contiguous tool messages until we hit a
+                    # non-tool role, even if all IDs are already satisfied.
+                    continue
+                dropped_misordered += 1
+                continue
+
+            ordered.append(msg)
+            pending_call_ids.clear()
+            in_tool_block = False
+
+        if dropped_misordered and not self.quiet_mode:
+            logger.info(
+                "Compression sanitizer: removed %d misordered tool result(s)",
+                dropped_misordered,
+            )
+
+        return ordered
 
     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Push a compress-start boundary forward past any orphan tool results.

@@ -17,6 +17,7 @@ import json
 import os
 import logging
 import hashlib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,6 +31,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOST = "hermes"
+
+
+def sanitize_honcho_id(id_str: str) -> str:
+    """Return an identifier accepted by Honcho (``^[a-zA-Z0-9_-]+$``)."""
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(id_str)).strip("-")
+    return sanitized or "hermes"
 
 
 def resolve_active_host() -> str:
@@ -333,6 +340,7 @@ class HonchoClientConfig:
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
+        safe_identity = sanitize_honcho_id(resolved_host)
         return cls(
             host=resolved_host,
             workspace_id=workspace_id,
@@ -340,7 +348,7 @@ class HonchoClientConfig:
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
             timeout=timeout,
-            ai_peer=resolved_host,
+            ai_peer=safe_identity,
             enabled=bool(api_key or base_url),
         )
 
@@ -372,16 +380,21 @@ class HonchoClientConfig:
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
 
-        # Explicit host block fields win, then flat/global, then defaults
+        default_identity = sanitize_honcho_id(resolved_host)
+        # Explicit host block fields win, then flat/global, then Honcho-valid
+        # defaults derived from the active profile host.  Profile hosts use
+        # dotted keys (e.g. ``hermes.loki``) for config lookup, but Honcho
+        # workspace/peer IDs reject dots, so only the fallback identities are
+        # normalized here. Explicit user-provided IDs remain unchanged.
         workspace = (
             host_block.get("workspace")
             or raw.get("workspace")
-            or resolved_host
+            or default_identity
         )
         ai_peer = (
             host_block.get("aiPeer")
             or raw.get("aiPeer")
-            or resolved_host
+            or default_identity
         )
         api_key = (
             host_block.get("apiKey")

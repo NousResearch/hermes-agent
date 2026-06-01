@@ -17,9 +17,8 @@ from plugins.memory.honcho.client import (
     resolve_active_host,
     resolve_config_path,
     resolve_global_config_path,
-    HOST,
+    sanitize_honcho_id,
 )
-
 
 class TestHonchoClientConfigDefaults:
     def test_default_values(self):
@@ -481,7 +480,7 @@ class TestProfileScopedConfig:
             config = HonchoClientConfig.from_env(host="hermes.coder")
         assert config.host == "hermes.coder"
         assert config.workspace_id == "hermes"  # shared workspace
-        assert config.ai_peer == "hermes.coder"
+        assert config.ai_peer == "hermes-coder"
 
     def test_from_env_default_workspace_preserved_for_default_host(self):
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
@@ -522,6 +521,23 @@ class TestProfileScopedConfig:
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.host == "hermes.dreamer"
         assert config.peer_name == "dreamer-user"
+        assert config.workspace_id == "hermes-dreamer"
+        assert config.ai_peer == "hermes-dreamer"
+
+    def test_default_profile_host_ids_are_honcho_valid(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "key"}))
+        config = HonchoClientConfig.from_global_config(
+            host="hermes.loki", config_path=config_file,
+        )
+        assert config.host == "hermes.loki"
+        assert config.workspace_id == "hermes-loki"
+        assert config.ai_peer == "hermes-loki"
+
+    def test_sanitize_honcho_id_replaces_invalid_chars(self):
+        assert sanitize_honcho_id("hermes.loki") == "hermes-loki"
+        assert sanitize_honcho_id(" hermes/loki ") == "hermes-loki"
+        assert sanitize_honcho_id("***") == "hermes"
 
 
 class TestObservationModeMigration:

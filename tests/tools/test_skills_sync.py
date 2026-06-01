@@ -201,6 +201,26 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
 
+    def test_suppressed_builtin_not_reseeded(self, tmp_path):
+        """A curator-pruned built-in in the suppression list must NOT be
+        re-copied on sync — that's what makes the prune durable across updates.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._read_suppressed_names", return_value={"old-skill"}):
+            result = sync_skills(quiet=True)
+
+        # old-skill is suppressed → skipped, not copied.
+        assert "old-skill" in result["suppressed"]
+        assert "old-skill" not in result["copied"]
+        assert not (skills_dir / "old-skill").exists()
+        # The non-suppressed bundled skill is still copied normally.
+        assert "new-skill" in result["copied"]
+        assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+
     def test_fresh_install_copies_all(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"
@@ -598,7 +618,7 @@ class TestSyncSkills:
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
 

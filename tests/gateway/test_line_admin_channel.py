@@ -87,3 +87,19 @@ def test_register_adds_customer_and_admin_platforms():
     assert set(by_name) == {"line", "line_admin"}
     assert by_name["line"]["check_fn"] is check_requirements
     assert by_name["line_admin"]["check_fn"] is check_requirements_admin
+
+
+def test_admin_requirements_gate_needs_token_and_secret(monkeypatch):
+    monkeypatch.delenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("LINE_ADMIN_CHANNEL_SECRET", raising=False)
+    assert check_requirements_admin() is False
+
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
+    assert check_requirements_admin() is False
+
+    monkeypatch.delenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_SECRET", "admin-secret")
+    assert check_requirements_admin() is False
+
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
+    assert check_requirements_admin() is True

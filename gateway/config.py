@@ -111,6 +111,40 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     return default
 
 
+def _normalize_channel_command_access(value: Any) -> Dict[str, Any]:
+    """Normalize per-channel slash-command access config.
+
+    The public config shape is a mapping of channel/group ids to either a
+    dict (``allowed_slash_commands`` plus optional ``deny_message``) or a bare
+    list/string of commands.  Stringify ids so numeric Telegram/Discord ids
+    survive YAML parsing and match ``SessionSource.chat_id`` comparisons.
+    """
+    if not isinstance(value, dict):
+        return {}
+    normalized: Dict[str, Any] = {}
+    for channel_id, rule in value.items():
+        key = str(channel_id).strip()
+        if not key:
+            continue
+        if isinstance(rule, dict):
+            normalized[key] = {str(k): v for k, v in rule.items()}
+        else:
+            normalized[key] = {"allowed_slash_commands": rule}
+    return normalized
+
+
+def _merge_channel_command_access(extra: dict, value: Any) -> None:
+    normalized = _normalize_channel_command_access(value)
+    if not normalized:
+        return
+    existing = extra.get("channel_command_access")
+    merged: Dict[str, Any] = {}
+    if isinstance(existing, dict):
+        merged.update(existing)
+    merged.update(normalized)
+    extra["channel_command_access"] = merged
+
+
 def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
     """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
 
@@ -1065,6 +1099,20 @@ def load_gateway_config() -> GatewayConfig:
 
             _merge_platform_map(gateway_platforms)
             _merge_platform_map(yaml_cfg.get("platforms"))
+
+            gateway_channel_access = (
+                gateway_cfg.get("channel_command_access")
+                if isinstance(gateway_cfg, dict)
+                else None
+            )
+            if isinstance(gateway_channel_access, dict):
+                for plat_name, access_map in gateway_channel_access.items():
+                    normalized = _normalize_channel_command_access(access_map)
+                    if not normalized:
+                        continue
+                    _, extra = _ensure_platform_extra_dict(platforms_data, str(plat_name))
+                    _merge_channel_command_access(extra, normalized)
+
             if platforms_data:
                 gw_data["platforms"] = platforms_data
             # Iterate built-in platforms plus any registered plugin platforms
@@ -1162,6 +1210,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
+                if "channel_command_access" in platform_cfg:
+                    bridged["channel_command_access"] = _normalize_channel_command_access(
+                        platform_cfg["channel_command_access"]
+                    )
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:

@@ -9082,7 +9082,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # can't bypass gating just because an agent happens to be busy.
             # /status above is intentionally pre-gate so users always see
             # session state. /help and /whoami fall under the always-allowed
-            # floor inside _check_slash_access.
+            # floor inside _check_slash_access unless a channel-specific hard
+            # allowlist caps the command set.
             if _evt_cmd and _cmd_def_inner is not None:
                 _denied = self._check_slash_access(source, _cmd_def_inner.name)
                 if _denied is not None:
@@ -9490,10 +9491,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
-        # vs group). When unset → backward-compat: every allowed user can
-        # run every command. When set → non-admins can run only commands in
+        # vs group) or a per-channel hard allowlist matches the source. When
+        # unset → backward-compat: every allowed user can run every command.
+        # With admin gating → non-admins can run only commands in
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
-        # /whoami). Plain chat is unaffected — only slash commands gate.
+        # /whoami). With channel gating → only that channel's configured
+        # slash commands may run. Plain chat is unaffected — only slash
+        # commands gate.
         if command and canonical and is_gateway_known_command(canonical):
             _denied = self._check_slash_access(source, canonical)
             if _denied is not None:
@@ -12156,6 +12160,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         policy = _policy_for_source(self.config, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
+
+        channel_rule = getattr(policy, "channel_rule", None)
+        if channel_rule is not None and not channel_rule.can_run(canonical_cmd):
+            logger.info(
+                "Slash command /%s denied for %s:%s in channel %s "
+                "(not in channel_command_access allowlist)",
+                canonical_cmd,
+                source.platform.value if source.platform else "?",
+                source.user_id,
+                getattr(channel_rule, "channel_id", "?"),
+            )
+            deny_message = getattr(channel_rule, "deny_message", None)
+            if deny_message:
+                return deny_message
+            allowed_preview = sorted(getattr(channel_rule, "allowed_commands", frozenset()))
+            if allowed_preview:
+                suffix = (
+                    "Enabled here: "
+                    + ", ".join(f"/{c}" for c in allowed_preview[:12])
+                    + ("…" if len(allowed_preview) > 12 else "")
+                    + "."
+                )
+            else:
+                suffix = "No slash commands are enabled in this group/channel."
+            return f"⛔ /{canonical_cmd} is not enabled in this group/channel. {suffix}"
+
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd,
@@ -12179,6 +12209,70 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
 
+    async def _handle_whoami_command(self, event: MessageEvent) -> str:
+        """Handle /whoami — show the user's slash command access on this scope.
+
+        Always works under regular admin/user slash gating. A channel-specific
+        hard allowlist can restrict it too, so restricted rooms must include
+        /whoami if they want this introspection command available.
+        Reports: platform, scope (DM vs group), the user's tier
+        (admin / user / unrestricted), and the slash commands they can
+        actually run on this scope.
+        """
+        from gateway.slash_access import policy_for_source as _policy_for_source
+
+        source = event.source
+        policy = _policy_for_source(self.config, source)
+        platform = source.platform.value if source and source.platform else "?"
+        chat_type = (source.chat_type if source else "") or "dm"
+        scope = "DM" if chat_type.lower() in {"dm", "direct", "private", ""} else "group/channel"
+        user_id = (source.user_id if source else None) or "?"
+
+        if not policy.enabled:
+            return (
+                f"**You** — {platform} ({scope})\n"
+                f"User ID: `{user_id}`\n"
+                f"Tier: unrestricted (no admin list configured for this scope)\n"
+                f"Slash commands: all available"
+            )
+
+        channel_rule = getattr(policy, "channel_rule", None)
+        if channel_rule is not None:
+            configured = sorted(getattr(channel_rule, "allowed_commands", frozenset()))
+            runnable_str = ", ".join(f"/{c}" for c in configured) if configured else "(none)"
+            tier = "admin (channel-restricted)" if policy.is_admin(user_id) else "user"
+            return (
+                f"**You** — {platform} ({scope})\n"
+                f"User ID: `{user_id}`\n"
+                f"Tier: {tier}\n"
+                f"Slash commands you can run: {runnable_str}"
+            )
+
+        if policy.is_admin(user_id):
+            return (
+                f"**You** — {platform} ({scope})\n"
+                f"User ID: `{user_id}`\n"
+                f"Tier: **admin**\n"
+                f"Slash commands: all available"
+            )
+
+        # Non-admin user. Show what's actually reachable.
+        floor = ["help", "whoami"]  # mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS
+        configured = sorted(policy.user_allowed_commands)
+        # Combine + dedupe, preserve order: floor first, then operator additions.
+        seen: set[str] = set()
+        runnable: list[str] = []
+        for c in floor + configured:
+            if c not in seen:
+                seen.add(c)
+                runnable.append(c)
+        runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else "(none)"
+        return (
+            f"**You** — {platform} ({scope})\n"
+            f"User ID: `{user_id}`\n"
+            f"Tier: user\n"
+            f"Slash commands you can run: {runnable_str}"
+        )
 
 
 

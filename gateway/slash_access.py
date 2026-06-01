@@ -54,6 +54,24 @@ _ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({
 
 
 @dataclass(frozen=True)
+class ChannelCommandAccessRule:
+    """Hard allowlist for one group/channel/thread.
+
+    When present, this rule caps the command surface before the broader
+    admin/user split is considered: only commands named here may continue to
+    the normal slash-command handlers. Operators configure these by channel id
+    in ``PlatformConfig.extra["channel_command_access"]``.
+    """
+
+    channel_id: str
+    allowed_commands: FrozenSet[str]
+    deny_message: Optional[str] = None
+
+    def can_run(self, canonical_cmd: str) -> bool:
+        return bool(canonical_cmd) and canonical_cmd in self.allowed_commands
+
+
+@dataclass(frozen=True)
 class SlashAccessPolicy:
     """Resolved access policy for a single (platform, scope) pair.
 
@@ -65,6 +83,7 @@ class SlashAccessPolicy:
     enabled: bool                      # gating active for this scope?
     admin_user_ids: FrozenSet[str]
     user_allowed_commands: FrozenSet[str]
+    channel_rule: Optional[ChannelCommandAccessRule] = None
 
     def is_admin(self, user_id: Optional[str]) -> bool:
         if not self.enabled:
@@ -72,12 +91,21 @@ class SlashAccessPolicy:
             # downstream code can keep using ``is_admin`` / ``can_run``
             # uniformly.
             return True
+        if not self.admin_user_ids:
+            # A channel allowlist can enable slash gating without opting into
+            # the broader admin/user tier split. In that case nobody gets an
+            # implicit admin bypass: the channel cap is authoritative.
+            return False
         if not user_id:
             return False
         return str(user_id) in self.admin_user_ids
 
     def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
+        if self.channel_rule is not None and not self.channel_rule.can_run(canonical_cmd):
+            return False
         if not self.enabled:
+            return True
+        if not self.admin_user_ids:
             return True
         if self.is_admin(user_id):
             return True
@@ -137,6 +165,76 @@ def _coerce_command_list(raw: Any) -> FrozenSet[str]:
     return frozenset(out)
 
 
+def _source_channel_ids(source: Any) -> tuple[str, ...]:
+    """Return candidate channel ids for per-channel slash allowlists.
+
+    Adapters expose platform-native ids differently. Signal group messages,
+    for example, use ``chat_id='group:<id>'`` for gateway routing and also
+    expose the raw signal-cli group id in ``chat_id_alt``. Try both so
+    operators can paste the platform-native id directly into config.yaml.
+    """
+    if source is None:
+        return ()
+
+    candidates: list[str] = []
+
+    def _add(raw: Any) -> None:
+        if raw is None:
+            return
+        value = str(raw).strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    chat_id = getattr(source, "chat_id", None)
+    chat_id_alt = getattr(source, "chat_id_alt", None)
+    thread_id = getattr(source, "thread_id", None)
+
+    if chat_id and thread_id:
+        _add(f"{chat_id}:{thread_id}")
+        _add(f"{chat_id}#{thread_id}")
+    if chat_id_alt and thread_id:
+        _add(f"{chat_id_alt}:{thread_id}")
+        _add(f"{chat_id_alt}#{thread_id}")
+
+    _add(chat_id)
+    if isinstance(chat_id, str) and chat_id.startswith("group:"):
+        _add(chat_id[6:])
+    _add(chat_id_alt)
+
+    return tuple(candidates)
+
+
+def _channel_rule_from_raw(channel_id: str, raw_rule: Any) -> ChannelCommandAccessRule:
+    if isinstance(raw_rule, dict):
+        allowed_raw = raw_rule.get("allowed_slash_commands")
+        if allowed_raw is None:
+            allowed_raw = raw_rule.get("allowed_commands")
+        if allowed_raw is None:
+            allowed_raw = raw_rule.get("commands")
+        deny_raw = raw_rule.get("deny_message")
+        deny_message = str(deny_raw).strip() if deny_raw is not None else None
+    else:
+        allowed_raw = raw_rule
+        deny_message = None
+
+    return ChannelCommandAccessRule(
+        channel_id=channel_id,
+        allowed_commands=_coerce_command_list(allowed_raw),
+        deny_message=deny_message or None,
+    )
+
+
+def _channel_rule_for_source(extra: dict, source: Any) -> Optional[ChannelCommandAccessRule]:
+    access_map = extra.get("channel_command_access")
+    if not isinstance(access_map, dict) or not access_map:
+        return None
+    normalized = {str(k).strip(): v for k, v in access_map.items() if str(k).strip()}
+    for channel_id in _source_channel_ids(source):
+        if channel_id in normalized:
+            return _channel_rule_from_raw(channel_id, normalized[channel_id])
+    return None
+
+
 def _scope_for_chat_type(chat_type: Optional[str]) -> str:
     if chat_type and chat_type.lower() in _DM_CHAT_TYPES:
         return "dm"
@@ -167,7 +265,7 @@ def _keys_for_scope(scope: str) -> Tuple[str, str]:
     return ("allow_admin_from", "user_allowed_commands")
 
 
-def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
+def policy_from_extra(extra: dict, scope: str, source: Any = None) -> SlashAccessPolicy:
     """Build a policy from a platform's ``extra`` dict for one scope.
 
     DM scope falls back to group scope keys ONLY for ``user_allowed_commands``
@@ -179,17 +277,19 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     admin_key, cmd_key = _keys_for_scope(scope)
     admin_ids = _coerce_id_list(extra.get(admin_key))
     cmds = _coerce_command_list(extra.get(cmd_key))
+    channel_rule = _channel_rule_for_source(extra, source)
 
     if scope == "dm" and not cmds:
         # DM didn't specify — let group's user_allowed_commands fall through
         # so operators only need to list it once if it's the same.
         cmds = _coerce_command_list(extra.get("group_user_allowed_commands"))
 
-    enabled = bool(admin_ids)
+    enabled = bool(admin_ids or channel_rule)
     return SlashAccessPolicy(
         enabled=enabled,
         admin_user_ids=admin_ids,
         user_allowed_commands=cmds,
+        channel_rule=channel_rule,
     )
 
 
@@ -219,10 +319,11 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
             platform_config = None
     extra = _platform_extra(platform_config)
     scope = _scope_for_chat_type(getattr(source, "chat_type", None))
-    return policy_from_extra(extra, scope)
+    return policy_from_extra(extra, scope, source)
 
 
 __all__ = [
+    "ChannelCommandAccessRule",
     "SlashAccessPolicy",
     "policy_from_extra",
     "policy_for_source",

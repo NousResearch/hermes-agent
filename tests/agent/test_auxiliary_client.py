@@ -1995,6 +1995,33 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_get_auxiliary_extra_body_reads_task_config(self):
+        import agent.auxiliary_client as mod
+
+        config = {
+            "extra_body": {
+                "enable_thinking": False,
+                "reasoning": {"effort": "none"},
+            }
+        }
+
+        with patch.object(mod, "auxiliary_is_nous", False), patch.object(
+            mod, "_get_auxiliary_task_config", return_value=config
+        ):
+            assert mod.get_auxiliary_extra_body("profile_describer") == {
+                "enable_thinking": False,
+                "reasoning": {"effort": "none"},
+            }
+
+    def test_get_auxiliary_extra_body_preserves_legacy_nous_tags_without_task(self):
+        import agent.auxiliary_client as mod
+
+        with patch.object(mod, "auxiliary_is_nous", True), patch.object(
+            mod, "_nous_extra_body", return_value={"tags": ["nous"]}
+        ), patch.object(mod, "_get_auxiliary_task_config") as mock_task_config:
+            assert mod.get_auxiliary_extra_body() == {"tags": ["nous"]}
+            mock_task_config.assert_not_called()
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"

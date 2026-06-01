@@ -112,6 +112,42 @@ def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     assert meta["description_auto"] is True
 
 
+def test_describer_passes_task_extra_body(profile_env, monkeypatch):
+    monkeypatch.setattr(
+        profiles_mod, "profile_exists", lambda n: n == "myprof",
+    )
+    monkeypatch.setattr(
+        profiles_mod, "normalize_profile_name", lambda n: n,
+    )
+    monkeypatch.setattr(
+        profiles_mod, "get_profile_dir", lambda n: profile_env,
+    )
+
+    client = MagicMock()
+    client.chat.completions.create = MagicMock(
+        return_value=_fake_aux_response(
+            jsonlib.dumps({"description": "uses configured extra body"})
+        )
+    )
+
+    def _extra_body_for_task(task: str):
+        assert task == "profile_describer"
+        return {"enable_thinking": False}
+
+    with patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        return_value=(client, "test-model"),
+    ), patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body",
+        side_effect=_extra_body_for_task,
+    ):
+        outcome = describer.describe_profile("myprof")
+
+    assert outcome.ok, outcome.reason
+    kwargs = client.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"] == {"enable_thinking": False}
+
+
 def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     profiles_mod.write_profile_meta(
         profile_env, description="curated", description_auto=False,

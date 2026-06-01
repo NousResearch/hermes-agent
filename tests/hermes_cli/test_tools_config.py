@@ -1245,18 +1245,21 @@ def test_discord_toolsets_in_default_off():
     assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
 
 
-def test_discord_toolsets_not_available_on_other_platforms():
-    """Platform-scoping: discord / discord_admin should not appear on CLI,
-    Telegram, etc. — not even as an opt-in."""
+def test_discord_toolsets_platform_scoping():
+    """Platform-scoping: read/participate Discord is allowed on CLI + Discord
+    as an explicit opt-in; admin actions remain Discord-platform only."""
     from hermes_cli.tools_config import _toolset_allowed_for_platform
-    for plat in ["cli", "telegram", "slack", "whatsapp", "signal"]:
+
+    assert _toolset_allowed_for_platform("discord", "cli")
+    assert _toolset_allowed_for_platform("discord", "discord")
+    for plat in ["telegram", "slack", "whatsapp", "signal"]:
         assert not _toolset_allowed_for_platform("discord", plat), (
             f"`discord` toolset leaked onto {plat}"
         )
         assert not _toolset_allowed_for_platform("discord_admin", plat), (
             f"`discord_admin` toolset leaked onto {plat}"
         )
-    assert _toolset_allowed_for_platform("discord", "discord")
+    assert not _toolset_allowed_for_platform("discord_admin", "cli")
     assert _toolset_allowed_for_platform("discord_admin", "discord")
 
 
@@ -1264,6 +1267,14 @@ def test_discord_toolsets_user_enabled_are_honored():
     """When the user opts in via `hermes tools`, the toolset appears."""
     config = {"platform_toolsets": {"discord": ["web", "terminal", "discord"]}}
     enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolset_user_enabled_on_cli_is_honored():
+    """CLI can opt into non-admin Discord read/participate without admin tools."""
+    config = {"platform_toolsets": {"cli": ["web", "terminal", "discord", "discord_admin"]}}
+    enabled = _get_platform_tools(config, "cli")
     assert "discord" in enabled
     assert "discord_admin" not in enabled
 

@@ -147,7 +147,10 @@ def _xai_credentials_present() -> bool:
 # server admin, Slack workspace admin, etc.).  Keeps every other platform's
 # checklist from filling up with irrelevant toggles.
 _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
-    "discord": {"discord"},
+    # Non-admin Discord read/participate is useful from the CLI as an
+    # operations surface, too. It remains opt-in and runtime-gated by
+    # DISCORD_BOT_TOKEN. Admin actions stay Discord-platform only.
+    "discord": {"cli", "discord"},
     "discord_admin": {"discord"},
 }
 

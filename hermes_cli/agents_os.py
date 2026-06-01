@@ -88,6 +88,31 @@ APPROVAL_RISKS = {
     "destructive-delete",
     "financial-action",
 }
+AGENTS_OS_TABLES = {
+    "meta",
+    "tasks",
+    "approvals",
+    "artifacts",
+    "events",
+    "runs",
+    "agents",
+    "workflows",
+    "routing_rules",
+    "reviews",
+    "state_snapshots",
+}
+WORKFLOW_TEXT_COLUMNS = {
+    "route",
+    "capabilities",
+    "allowed_paths",
+    "blocked_paths",
+    "approval_risks",
+    "precheck",
+    "execute",
+    "verify",
+    "review",
+    "close",
+}
 
 
 @dataclass(frozen=True)
@@ -241,8 +266,22 @@ CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, created_at);
 """
 
+def _quote_sql_identifier(identifier: str, *, allowed: set[str] | None = None) -> str:
+    """Quote a SQLite identifier after strict allowlist validation.
+
+    SQLite does not support binding table/column names as query parameters, so
+    identifier-bearing statements must be built from trusted identifiers only.
+    """
+    if allowed is not None and identifier not in allowed:
+        raise ValueError(f"Unexpected SQL identifier: {identifier!r}")
+    if not identifier.replace("_", "").isalnum() or not identifier or identifier[0].isdigit():
+        raise ValueError(f"Unsafe SQL identifier: {identifier!r}")
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    quoted_table = _quote_sql_identifier(table, allowed=AGENTS_OS_TABLES)
+    return {row[1] for row in conn.execute("PRAGMA table_info(" + quoted_table + ")").fetchall()}
 
 
 def _seed_workflows_and_rules(conn: sqlite3.Connection) -> None:
@@ -322,7 +361,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "close": "'[]'",
     }.items():
         if col not in workflow_cols:
-            conn.execute(f"ALTER TABLE workflows ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+            quoted_col = _quote_sql_identifier(col, allowed=WORKFLOW_TEXT_COLUMNS)
+            conn.execute("ALTER TABLE workflows ADD COLUMN " + quoted_col + " TEXT NOT NULL DEFAULT " + default)
     review_cols = _table_columns(conn, "reviews")
     if "kind" not in review_cols:
         conn.execute("ALTER TABLE reviews ADD COLUMN kind TEXT NOT NULL DEFAULT 'general'")
@@ -971,7 +1011,11 @@ def doctor(args: argparse.Namespace) -> int:
 
 def _snapshot_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     tables = ["meta", "tasks", "approvals", "artifacts", "events", "runs", "agents", "workflows", "routing_rules", "reviews"]
-    return {table: [row_to_dict(r) for r in conn.execute(f"SELECT * FROM {table}").fetchall()] for table in tables}
+    payload: dict[str, Any] = {}
+    for table in tables:
+        quoted_table = _quote_sql_identifier(table, allowed=AGENTS_OS_TABLES)
+        payload[table] = [row_to_dict(r) for r in conn.execute("SELECT * FROM " + quoted_table).fetchall()]
+    return payload
 
 
 def snapshot_cmd(args: argparse.Namespace) -> int:

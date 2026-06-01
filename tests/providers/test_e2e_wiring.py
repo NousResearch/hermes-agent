@@ -116,3 +116,31 @@ class TestDeepSeekProfileWiring:
             ollama_num_ctx=None,
         )
         assert kwargs["messages"] == msgs
+
+
+class TestStepFunProfileWiring:
+    """Minimal e2e wiring check for the new StepFunProfile (reasoning_effort path)."""
+
+    def test_stepfun_profile_is_used(self, transport):
+        profile = get_provider_profile("stepfun")
+        # Just confirm we get a proper subclass, not the bare base
+        from plugins.model_providers.stepfun import StepFunProfile
+        assert isinstance(profile, StepFunProfile)
+
+    def test_stepfun_no_forced_max_tokens(self, transport):
+        profile = get_provider_profile("stepfun")
+        kwargs = transport.build_kwargs(
+            model="step-3.7-flash",
+            messages=_msgs(),
+            tools=None,
+            provider_profile=profile,
+            max_tokens=None,
+            max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
+            timeout=300,
+            reasoning_config=None,
+            request_overrides=None,
+            session_id="test",
+            ollama_num_ctx=None,
+        )
+        # StepFun profile does not force max_tokens
+        assert kwargs.get("max_tokens") is None or "max_tokens" not in kwargs

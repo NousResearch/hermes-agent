@@ -1,7 +1,5 @@
 """Tests for Telegram message reactions tied to processing lifecycle hooks."""
 
-import sqlite3
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -274,104 +272,6 @@ async def test_clear_reactions_returns_false_without_bot(monkeypatch):
 
     result = await adapter._clear_reactions("123", "456")
     assert result is False
-
-
-@pytest.mark.asyncio
-async def test_handle_reaction_update_persists_and_dispatches(monkeypatch):
-    """Incoming Telegram reactions should be persisted and routed to the agent."""
-    adapter = _make_adapter()
-    adapter.handle_message = AsyncMock()
-    adapter._bot = SimpleNamespace(id=999999)
-
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        """
-        CREATE TABLE messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            platform_message_id TEXT
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE telegram_reaction_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            platform TEXT,
-            chat_id TEXT,
-            message_id TEXT,
-            thread_id TEXT,
-            reactor_user_id TEXT,
-            reactor_user_name TEXT,
-            actor_chat_id TEXT,
-            timestamp REAL,
-            reaction_json TEXT,
-            old_reaction_json TEXT,
-            new_reaction_json TEXT,
-            raw_update_json TEXT,
-            actor_chat_name TEXT,
-            old_reaction TEXT,
-            new_reaction TEXT,
-            raw_update TEXT
-        )
-        """
-    )
-    conn.execute(
-        "INSERT INTO messages(session_id, platform_message_id) VALUES (?, ?)",
-        ("sess-1", "521"),
-    )
-    conn.commit()
-
-    origin = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1003804726892",
-        chat_type="group",
-        user_id="114091409",
-        user_name="lililililililil",
-    )
-    session_entry = SimpleNamespace(session_id="sess-1", origin=origin)
-    adapter._session_store = SimpleNamespace(
-        _db=SimpleNamespace(_conn=conn),
-        list_sessions=lambda: [session_entry],
-    )
-
-    reaction = SimpleNamespace(
-        chat=SimpleNamespace(id=-1003804726892),
-        message_id=521,
-        date=datetime.now(timezone.utc),
-        old_reaction=[],
-        new_reaction=[{"type": "emoji", "emoji": "🤬"}],
-        user=SimpleNamespace(
-            id=114091409,
-            full_name="lililililililil",
-            username=None,
-            first_name=None,
-        ),
-        actor_chat=None,
-        message_thread_id=None,
-    )
-    update = SimpleNamespace(message_reaction=reaction)
-
-    await adapter._handle_reaction_update(update, context=SimpleNamespace())
-
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert event.text == "reaction:added:🤬"
-    assert event.message_id == "521"
-    assert event.source == origin
-
-    row = conn.execute(
-        "SELECT platform, chat_id, message_id, reactor_user_name, reaction_json, new_reaction_json FROM telegram_reaction_events"
-    ).fetchone()
-    assert row == (
-        "telegram",
-        "-1003804726892",
-        "521",
-        "lililililililil",
-        '[{"type": "emoji", "emoji": "🤬"}]',
-        '[{"type": "emoji", "emoji": "🤬"}]',
-    )
 
 
 # ── config.py bridging ───────────────────────────────────────────────

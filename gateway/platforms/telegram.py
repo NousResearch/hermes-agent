@@ -30,7 +30,6 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
-        MessageReactionHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -49,7 +48,6 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
-    MessageReactionHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -120,7 +118,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, MessageReactionHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -139,7 +137,6 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
-            MessageReactionHandler as _MRH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -156,7 +153,6 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
-    MessageReactionHandler = _MRH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -1585,7 +1581,6 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            self._app.add_handler(MessageReactionHandler(self._handle_reaction_update))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -5859,238 +5854,6 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
-
-    @staticmethod
-    def _telegram_reaction_items(items: Any) -> list[dict[str, Any]]:
-        """Normalize Telegram reaction objects into JSON-serializable dicts."""
-        normalized: list[dict[str, Any]] = []
-        for item in items or []:
-            if isinstance(item, dict):
-                normalized.append(dict(item))
-                continue
-            if hasattr(item, "to_dict"):
-                try:
-                    data = item.to_dict()
-                except Exception:
-                    data = {}
-                if isinstance(data, dict):
-                    normalized.append(data)
-                    continue
-            data: dict[str, Any] = {}
-            for key in ("type", "emoji", "custom_emoji_id"):
-                value = getattr(item, key, None)
-                if value is not None:
-                    data[key] = value
-            if not data:
-                data["value"] = str(item)
-            normalized.append(data)
-        return normalized
-
-    @staticmethod
-    def _telegram_reaction_label(items: list[dict[str, Any]]) -> str:
-        """Render a compact reaction label for logs and synthetic events."""
-        labels: list[str] = []
-        for item in items:
-            label = item.get("emoji") or item.get("custom_emoji_id") or item.get("type")
-            if label:
-                labels.append(str(label))
-        return "+".join(labels) if labels else "UNKNOWN"
-
-    def _find_session_entry_by_platform_message_id(self, message_id: str):
-        """Return the SessionEntry that owns a Telegram platform message id."""
-        store = getattr(self, "_session_store", None)
-        db = getattr(store, "_db", None) if store else None
-        conn = getattr(db, "_conn", None) if db else None
-        if not conn:
-            return None
-        try:
-            row = conn.execute(
-                "SELECT session_id FROM messages WHERE platform_message_id = ? ORDER BY id DESC LIMIT 1",
-                (str(message_id),),
-            ).fetchone()
-        except Exception as exc:
-            logger.debug("[%s] Telegram reaction session lookup failed: %s", self.name, exc)
-            return None
-        if not row:
-            return None
-        session_id = str(row[0])
-        try:
-            for entry in store.list_sessions():
-                if entry.session_id == session_id:
-                    return entry
-        except Exception as exc:
-            logger.debug("[%s] Telegram reaction session entry lookup failed: %s", self.name, exc)
-        return None
-
-    def _store_telegram_reaction_event(
-        self,
-        *,
-        session_id: Optional[str],
-        chat_id: str,
-        message_id: str,
-        thread_id: Optional[str],
-        reactor_user_id: Optional[str],
-        reactor_user_name: Optional[str],
-        actor_chat_id: Optional[str],
-        actor_chat_name: Optional[str],
-        old_reaction_items: list[dict[str, Any]],
-        new_reaction_items: list[dict[str, Any]],
-        raw_update: dict[str, Any],
-        timestamp: datetime,
-    ) -> bool:
-        """Persist an incoming Telegram reaction into telegram_reaction_events."""
-        store = getattr(self, "_session_store", None)
-        db = getattr(store, "_db", None) if store else None
-        conn = getattr(db, "_conn", None) if db else None
-        if not conn:
-            return False
-        reaction_items = new_reaction_items or old_reaction_items
-        reaction_json = json.dumps(reaction_items, ensure_ascii=False)
-        old_reaction_json = json.dumps(old_reaction_items, ensure_ascii=False)
-        new_reaction_json = json.dumps(new_reaction_items, ensure_ascii=False)
-        raw_update_json = json.dumps(raw_update, ensure_ascii=False)
-        try:
-            conn.execute(
-                """
-                INSERT INTO telegram_reaction_events (
-                    session_id, platform, chat_id, message_id, thread_id,
-                    reactor_user_id, reactor_user_name, actor_chat_id,
-                    timestamp, reaction_json, old_reaction_json, new_reaction_json,
-                    raw_update_json, actor_chat_name, old_reaction, new_reaction, raw_update
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    "telegram",
-                    str(chat_id),
-                    str(message_id),
-                    str(thread_id) if thread_id is not None else None,
-                    str(reactor_user_id) if reactor_user_id else None,
-                    reactor_user_name,
-                    str(actor_chat_id) if actor_chat_id else None,
-                    timestamp.timestamp(),
-                    reaction_json,
-                    old_reaction_json,
-                    new_reaction_json,
-                    raw_update_json,
-                    actor_chat_name,
-                    old_reaction_json,
-                    new_reaction_json,
-                    raw_update_json,
-                ),
-            )
-            conn.commit()
-            return True
-        except Exception as exc:
-            logger.debug("[%s] Failed to persist Telegram reaction event: %s", self.name, exc)
-            return False
-
-    async def _handle_reaction_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Persist Telegram reactions and route them as synthetic text events.
-
-        Telegram doesn't include the reacted-to message body in the reaction
-        update, so we look up the target platform message id in state.db.
-        When it maps back to an existing session, we re-use that session's
-        origin source so the reaction lands in the same transcript instead of
-        creating a fresh, unrelated conversation.
-        """
-        reaction = getattr(update, "message_reaction", None)
-        if reaction is None:
-            return
-
-        chat = getattr(reaction, "chat", None)
-        if not chat:
-            return
-
-        message_id = str(getattr(reaction, "message_id", "") or "")
-        if not message_id:
-            return
-
-        user = getattr(reaction, "user", None)
-        actor_chat = getattr(reaction, "actor_chat", None)
-        reactor_user_id = str(getattr(user, "id", "") or "") if user else None
-        reactor_user_name = None
-        if user is not None:
-            reactor_user_name = (
-                getattr(user, "full_name", None)
-                or getattr(user, "username", None)
-                or getattr(user, "first_name", None)
-                or reactor_user_id
-            )
-        actor_chat_id = str(getattr(actor_chat, "id", "") or "") if actor_chat else None
-        actor_chat_name = getattr(actor_chat, "title", None) if actor_chat else None
-
-        old_items = self._telegram_reaction_items(getattr(reaction, "old_reaction", None))
-        new_items = self._telegram_reaction_items(getattr(reaction, "new_reaction", None))
-        action = "added" if new_items and not old_items else "removed" if old_items and not new_items else "changed"
-        label = self._telegram_reaction_label(new_items or old_items)
-
-        # Skip our own lifecycle reactions so the bot doesn't react to itself.
-        bot_id = str(getattr(self._bot, "id", "") or "") if self._bot else ""
-        if bot_id and reactor_user_id and reactor_user_id == bot_id:
-            logger.debug("[%s] Ignoring self reaction update on message %s", self.name, message_id)
-            return
-        if bot_id and actor_chat_id and actor_chat_id == bot_id:
-            logger.debug("[%s] Ignoring bot actor_chat reaction update on message %s", self.name, message_id)
-            return
-
-        raw_update = {
-            "chat_id": getattr(chat, "id", None),
-            "message_id": int(message_id) if message_id.isdigit() else message_id,
-            "date": getattr(getattr(reaction, "date", None), "isoformat", lambda: None)(),
-            "old_reaction": old_items,
-            "new_reaction": new_items,
-            "user_id": getattr(user, "id", None) if user else None,
-            "user_name": reactor_user_name,
-            "actor_chat_id": actor_chat_id,
-            "actor_chat_name": actor_chat_name,
-        }
-
-        session_entry = self._find_session_entry_by_platform_message_id(message_id)
-        session_id = session_entry.session_id if session_entry else None
-        timestamp = getattr(reaction, "date", None) or datetime.now(tz=timezone.utc)
-        persisted = self._store_telegram_reaction_event(
-            session_id=session_id,
-            chat_id=str(getattr(chat, "id", "")),
-            message_id=message_id,
-            thread_id=(
-                str(getattr(reaction, "message_thread_id", None))
-                if getattr(reaction, "message_thread_id", None) is not None
-                else None
-            ),
-            reactor_user_id=reactor_user_id,
-            reactor_user_name=reactor_user_name,
-            actor_chat_id=actor_chat_id,
-            actor_chat_name=actor_chat_name,
-            old_reaction_items=old_items,
-            new_reaction_items=new_items,
-            raw_update=raw_update,
-            timestamp=timestamp,
-        )
-
-        logger.info(
-            "[%s] Telegram reaction %s for chat=%s message=%s user=%s new=%s persisted=%s",
-            self.name,
-            action,
-            getattr(chat, "id", "unknown"),
-            message_id,
-            reactor_user_name or reactor_user_id or actor_chat_name or "unknown",
-            label,
-            persisted,
-        )
-
-        if not session_entry or not session_entry.origin:
-            return
-
-        event = MessageEvent(
-            text=f"reaction:{action}:{label}",
-            message_type=MessageType.TEXT,
-            source=session_entry.origin,
-            raw_message=update,
-            message_id=message_id,
-            timestamp=timestamp,
-        )
-        await self.handle_message(event)
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

@@ -26,6 +26,16 @@ docker run -it --rm \
 
 This drops you into the setup wizard, which will prompt you for your API keys and write them to `~/.hermes/.env`. You only need to do this once. It is highly recommended to set up a chat system for the gateway to work with at this point.
 
+:::warning Use SSH for remote setup
+If you are installing Hermes from a hosting-provider browser console, such as the Hetzner web console, open a real SSH session before pasting setup commands or API keys. Some browser consoles rewrite or drop special characters like quotes, backslashes, `$`, `!`, and `@`, which can corrupt Docker commands, environment variables, and secrets.
+
+Run the commands from your local terminal instead:
+
+```sh
+ssh user@your-server
+```
+:::
+
 :::tip
 Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](/integrations/nous-portal).
 :::

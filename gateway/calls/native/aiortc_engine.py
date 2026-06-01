@@ -1669,7 +1669,10 @@ def _create_pcm_streaming_track(target_rate: int):
             )
             # Buffer for resampled frames not yet emitted: resample() can return
             # more than one frame, and recv() emits one per call (drained FIFO).
-            self._pending_out: deque = deque()
+            # Note: with frame_size set, the resampler buffers (<frame_size)
+            # samples on the first input, so the very first recv() emits one
+            # 20ms silence frame before real audio (inaudible one-time latency).
+            self._pending_out: deque[Any] = deque()
             self._pts = 0
             self._time_base = fractions.Fraction(1, target_rate)
             self._start_time = 0.0

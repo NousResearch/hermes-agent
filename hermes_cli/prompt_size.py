@@ -46,6 +46,7 @@ def _build_inspection_agent(platform: str) -> Any:
         quiet_mode=True,
         save_trajectories=False,
         platform=platform,
+        hitl_config={"enabled": False},
     )
 
 

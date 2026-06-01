@@ -1622,6 +1622,12 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        # Phase 3: Load HITL config for continuous/converge mode support
+        _hitl_cfg = _cfg.get("hitl", {"enabled": False})
+        if job.get("mode") in {"converge", "continuous", "supervised"}:
+            _hitl_cfg = dict(_hitl_cfg)
+            _hitl_cfg["enabled"] = True
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1643,16 +1649,13 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
-            # Cron jobs should always inherit the user's SOUL.md identity from
-            # HERMES_HOME. When a workdir is configured, also inject project
-            # context files (AGENTS.md / CLAUDE.md / .cursorrules) from there.
-            # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_memory=True,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            hitl_config=_hitl_cfg,
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run

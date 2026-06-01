@@ -380,6 +380,16 @@ def run_conversation(
     # Installed once, transparent when streams are healthy, prevents crash on write.
     _install_safe_stdio()
 
+    # HITL Harness: session-start hook (idempotent — safe to call every turn)
+    if getattr(agent, "hitl_harness", None):
+        try:
+            agent.hitl_harness.on_session_start(
+                agent.session_id or "",
+                system_message or "",
+            )
+        except Exception:
+            pass
+
     agent._ensure_db_session()
 
     # Tell auxiliary_client what the live main provider/model are for
@@ -819,6 +829,13 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
+
+        # HITL Harness: iteration-start hook
+        if getattr(agent, "hitl_harness", None):
+            try:
+                agent.hitl_harness.on_iteration_start(messages)
+            except Exception:
+                pass
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -3603,7 +3620,22 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
-            
+
+            # HITL Harness: iteration-end hook (check fitness / State Locking)
+            if getattr(agent, "hitl_harness", None):
+                try:
+                    _hitl_resp = agent.hitl_harness.on_iteration_end({
+                        "assistant_message": assistant_message,
+                        "finish_reason": finish_reason,
+                    })
+                    if _hitl_resp.get("_hitl_halt"):
+                        _turn_exit_reason = "hitl_halt"
+                        final_response = _hitl_resp.get("_hitl_halt_reason", "Optimization halted by HITL harness.")
+                        messages.append({"role": "assistant", "content": final_response})
+                        break
+                except Exception:
+                    pass
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
@@ -4683,6 +4715,13 @@ def run_conversation(
     # provider before the second message. Actual session-end cleanup is
     # handled by the CLI (atexit / /reset) and gateway (session expiry /
     # _reset_session).
+
+    # HITL Harness: session-end hook (flushes iterations.jsonl, etc.)
+    if getattr(agent, "hitl_harness", None):
+        try:
+            agent.hitl_harness.on_session_end()
+        except Exception:
+            pass
 
     # Plugin hook: on_session_end
     # Fired at the very end of every run_conversation call.

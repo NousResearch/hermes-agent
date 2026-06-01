@@ -633,6 +633,12 @@ def _truthy_env(name: str, default: bool = False) -> bool:
     return v.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _line_env_name(env_prefix: str, name: str) -> str:
+    if env_prefix == "LINE" and name in {"ACCESS_TOKEN", "SECRET"}:
+        return f"LINE_CHANNEL_{name}"
+    return f"{env_prefix}_{name}"
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -643,58 +649,69 @@ class LineAdapter(BasePlatformAdapter):
     # LINE has its own message-edit story (none) — we always send fresh
     # bubbles, never edit, so REQUIRES_EDIT_FINALIZE stays False.
 
-    def __init__(self, config, **kwargs):
-        platform = Platform("line")
+    def __init__(
+        self,
+        config,
+        *,
+        platform_value: str = "line",
+        env_prefix: str = "LINE",
+        default_port: int = DEFAULT_WEBHOOK_PORT,
+        default_webhook_path: str = DEFAULT_WEBHOOK_PATH,
+        default_media_prefix: str = DEFAULT_MEDIA_PATH_PREFIX,
+    ):
+        platform = Platform(platform_value)
         super().__init__(config=config, platform=platform)
 
         extra = getattr(config, "extra", {}) or {}
+        self.env_prefix = env_prefix
 
         # Credentials
         self.channel_access_token = (
-            os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+            os.getenv(_line_env_name(env_prefix, "ACCESS_TOKEN"))
             or extra.get("channel_access_token", "")
         )
         self.channel_secret = (
-            os.getenv("LINE_CHANNEL_SECRET")
+            os.getenv(_line_env_name(env_prefix, "SECRET"))
             or extra.get("channel_secret", "")
         )
 
         # Webhook server
-        self.webhook_host = os.getenv("LINE_HOST") or extra.get("host", "0.0.0.0")
+        self.webhook_host = os.getenv(_line_env_name(env_prefix, "HOST")) or extra.get("host", "0.0.0.0")
         try:
             self.webhook_port = int(
-                os.getenv("LINE_PORT") or extra.get("port", DEFAULT_WEBHOOK_PORT)
+                os.getenv(_line_env_name(env_prefix, "PORT")) or extra.get("port", default_port)
             )
         except (TypeError, ValueError):
-            self.webhook_port = DEFAULT_WEBHOOK_PORT
-        self.webhook_path = extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
+            self.webhook_port = default_port
+        self.webhook_path = extra.get("webhook_path", default_webhook_path)
+        self.media_path_prefix = default_media_prefix
 
         # Public base URL — required for media sending when bind isn't
         # publicly reachable.
         self.public_base_url = (
-            os.getenv("LINE_PUBLIC_URL")
+            os.getenv(_line_env_name(env_prefix, "PUBLIC_URL"))
             or extra.get("public_url", "")
             or ""
         ).rstrip("/")
 
         # Three-allowlist gating
         self.allow_all = _truthy_env(
-            "LINE_ALLOW_ALL_USERS", bool(extra.get("allow_all_users", False))
+            _line_env_name(env_prefix, "ALLOW_ALL_USERS"), bool(extra.get("allow_all_users", False))
         )
         self.allowed_users = _csv_set(
-            os.getenv("LINE_ALLOWED_USERS", "")
+            os.getenv(_line_env_name(env_prefix, "ALLOWED_USERS"), "")
         ) | set(extra.get("allowed_users", []))
         self.allowed_groups = _csv_set(
-            os.getenv("LINE_ALLOWED_GROUPS", "")
+            os.getenv(_line_env_name(env_prefix, "ALLOWED_GROUPS"), "")
         ) | set(extra.get("allowed_groups", []))
         self.allowed_rooms = _csv_set(
-            os.getenv("LINE_ALLOWED_ROOMS", "")
+            os.getenv(_line_env_name(env_prefix, "ALLOWED_ROOMS"), "")
         ) | set(extra.get("allowed_rooms", []))
 
         # Slow-LLM postback button threshold
         try:
             self.slow_response_threshold = float(
-                os.getenv("LINE_SLOW_RESPONSE_THRESHOLD")
+                os.getenv(_line_env_name(env_prefix, "SLOW_RESPONSE_THRESHOLD"))
                 or extra.get("slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
             )
         except (TypeError, ValueError):
@@ -702,19 +719,19 @@ class LineAdapter(BasePlatformAdapter):
 
         # User-overridable copy
         self.pending_text = (
-            os.getenv("LINE_PENDING_TEXT")
+            os.getenv(_line_env_name(env_prefix, "PENDING_TEXT"))
             or extra.get("pending_text", DEFAULT_PENDING_REPLY_TEXT)
         )
         self.button_label = (
-            os.getenv("LINE_BUTTON_LABEL")
+            os.getenv(_line_env_name(env_prefix, "BUTTON_LABEL"))
             or extra.get("button_label", DEFAULT_BUTTON_LABEL)
         )
         self.delivered_text = (
-            os.getenv("LINE_DELIVERED_TEXT")
+            os.getenv(_line_env_name(env_prefix, "DELIVERED_TEXT"))
             or extra.get("delivered_text", DEFAULT_DELIVERED_TEXT)
         )
         self.interrupted_text = (
-            os.getenv("LINE_INTERRUPTED_TEXT")
+            os.getenv(_line_env_name(env_prefix, "INTERRUPTED_TEXT"))
             or extra.get("interrupted_text", DEFAULT_INTERRUPTED_TEXT)
         )
 
@@ -796,7 +813,7 @@ class LineAdapter(BasePlatformAdapter):
         self._app.router.add_get(f"{self.webhook_path}/health", self._handle_health)
         # Media serving endpoint.
         self._app.router.add_get(
-            f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}",
+            f"{self.media_path_prefix}/{{token}}/{{filename}}",
             self._handle_media,
         )
 
@@ -1498,9 +1515,9 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
 
 def _check_requirements(env_prefix: str) -> bool:
     """Plugin gate: require credentials AND aiohttp at runtime."""
-    if not os.getenv(f"{env_prefix}_CHANNEL_ACCESS_TOKEN"):
+    if not os.getenv(_line_env_name(env_prefix, "ACCESS_TOKEN")):
         return False
-    if not os.getenv(f"{env_prefix}_CHANNEL_SECRET"):
+    if not os.getenv(_line_env_name(env_prefix, "SECRET")):
         return False
     try:
         import aiohttp  # noqa: F401

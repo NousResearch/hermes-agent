@@ -32,3 +32,39 @@ def test_customer_defaults_remain_unchanged_without_admin_env(monkeypatch):
     assert adapter.webhook_path == "/line/webhook"
     assert check_requirements() is True
     assert check_requirements_admin() is False
+
+
+def test_admin_constructor_reads_admin_env_and_defaults(monkeypatch):
+    from gateway.config import Platform, PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "customer-token")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "customer-secret")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_SECRET", "admin-secret")
+    monkeypatch.delenv("LINE_ADMIN_CHANNEL_PORT", raising=False)
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        adapter = LineAdapter(
+            PlatformConfig(enabled=True),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    assert adapter.channel_access_token == "admin-token"
+    assert adapter.channel_secret == "admin-secret"
+    assert adapter.platform == Platform("line_admin")
+    assert adapter.webhook_port == 8647
+    assert adapter.webhook_path == "/line-admin/webhook"

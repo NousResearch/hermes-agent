@@ -16268,7 +16268,9 @@ class GatewayRunner:
 
         try:
             _timeout = ClientTimeout(total=0, sock_read=1800)
-            async with _AioClientSession(timeout=_timeout) as session:
+            session = _AioClientSession(timeout=_timeout)
+            resp = None
+            try:
                 async with session.post(
                     f"{proxy_url}/v1/chat/completions",
                     json=body,
@@ -16330,6 +16332,24 @@ class GatewayRunner:
                                                 _stream_consumer.on_delta(content)
                                 except json.JSONDecodeError:
                                     pass
+            finally:
+                if resp is not None:
+                    _release = getattr(resp, "release", None)
+                    if callable(_release):
+                        try:
+                            with_context = _release()
+                            if inspect.isawaitable(with_context):
+                                await with_context
+                        except Exception as _release_err:  # pragma: no cover
+                            logger.debug("proxy response release failed for %s: %s", proxy_url, _release_err)
+                _close = getattr(session, "close", None)
+                if callable(_close):
+                    try:
+                        _maybe_awaitable = _close()
+                        if inspect.isawaitable(_maybe_awaitable):
+                            await _maybe_awaitable
+                    except Exception as _close_err:  # pragma: no cover
+                        logger.debug("proxy session close failed for %s: %s", proxy_url, _close_err)
 
         except asyncio.CancelledError:
             raise

@@ -44,9 +44,13 @@ class _FakeSSEResponse:
         self._sse_chunks = sse_chunks or []
         self._error_text = error_text
         self.content = self
+        self.release_called = False
 
     async def text(self):
         return self._error_text
+
+    async def release(self):
+        self.release_called = True
 
     async def iter_any(self):
         for chunk in self._sse_chunks:
@@ -69,12 +73,16 @@ class _FakeSession:
         self.captured_url = None
         self.captured_json = None
         self.captured_headers = None
+        self.close_called = False
 
     def post(self, url, json=None, headers=None, **kwargs):
         self.captured_url = url
         self.captured_json = json
         self.captured_headers = headers
         return self._response
+
+    async def close(self):
+        self.close_called = True
 
     async def __aenter__(self):
         return self
@@ -466,6 +474,43 @@ class TestRunAgentViaProxy:
                     )
 
         assert "Authorization" not in session.captured_headers
+
+    @pytest.mark.asyncio
+    async def test_connection_error_closes_session_and_response(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        class _RemoteProtocolError(Exception):
+            """Name-compatible stand in for aiohttp's remote protocol stream error."""
+
+        class _DroppingResponse(_FakeSSEResponse):
+            async def iter_any(self):
+                # async for expects an async generator; keep one async yield point and
+                # then raise the protocol error to emulate remote truncation.
+                if False:
+                    yield b""
+                raise _RemoteProtocolError("peer closed connection without sending complete message body")
+
+        resp = _DroppingResponse(status=200)
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "Proxy connection error" in result["final_response"]
+        assert session.close_called is True
+        assert session._response.release_called is True
+
 
     @pytest.mark.asyncio
     async def test_no_system_message_when_context_empty(self, monkeypatch):

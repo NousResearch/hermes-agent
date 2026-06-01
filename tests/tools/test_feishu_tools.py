@@ -57,6 +57,29 @@ class TestFeishuToolRegistration(unittest.TestCase):
             self.assertIn("file_token", props, f"{tool_name} missing file_token param")
             self.assertIn("file_type", props, f"{tool_name} missing file_type param")
 
+    def test_drive_tools_file_type_enum(self):
+        list_reply_tools = (
+            "feishu_drive_list_comments",
+            "feishu_drive_list_comment_replies",
+            "feishu_drive_reply_comment",
+        )
+        for tool_name in list_reply_tools:
+            entry = registry.get_entry(tool_name)
+            file_type = entry.schema["parameters"]["properties"]["file_type"]
+            self.assertEqual(
+                file_type.get("enum"),
+                ["docx", "sheet", "slides", "file"],
+                f"{tool_name} file_type enum mismatch",
+            )
+
+        entry = registry.get_entry("feishu_drive_add_comment")
+        file_type = entry.schema["parameters"]["properties"]["file_type"]
+        self.assertEqual(
+            file_type.get("enum"),
+            ["docx"],
+            "feishu_drive_add_comment must restrict file_type to docx only",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

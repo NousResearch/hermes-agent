@@ -19,6 +19,7 @@ import yaml
 
 from agent.memory_provider import MemoryProvider
 from .consolidation import RuleBasedConsolidator
+from .daily_consolidation import run_daily_consolidation_report
 from .index import MemoryV2Index
 from .retrieval import MemoryPacketComposer
 from .schemas import CandidateMemory, GateDecision, WorkingMemory, utc_now_iso
@@ -54,6 +55,18 @@ CONSOLIDATE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {},
+        "required": [],
+    },
+}
+
+DAILY_REPORT_SCHEMA = {
+    "name": "memory_v2_daily_report",
+    "description": "Run Memory v2 daily consolidation and write an auditable daily report/episode.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "Optional report date as YYYY-MM-DD; defaults to current UTC date."},
+        },
         "required": [],
     },
 }
@@ -292,6 +305,7 @@ class MemoryV2Provider(MemoryProvider):
             STATUS_SCHEMA,
             SEARCH_SCHEMA,
             CONSOLIDATE_SCHEMA,
+            DAILY_REPORT_SCHEMA,
             CANDIDATES_SCHEMA,
             PROMOTE_SCHEMA,
             REJECT_SCHEMA,
@@ -460,6 +474,12 @@ class MemoryV2Provider(MemoryProvider):
         if tool_name == "memory_v2_consolidate":
             report = RuleBasedConsolidator().consolidate(self.store, self.index)
             return json.dumps({"success": True, **report.to_dict()})
+        if tool_name == "memory_v2_daily_report":
+            try:
+                report = run_daily_consolidation_report(self.store, self.index, date=args.get("date"))
+            except ValueError as exc:
+                return json.dumps({"success": False, "error": str(exc)})
+            return json.dumps(report)
         if tool_name == "memory_v2_candidates":
             return json.dumps(self._candidates_payload(args))
         if tool_name == "memory_v2_reject":

@@ -92,6 +92,15 @@ def test_materialize_case_marker_replaces_marker_with_nonce():
     assert materialized.prompt == "reply exactly OK_run_1_case"
 
 
+def test_materialize_case_marker_injects_source_root(tmp_path):
+    case = canary.CanaryCase(name="unit", marker="OK", prompt="cd {source_root}; reply OK")
+
+    materialized = canary.materialize_case_marker(case, "n1", source_root=tmp_path)
+
+    assert str(tmp_path) in materialized.prompt
+    assert materialized.prompt.endswith("reply OK_n1")
+
+
 def test_run_case_uses_runner_and_sanitizes_prompt_from_logged_command(tmp_path):
     case = canary.CanaryCase(name="unit", marker="OK", prompt="private prompt")
 

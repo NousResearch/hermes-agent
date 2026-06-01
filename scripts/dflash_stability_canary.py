@@ -74,7 +74,7 @@ DEFAULT_CASES: tuple[CanaryCase, ...] = (
         name="short-fragment-detector",
         marker="CANARY_FRAGMENT_OK",
         prompt=(
-            "Run a Python check in the current Hermes checkout that imports "
+            "Run a Python check from the Hermes checkout at `{source_root}` that imports "
             "`looks_like_incomplete_final_fragment` from `agent.stall_retry` and "
             "verifies it returns true for exactly this string: "
             "`I see a lot of discord-res tasks (digest Discord content) and some`. "
@@ -155,16 +155,24 @@ def marker_suffix(*parts: object) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
 
 
-def materialize_case_marker(case: CanaryCase, suffix: str = "") -> CanaryCase:
+def materialize_case_marker(
+    case: CanaryCase,
+    suffix: str = "",
+    *,
+    source_root: Path | None = None,
+) -> CanaryCase:
     suffix = marker_suffix(suffix)
+    prompt = case.prompt
+    if source_root is not None:
+        prompt = prompt.replace("{source_root}", str(source_root))
     if not suffix:
-        return case
+        return CanaryCase(name=case.name, marker=case.marker, prompt=prompt)
 
     marker = f"{case.marker}_{suffix}"
     return CanaryCase(
         name=case.name,
         marker=marker,
-        prompt=case.prompt.replace(case.marker, marker),
+        prompt=prompt.replace(case.marker, marker),
     )
 
 
@@ -276,9 +284,14 @@ def run_case(
     timeout_s: float,
     strict_marker: bool,
     marker_nonce: str = "",
+    source_root: Path | None = None,
     runner: Callable[[Sequence[str], Path, float], CommandResult] | None = None,
 ) -> dict:
-    active_case = materialize_case_marker(case, marker_nonce)
+    active_case = materialize_case_marker(
+        case,
+        marker_nonce,
+        source_root=source_root or Path(__file__).resolve().parents[1],
+    )
     cmd = build_command(hermes_bin, active_case, model=model, provider=provider, toolsets=toolsets)
 
     if runner is None:

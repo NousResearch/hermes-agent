@@ -83,6 +83,32 @@ def _read_manifest() -> Dict[str, str]:
         return {}
 
 
+def _read_suppressed_names() -> set:
+    """Built-in skills the curator pruned — must NOT be re-seeded on sync.
+
+    Delegates to ``tools.skill_usage`` (single source of truth) and falls back
+    to reading ``~/.hermes/skills/.curator_suppressed`` directly if that import
+    is unavailable in a packaged/update context.
+    """
+    try:
+        from tools.skill_usage import read_suppressed_names
+
+        return read_suppressed_names()
+    except Exception:
+        path = SKILLS_DIR / ".curator_suppressed"
+        if not path.exists():
+            return set()
+        names = set()
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    names.add(line)
+        except OSError:
+            pass
+        return names
+
+
 def _write_manifest(entries: Dict[str, str]):
     """Write the manifest file atomically in v2 format (name:hash).
 
@@ -428,7 +454,7 @@ def sync_skills(quiet: bool = False) -> dict:
     if not bundled_dir.exists():
         return {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
 
@@ -436,13 +462,24 @@ def sync_skills(quiet: bool = False) -> dict:
     manifest = _read_manifest()
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
+    suppressed = _read_suppressed_names()
 
     copied = []
     updated = []
     user_modified = []
+    suppressed_skipped: List[str] = []
     skipped = 0
 
     for skill_name, skill_src in bundled_skills:
+        # Curator-pruned built-ins: do not re-seed. The suppression list
+        # (~/.hermes/skills/.curator_suppressed) is written when the curator
+        # archives a bundled skill with curator.prune_builtins enabled. Without
+        # this skip, every `hermes update` would resurrect a skill the user
+        # deliberately pruned. Restoring the skill clears its suppression entry.
+        if skill_name in suppressed:
+            suppressed_skipped.append(skill_name)
+            continue
+
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
 
@@ -561,6 +598,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "skipped": skipped,
         "user_modified": user_modified,
         "cleaned": cleaned,
+        "suppressed": suppressed_skipped,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": optional_provenance_backfilled,
     }

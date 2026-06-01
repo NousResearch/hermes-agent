@@ -21,6 +21,8 @@ It DOES include:
     pointer — otherwise the curator would immediately re-fire on the next
     tick)
   - ``.bundled_manifest`` (so protection markers stay consistent)
+  - ``.curator_suppressed`` (so rollback restores the set of pruned built-ins
+    the re-seeder must leave archived)
 
 Alongside the skills tarball, each snapshot also captures a copy of
 ``~/.hermes/cron/jobs.json`` as ``cron-jobs.json`` when it exists. Cron

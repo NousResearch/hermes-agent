@@ -183,6 +183,18 @@ def get_archive_after_days() -> int:
         return DEFAULT_ARCHIVE_AFTER_DAYS
 
 
+def get_prune_builtins() -> bool:
+    """Whether the curator may prune (archive) bundled built-in skills too.
+
+    ON by default. When on, built-ins become curation candidates and are
+    archived after the same inactivity period as agent-created skills, with a
+    suppression list keeping them archived across `hermes update` re-seeds.
+    Hub-installed skills are never pruned regardless of this flag.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("prune_builtins", True))
+
+
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
@@ -254,9 +266,17 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # ---------------------------------------------------------------------------
 
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
-    """Walk every agent-created skill and move active/stale/archived based on
+    """Walk every curator-managed skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
-    Returns a counter dict describing what changed."""
+
+    Built-ins (eligible only when ``curator.prune_builtins`` is on) are seeded
+    with a baseline record the first time they're seen so their inactivity
+    clock starts NOW rather than at epoch — a long-unused built-in is therefore
+    archived only after a fresh ``archive_after_days`` of non-use, not on the
+    first pass after the flag flips on.
+
+    Returns a counter dict describing what changed.
+    """
     from tools import skill_usage as _u
 
     if now is None:
@@ -264,12 +284,19 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
+            continue
+
+        # First sight of a curation-eligible skill with no persisted record
+        # (e.g. a newly-eligible built-in): anchor its clock to now and defer.
+        if not row.get("_persisted", True):
+            _u.seed_record_if_missing(name)
+            counts["seeded"] += 1
             continue
 
         last_activity = _parse_iso(row.get("last_activity_at"))
@@ -1484,14 +1511,30 @@ def run_curator_review(
                     "error": None,
                 }
             else:
+                # When pruning built-ins is enabled, the candidate list now
+                # includes bundled skills. Override the default "don't touch
+                # bundled" rule for them — but only archiving is permitted, and
+                # hub-installed skills remain strictly off-limits.
+                builtins_note = ""
+                if get_prune_builtins():
+                    builtins_note = (
+                        "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
+                        "ARE included in the candidate list below and MAY be "
+                        "archived for staleness/irrelevance, overriding hard "
+                        "rule #1 for bundled skills ONLY. Hub-installed skills "
+                        "remain strictly off-limits. Treat a stale built-in the "
+                        "same as a stale agent-created skill: archive it (never "
+                        "delete). It will be restored on `hermes update` only if "
+                        "the user explicitly restores it."
+                    )
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
-                        f"{CURATOR_REVIEW_PROMPT}\n\n"
+                        f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n"
                         f"{candidate_list}"
                     )
                 else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                    prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"

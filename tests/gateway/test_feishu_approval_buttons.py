@@ -524,6 +524,33 @@ class TestCardActionCallbackResponse:
         assert card["header"]["template"] == "red"
         assert "Denied" in card["header"]["title"]["content"]
 
+    def test_dm_approval_click_does_not_require_group_allowlist(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._allowed_group_users = set()
+        adapter._admins = set()
+        adapter._approval_state[7] = {
+            "session_key": "sess-7",
+            "message_id": "msg-7",
+            "chat_id": "oc_dm",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 7},
+            chat_id="oc_dm",
+            open_id="ou_paired_dm_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Approved once" in card["header"]["title"]["content"]
+
     def test_ignores_missing_approval_id(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()

@@ -982,3 +982,68 @@ class TestNoBundledSkillsOptOut:
         assert result.get("skipped_opt_out") is not True
         assert "new-skill" in result["copied"]
         assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+
+
+class TestOptOutToggleAndRemove:
+    """`hermes skills opt-out/opt-in` core: marker toggle + safe removal."""
+
+    def _setup_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        for n in ("alpha", "beta"):
+            d = bundled / n
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {n}\n---\nbody {n}\n")
+        return bundled
+
+    def test_marker_toggle(self, tmp_path):
+        from tools.skills_sync import (
+            set_bundled_skills_opt_out, is_bundled_skills_opt_out,
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("tools.skills_sync.HERMES_HOME", home):
+            assert is_bundled_skills_opt_out() is False
+            r = set_bundled_skills_opt_out(True)
+            assert r["ok"] and r["changed"]
+            assert is_bundled_skills_opt_out() is True
+            # idempotent
+            r2 = set_bundled_skills_opt_out(True)
+            assert r2["ok"] and r2["changed"] is False
+            # opt back in
+            r3 = set_bundled_skills_opt_out(False)
+            assert r3["ok"] and r3["changed"]
+            assert is_bundled_skills_opt_out() is False
+
+    def test_remove_keeps_user_modified(self, tmp_path):
+        from tools.skills_sync import (
+            sync_skills, remove_pristine_bundled_skills,
+        )
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", home):
+            sync_skills(quiet=True)
+            # User edits 'beta'
+            (skills_dir / "beta" / "SKILL.md").write_text("---\nname: beta\n---\nEDITED\n")
+            # A hand-written, non-bundled skill must also survive.
+            (skills_dir / "mine").mkdir()
+            (skills_dir / "mine" / "SKILL.md").write_text("---\nname: mine\n---\nlocal\n")
+
+            preview = remove_pristine_bundled_skills(dry_run=True)
+            assert "alpha" in preview["removed"]
+            assert "beta" not in preview["removed"]
+
+            result = remove_pristine_bundled_skills(dry_run=False)
+            assert "alpha" in result["removed"]
+            assert not (skills_dir / "alpha").exists()
+            # user-modified bundled skill kept
+            assert (skills_dir / "beta" / "SKILL.md").exists()
+            assert "EDITED" in (skills_dir / "beta" / "SKILL.md").read_text()
+            # non-bundled local skill never considered
+            assert (skills_dir / "mine" / "SKILL.md").exists()

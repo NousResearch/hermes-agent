@@ -369,6 +369,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        self.gateway_runner = None
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -2809,17 +2810,13 @@ class SlackAdapter(BasePlatformAdapter):
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
 
-        # Authorization — reuse the exec-approval allowlist.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
-                )
-                return
+        if not self._is_action_user_authorized(user_id):
+            logger.warning(
+                "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
+                user_name,
+                user_id,
+            )
+            return
 
         # Parse session_key|confirm_id back out
         if "|" not in value:
@@ -2917,19 +2914,15 @@ class SlackAdapter(BasePlatformAdapter):
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
 
-        # Only authorized users may click approval buttons.  Button clicks
-        # bypass the normal message auth flow in gateway/run.py, so we must
-        # check here as well.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
-                )
-                return
+        # Button clicks bypass the normal message auth flow in gateway/run.py,
+        # so reuse both env allowlists and the pairing store here.
+        if not self._is_action_user_authorized(user_id):
+            logger.warning(
+                "[Slack] Unauthorized approval click by %s (%s) — ignoring",
+                user_name,
+                user_id,
+            )
+            return
 
         # Map action_id to approval choice
         choice_map = {
@@ -3004,6 +2997,36 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         # (approval state already consumed by atomic pop above)
+
+    def _is_action_user_authorized(self, user_id: str) -> bool:
+        """Return whether a Slack action button click may affect agent state."""
+        if not user_id:
+            return False
+
+        allowed_ids = set()
+        for env_name in ("SLACK_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"):
+            raw = os.getenv(env_name, "").strip()
+            if raw:
+                allowed_ids.update(uid.strip() for uid in raw.split(",") if uid.strip())
+
+        if "*" in allowed_ids or user_id in allowed_ids:
+            return True
+
+        runner = getattr(self, "gateway_runner", None)
+        pairing_store = getattr(runner, "pairing_store", None) if runner else None
+        if pairing_store:
+            try:
+                if pairing_store.is_approved("slack", user_id):
+                    return True
+            except Exception:
+                logger.debug(
+                    "[Slack] Pairing-store auth check failed for %s",
+                    user_id,
+                    exc_info=True,
+                )
+
+        # Preserve previous behavior for setups with no explicit allowlists.
+        return not allowed_ids
 
     # ----- Thread context fetching -----
 

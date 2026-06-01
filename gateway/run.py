@@ -1496,6 +1496,19 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _platform_value(platform: Any) -> str:
+    """Return the runtime platform value for enums and enum-like test doubles."""
+    return str(getattr(platform, "value", platform) or "")
+
+
+def _is_slack_platform(platform: Any) -> bool:
+    return _platform_value(platform) == Platform.SLACK.value
+
+
+def _want_gateway_status_messages(platform: Any) -> bool:
+    return not _is_slack_platform(platform)
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -3414,6 +3427,12 @@ class GatewayRunner:
         if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
+
+        # Slack channels are shared operational surfaces. Keep interrupt/queue
+        # handling, but avoid posting lifecycle acks into the channel.
+        if _is_slack_platform(event.source.platform):
+            logger.debug("Busy ack suppressed for Slack session %s", session_key)
+            return True
 
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly
@@ -6692,7 +6711,9 @@ class GatewayRunner:
             if not check_slack_requirements():
                 logger.warning("Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
                 return None
-            return SlackAdapter(config)
+            adapter = SlackAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.SIGNAL:
             from gateway.platforms.signal import SignalAdapter, check_signal_requirements
@@ -17251,6 +17272,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
+        _should_send_gateway_status = _want_gateway_status_messages(source.platform)
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
             # sent via the reply API with reply_in_thread=true. Status/interim,
@@ -17264,7 +17286,7 @@ class GatewayRunner:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
-            if not _status_adapter or not _run_still_current():
+            if not _should_send_gateway_status or not _status_adapter or not _run_still_current():
                 return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
@@ -17539,7 +17561,7 @@ class GatewayRunner:
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-            agent.status_callback = _status_callback_sync
+            agent.status_callback = _status_callback_sync if _should_send_gateway_status else None
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}

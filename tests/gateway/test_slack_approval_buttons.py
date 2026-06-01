@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -165,7 +166,7 @@ class TestSlackApprovalAction:
                 ],
             },
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"name": "norbert", "id": "U_NORBERT"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -195,7 +196,7 @@ class TestSlackApprovalAction:
         body = {
             "message": {"ts": "1234.5678", "blocks": []},
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"name": "norbert", "id": "U_NORBERT"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -220,7 +221,7 @@ class TestSlackApprovalAction:
                 {"type": "section", "text": {"type": "mrkdwn", "text": "cmd"}},
             ]},
             "channel": {"id": "C1"},
-            "user": {"name": "alice"},
+            "user": {"name": "alice", "id": "U_ALICE"},
         }
         action = {"action_id": "hermes_deny", "value": "session-key"}
 
@@ -233,6 +234,94 @@ class TestSlackApprovalAction:
         mock_resolve.assert_called_once_with("session-key", "deny")
         update_kwargs = mock_client.chat_update.call_args[1]
         assert "Denied by alice" in update_kwargs["text"]
+
+
+class TestSlackActionAuthorization:
+    """Button clicks must match normal Slack message authorization."""
+
+    def _approval_body(self, *, user_id="U_AUTH", user_name="authorized", ts="1.2"):
+        return {
+            "message": {
+                "ts": ts,
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "cmd"}},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": user_name, "id": user_id},
+        }
+
+    @pytest.mark.asyncio
+    async def test_gateway_allowlist_can_authorize_button_clicks(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._approval_resolved["1.2"] = False
+        adapter._team_clients["T1"].chat_update = AsyncMock()
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "U_AUTH")
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(
+                AsyncMock(),
+                self._approval_body(user_id="U_AUTH"),
+                {"action_id": "hermes_approve_once", "value": "session-key"},
+            )
+
+        mock_resolve.assert_called_once_with("session-key", "once")
+
+    @pytest.mark.asyncio
+    async def test_pairing_store_can_authorize_button_clicks(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._approval_resolved["1.2"] = False
+        adapter._team_clients["T1"].chat_update = AsyncMock()
+        pairing_store = SimpleNamespace(is_approved=MagicMock(return_value=True))
+        adapter.gateway_runner = SimpleNamespace(pairing_store=pairing_store)
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "U_OTHER")
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(
+                AsyncMock(),
+                self._approval_body(user_id="U_PAIRED"),
+                {"action_id": "hermes_deny", "value": "session-key"},
+            )
+
+        pairing_store.is_approved.assert_called_once_with("slack", "U_PAIRED")
+        mock_resolve.assert_called_once_with("session-key", "deny")
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_button_click_is_ignored(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._approval_resolved["1.2"] = False
+        adapter._team_clients["T1"].chat_update = AsyncMock()
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_OWNER")
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_approval_action(
+                AsyncMock(),
+                self._approval_body(user_id="U_INTRUDER"),
+                {"action_id": "hermes_approve_once", "value": "session-key"},
+            )
+
+        mock_resolve.assert_not_called()
+        adapter._team_clients["T1"].chat_update.assert_not_called()
+
+
+def test_gateway_runner_attaches_pairing_store_to_slack_adapter():
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(
+        group_sessions_per_user=False,
+        thread_sessions_per_user=False,
+    )
+
+    adapter = GatewayRunner._create_adapter(
+        runner,
+        Platform.SLACK,
+        PlatformConfig(enabled=True, token="xoxb-test-token"),
+    )
+
+    assert adapter is not None
+    assert adapter.gateway_runner is runner
 
 
 # ===========================================================================

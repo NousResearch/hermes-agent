@@ -445,6 +445,37 @@ class TestBusySessionAck:
         assert "10 min" not in content
 
     @pytest.mark.asyncio
+    async def test_slack_suppresses_busy_ack_but_still_interrupts(self):
+        """Slack channels should not receive lifecycle ack noise."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter(platform_val="slack")
+
+        event = _make_event(text="new instruction", chat_id="C1", platform_val="slack")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 600
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("new instruction")
+        adapter._send_with_retry.assert_not_called()
+        assert sk not in runner._busy_ack_ts
+
+    def test_slack_disables_gateway_status_messages(self):
+        """Agent lifecycle/status callbacks should stay out of Slack channels."""
+        from gateway.config import Platform
+        from gateway.run import _want_gateway_status_messages
+
+        assert _want_gateway_status_messages(Platform.SLACK) is False
+        assert _want_gateway_status_messages(MagicMock(value="slack")) is False
+        assert _want_gateway_status_messages(Platform.TELEGRAM) is True
+
+    @pytest.mark.asyncio
     async def test_draining_still_works(self):
         """Draining case should still produce the drain-specific message."""
         runner, sentinel = _make_runner()

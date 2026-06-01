@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 from pathlib import Path
+from typing import Iterable
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -172,6 +173,94 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+
+_PRODUCT_CODE_SOURCE_EXTENSIONS = frozenset({
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".kt", ".kts", ".swift", ".c", ".h",
+    ".cc", ".cpp", ".cxx", ".hpp", ".cs", ".php", ".rb", ".sh",
+    ".bash", ".zsh", ".fish", ".ps1", ".sql", ".html", ".css",
+    ".scss", ".vue", ".svelte",
+})
+
+_PRODUCT_CODE_MANIFEST_FILENAMES = frozenset({
+    "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "pyproject.toml", "poetry.lock", "go.mod", "go.sum",
+    "cargo.toml", "cargo.lock", "dockerfile", "containerfile",
+})
+
+_PRODUCT_CODE_MANIFEST_PATTERNS = frozenset({
+    "tsconfig*.json", "vite.config.*", "webpack.config.*", "next.config.*",
+    "requirements*.txt", "docker-compose*.yml", "docker-compose*.yaml",
+})
+
+_NON_PRODUCT_ARTIFACT_FILENAMES = frozenset({
+    "result.md", "soul.md", "codex.md", "config.yaml", "config.yml",
+    "evidence_manifest.json",
+})
+
+_NON_PRODUCT_ARTIFACT_PATTERNS = frozenset({
+    "*result.md", "*evidence_manifest*.json", "*.log", "*.md",
+})
+
+
+def _code_writes_require_codex_enabled() -> bool:
+    """Return true when native Hermes code writes should be refused.
+
+    Supports both a simple boolean and a future-extensible object:
+    ``code_writes_require_codex: true`` or
+    ``code_writes_require_codex: {enabled: true}``.
+    """
+    if os.environ.get("HERMES_CODEX_DELEGATE_ACTIVE") == "1":
+        return False
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return False
+    value = cfg.get("code_writes_require_codex") if isinstance(cfg, dict) else None
+    if isinstance(value, dict):
+        return bool(value.get("enabled", False))
+    return bool(value)
+
+
+def _is_code_write_path(filepath: str, task_id: str = "default") -> bool:
+    """Return True when *filepath* is product code for code-write delegation.
+
+    Product code includes source files and code-affecting manifests/configs
+    that change build, dependency, runtime, or container behavior. Reporting,
+    evidence, profile, and Markdown artifacts are deliberately excluded so the
+    guard can still write verification notes while product-code edits route
+    through Codex.
+    """
+    import fnmatch
+
+    try:
+        resolved = _resolve_path_for_task(filepath, task_id)
+    except Exception:
+        resolved = Path(os.path.expanduser(filepath))
+    name = resolved.name.lower()
+    if name in _NON_PRODUCT_ARTIFACT_FILENAMES:
+        return False
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _NON_PRODUCT_ARTIFACT_PATTERNS):
+        return False
+    if name in _PRODUCT_CODE_MANIFEST_FILENAMES:
+        return True
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _PRODUCT_CODE_MANIFEST_PATTERNS):
+        return True
+    return resolved.suffix.lower() in _PRODUCT_CODE_SOURCE_EXTENSIONS
+
+
+def _check_codex_code_write_guard(paths: Iterable[str], task_id: str = "default") -> str | None:
+    if not _code_writes_require_codex_enabled():
+        return None
+    blocked = [p for p in paths if p and _is_code_write_path(p, task_id)]
+    if not blocked:
+        return None
+    return (
+        "code_writes_require_codex is enabled; refusing native Hermes file edit "
+        f"for code path(s): {', '.join(blocked)}. Use delegate_to_codex for "
+        "product-code changes, then verify artifacts/tests separately."
+    )
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
@@ -894,6 +983,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    codex_guard_err = _check_codex_code_write_guard([path], task_id)
+    if codex_guard_err:
+        return tool_error(codex_guard_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
@@ -987,6 +1079,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        codex_guard_err = _check_codex_code_write_guard([_p], task_id)
+        if codex_guard_err:
+            return tool_error(codex_guard_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:

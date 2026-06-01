@@ -205,6 +205,51 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_rename_session_updates_title(self):
+        """PATCH /api/sessions/{id} renames a session (regression: the route
+        was missing entirely, so the desktop rename dialog got a 405)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="rename-me", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/rename-me", json={"title": "My Chat"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": "My Chat"}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("rename-me") == "My Chat"
+        finally:
+            db.close()
+
+    def test_rename_session_clears_title_when_empty(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="clear-me", source="cli")
+            db.set_session_title("clear-me", "Has A Title")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/clear-me", json={"title": ""})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": ""}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("clear-me") is None
+        finally:
+            db.close()
+
+    def test_rename_session_not_found(self):
+        resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
+        assert resp.status_code == 404
+
     def test_audio_transcription_endpoint(self, monkeypatch):
         import tools.transcription_tools as transcription_tools
 

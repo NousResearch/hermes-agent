@@ -8,15 +8,15 @@ description: >
   for inbound MESSAGE_CREATE dispatches.
 author: Hermes Agent
 requires_env:
-  - name: FLUXER_BASE_URL
-    description: "Fluxer API base URL, e.g. https://fluxer.example/api or https://fluxer.example"
-    prompt: "Fluxer base URL"
-    password: false
   - name: FLUXER_BOT_TOKEN
     description: "Fluxer bot token (<applicationId>.<secret>)"
     prompt: "Fluxer bot token"
     password: true
 optional_env:
+  - name: FLUXER_BASE_URL
+    description: "Fluxer API base URL for self-hosted instances; defaults to https://api.fluxer.app/v1"
+    prompt: "Fluxer base URL"
+    password: false
   - name: FLUXER_ALLOWED_USERS
     description: "Comma-separated Fluxer user IDs allowed to talk to the bot"
     prompt: "Allowed Fluxer user IDs"

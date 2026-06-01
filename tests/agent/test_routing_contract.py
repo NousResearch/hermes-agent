@@ -27,6 +27,12 @@ def model_routing_table(monkeypatch):
                 "reasoning_effort": "low",
                 "route_key": "nous/deepseek/deepseek-v4-flash:free",
             },
+            "finance_legal_compliance": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "xhigh",
+                "route_key": "openai-codex/gpt-5.5",
+            },
         }
     }
     monkeypatch.setattr(
@@ -150,3 +156,58 @@ def test_kanban_model_routing_satisfies_architecture_xhigh_lane():
 
     assert check.violation is None
     assert check.execution_surface == "kanban_create"
+
+
+def test_unknown_legal_compliance_lane_is_rejected_with_canonical_hint():
+    check = _check(
+        "Routing Decision: legal draft -> business ops -> delegate(trigger) "
+        "-> legal_compliance/gpt-5.5-xhigh",
+        [],
+    )
+
+    assert check.violation is not None
+    assert check.violation.code == "unknown_lane"
+    assert "finance_legal_compliance" in check.violation.recovery_prompt
+    assert "approve creating a new lane" in check.violation.recovery_prompt
+
+
+def test_finance_legal_compliance_requires_xhigh_delegate_transport():
+    check = _check(
+        "Routing Decision: legal draft -> business ops -> delegate(trigger) "
+        "-> finance_legal_compliance/gpt-5.5-xhigh",
+        [
+            _tool_call(
+                "delegate_task",
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "reasoning_effort": "high",
+                    "task": "draft legal policies",
+                },
+            )
+        ],
+    )
+
+    assert check.violation is not None
+    assert check.violation.code == "xhigh_lane_not_executed"
+
+
+def test_finance_legal_compliance_accepts_xhigh_delegate_transport():
+    check = _check(
+        "Routing Decision: legal draft -> business ops -> delegate(trigger) "
+        "-> finance_legal_compliance/gpt-5.5-xhigh",
+        [
+            _tool_call(
+                "delegate_task",
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "reasoning_effort": "xhigh",
+                    "task": "draft legal policies",
+                },
+            )
+        ],
+    )
+
+    assert check.violation is None
+    assert check.execution_surface == "delegate_task"

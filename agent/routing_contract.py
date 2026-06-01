@@ -175,7 +175,14 @@ def check_route_contract(
         return RouteContractCheck(declared=declared, execution_surface=execution)
 
     if lane_route is None:
-        # Unknown lanes remain advisory; the guard cannot safely infer intent.
+        if _unknown_lane_should_fail(declared):
+            return RouteContractCheck(
+                declared=declared,
+                execution_surface=_execution_surface(calls),
+                violation=_unknown_lane_violation(declared),
+            )
+        # Bare unknown labels without route metadata remain advisory; the guard
+        # cannot safely infer intent from prose-only labels.
         return RouteContractCheck(declared=declared, execution_surface=_execution_surface(calls))
 
     expected_effort = _clean_effort(lane_route.get("reasoning_effort"))
@@ -375,6 +382,107 @@ def _parse_provider_model_tail(tail: str) -> tuple[Optional[str], Optional[str]]
         if lowered.startswith(marker) and len(tail) > len(marker):
             return prefix, tail[len(marker) :].strip() or None
     return None, tail or None
+
+
+def _unknown_lane_should_fail(declared: DeclaredRoute) -> bool:
+    if declared.declared_provider or declared.declared_model or declared.declared_effort:
+        return True
+    surface = declared.surface.strip().lower()
+    if "delegate" in surface or "kanban" in surface:
+        return True
+    if "/" in declared.lane_label:
+        return True
+    return False
+
+
+def _unknown_lane_violation(declared: DeclaredRoute) -> RouteContractViolation:
+    candidates = _candidate_canonical_lanes(declared)
+    if candidates:
+        candidate_text = (
+            " Candidate existing lanes: "
+            + ", ".join(f"`{lane}`" for lane in candidates)
+            + ". If one fits, retry with that canonical lane and matching "
+            "transport fields."
+        )
+    else:
+        candidate_text = " No close existing lane was found."
+    reason = (
+        f"unknown route lane `{declared.lane_name}`; route labels must use "
+        "canonical lane IDs from the model-routing table"
+    )
+    message = f"Route contract violation: {reason}."
+    recovery = (
+        f"{message}{candidate_text} If no existing lane fits, ask the user to "
+        "approve creating a new lane and include proposed provider, model, "
+        "reasoning_effort, privacy/data policy, quota/fallback behavior, and "
+        "verification plan. For inline work, use an honest "
+        "`front_door/<model>-<effort>` label instead."
+    )
+    return RouteContractViolation(
+        code="unknown_lane",
+        message=message,
+        recovery_prompt=recovery,
+    )
+
+
+def _candidate_canonical_lanes(declared: DeclaredRoute) -> list[str]:
+    text = " ".join(
+        [
+            declared.lane_name,
+            declared.domain,
+            declared.target,
+            declared.surface,
+        ]
+    ).lower()
+    query = _route_text_tokens(text)
+    scored: list[tuple[int, str]] = []
+    try:
+        from tools.kanban_tools import _load_model_routing_table
+
+        table, _source = _load_model_routing_table()
+        lanes = table.get("task_lanes") if isinstance(table.get("task_lanes"), Mapping) else {}
+        for lane, route in lanes.items():
+            if not isinstance(lane, str):
+                continue
+            route_text = lane
+            if isinstance(route, Mapping):
+                route_text = " ".join(
+                    str(part or "")
+                    for part in (
+                        lane,
+                        route.get("description"),
+                        route.get("rule"),
+                        route.get("preset"),
+                    )
+                )
+            lane_tokens = _route_text_tokens(route_text)
+            overlap = query & lane_tokens
+            if overlap:
+                scored.append((len(overlap), lane))
+    except Exception:
+        logger.debug("failed to load lane candidates", exc_info=True)
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    candidates = [lane for _score, lane in scored[:3]]
+    if (
+        any(term in text for term in ("finance", "legal", "compliance", "contract"))
+        and "finance_legal_compliance" not in candidates
+    ):
+        candidates.insert(0, "finance_legal_compliance")
+
+    deduped: list[str] = []
+    for lane in candidates:
+        if lane not in deduped:
+            deduped.append(lane)
+    return deduped[:3]
+
+
+def _route_text_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", text.lower())
+        if len(token) >= 4
+    }
 
 
 def _normalize_lane_key(value: Any) -> str:

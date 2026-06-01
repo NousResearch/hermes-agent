@@ -42,9 +42,15 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from agent.secret_sources._cache import (
+    CachedFetch as _CachedFetch,
+    DiskCache,
+    FetchResult,
+    is_valid_env_name as _is_valid_env_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +76,7 @@ _BWS_RUN_TIMEOUT = 30
 # In-process cache so repeated load_hermes_dotenv() calls (CLI startup,
 # gateway hot-reload, test suites) don't re-fetch from BSM.
 _CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
-_CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
+_CACHE: Dict[_CacheKey, _CachedFetch] = {}
 
 # Disk-persisted cache so back-to-back CLI invocations (e.g. `hermes chat -q ...`
 # called from scripts, cron, the gateway forking new agents) don't each pay the
@@ -81,19 +87,9 @@ _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 # <hermes_home>/cache/bws_cache.json. The file holds only the secret VALUES,
 # never the access token. It's plaintext-equivalent to ~/.hermes/.env (which
 # we already accept) but kept out of the .env file so users editing it won't
-# accidentally commit BSM-sourced secrets.
+# accidentally commit BSM-sourced secrets. The atomic-write/0600/TTL mechanics
+# live in agent.secret_sources._cache.DiskCache, shared with the other backends.
 _DISK_CACHE_BASENAME = "bws_cache.json"
-
-
-def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
-    """Return the disk cache path under hermes_home/cache/.
-
-    `home_path` is what `load_hermes_dotenv()` already resolved; falling back
-    to `$HERMES_HOME` / `~/.hermes` keeps direct callers working too.
-    """
-    if home_path is None:
-        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    return home_path / "cache" / _DISK_CACHE_BASENAME
 
 
 def _cache_key_str(cache_key: _CacheKey) -> str:
@@ -102,103 +98,18 @@ def _cache_key_str(cache_key: _CacheKey) -> str:
     return f"{token_fp}|{project_id}|{server_url}"
 
 
-def _read_disk_cache(cache_key: _CacheKey, ttl_seconds: float,
-                     home_path: Optional[Path] = None) -> Optional["_CachedFetch"]:
-    """Return a cached entry from disk if fresh, else None.
+_DISK_CACHE: DiskCache = DiskCache(
+    _DISK_CACHE_BASENAME, key_serializer=_cache_key_str
+)
 
-    Best-effort: any I/O or parse error returns None and we re-fetch.
+
+def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    """Return the disk cache path under hermes_home/cache/.
+
+    Thin wrapper over the shared DiskCache, kept for tests and any direct
+    callers; falls back to `$HERMES_HOME` / `~/.hermes` when home is None.
     """
-    if ttl_seconds <= 0:
-        return None
-    path = _disk_cache_path(home_path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("key") != _cache_key_str(cache_key):
-        return None
-    secrets = payload.get("secrets")
-    fetched_at = payload.get("fetched_at")
-    if not isinstance(secrets, dict) or not isinstance(fetched_at, (int, float)):
-        return None
-    # Coerce all values to strings — JSON allows numbers but env vars need strings
-    typed_secrets: Dict[str, str] = {
-        k: v for k, v in secrets.items() if isinstance(k, str) and isinstance(v, str)
-    }
-    entry = _CachedFetch(secrets=typed_secrets, fetched_at=float(fetched_at))
-    if not entry.is_fresh(ttl_seconds):
-        return None
-    return entry
-
-
-def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
-                      home_path: Optional[Path] = None) -> None:
-    """Persist a cache entry to disk atomically with mode 0600.
-
-    Best-effort: any I/O error is swallowed (the next invocation will just
-    re-fetch). We never want disk cache failures to break startup.
-    """
-    path = _disk_cache_path(home_path)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "key": _cache_key_str(cache_key),
-            "secrets": entry.secrets,
-            "fetched_at": entry.fetched_at,
-        }
-        # Write to a temp file in the same directory and atomic-rename.
-        # tempfile honors os.umask, so we explicitly chmod 0600 before rename.
-        fd, tmp = tempfile.mkstemp(
-            prefix=".bws_cache_", suffix=".tmp", dir=str(path.parent)
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        pass  # best-effort — disk cache miss on next invocation is fine
-
-
-@dataclass
-class _CachedFetch:
-    secrets: Dict[str, str]
-    fetched_at: float
-
-    def is_fresh(self, ttl_seconds: float) -> bool:
-        if ttl_seconds <= 0:
-            return False
-        return (time.time() - self.fetched_at) < ttl_seconds
-
-
-# ---------------------------------------------------------------------------
-# Public dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class FetchResult:
-    """Outcome of a single BSM pull."""
-
-    secrets: Dict[str, str] = field(default_factory=dict)
-    applied: List[str] = field(default_factory=list)   # set into os.environ
-    skipped: List[str] = field(default_factory=list)   # already set, not overridden
-    warnings: List[str] = field(default_factory=list)  # non-fatal issues
-    error: Optional[str] = None                        # fatal: nothing was fetched
-    binary_path: Optional[Path] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
+    return _DISK_CACHE.path(home_path)
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +390,7 @@ def fetch_bitwarden_secrets(
         if cached and cached.is_fresh(cache_ttl_seconds):
             return cached.secrets, []
         # L2: disk cache. ~5ms on cache hit vs ~380ms for `bws secret list`.
-        disk_cached = _read_disk_cache(cache_key, cache_ttl_seconds, home_path)
+        disk_cached = _DISK_CACHE.read(cache_key, cache_ttl_seconds, home_path)
         if disk_cached is not None:
             # Promote into in-process cache so subsequent fetches in the
             # same process skip the disk read too.
@@ -499,7 +410,7 @@ def fetch_bitwarden_secrets(
     entry = _CachedFetch(secrets=secrets, fetched_at=time.time())
     _CACHE[cache_key] = entry
     if use_cache:
-        _write_disk_cache(cache_key, entry, home_path)
+        _DISK_CACHE.write(cache_key, entry, cache_ttl_seconds, home_path)
     return secrets, warnings
 
 
@@ -573,14 +484,6 @@ def _run_bws_list(
             continue
         secrets[key] = value
     return secrets, warnings
-
-
-def _is_valid_env_name(name: str) -> bool:
-    if not name:
-        return False
-    if not (name[0].isalpha() or name[0] == "_"):
-        return False
-    return all(c.isalnum() or c == "_" for c in name)
 
 
 # ---------------------------------------------------------------------------
@@ -686,7 +589,4 @@ def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
     writer itself.
     """
     _CACHE.clear()
-    try:
-        _disk_cache_path(home_path).unlink()
-    except (FileNotFoundError, OSError):
-        pass
+    _DISK_CACHE.clear(home_path)

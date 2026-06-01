@@ -124,14 +124,7 @@ When `composio connections list` returns no active accounts, the user hasn't con
 - **Google Workspace** — triage Gmail, manage Calendar, and edit Docs/Sheets/Drive.
 - **Cross-app workflows** — chain the above, e.g. summarize unread Gmail, file action items as Linear tickets, post a digest to Slack.
 
-Ground every suggestion in what Composio actually supports — run `composio search` for the use case before naming a specific tool, so you never promise something that doesn't exist:
-
-```bash
-composio search "build a training plan from my Strava runs" --limit 3
-composio search "create a github pr from a linear ticket" --limit 3
-```
-
-When the user picks something, connect that app and continue:
+These apps are all supported by Composio — suggest them directly. Do not run `composio search` here; first run is a pitch, not a lookup. Save `search` for later, once the user picks a concrete task and you need the exact tool slug. When the user picks an app, connect it and continue:
 
 ```bash
 composio link strava

@@ -445,3 +445,64 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_sync_kanban_forum_status_tag_replaces_only_configured_status_tag():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    class Tag:
+        def __init__(self, id, name):
+            self.id = id
+            self.name = name
+
+    parent = SimpleNamespace(
+        type=SimpleNamespace(value=15),
+        available_tags=[
+            Tag(101, "todo"),
+            Tag(102, "in-progress"),
+            Tag(103, "done"),
+            Tag(201, "RFC"),
+        ],
+    )
+    thread = SimpleNamespace(
+        id=999,
+        parent=parent,
+        applied_tags=[101, 201],
+        edit=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if int(channel_id) == 999 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.sync_kanban_forum_status_tag(
+        "999",
+        "running",
+        {
+            "todo": "todo",
+            "running": "in-progress",
+            "done": "done",
+        },
+    )
+
+    assert result.success is True
+    assert result.raw_response["applied_tags"] == [201, 102]
+    thread.edit.assert_awaited_once_with(applied_tags=[201, 102])
+
+
+@pytest.mark.asyncio
+async def test_sync_kanban_forum_status_tag_noops_for_ordinary_thread():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    parent = SimpleNamespace(type=SimpleNamespace(value=0), available_tags=[])
+    thread = SimpleNamespace(id=999, parent=parent, applied_tags=[], edit=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.sync_kanban_forum_status_tag("999", "running", {"running": "in-progress"})
+
+    assert result.success is True
+    assert result.raw_response["skipped"] == "not_forum_thread"
+    thread.edit.assert_not_awaited()

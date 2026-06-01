@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -233,3 +233,69 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+class RecordingDiscordAdapter(RecordingAdapter):
+    def __init__(self):
+        super().__init__()
+        self.synced = []
+
+    async def sync_kanban_forum_status_tag(self, thread_id, status, status_tag_map):
+        self.synced.append({
+            "thread_id": thread_id,
+            "status": status,
+            "status_tag_map": status_tag_map,
+        })
+
+
+def _make_discord_runner(adapter):
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._kanban_sub_fail_counts = {}
+    runner.config = GatewayConfig(platforms={
+        Platform.DISCORD: PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={
+                "kanban_forum_tag_sync": {
+                    "enabled": True,
+                    "status_tags": {
+                        "blocked": "blocked",
+                        "done": "done",
+                    },
+                }
+            },
+        )
+    })
+    return runner
+
+
+def test_kanban_notifier_syncs_discord_forum_tags_when_enabled(tmp_path, monkeypatch):
+    db_path = tmp_path / "discord-tag-sync.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="sync tag", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="forum-parent-1",
+            thread_id="999",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingDiscordAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_discord_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.synced == [{
+        "thread_id": "999",
+        "status": "done",
+        "status_tag_map": {"blocked": "blocked", "done": "done"},
+    }]

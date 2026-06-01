@@ -1414,8 +1414,18 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             # Without this gate, Claude Code credentials get silently used
             # as auxiliary fallback when the user's primary provider fails.
             try:
-                from hermes_cli.auth import is_provider_explicitly_configured
+                from hermes_cli.auth import is_provider_explicitly_configured, has_usable_secret
                 if not is_provider_explicitly_configured("anthropic"):
+                    continue
+                # In the auto-provider chain, skip Anthropic unless an
+                # explicit Anthropic credential is present. This prevents
+                # implicit Claude Code OAuth discovery from hijacking
+                # auxiliary fallback when ANTHROPIC_API_KEY is unset.
+                has_explicit_anthropic_key = any(
+                    has_usable_secret(os.getenv(var, ""))
+                    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN")
+                )
+                if not has_explicit_anthropic_key:
                     continue
             except ImportError:
                 pass

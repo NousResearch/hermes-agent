@@ -1675,6 +1675,43 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
 
 
+def test_resolve_api_key_provider_skips_anthropic_without_explicit_key(monkeypatch):
+    """Auto provider chain should not try anthropic without explicit env credentials."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+
+    fake_registry = OrderedDict({
+        "anthropic": ProviderConfig(
+            id="anthropic",
+            name="Anthropic",
+            auth_type="api_key",
+            inference_base_url="https://api.anthropic.com",
+            api_key_env_vars=("ANTHROPIC_API_KEY",),
+        ),
+    })
+
+    called = []
+
+    def mock_try_anthropic():
+        called.append("anthropic")
+        return None, None
+
+    monkeypatch.setattr("agent.auxiliary_client._try_anthropic", mock_try_anthropic)
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: True,
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    _resolve_api_key_provider()
+
+    assert "anthropic" not in called, \
+        "_try_anthropic() should not be called when no explicit Anthropic env key is set"
+
+
 # ---------------------------------------------------------------------------
 # model="default" elimination (#7512)
 # ---------------------------------------------------------------------------

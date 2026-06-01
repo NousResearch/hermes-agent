@@ -297,7 +297,7 @@ def _setup_command(args: argparse.Namespace) -> int:
 
     print("LM-twitterer setup")
     print("------------------")
-    print("Use the Gmail-linked X account browser session.")
+    print("Use the logged-in X account browser session.")
     print("Get cookies from DevTools > Application > Cookies > https://x.com")
     print()
 
@@ -429,9 +429,9 @@ def _auth_browser_command(args: argparse.Namespace) -> int:
     browser_label = "Microsoft Edge" if browser == "edge" else "Chromium"
     print(f"A temporary {browser_label} profile will open.")
     if int(getattr(args, "wait_seconds", 0) or 0) > 0:
-        print("Sign in to the Gmail-linked X account. Hermes will save cookies once X is logged in.")
+        print("Sign in to the X account. Hermes will save cookies once X is logged in.")
     else:
-        print("Sign in to the Gmail-linked X account, then return here and press Enter.")
+        print("Sign in to the X account, then return here and press Enter.")
     print("Only auth_token and ct0 from x.com will be saved to Hermes .env.")
     print()
 
@@ -547,7 +547,7 @@ def _auth_edge_direct_command(args: argparse.Namespace) -> int:
         "https://x.com/i/flow/login",
     ]
     print("A normal Microsoft Edge window will open.")
-    print("Sign in to the Gmail-linked X account in that window.")
+    print("Sign in to the X account in that window.")
     print("Hermes will only save auth_token and ct0 from x.com; cookie values are not printed.")
     print()
 
@@ -710,7 +710,7 @@ def _import_edge_cookies_command(args: argparse.Namespace) -> int:
                 "source_mode": result["mode"],
                 "error": "Did not find both auth_token and ct0 for x.com in the selected Edge profile.",
                 "next_steps": [
-                    "Confirm Edge is logged in at https://x.com with the Gmail-linked account.",
+                    "Confirm Edge is logged in at https://x.com with the intended X account.",
                     "Close Edge and retry this command.",
                 ],
             }

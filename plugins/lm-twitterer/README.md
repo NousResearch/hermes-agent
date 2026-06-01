@@ -7,7 +7,7 @@ The original app is a Gradio bot that can use GGUF or OpenAI-compatible
 endpoints.  This plugin keeps generation inside Hermes through `ctx.llm`, so
 it can use the currently configured Hermes model, including non-Grok models.
 X access uses the same cookie style as LM-twitterer: `auth_token` and `ct0`
-from the Gmail-linked X browser session.
+from the logged-in X browser session.
 
 X Premium/Grok is not used as the generation backend unless you explicitly set
 Hermes to a Grok/xAI provider.  The logged-in X account is only the posting and
@@ -37,7 +37,7 @@ Install X client dependencies into the Hermes Python environment:
 hermes lm-twitterer install-deps --yes
 ```
 
-If you want the Gmail-linked login flow, also install the temporary browser
+If you want an interactive login flow, also install the temporary browser
 runtime:
 
 ```powershell
@@ -60,13 +60,13 @@ hermes lm-twitterer auth-browser
 Or let the visible browser poll for cookies for up to ten minutes:
 
 ```powershell
-hermes lm-twitterer auth-browser --screen-name zapabob_ouj --wait-seconds 600
+hermes lm-twitterer auth-browser --screen-name your_x_screen_name --wait-seconds 600
 ```
 
 Use Microsoft Edge instead of bundled Chromium:
 
 ```powershell
-hermes lm-twitterer auth-browser --browser edge --screen-name zapabob_ouj --wait-seconds 600
+hermes lm-twitterer auth-browser --browser edge --screen-name your_x_screen_name --wait-seconds 600
 ```
 
 If X flags the Playwright-managed browser as automated, open a normal Edge
@@ -74,7 +74,7 @@ window and let Hermes read cookies through a local debugging connection after
 you finish the login:
 
 ```powershell
-hermes lm-twitterer auth-edge-direct --screen-name zapabob_ouj --wait-seconds 900
+hermes lm-twitterer auth-edge-direct --screen-name your_x_screen_name --wait-seconds 900
 ```
 
 Enter the X password only in the visible Edge window.  The command does not
@@ -85,13 +85,13 @@ Or import cookies from the normal Microsoft Edge profile after you log in at
 the cookie database while it is running:
 
 ```powershell
-hermes lm-twitterer import-edge-cookies --screen-name zapabob_ouj
+hermes lm-twitterer import-edge-cookies --screen-name your_x_screen_name
 ```
 
 If you know the profile directory, pass it explicitly:
 
 ```powershell
-hermes lm-twitterer import-edge-cookies --profile "Profile 1" --screen-name zapabob_ouj
+hermes lm-twitterer import-edge-cookies --profile "Profile 1" --screen-name your_x_screen_name
 ```
 
 The importer only reads `auth_token` and `ct0` for `x.com`, saves them to the
@@ -141,8 +141,8 @@ hermes lm-twitterer trust-llm-overrides --provider opencode-zen --model auto-fre
 ```powershell
 hermes lm-twitterer status
 hermes lm-twitterer auth-check
-hermes lm-twitterer auth-edge-direct --screen-name zapabob_ouj --wait-seconds 900
-hermes lm-twitterer import-edge-cookies --screen-name zapabob_ouj
+hermes lm-twitterer auth-edge-direct --screen-name your_x_screen_name --wait-seconds 900
+hermes lm-twitterer import-edge-cookies --screen-name your_x_screen_name
 hermes lm-twitterer trust-llm-overrides --provider opencode-zen --model auto-free
 hermes lm-twitterer mentions --count 20
 hermes lm-twitterer whitelist import-mentioned-followers --count 100

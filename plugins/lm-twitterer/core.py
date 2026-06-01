@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -160,6 +162,9 @@ class Settings:
     whitelist_file: Path
     replied_ids_file: Path
     log_file: Path
+    memory_bridge_enabled: bool = True
+    memory_db: Path | None = None
+    memory_recall_limit: int = 5
 
 
 def bind_llm_factory(factory: Callable[[], Any]) -> None:
@@ -234,6 +239,11 @@ def settings() -> Settings:
         whitelist_file=whitelist_file,
         replied_ids_file=replied_ids_file,
         log_file=state_dir / "activity.jsonl",
+        memory_bridge_enabled=_bool_env("LM_TWITTERER_MEMORY_BRIDGE", True),
+        memory_db=Path(
+            _env("LM_TWITTERER_MEMORY_DB", str(home / "ebbinghaus_memory.db"))
+        ).expanduser(),
+        memory_recall_limit=_int_env("LM_TWITTERER_MEMORY_RECALL_LIMIT", 5, minimum=0, maximum=20),
     )
 
 
@@ -300,7 +310,7 @@ def _twitter_client(cfg: Settings):
     if not cfg.auth_token or not cfg.ct0:
         raise RuntimeError(
             "Missing X cookies. Set LM_TWITTERER_AUTH_TOKEN and LM_TWITTERER_CT0 "
-            "from the Gmail-linked account browser session."
+            "from the logged-in X account browser session."
         )
     try:
         from twitter_openapi_python.client import TwitterOpenapiPython
@@ -451,12 +461,112 @@ def _clean_generated_text(text: str, *, max_chars: int, strip_mentions: bool = F
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:text)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
         cleaned = re.sub(r"\s*```$", "", cleaned).strip()
-    cleaned = cleaned.strip("\"' \n\r\t")
+    cleaned = cleaned.strip('"\' \n\r\t')
     if strip_mentions:
         cleaned = re.sub(r"^(?:@\w+\s*)+", "", cleaned).strip()
     cleaned = " ".join(cleaned.split())
     return cleaned[:max_chars].rstrip()
 
+
+def _tokenize_for_memory(text: str) -> set[str]:
+    """Small language-agnostic tokenizer for local memory cue overlap."""
+    words = {w.lower() for w in re.findall(r"[A-Za-z0-9_#@\-]{2,}", text or "")}
+    compact_cjk = "".join(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]+", text or ""))
+    words.update(compact_cjk[i : i + 2] for i in range(max(0, len(compact_cjk) - 1)))
+    words.update(compact_cjk[i : i + 3] for i in range(max(0, len(compact_cjk) - 2)))
+    return {w for w in words if w.strip()}
+
+
+def _memory_db_path(cfg: Settings) -> Path | None:
+    if not cfg.memory_bridge_enabled or cfg.memory_recall_limit <= 0:
+        return None
+    path = cfg.memory_db or (Path(get_hermes_home()) / "ebbinghaus_memory.db")
+    return Path(path).expanduser()
+
+
+def _recall_memory_snippets(topic: str, cfg: Settings) -> list[str]:
+    """Recall relevant Hakua/Ebbinghaus memories for post voice consistency.
+
+    The Ebbinghaus memory tool can be installed as an external Hermes tool rather
+    than in this repo, so this bridge reads its stable SQLite store when present
+    and fails closed when unavailable.
+    """
+    db_path = _memory_db_path(cfg)
+    if db_path is None or not db_path.exists():
+        return []
+    query_tokens = _tokenize_for_memory(topic or cfg.default_topic)
+    if not query_tokens:
+        return []
+    try:
+        with sqlite3.connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT memory_id, content, encoded, cues, tags, salience, strength, updated_at
+                FROM memories
+                ORDER BY updated_at DESC
+                LIMIT 200
+                """
+            ).fetchall()
+    except Exception:
+        return []
+
+    ranked: list[tuple[float, str]] = []
+    now = time.time()
+    for memory_id, content, encoded, cues, tags, salience, strength, updated_at in rows:
+        haystack = " ".join(str(x or "") for x in (content, encoded, cues, tags))
+        overlap = len(query_tokens & _tokenize_for_memory(haystack))
+        if overlap <= 0:
+            continue
+        age_days = max(0.0, (now - float(updated_at or now)) / 86400.0)
+        freshness = 1.0 / (1.0 + age_days / 14.0)
+        score = overlap * float(salience or 0.6) * float(strength or 1.0) * freshness
+        snippet = " ".join(str(content or "").split())[:240]
+        if snippet:
+            ranked.append((score, f"- memory:{memory_id} {snippet}"))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [snippet for _, snippet in ranked[: cfg.memory_recall_limit]]
+
+
+def _with_memory_context(topic: str, cfg: Settings) -> str:
+    instruction = (topic or "").strip() or cfg.default_topic
+    snippets = _recall_memory_snippets(instruction, cfg)
+    if not snippets:
+        return instruction
+    return (
+        f"{instruction}\n\n"
+        "Use these trusted Hakua/Hermes memory notes only as style and factual continuity; "
+        "do not expose them as private memory dumps and do not invent details:\n"
+        + "\n".join(snippets)
+    )
+
+
+def _remember_generated_post(text: str, cfg: Settings, *, dry_run: bool, topic: str) -> None:
+    db_path = _memory_db_path(cfg)
+    if db_path is None or not db_path.exists() or not text.strip():
+        return
+    content = f"LM-twitterer {'drafted' if dry_run else 'posted'} X post: {text.strip()}"
+    encoded = f"public_x_post lm-twitterer hakua hermes topic={topic.strip() or cfg.default_topic}"
+    cues = "x,twitter,lm-twitterer,post,hakua,hermes"
+    tags = "lm-twitterer,x-post,hakua-memory"
+    now = time.time()
+    try:
+        with sqlite3.connect(db_path) as con:
+            con.execute(
+                """
+                INSERT INTO memories
+                    (content, encoded, cues, tags, salience, valence, strength, source, session_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0.45, 0.1, 1.0, 'lm-twitterer', '', ?, ?)
+                ON CONFLICT(content) DO UPDATE SET
+                    encoded=excluded.encoded,
+                    cues=excluded.cues,
+                    tags=excluded.tags,
+                    updated_at=excluded.updated_at,
+                    source='lm-twitterer'
+                """,
+                (content, encoded, cues, tags, now, now),
+            )
+    except Exception:
+        return
 
 def _append_identity_signature(text: str, cfg: Settings, *, enabled: bool = True) -> str:
     cleaned = (text or "").strip()
@@ -537,7 +647,7 @@ def _prepare_generation_env(cfg: Settings) -> None:
 
 def generate_post_text(topic: str, cfg: Settings | None = None) -> str:
     cfg = cfg or settings()
-    instruction = (topic or "").strip() or cfg.default_topic
+    instruction = _with_memory_context(topic, cfg)
     text = _clean_generated_text(
         _llm_generate(cfg.tweet_prompt, instruction, cfg, purpose="lm-twitterer.post"),
         max_chars=cfg.max_post_chars,
@@ -688,12 +798,14 @@ def post(
     if dry_run:
         result["message"] = "generated only; not posted"
         _append_log({"action": "post", **result}, cfg)
+        _remember_generated_post(text, cfg, dry_run=True, topic=topic)
         return result
     client = _twitter_client(cfg)
     created = client.get_post_api().post_create_tweet(tweet_text=text)
     url = _tweet_url_from_result(created)
     result.update({"posted": True, "url": url})
     _append_log({"action": "post", **result}, cfg)
+    _remember_generated_post(text, cfg, dry_run=False, topic=topic)
     return result
 
 
@@ -975,6 +1087,10 @@ def status() -> dict[str, Any]:
         "effective_generation_provider": effective_provider,
         "effective_generation_model": effective_model,
         "generation_uses_grok_backend": _is_grok_provider(effective_provider),
+        "memory_bridge_enabled": cfg.memory_bridge_enabled,
+        "memory_db": str(cfg.memory_db) if cfg.memory_db else "",
+        "memory_db_exists": bool(cfg.memory_db and cfg.memory_db.exists()),
+        "memory_recall_limit": cfg.memory_recall_limit,
     }
 
 

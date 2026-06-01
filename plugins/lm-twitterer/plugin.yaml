@@ -8,7 +8,7 @@ requires_env:
     description: "X screen name for the bot account, without @."
     secret: false
   - name: LM_TWITTERER_AUTH_TOKEN
-    description: "X auth_token cookie from the Gmail-linked account session."
+    description: "X auth_token cookie from the logged-in account session."
     secret: true
   - name: LM_TWITTERER_CT0
     description: "X ct0 cookie from the same browser session."

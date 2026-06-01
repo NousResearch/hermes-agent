@@ -187,7 +187,7 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 
 ### MCP
 
-Manage [MCP](/integrations/mcp) servers without the CLI. The same `mcp_servers`
+Manage [MCP](./mcp.md) servers without the CLI. The same `mcp_servers`
 block in `config.yaml` that `hermes mcp` reads from.
 
 - **Add** — register an HTTP/SSE server (URL) or a stdio server (command + args), with optional `KEY=VALUE` environment variables for stdio servers

@@ -31,9 +31,12 @@ related:
 ## งานที่พี่นัทต้องทำเอง (คน · ทำครั้งเดียว)
 
 1. **จดโดเมน** `hilogiclabs.com` ที่ผู้รับจดโดเมน
-2. **ใส่กุญแจ AI** ในไฟล์ `.env` ของ Content Factory:
-   - `OPENROUTER_API_KEY` — เพื่อให้ AI เขียนเนื้อหา (ขั้น 3)
-   - `MINIMAX_API_KEY` — เพื่อทำเสียงพูด + วิดีโอ (เฟส 4.5)
+2. **ใส่กุญแจ AI ระดับพรีเมียม** ในไฟล์ `.env` ของ Content Factory (รายละเอียดเต็มดู `premium-tool-stack.md`):
+   - `OPENROUTER_API_KEY` — เขียนเนื้อหา (Claude Opus)
+   - `ELEVENLABS_API_KEY` — เสียงบรรยายคุณภาพสูงสุด
+   - `GOOGLE_API_KEY` — ภาพ Imagen 4 Ultra + คลิป Veo/Sora
+   - `GAMMA_API_KEY` — สไลด์
+   - `AYRSHARE_API_KEY` — โพสต์อัตโนมัติระดับองค์กร
 3. **ขอ token แพลตฟอร์ม** (LinkedIn / Facebook / Medium) + ผ่าน 2FA เพื่อโพสต์อัตโนมัติ (ขั้น 5)
 
 ## สถานะระบบ ณ 2026-06-01
@@ -46,7 +49,7 @@ related:
 | template เนื้อหา 5 ช่องทาง | สร้างครบ | โหลดได้ทุกตัว |
 | แกนผลิต (produce-content) | wiring พร้อม | dry-run ผ่าน รอกุญแจ |
 | ตัวเฝ้าดู sync (เฟส 7) | ทำงานได้ | รันจริง จับ 3 repo |
-| เสียง/วิดีโอ (เฟส 4.5) | รอกุญแจ MiniMax | — |
+| เสียง/วิดีโอ (เฟส 4.5) | รอกุญแจ ElevenLabs + Veo (ดู premium-tool-stack.md) | — |
 
 ## หมายเหตุ
 

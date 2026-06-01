@@ -1750,8 +1750,8 @@ class BasePlatformAdapter(ABC):
     def enforces_own_access_policy(self) -> bool:
         """Whether this adapter gates inbound access before dispatch.
 
-        Some adapters (WeCom, Weixin, Yuanbao, QQBot) implement a documented
-        config-driven access surface — ``dm_policy`` / ``group_policy`` /
+        Some adapters (WeCom, Weixin, Yuanbao, QQBot, WhatsApp) implement a
+        documented config-driven access surface — ``dm_policy`` / ``group_policy`` /
         ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.

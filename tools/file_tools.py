@@ -174,9 +174,44 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
+    """Return the container-side Hermes mirror prefix for Docker file tools."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        return None
+
+    try:
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+
+        if env is not None:
+            if env.__class__.__name__ == "DockerEnvironment" and bool(
+                getattr(env, "_persistent", False)
+            ):
+                return "/root/.hermes"
+            return None
+
+        config = _get_env_config()
+    except Exception:
+        return None
+
+    if config.get("env_type") == "docker" and config.get("container_persistent", True):
+        return "/root/.hermes"
+    return None
+
+
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
     """Return a cross-profile warning string when ``filepath`` lands in
-    another Hermes profile's skills/plugins/cron/memories directory.
+    another Hermes profile's skills/plugins/cron/memories directory, or
+    when it targets the Docker container's sandbox mirror of Hermes state.
 
     Returns ``None`` when the write is in-scope (same profile) or outside
     Hermes scope entirely. Soft guard — the agent can override by passing
@@ -205,7 +240,10 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     warning = get_cross_profile_warning(resolved)
     if warning is not None:
         return warning
-    return get_container_mirror_warning(resolved)
+    return get_container_mirror_warning(
+        resolved,
+        mirror_prefix=_get_container_mirror_prefix_for_task(task_id),
+    )
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:

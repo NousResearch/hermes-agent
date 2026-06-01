@@ -3,16 +3,8 @@
 from __future__ import annotations
 
 import os
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional
-
-# Set by DockerEnvironment when persistent=True to declare that the
-# container's /root maps to a sandbox bind-mount, making /root/.hermes
-# a non-authoritative mirror of the host profile state.
-_CONTAINER_HERMES_MIRROR: ContextVar[str | None] = ContextVar(
-    "_CONTAINER_HERMES_MIRROR", default=None
-)
 
 
 def _hermes_home_path() -> Path:
@@ -467,33 +459,28 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 # ownership on the divergent SOUL.md in #32049 confirms this is the primary
 # failure mode.
 #
-# Fix: DockerEnvironment sets _CONTAINER_HERMES_MIRROR to "/root/.hermes"
-# when persistent=True (it already knows /root maps to <sandbox>/home).
-# classify_container_mirror_target then catches any write whose resolved
-# path starts with that prefix, using the same warning + bypass contract.
+# Fix: file_tools passes the active Docker mirror prefix when the terminal
+# backend is docker + persistent. This catches the very first file-tool call,
+# before a DockerEnvironment object necessarily exists.
 # ---------------------------------------------------------------------------
 
 
-def set_container_hermes_mirror(path: str) -> object:
-    """Declare that *path* inside the container is a sandbox mirror, not
-    authoritative HERMES_HOME state.  Call from DockerEnvironment when
-    persistent=True.  Returns the ContextVar token for reset on teardown."""
-    return _CONTAINER_HERMES_MIRROR.set(path)
-
-
-def classify_container_mirror_target(path: str) -> Optional[dict]:
+def classify_container_mirror_target(
+    path: str,
+    mirror_prefix: str | None = None,
+) -> Optional[dict]:
     """Classify a write target as a container-side sandbox mirror.
 
-    Returns ``None`` when no Docker context is active or the path is not
-    under the declared mirror prefix.  Otherwise returns the same dict
-    shape as ``classify_sandbox_mirror_target``:
+    ``mirror_prefix`` must be supplied by the caller after it has established
+    that file tools are executing in a container whose home is a sandbox
+    mirror. Returns ``None`` when no such context is active or the path is not
+    under the mirror prefix. Otherwise returns:
 
       * ``target_path``: resolved path string
       * ``mirror_root``: the declared container mirror prefix
       * ``inner_path``: portion under the mirror root (what the agent
         likely meant to address in the host HERMES_HOME)
     """
-    mirror_prefix = _CONTAINER_HERMES_MIRROR.get()
     if not mirror_prefix:
         return None
     try:
@@ -509,15 +496,20 @@ def classify_container_mirror_target(path: str) -> Optional[dict]:
     }
 
 
-def get_container_mirror_warning(path: str) -> Optional[str]:
+def get_container_mirror_warning(
+    path: str,
+    mirror_prefix: str | None = None,
+) -> Optional[str]:
     """Return a model-facing warning when *path* lands in the container's
     sandbox mirror of authoritative Hermes state.
 
-    Same contract as ``get_sandbox_mirror_warning``: soft guard, returns
-    ``None`` for non-mirror paths, caller surfaces as a tool-result error.
-    Bypass via ``cross_profile=True`` after explicit user direction.
+    The caller supplies ``mirror_prefix`` only when the current file-tool
+    backend is known to execute inside a Docker sandbox. Same contract as
+    ``get_cross_profile_warning``: soft guard, returns ``None`` for
+    non-mirror paths, caller surfaces as a tool-result error. Bypass via
+    ``cross_profile=True`` after explicit user direction.
     """
-    info = classify_container_mirror_target(path)
+    info = classify_container_mirror_target(path, mirror_prefix)
     if info is None:
         return None
     return (

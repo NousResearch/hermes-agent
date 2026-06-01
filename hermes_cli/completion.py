@@ -105,7 +105,7 @@ _hermes_profiles() {{
     local profiles_dir="$HOME/.hermes/profiles"
     local profiles="default"
     if [ -d "$profiles_dir" ]; then
-        profiles="$profiles $(ls "$profiles_dir" 2>/dev/null)"
+        profiles="$profiles $(for d in "$profiles_dir"/*/; do [ -d "$d" ] && basename "$d"; done 2>/dev/null)"
     fi
     echo "$profiles"
 }}
@@ -206,7 +206,7 @@ _hermes_profiles() {{
     local -a profiles
     profiles=(default)
     if [[ -d "$HOME/.hermes/profiles" ]]; then
-        profiles+=("${{(@f)$(ls $HOME/.hermes/profiles 2>/dev/null)}}")
+        profiles+=("${{(@f)$(for d in $HOME/.hermes/profiles/*/; do [ -d $d ] && basename $d; done 2>/dev/null)}}")
     fi
     _describe 'profile' profiles
 }}
@@ -260,7 +260,11 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
         "function __hermes_profiles",
         "    echo default",
         "    if test -d $HOME/.hermes/profiles",
-        "        ls $HOME/.hermes/profiles 2>/dev/null",
+        "        for d in $HOME/.hermes/profiles/*/",
+        "            if test -d $d",
+        "                basename $d",
+        "            end",
+        "        end 2>/dev/null",
         "    end",
         "end",
         "",

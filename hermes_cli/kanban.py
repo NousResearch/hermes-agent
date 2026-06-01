@@ -1137,6 +1137,10 @@ def _cmd_boards_switch(args: argparse.Namespace) -> int:
         )
         return 1
     kb.set_current_board(normed)
+    # Mirror the switch in the process environment so that downstream
+    # subprocesses spawned by THIS process see the new board immediately,
+    # even when the caller has a pre-existing HERMES_KANBAN_BOARD env pin.
+    os.environ["HERMES_KANBAN_BOARD"] = normed
     print(f"Active board is now {normed!r}.")
     return 0
 

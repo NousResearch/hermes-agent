@@ -12430,6 +12430,14 @@ def _command_has_dedicated_mcp_startup(args) -> bool:
 def _should_background_mcp_startup(args) -> bool:
     if _is_tui_chat_launch(args):
         return False
+    # Quiet mode (chat -Q) or query mode (chat -q "prompt") means a kanban
+    # worker, cron job, or scripted invocation -- there is no interactive
+    # prompt to rush to, and the 750ms join timeout causes MCP tools from
+    # slow-starting servers (e.g. mcp-atlassian via uvx) to be invisible
+    # to the agent.  Keep MCP discovery synchronous for non-interactive
+    # sessions.
+    if getattr(args, "quiet", False) or getattr(args, "query", None):
+        return False
     return args.command in {None, "chat", "rl"}
 
 

@@ -198,6 +198,63 @@ def test_cli_get_tool_definitions_briefly_waits_for_fast_mcp_thread(monkeypatch)
     assert not thread.is_alive()
 
 
+def _mock_mcp_modules(monkeypatch, calls):
+    """Shared monkeypatch setup for quiet/query MCP tests."""
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+            load_config=lambda: {},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1)
+        ),
+    )
+
+
+def test_prepare_agent_startup_runs_inline_mcp_for_quiet_flag(monkeypatch):
+    """chat -Q (quiet flag) must run MCP discovery synchronously."""
+    calls = {"mcp": 0}
+    _mock_mcp_modules(monkeypatch, calls)
+
+    main_mod._prepare_agent_startup(_agent_args(quiet=True))
+
+    assert calls["mcp"] == 1
+    assert mcp_startup._mcp_discovery_thread is None
+
+
+def test_prepare_agent_startup_runs_inline_mcp_for_query_mode(monkeypatch):
+    """chat -q "prompt" (query mode) must run MCP discovery synchronously.
+
+    Kanban workers and cron jobs use -q (--query), not -Q (--quiet).
+    The 750ms background timeout is too short for slow MCP servers
+    (e.g. mcp-atlassian via uvx takes 12+ seconds). Synchronous discovery
+    ensures all tools are visible before the first turn.
+    """
+    calls = {"mcp": 0}
+    _mock_mcp_modules(monkeypatch, calls)
+
+    main_mod._prepare_agent_startup(_agent_args(query="work kanban task t_abc"))
+
+    assert calls["mcp"] == 1
+    assert mcp_startup._mcp_discovery_thread is None
+
+
 def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     waited = {"done": False}
 

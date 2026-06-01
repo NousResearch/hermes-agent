@@ -918,10 +918,15 @@ class SessionStore:
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
+                    # Bridge the prior session_id forward, but ONLY when the
+                    # prior session had activity — there's no point stitching
+                    # context from an empty rotation.
+                    previous_session_id = entry.session_id if reset_had_activity else None
             else:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+                previous_session_id = None
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -938,6 +943,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                previous_session_id=previous_session_id,
             )
 
             self._entries[session_key] = entry

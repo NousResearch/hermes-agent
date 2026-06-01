@@ -33,14 +33,131 @@ def _query_matches(label: str, query: str) -> bool:
     return True
 
 
+_WORD_BOUNDARY = frozenset("-_/. ")
+
+
+def _is_boundary(target: str, index: int) -> bool:
+    """True if position ``index`` in ``target`` starts a word.
+
+    Mirrors ``isBoundary`` in the TS scorer: start-of-string, after a
+    separator char, or a lower->upper camelCase transition.
+    """
+    if index == 0:
+        return True
+
+    prev = target[index - 1]
+
+    if prev in _WORD_BOUNDARY:
+        return True
+
+    # camelCase / lower->upper transition (e.g. the `O` in `gptO`).
+    cur = target[index]
+
+    return prev == prev.lower() and cur != cur.lower() and cur == cur.upper()
+
+
+def _token_score(orig: str, lower: str, token: str) -> float | None:
+    """Score one token against a target. None if the token isn't a subsequence.
+
+    A faithful port of ``fuzzyScore`` in ui-tui/src/lib/fuzzy.ts and
+    web/src/lib/fuzzy.ts so all three surfaces rank model ids identically:
+    contiguous runs, word-boundary / first-char starts, prefix matches, and
+    exact matches all score higher than scattered subsequence hits.
+
+    ``lower`` is ``orig`` lowercased; matching is done against ``lower`` while
+    boundary detection uses ``orig`` (so the camelCase rule works), exactly as
+    in the TS scorer.
+    """
+    score = 0.0
+    prev = -1
+    search_from = 0
+    positions: list[int] = []
+
+    for ch in token:
+        idx = lower.find(ch, search_from)
+
+        if idx < 0:
+            return None
+
+        positions.append(idx)
+        score += 1
+
+        if prev >= 0 and idx == prev + 1:
+            score += 5
+        elif prev >= 0:
+            score -= min(idx - prev - 1, 3)
+
+        if _is_boundary(orig, idx):
+            score += 3
+
+        if idx == 0:
+            score += 5
+
+        prev = idx
+        search_from = idx + 1
+
+    # Prefix bonus: the token matched a contiguous prefix of the target.
+    if positions and positions[0] == 0 and positions[-1] == len(positions) - 1:
+        score += 8
+
+    # Exact full match dominates everything else.
+    if lower == token:
+        score += 20
+
+    # Slightly prefer shorter targets when scores are otherwise close.
+    score -= len(lower) * 0.01
+
+    return score
+
+
+def _fuzzy_score(label: str, query: str) -> float | None:
+    """Aggregate score for a multi-token query (AND). None if any token fails.
+
+    Mirrors ``fuzzyScoreMulti`` in the TS scorer: every whitespace-separated
+    token must match; per-token scores are summed.
+    """
+    lower = label.lower()
+    tokens = query.lower().split()
+
+    if not tokens:
+        return 0.0
+
+    total = 0.0
+
+    for token in tokens:
+        token_score = _token_score(label, lower, token)
+
+        if token_score is None:
+            return None
+
+        total += token_score
+
+    return total
+
+
 def _filter_indices(items: List[str], query: str) -> List[int]:
-    """Return original item indices matching *query*, preserving list order."""
+    """Return item indices matching *query*, ranked best-first.
+
+    An empty query keeps every item in original order. Otherwise items are
+    filtered to fuzzy matches and sorted by score descending, ties broken by
+    original index so equal-scoring rows keep their catalog order.
+    """
     q = query.strip()
 
     if not q:
         return list(range(len(items)))
 
-    return [i for i, label in enumerate(items) if _query_matches(label, q)]
+    scored = []
+
+    for i, label in enumerate(items):
+        score = _fuzzy_score(label, q)
+
+        if score is not None:
+            scored.append((i, score))
+
+    scored.sort(key=lambda pair: (-pair[1], pair[0]))
+
+    return [i for i, _ in scored]
 
 
 @dataclass
@@ -98,8 +215,13 @@ def _handle_active_search_key(
         return False, False, False
 
     if key == 27:
+        # Esc stops search AND clears the query, restoring the full list (so a
+        # no-match filter can't strand the user on an empty list). Signals
+        # `changed` when there was a query so the driver resets scroll/cursor.
+        had_query = bool(search.query)
         search.active = False
-        return True, False, False
+        search.query = ""
+        return True, False, had_query
 
     if key in (curses_mod.KEY_BACKSPACE, 127, 8):
         search.query = search.query[:-1]
@@ -112,7 +234,7 @@ def _handle_active_search_key(
     if key in (curses_mod.KEY_ENTER, 10, 13):
         return True, True, False
 
-    if 0 <= key < 256 and chr(key).isprintable():
+    if 32 <= key < 127:  # printable ASCII; avoids Latin-1 mojibake from 128-255
         search.query += chr(key)
         return True, False, True
 
@@ -167,9 +289,16 @@ def read_menu_key(stdscr) -> str:
     the escape path; ``q`` also cancels.  Unknown sequences map to
     ``NAV_NONE`` so the caller simply ignores them rather than misfiring.
     """
-    import curses
+    return _decode_menu_key(stdscr, stdscr.getch())
 
-    key = stdscr.getch()
+
+def _decode_menu_key(stdscr, key: int) -> str:
+    """Normalize an already-read keypress to a menu action.
+
+    Split out from ``read_menu_key`` so search-aware loops can peek the raw
+    key (e.g. to catch ``/``) before falling back to nav decoding.
+    """
+    import curses
 
     if key in (curses.KEY_UP, ord("k")):
         return NAV_UP
@@ -230,6 +359,8 @@ def _run_curses_menu(
     extra_color_pairs=False,
     fallback,
     cancel_value,
+    searchable=False,
+    search_labels=None,
 ):
     """Shared curses single-/multi-select event loop.
 
@@ -244,9 +375,12 @@ def _run_curses_menu(
     Callbacks / params:
         draw_header(stdscr, max_y, max_x) -> int
             Draw the title/hint/description rows. Returns the first screen row
-            index where the scrollable item list should start.
+            index where the scrollable item list should start. When search is
+            active it receives the live ``_SearchState`` via the optional
+            ``search`` keyword (drawn by the menu so the hint line can show it).
         draw_row(stdscr, y, idx, is_cursor, max_x) -> None
-            Draw one item row.
+            Draw one item row. ``idx`` is always the ORIGINAL item index, so
+            per-menu rendering is unchanged whether or not a filter is active.
         on_action(action, cursor) -> value
             Reducer for SELECT/TOGGLE/CANCEL. Return ``_KEEP`` to continue the
             loop; return anything else to resolve the menu with that value.
@@ -260,12 +394,18 @@ def _run_curses_menu(
         fallback() -> value
             Called when curses errors out on a real TTY (curses unavailable).
         cancel_value: returned on non-TTY stdin, ESC/cancel, or KeyboardInterrupt.
+        searchable: when true, ``/`` opens a type-to-filter prompt over
+            ``search_labels``. Returned values are always ORIGINAL item indices.
+        search_labels: per-item text used for filtering (required when
+            ``searchable`` is true; length must equal ``item_count``).
     """
     # Non-TTY (piped/redirected stdin): curses and input() both hang or spin,
     # so return the cancel value directly — matching the pre-refactor guard in
     # each menu (the numbered fallback is only for curses errors on a real TTY).
     if not sys.stdin.isatty():
         return cancel_value
+
+    use_search = searchable and search_labels is not None and len(search_labels) == item_count
 
     try:
         import curses
@@ -284,22 +424,46 @@ def _run_curses_menu(
                     )
             cursor = initial_cursor
             scroll_offset = 0
+            search = _SearchState()
+            # Non-None labels for filtering; empty when search is disabled so
+            # _filter_indices stays a cheap identity range.
+            labels: List[str] = (
+                search_labels if (use_search and search_labels is not None) else []
+            )
 
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
-                items_start = draw_header(stdscr, max_y, max_x)
+                filtered = (
+                    _filter_indices(labels, search.query)
+                    if use_search
+                    else list(range(item_count))
+                )
+                cursor, cursor_pos = _reconcile_cursor(filtered, cursor)
 
-                visible_rows = max_y - items_start - reserve_bottom
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible_rows:
-                    scroll_offset = cursor - visible_rows + 1
+                # draw_header accepts an optional `search` kwarg when the menu
+                # wants to render the live filter; tolerate headers that don't.
+                try:
+                    items_start = draw_header(stdscr, max_y, max_x, search=search)
+                except TypeError:
+                    items_start = draw_header(stdscr, max_y, max_x)
 
-                for draw_i, i in enumerate(
-                    range(scroll_offset, min(item_count, scroll_offset + visible_rows))
+                visible_rows = max(1, max_y - items_start - reserve_bottom)
+                scroll_offset = _scroll_for_cursor(
+                    scroll_offset, cursor_pos, visible_rows, len(filtered)
+                )
+
+                if use_search and search.query and not filtered:
+                    try:
+                        stdscr.addnstr(items_start, 0, "  No matches", max_x - 1, curses.A_DIM)
+                    except curses.error:
+                        pass
+
+                for draw_i, filtered_pos in enumerate(
+                    range(scroll_offset, min(len(filtered), scroll_offset + visible_rows))
                 ):
+                    i = filtered[filtered_pos]
                     y = draw_i + items_start
                     if y >= max_y - reserve_bottom:
                         break
@@ -309,13 +473,46 @@ def _run_curses_menu(
                     draw_footer(stdscr, max_y, max_x)
 
                 stdscr.refresh()
-                action = read_menu_key(stdscr)
+
+                if use_search:
+                    key = stdscr.getch()
+
+                    if search.active:
+                        # Active search consumes query-editing keys; nav keys
+                        # fall through to be decoded below.
+                        handled, confirm, changed = _handle_active_search_key(
+                            curses, key, search
+                        )
+                        if changed:
+                            scroll_offset = 0
+                            cursor, cursor_pos = _reconcile_cursor(
+                                _filter_indices(search_labels, search.query), cursor
+                            )
+                        if confirm:
+                            if filtered:
+                                outcome = on_action(NAV_SELECT, cursor)
+                                if outcome is not _KEEP:
+                                    result_holder[0] = outcome
+                                    return
+                            continue
+                        if handled:
+                            continue
+                        action = _decode_menu_key(stdscr, key)
+                    elif key == ord("/"):
+                        search.active = True
+                        continue
+                    else:
+                        action = _decode_menu_key(stdscr, key)
+                else:
+                    action = read_menu_key(stdscr)
 
                 if action == NAV_UP:
-                    cursor = (cursor - 1) % item_count
+                    cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, -1)
                 elif action == NAV_DOWN:
-                    cursor = (cursor + 1) % item_count
+                    cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, 1)
                 elif action in (NAV_SELECT, NAV_TOGGLE, NAV_CANCEL):
+                    if action == NAV_SELECT and use_search and not filtered:
+                        continue
                     outcome = on_action(action, cursor)
                     if outcome is not _KEEP:
                         result_holder[0] = outcome
@@ -429,6 +626,7 @@ def curses_radiolist(
     *,
     cancel_returns: int | None = None,
     description: str | None = None,
+    searchable: bool = False,
 ) -> int:
     """Curses single-select radio list. Returns the selected index.
 
@@ -440,6 +638,9 @@ def curses_radiolist(
         description: Optional multi-line text shown between the title and
             the item list.  Useful for context that should survive the
             curses screen clear.
+        searchable: When true, ``/`` opens a type-to-filter prompt. The
+            returned value is always the original item index, not a filtered
+            row position.
     """
     if cancel_returns is None:
         cancel_returns = selected
@@ -448,7 +649,7 @@ def curses_radiolist(
     if description:
         desc_lines = description.splitlines()
 
-    def _draw_header(stdscr, max_y, max_x):
+    def _draw_header(stdscr, max_y, max_x, search=None):
         import curses
         row = 0
         try:
@@ -465,11 +666,13 @@ def curses_radiolist(
                 stdscr.addnstr(row, 0, dline, max_x - 1, curses.A_NORMAL)
                 row += 1
 
-            stdscr.addnstr(
-                row, 0,
-                "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel",
-                max_x - 1, curses.A_DIM,
-            )
+            if searchable and search is not None and search.active:
+                hint = f"  Search: {search.query}\u258e  BACKSPACE edit  Ctrl+U clear  ESC stop"
+            elif searchable:
+                hint = "  \u2191\u2193 navigate  ENTER/SPACE select  / search  ESC cancel"
+            else:
+                hint = "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel"
+            stdscr.addnstr(row, 0, hint, max_x - 1, curses.A_DIM)
             row += 1
         except curses.error:
             pass
@@ -505,6 +708,8 @@ def curses_radiolist(
         reserve_bottom=1,
         fallback=lambda: _radio_numbered_fallback(title, items, selected, cancel_returns),
         cancel_value=cancel_returns,
+        searchable=searchable,
+        search_labels=list(items) if searchable else None,
     )
 
 
@@ -540,27 +745,33 @@ def curses_single_select(
     default_index: int = 0,
     *,
     cancel_label: str = "Cancel",
+    searchable: bool = False,
 ) -> int | None:
     """Curses single-select menu. Returns selected index or None on cancel.
 
     Works inside prompt_toolkit because curses.wrapper() restores the terminal
     safely, unlike simple_term_menu which conflicts with /dev/tty.
+
+    When ``searchable`` is true, ``/`` opens a type-to-filter prompt; the
+    returned value is always the original item index (or None for cancel).
     """
     all_items = list(items) + [cancel_label]
     cancel_idx = len(items)
 
-    def _draw_header(stdscr, max_y, max_x):
+    def _draw_header(stdscr, max_y, max_x, search=None):
         import curses
         try:
             hattr = curses.A_BOLD
             if curses.has_colors():
                 hattr |= curses.color_pair(2)
             stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-            stdscr.addnstr(
-                1, 0,
-                "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
-                max_x - 1, curses.A_DIM,
-            )
+            if searchable and search is not None and search.active:
+                hint = f"  Search: {search.query}\u258e  BACKSPACE edit  Ctrl+U clear  ESC stop"
+            elif searchable:
+                hint = "  ↑↓ navigate  ENTER confirm  / search  ESC/q cancel"
+            else:
+                hint = "  ↑↓ navigate  ENTER confirm  ESC/q cancel"
+            stdscr.addnstr(1, 0, hint, max_x - 1, curses.A_DIM)
         except curses.error:
             pass
         return 3
@@ -597,6 +808,8 @@ def curses_single_select(
         reserve_bottom=1,
         fallback=lambda: _numbered_single_fallback(title, all_items, cancel_idx),
         cancel_value=None,
+        searchable=searchable,
+        search_labels=list(all_items) if searchable else None,
     )
 
 

@@ -10831,7 +10831,11 @@ class GatewayRunner:
         # exits when the gateway dies, taking the detached helper with it).
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        # Launchd on macOS has KeepAlive=true which restarts the gateway on any
+        # exit — same semantics as systemd.  Use via_service=True so the gateway
+        # exits cleanly and launchd restarts it natively, rather than spawning a
+        # detached watcher shell that races with KeepAlive (SIGTERM ping-pong).
+        if _under_service or _in_container or sys.platform == "darwin":
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

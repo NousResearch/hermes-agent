@@ -7039,6 +7039,119 @@ class HermesCLI:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
+    def _handle_plan_command(self, cmd_original: str) -> None:
+        """Handle /plan [pending|clear] — show or clear the agent's todo list.
+
+        Reads ``self.agent._todo_store`` (initialised in
+        ``agent/agent_init.py``) and renders a compact table with a
+        status marker per item. No LLM call — the plan is in-process
+        state already.
+
+        Subcommands:
+          - ``/plan``         — show all items (pending/in_progress/completed/cancelled)
+          - ``/plan pending`` — only pending + in_progress
+          - ``/plan clear``   — wipe the list (with confirmation)
+        """
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+
+        # Strip inline destructive-skip tokens (now/--yes/-y) so that
+        # "/plan clear --yes" is interpreted as the clear subcommand with
+        # the confirmation gate skipped, matching the /new/--reset pattern.
+        # See _split_destructive_skip.
+        sub, _ = self._split_destructive_skip(cmd_original)
+        sub = sub.strip().lower()
+
+        # Resolve todo store.  _todo_store is created in agent_init.py
+        # for every AIAgent; fall back gracefully if a stub or a non-agent
+        # session is in use (e.g. tests, --help, early startup).
+        store = getattr(getattr(self, "agent", None), "_todo_store", None)
+
+        if sub == "clear":
+            if store is None:
+                _cprint("  No active plan to clear.")
+                return
+            items = store.read()
+            if not items:
+                _cprint("  No active plan to clear.")
+                return
+            decision = self._confirm_destructive_slash(
+                "plan",
+                "This clears the agent's todo list for the current session.\n"
+                "The agent will lose visibility of in-progress tasks until it rebuilds the plan.",
+                cmd_original=cmd_original,
+            )
+            if decision is None:
+                _cprint("  Cancelled. Plan left unchanged.")
+                return
+            store.write([], merge=False)
+            _cprint("  ✓ Plan cleared.")
+            return
+
+        if store is None:
+            _cprint("  No active agent session — no plan to show.")
+            return
+
+        items = store.read()
+        if not items:
+            _cprint("  (ᵔ◡ᵔ) No plan yet. The agent will populate the list when it starts tracking tasks.")
+            return
+
+        # Apply filter
+        if sub and sub not in {"pending", "all"}:
+            _cprint(f"  Unknown /plan option: {raw_args!r}. Use 'pending' or 'clear'.")
+            return
+        if sub == "pending":
+            rendered = [i for i in items if i["status"] in {"pending", "in_progress"}]
+        else:
+            rendered = items
+
+        if not rendered:
+            _cprint("  (ᵔ◡ᵔ) No pending tasks — the plan is complete or empty.")
+            return
+
+        markers = {
+            "completed": "✓",
+            "in_progress": "●",
+            "pending": "○",
+            "cancelled": "✗",
+        }
+
+        # Compute the visible width so the box border lines up.
+        status_tail = "  (in_progress)"
+        rows = []
+        for i, item in enumerate(rendered, 1):
+            marker = markers.get(item["status"], "?")
+            tail = status_tail if item["status"] == "in_progress" else ""
+            rows.append((i, marker, item["content"], tail))
+
+        inner_width = max(
+            len(f" {i}. {m} {c}{t}") for i, m, c, t in rows
+        )
+        inner_width = max(inner_width, len("Current Plan"))
+        border = "─" * (inner_width + 2)
+
+        print()
+        print("  📋 Current Plan")
+        print(f"  ┌{border}┐")
+        print(f"  │ {'Current Plan':<{inner_width}} │")
+        print(f"  ├{border}┤")
+        for i, marker, content, tail in rows:
+            line = f" {i}. {marker} {content}{tail}"
+            print(f"  │ {line:<{inner_width}} │")
+        print(f"  └{border}┘")
+
+        completed = sum(1 for it in items if it["status"] == "completed")
+        cancelled = sum(1 for it in items if it["status"] == "cancelled")
+        total_for_progress = len(items) - cancelled
+        print(f"  Progress: {completed}/{total_for_progress} completed")
+        if cancelled:
+            print(
+                f"  ({cancelled} cancelled item"
+                f"{'s' if cancelled != 1 else ''} hidden from progress count)"
+            )
+        print()
+
     def save_conversation(self):
         """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
@@ -8630,6 +8743,8 @@ class HermesCLI:
                     pass
         elif canonical == "history":
             self.show_history()
+        elif canonical == "plan":
+            self._handle_plan_command(cmd_original)
         elif canonical == "title":
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:

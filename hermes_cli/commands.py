@@ -110,6 +110,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("plan", "Show the agent's current todo list", "Session",
+               cli_only=True, args_hint="[pending|clear]"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",

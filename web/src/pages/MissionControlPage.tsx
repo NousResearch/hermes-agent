@@ -32,6 +32,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { MissionPacketsPanel } from "@/components/MissionPacketsPanel";
+import { ProjectRoomsPanel } from "@/components/ProjectRoomsPanel";
 import { api } from "@/lib/api";
 import type { CronJob, OpsApprovalSummary, OpsMemoryStatus, OpsSocialPlatformHistory, OpsSocialPlatformHistoryEvent, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, OpsSocialPlatformStatusUpdate, SessionInfo, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -1417,6 +1418,7 @@ export default function MissionControlPage() {
         <TodayView status={status} activeJobs={activeJobs} jobs={jobs} approvalSummary={approvalSummary} />
         <MemoryStatusPanel memoryStatus={memoryStatus} />
         <AutomationPosturePanel jobs={jobs} />
+        <ProjectRoomsPanel />
         <MissionPacketsPanel />
         </div>
 

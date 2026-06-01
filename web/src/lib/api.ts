@@ -211,6 +211,43 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  listProjectRooms: () =>
+    fetchJSON<ProjectRoomsResponse>("/api/mission-control/project-rooms", { cache: "no-store" }),
+  createProjectRoom: (body: ProjectRoomCreate) =>
+    fetchJSON<ProjectRoomCreateResponse>("/api/mission-control/project-rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  listProjectRoomMessages: (roomId: string) =>
+    fetchJSON<ProjectRoomMessagesResponse>(`/api/mission-control/project-rooms/${encodeURIComponent(roomId)}/messages`, { cache: "no-store" }),
+  addProjectRoomMessage: (roomId: string, body: ProjectRoomMessageCreate) =>
+    fetchJSON<ProjectRoomMessageCreateResponse>(`/api/mission-control/project-rooms/${encodeURIComponent(roomId)}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  uploadProjectRoomAttachment: (roomId: string, file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return fetchJSON<ProjectRoomAttachmentCreateResponse>(`/api/mission-control/project-rooms/${encodeURIComponent(roomId)}/attachments`, {
+      method: "POST",
+      body,
+    });
+  },
+  getProjectRoomAttachment: (roomId: string, attachmentId: string) =>
+    fetchJSON<ProjectRoomAttachmentResponse>(`/api/mission-control/project-rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(attachmentId)}`, { cache: "no-store" }),
+  downloadProjectRoomAttachment: async (roomId: string, attachmentId: string) => {
+    const headers = new Headers();
+    const token = window.__HERMES_SESSION_TOKEN__;
+    if (token) setSessionHeader(headers, token);
+    const res = await fetch(`${BASE}/api/mission-control/project-rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(attachmentId)}/download`, { headers });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${text}`);
+    }
+    return res.blob();
+  },
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
@@ -896,6 +933,94 @@ export interface MissionControlBlockFlagPacketCreate {
   reason: string;
   source_refs?: string[];
   author?: string;
+}
+
+export interface ProjectRoom {
+  id: string;
+  slug: string;
+  title: string;
+  project_key: string;
+  description: string;
+  trusted_for_execution: false;
+  inert_context_only: true;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  attachment_count: number;
+}
+
+export interface ProjectRoomsResponse {
+  generated_at: string;
+  source: string;
+  source_refs: string[];
+  rooms: ProjectRoom[];
+  warnings: string[];
+}
+
+export interface ProjectRoomCreate {
+  title: string;
+  project_key?: string;
+  description?: string;
+}
+
+export interface ProjectRoomCreateResponse {
+  room: ProjectRoom;
+}
+
+export interface ProjectRoomMessage {
+  id: string;
+  room_id: string;
+  author: string;
+  role: string;
+  content_type: string;
+  content_text: string;
+  source_refs: string[];
+  linked_packet_ids: string[];
+  trusted_for_execution: false;
+  inert_context_only: true;
+  created_at: string;
+}
+
+export interface ProjectRoomMessagesResponse {
+  generated_at: string;
+  source: string;
+  room: ProjectRoom;
+  messages: ProjectRoomMessage[];
+  warnings: string[];
+}
+
+export interface ProjectRoomMessageCreate {
+  author?: string;
+  role?: string;
+  content_type?: string;
+  content_text: string;
+  source_refs?: string[];
+  linked_packet_ids?: string[];
+  trusted_for_execution?: boolean;
+}
+
+export interface ProjectRoomMessageCreateResponse {
+  message: ProjectRoomMessage;
+}
+
+export interface ProjectRoomAttachment {
+  id: string;
+  room_id: string;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  trusted_for_execution: false;
+  inert_context_only: true;
+  created_at: string;
+}
+
+export interface ProjectRoomAttachmentCreateResponse {
+  attachment: ProjectRoomAttachment;
+}
+
+export interface ProjectRoomAttachmentResponse {
+  attachment: ProjectRoomAttachment;
 }
 
 export interface OpsActionExecute {

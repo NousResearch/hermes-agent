@@ -52,7 +52,7 @@ from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -64,7 +64,7 @@ except ImportError:
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
@@ -2852,6 +2852,18 @@ def _mission_control_packet_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="Mission Control packet error")
 
 
+def _project_room_error(exc: Exception) -> HTTPException:
+    from hermes_cli.mission_control_project_rooms import ProjectRoomError
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="Project Room item not found")
+    if isinstance(exc, OverflowError):
+        return HTTPException(status_code=413, detail=str(exc))
+    if isinstance(exc, ProjectRoomError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Project Rooms error")
+
+
 @app.get("/api/mission-control/packets")
 async def get_mission_control_packets():
     from hermes_cli.mission_control import list_packets
@@ -2912,6 +2924,87 @@ async def post_mission_control_block_flag_packet(body: Dict[str, Any]):
     except Exception as exc:
         create_rejection_audit(dict(body), str(exc), packet_kind="block_flag")
         raise _mission_control_packet_error(exc) from exc
+
+
+@app.get("/api/mission-control/project-rooms")
+async def get_project_rooms():
+    from hermes_cli.mission_control_project_rooms import list_rooms
+
+    return list_rooms()
+
+
+@app.post("/api/mission-control/project-rooms")
+async def post_project_room(body: Dict[str, Any]):
+    from hermes_cli.mission_control_project_rooms import create_room
+
+    try:
+        return {"room": create_room(dict(body))}
+    except Exception as exc:
+        raise _project_room_error(exc) from exc
+
+
+@app.get("/api/mission-control/project-rooms/{room_id}/messages")
+async def get_project_room_messages(room_id: str):
+    from hermes_cli.mission_control_project_rooms import list_messages
+
+    try:
+        return list_messages(room_id)
+    except Exception as exc:
+        raise _project_room_error(exc) from exc
+
+
+@app.post("/api/mission-control/project-rooms/{room_id}/messages")
+async def post_project_room_message(room_id: str, body: Dict[str, Any]):
+    from hermes_cli.mission_control_project_rooms import add_message
+
+    try:
+        return {"message": add_message(room_id, dict(body))}
+    except Exception as exc:
+        raise _project_room_error(exc) from exc
+
+
+@app.post("/api/mission-control/project-rooms/{room_id}/attachments")
+async def post_project_room_attachment(room_id: str, file: UploadFile = File(...)):
+    from hermes_cli.mission_control_project_rooms import add_attachment
+
+    try:
+        content = await file.read()
+        attachment = add_attachment(
+            room_id,
+            filename=file.filename or "",
+            mime_type=file.content_type or "application/octet-stream",
+            content=content,
+        )
+        return {"attachment": attachment}
+    except Exception as exc:
+        raise _project_room_error(exc) from exc
+    finally:
+        await file.close()
+
+
+@app.get("/api/mission-control/project-rooms/{room_id}/attachments/{attachment_id}")
+async def get_project_room_attachment(room_id: str, attachment_id: str):
+    from hermes_cli.mission_control_project_rooms import get_attachment
+
+    try:
+        return {"attachment": get_attachment(room_id, attachment_id)}
+    except Exception as exc:
+        raise _project_room_error(exc) from exc
+
+
+@app.get("/api/mission-control/project-rooms/{room_id}/attachments/{attachment_id}/download")
+async def download_project_room_attachment(room_id: str, attachment_id: str):
+    from hermes_cli.mission_control_project_rooms import attachment_file_path
+
+    try:
+        path, attachment = attachment_file_path(room_id, attachment_id)
+        return FileResponse(
+            path,
+            media_type=str(attachment.get("mime_type") or "application/octet-stream"),
+            filename=str(attachment.get("original_filename") or path.name),
+        )
+    except Exception as exc:
+        raise _project_room_error(exc) from exc
 
 
 _CRON_PROFILE_LOCK = threading.RLock()

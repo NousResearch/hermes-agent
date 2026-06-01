@@ -3699,6 +3699,36 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
+        """Continuation retries must not shrink a higher provider default cap."""
+        self._setup_agent(agent)
+        agent.max_tokens = None
+        requested_caps = []
+
+        def _fake_build_api_kwargs(api_messages):
+            ephemeral = getattr(agent, "_ephemeral_max_output_tokens", None)
+            if ephemeral is not None:
+                agent._ephemeral_max_output_tokens = None
+            cap = ephemeral if ephemeral is not None else 65536
+            requested_caps.append(cap)
+            return {"model": agent.model, "messages": api_messages, "max_tokens": cap}
+
+        first = _mock_response(content="Part 1 ", finish_reason="length")
+        second = _mock_response(content="Part 2", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Part 1 Part 2"
+        assert requested_caps == [65536, 65536]
+
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Ollama-hosted GLM responses can misreport truncated output as stop."""
         self._setup_agent(agent)
@@ -3877,7 +3907,8 @@ class TestRunConversation:
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
-        once. If the retry succeeds (valid JSON args), tool execution proceeds."""
+        (up to 3 times). If a retry succeeds (valid JSON args), tool execution
+        proceeds."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
@@ -3911,6 +3942,48 @@ class TestRunConversation:
             result = agent.run_conversation("write the report")
 
         # Tool was executed on the retry (good_resp)
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+
+    def test_stub_stall_mid_tool_call_recovers_within_3_retries(self, agent):
+        """A network stream stall mid tool-call (PARTIAL_STREAM_STUB_ID) must
+        retry up to 3 times rather than hard-failing after one — and recover
+        if a retry produces a complete tool call. Regression for the false
+        'model hit max output tokens' on Opus when the stream simply dropped."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        # Two consecutive stub-stall responses, then a clean tool call.
+        stall1 = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        stall1.id = PARTIAL_STREAM_STUB_ID
+        stall2 = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        stall2.id = PARTIAL_STREAM_STUB_ID
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"full content"}',
+            call_id="c2",
+        )
+        good_resp = _mock_response(content="", finish_reason="stop", tool_calls=[good_tc])
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                stall1, stall2, good_resp, final_resp,
+            ]
+            result = agent.run_conversation("write the report")
+
+        # Recovered on the 3rd attempt instead of refusing after the 1st.
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 

@@ -74,35 +74,68 @@ def _make_agent(provider="openai-codex", model="gpt-5.5",
     return agent
 
 
-# ── Test: _try_activate_fallback clears mismatched pool ──────────────
+# ── Test: _try_activate_fallback reloads mismatched pool ──────────────
 
 class TestFallbackCredentialIsolation:
-    """Test that _try_activate_fallback isolates the credential pool."""
+    """Test that _try_activate_fallback reloads the credential pool."""
 
-    def test_fallback_clears_primary_pool(self):
-        """When switching from openai-codex to openrouter, the codex pool is cleared."""
-        # Import the real method
-        sys.path.insert(0, "/mnt/g/knowledge/project/hermes-agent")
-        # We test the isolation logic directly, not the full _try_activate_fallback
-        # which has many dependencies. Instead we verify the pool-clearing guard.
+    def test_fallback_reloads_pool_for_new_provider(self, monkeypatch):
+        """When switching from openai-codex to openrouter, the codex pool is
+        replaced with the openrouter pool instead of being cleared to None."""
+        mock_new_pool = _make_pool("openrouter", n_entries=2)
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: mock_new_pool,
+        )
 
         agent = _make_agent(provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex")
         agent._fallback_activated = True
         agent._credential_pool = _make_pool("openai-codex")
 
-        # Simulate: after fallback activation, provider is now openrouter
         fb_provider = "openrouter"
         fb_model = "openrouter/auto"
 
-        # The isolation code from _try_activate_fallback:
+        # Simulate the new reload logic from _try_activate_fallback
         pool = getattr(agent, "_credential_pool", None)
         if pool is not None:
-            pool_provider = getattr(pool, "provider", "") or ""
-            if pool_provider.lower() != fb_provider:
-                agent._credential_pool = None
+            pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+            if pool_provider and pool_provider != fb_provider:
+                try:
+                    from agent.credential_pool import load_pool
+                    new_pool = load_pool(fb_provider)
+                    if new_pool and new_pool.has_credentials():
+                        agent._credential_pool = new_pool
+                except Exception:
+                    pass
+
+        assert agent._credential_pool is not None, (
+            "Pool should be reloaded, not cleared"
+        )
+        assert getattr(agent._credential_pool, "provider", "") == fb_provider, (
+            f"Reloaded pool should be for {fb_provider}"
+        )
+
+    def test_fallback_clears_pool_when_no_credentials(self, monkeypatch):
+        """When the new provider has no credentials, pool is cleared to None."""
+        agent = _make_agent(provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex")
+        agent._fallback_activated = True
+        # Pool has 0 entries → load_pool returns pool with has_credentials=False
+        agent._credential_pool = _make_pool("openai-codex", n_entries=0)
+
+        fb_provider = "openrouter"
+
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is not None:
+            pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+            if pool_provider and pool_provider != fb_provider:
+                new_pool = _make_pool(fb_provider, n_entries=0)
+                if new_pool and new_pool.has_credentials():
+                    agent._credential_pool = new_pool
+                else:
+                    agent._credential_pool = None
 
         assert agent._credential_pool is None, (
-            "Pool should be cleared when fallback provider differs from pool provider"
+            "Pool should be None when new provider has no credentials"
         )
 
     def test_fallback_keeps_matching_pool(self):
@@ -217,3 +250,64 @@ class TestBaseUrlLeak:
         # and _swap_credential is never called
         pool = agent._credential_pool
         assert pool is None, "Pool should be None — _swap_credential won't be reached"
+
+
+# ── Test: _reload_pool_for_provider ──────────────────────────────────
+
+class TestReloadPoolForProvider:
+    """Test the _reload_pool_for_provider helper."""
+
+    def test_reload_attaches_pool_to_agent(self, monkeypatch):
+        """A successful reload attaches the new pool to agent._credential_pool."""
+        from agent.agent_runtime_helpers import _reload_pool_for_provider
+
+        mock_pool = _make_pool("openai-codex", n_entries=2)
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: mock_pool,
+        )
+
+        agent = _make_agent(provider="openrouter")
+        agent._credential_pool = _make_pool("openrouter")
+
+        result = _reload_pool_for_provider(agent, "openai-codex")
+
+        assert result is mock_pool, "Should return the new pool"
+        assert agent._credential_pool is mock_pool, (
+            "Should attach pool to agent"
+        )
+
+    def test_reload_returns_none_when_no_credentials(self, monkeypatch):
+        """Returns None when load_pool succeeds but has no credentials."""
+        from agent.agent_runtime_helpers import _reload_pool_for_provider
+
+        mock_pool = _make_pool("openai-codex", n_entries=0)
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: mock_pool,
+        )
+
+        agent = _make_agent(provider="openrouter")
+        agent._credential_pool = _make_pool("openrouter")
+
+        result = _reload_pool_for_provider(agent, "openai-codex")
+
+        assert result is None, "Should return None when no credentials"
+
+    def test_reload_returns_none_on_load_error(self, monkeypatch):
+        """Returns None when load_pool raises an exception."""
+        from agent.agent_runtime_helpers import _reload_pool_for_provider
+
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: (_ for _ in ()).throw(RuntimeError("test error")),
+        )
+
+        agent = _make_agent(provider="openrouter")
+        agent._credential_pool = _make_pool("openrouter")
+
+        result = _reload_pool_for_provider(agent, "openai-codex")
+
+        assert result is None, "Should return None on load error"
+        # Agent pool should be unchanged
+        assert agent._credential_pool is not None, "Original pool should be preserved"

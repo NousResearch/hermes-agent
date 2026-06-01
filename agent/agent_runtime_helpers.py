@@ -527,6 +527,31 @@ def strip_think_blocks(agent, content: str) -> str:
 
 
 
+def _reload_pool_for_provider(agent, provider: str):
+    """Reload the credential pool for *provider* and attach it to *agent*.
+
+    Returns the new pool on success, None if no credentials are available.
+    Used when the agent's active provider has changed (fallback, smart
+    routing, /model switch) and the stale pool would otherwise block all
+    credential rotation (see #33538).
+    """
+    try:
+        from agent.credential_pool import load_pool
+        new_pool = load_pool(provider)
+    except Exception as exc:
+        _ra().logger.debug("_reload_pool_for_provider: load_pool(%s) failed: %s", provider, exc)
+        return None
+    if new_pool is None or not new_pool.has_credentials():
+        _ra().logger.debug("_reload_pool_for_provider: no credentials for %s", provider)
+        return None
+    agent._credential_pool = new_pool
+    _ra().logger.info(
+        "Reloaded credential pool for provider %s (%d entries)",
+        provider, len(new_pool.entries()),
+    )
+    return new_pool
+
+
 def recover_with_credential_pool(
     agent,
     *,
@@ -561,15 +586,25 @@ def recover_with_credential_pool(
     # subsequent request then goes to the wrong host and 404s (see #33163).
     # The pool should only act when the agent is still on the same provider
     # that seeded the pool.
+    #
+    # When the pool doesn't match the active provider, try to reload the
+    # correct pool for the current provider before giving up.  Without this,
+    # credential rotation is structurally disabled for any provider that was
+    # activated via fallback, smart routing, or /model switch — the agent
+    # keeps the stale pool and rejects all mutations (see #33538).
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if current_provider and pool_provider and current_provider != pool_provider:
         _ra().logger.warning(
             "Credential pool provider mismatch: pool=%s, agent=%s — "
-            "skipping pool mutation to avoid cross-provider contamination",
+            "attempting reload for current provider",
             pool_provider, current_provider,
         )
-        return False, has_retried_429
+        reloaded = _reload_pool_for_provider(agent, current_provider)
+        if reloaded:
+            pool = reloaded
+        else:
+            return False, has_retried_429
 
     effective_reason = classified_reason
     if effective_reason is None:
@@ -1426,6 +1461,19 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._transport_cache.clear()
         if api_key:
             agent.api_key = api_key
+
+        # ── Reload credential pool for new provider ──
+        # When /model switches to a provider with pooled credentials (e.g.
+        # openai-codex), the stale pool from the old provider would block all
+        # credential rotation — every 429/402/401 gets the mismatch guard and
+        # the agent is stuck retrying the same exhausted key (see #33538).
+        _existing_pool = getattr(agent, "_credential_pool", None)
+        if _existing_pool is not None:
+            _old_pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
+            if _old_pool_provider and _old_pool_provider != new_provider:
+                _reload_pool_for_provider(agent, new_provider)
+        elif new_provider:
+            _reload_pool_for_provider(agent, new_provider)
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":

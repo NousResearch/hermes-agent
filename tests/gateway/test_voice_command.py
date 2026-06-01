@@ -495,6 +495,7 @@ class TestSendVoiceReply:
 
     @pytest.mark.asyncio
     async def test_exception_caught(self, runner):
+        # smoke test — no assertion needed
         event = _make_event()
         with patch("tools.tts_tool.text_to_speech_tool", side_effect=RuntimeError("boom")), \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
@@ -904,12 +905,14 @@ class TestVoiceChannelCommands:
 
     @pytest.mark.asyncio
     async def test_input_no_adapter(self, runner):
+        # smoke test — no assertion needed
         """No Discord adapter — early return, no crash."""
         # No adapters set
         await runner._handle_voice_channel_input(111, 42, "Hello")
 
     @pytest.mark.asyncio
     async def test_input_no_text_channel(self, runner):
+        # smoke test — no assertion needed
         """No text channel mapped for guild — early return."""
         from gateway.config import Platform
         mock_adapter = AsyncMock()
@@ -1135,6 +1138,7 @@ class TestDiscordVoiceChannelMethods:
 
     @pytest.mark.asyncio
     async def test_leave_voice_channel_no_connection(self):
+        # smoke test — no assertion needed
         """Leave when not connected — no crash."""
         adapter = self._make_adapter()
         await adapter.leave_voice_channel(111)  # should not raise
@@ -1246,6 +1250,7 @@ class TestDiscordVoiceChannelMethods:
 
     @pytest.mark.asyncio
     async def test_process_voice_input_exception_caught(self):
+        # smoke test — no assertion needed
         """Exception during processing is caught, no crash."""
         adapter = self._make_adapter()
         adapter._voice_input_callback = AsyncMock()
@@ -1483,6 +1488,9 @@ class TestAutoTtsEmptyTextGuard:
         import re
         text_content = "```python\nprint(1)\n```"
         speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
+        # After stripping markdown chars from a code block, the result
+        # should be shorter than the original (chars removed)
+        assert len(speech_text) < len(text_content)
         # Note: base.py regex only strips individual chars, not full code blocks
         # So code blocks are partially stripped but may leave content
         # The real fix is in base.py — empty check after strip

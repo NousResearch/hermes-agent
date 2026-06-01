@@ -28,7 +28,7 @@ def isolated_session(monkeypatch, tmp_path):
     token = set_current_session_key(session_key)
     monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
     # Make sure we don't skip guards via yolo / approvals.mode=off
-    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.setattr(_am, "_YOLO_MODE_FROZEN", False)
     # Isolate from the real user's permanent allowlist + session state
     _saved_permanent = _am._permanent_approved.copy()
     _saved_session = {k: v.copy() for k, v in _am._session_approved.items()}

@@ -46,6 +46,11 @@ def _make_agent(monkeypatch):
         # Worker-thread tracking state mirrored from AIAgent.__init__ so the
         # real interrupt() method can fan out to concurrent-tool workers.
         _active_children: list = []
+        _tool_guardrails = MagicMock()  # ToolCallGuardrailController, set in AIAgent.__init__:1172
+
+        # _append_guardrail_observation — added upstream, wraps result with guardrail guidance
+        def _append_guardrail_observation(self, tool_name, function_args, function_result, *, failed):
+            return function_result
 
         def __init__(self):
             # Instance-level (not class-level) so each test gets a fresh set.

@@ -7,7 +7,6 @@ Covers:
   on cold-load init and persisting metadata at the end of ``async_auth_flow``.
 
 Context
-=======
 The MCP SDK discovers OAuth server metadata (``token_endpoint``, etc.)
 on-demand and keeps it in memory only. Without disk persistence a restart
 forces the SDK to fall back to guessing ``{server_url}/token``, which returns

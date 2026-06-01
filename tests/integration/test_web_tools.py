@@ -118,6 +118,7 @@ class WebToolsTester:
             print_warning(f"{test_name} skipped: {details}" if details else f"{test_name} skipped")
     
     def test_environment(self) -> bool:
+        # smoke test — no assertion needed
         """Test environment setup and API keys"""
         print_section("Environment Check")
         
@@ -139,6 +140,7 @@ class WebToolsTester:
         return True
     
     def test_web_search(self) -> List[str]:
+        # smoke test — no assertion needed
         """Test web search functionality"""
         print_section("Test 1: Web Search")
         
@@ -239,6 +241,7 @@ class WebToolsTester:
         return extracted_urls
     
     async def test_web_extract(self, urls: List[str] = None):
+        # smoke test — no assertion needed
         """Test web content extraction"""
         print_section("Test 2: Web Extract (without LLM)")
         
@@ -344,6 +347,7 @@ class WebToolsTester:
                     print(f"    Traceback: {traceback.format_exc()}")
     
     async def test_web_extract_with_llm(self, urls: List[str] = None):
+        # smoke test — no assertion needed
         """Test web extraction with LLM processing"""
         print_section("Test 3: Web Extract (with Gemini LLM)")
         
@@ -402,6 +406,114 @@ class WebToolsTester:
             self.log_result("Extract (with LLM)", "failed", f"Invalid JSON: {e}")
         except Exception as e:
             self.log_result("Extract (with LLM)", "failed", str(e))
+    
+    async def test_web_crawl(self):
+        # smoke test — no assertion needed
+        """Test web crawling functionality"""
+        print_section("Test 4: Web Crawl")
+        
+        test_sites = [
+            ("https://docs.firecrawl.dev", None, 2),  # Test docs site
+            ("https://firecrawl.dev", None, 3),  # Test main site
+        ]
+        
+        for url, instructions, expected_min_pages in test_sites:
+            try:
+                print(f"\n  Testing crawl of: {url}")
+                if instructions:
+                    print(f"  Instructions: {instructions}")
+                else:
+                    print(f"  No instructions (general crawl)")
+                print(f"  Expected minimum pages: {expected_min_pages}")
+                
+                # Show what's being called
+                if self.verbose:
+                    print(f"  Calling web_crawl_tool(url='{url}', instructions={instructions}, use_llm_processing=False)")
+                
+                result = await web_crawl_tool(
+                    url,
+                    instructions=instructions,
+                    use_llm_processing=False  # Disable LLM for faster testing
+                )
+                
+                # Check if result is valid JSON
+                try:
+                    data = json.loads(result)
+                except json.JSONDecodeError as e:
+                    self.log_result(f"Crawl: {url}", "failed", f"Invalid JSON response: {e}")
+                    if self.verbose:
+                        print(f"    Raw response (first 500 chars): {result[:500]}...")
+                    continue
+                
+                # Check for errors
+                if "error" in data:
+                    self.log_result(f"Crawl: {url}", "failed", f"API error: {data['error']}")
+                    continue
+                
+                # Get results
+                results = data.get("results", [])
+                
+                if not results:
+                    self.log_result(f"Crawl: {url}", "failed", "No pages in results array")
+                    if self.verbose:
+                        print(f"    Full response: {json.dumps(data, indent=2)[:1000]}...")
+                    continue
+                
+                # Analyze pages
+                valid_pages = 0
+                empty_pages = 0
+                total_content = 0
+                page_details = []
+                
+                for i, page in enumerate(results):
+                    content = page.get("content", "")
+                    title = page.get("title", "Untitled")
+                    error = page.get("error")
+                    
+                    if error:
+                        page_details.append(f"Page {i+1}: ERROR - {error}")
+                    elif content:
+                        valid_pages += 1
+                        content_len = len(content)
+                        total_content += content_len
+                        page_details.append(f"Page {i+1}: {title[:40]}... ({content_len} chars)")
+                    else:
+                        empty_pages += 1
+                        page_details.append(f"Page {i+1}: {title[:40]}... (EMPTY)")
+                
+                # Show detailed results if verbose
+                if self.verbose:
+                    print(f"\n  Crawl Results:")
+                    print(f"    Total pages returned: {len(results)}")
+                    print(f"    Valid pages (with content): {valid_pages}")
+                    print(f"    Empty pages: {empty_pages}")
+                    print(f"    Total content size: {total_content} characters")
+                    print(f"\n  Page Details:")
+                    for detail in page_details[:10]:  # Show first 10 pages
+                        print(f"    - {detail}")
+                    if len(page_details) > 10:
+                        print(f"    ... and {len(page_details) - 10} more pages")
+                
+                # Determine pass/fail
+                if valid_pages >= expected_min_pages:
+                    self.log_result(
+                        f"Crawl: {url}", 
+                        "passed", 
+                        f"{valid_pages}/{len(results)} valid pages, {total_content} chars total"
+                    )
+                else:
+                    self.log_result(
+                        f"Crawl: {url}", 
+                        "failed", 
+                        f"Only {valid_pages} valid pages (expected >= {expected_min_pages}), {empty_pages} empty, {len(results)} total"
+                    )
+                    
+            except Exception as e:
+                self.log_result(f"Crawl: {url}", "failed", f"Exception: {type(e).__name__}: {str(e)}")
+                if self.verbose:
+                    import traceback
+                    print(f"    Traceback:")
+                    print("    " + "\n    ".join(traceback.format_exc().split("\n")))
     
     async def run_all_tests(self):
         """Run all tests"""

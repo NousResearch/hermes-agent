@@ -285,7 +285,11 @@ def main():
             continue
 
         method = req.get("method") if isinstance(req, dict) else None
-        resp = dispatch(req)
+        try:
+            resp = dispatch(req)
+        except Exception as exc:
+            _log_exit(f"unhandled exception in dispatch({method!r}): {exc}")
+            resp = {"jsonrpc": "2.0", "error": {"code": -32000, "message": f"handler error: {exc}"}, "id": req.get("id")}
         if resp is not None:
             if not write_json(resp):
                 _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")

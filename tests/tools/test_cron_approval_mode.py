@@ -94,7 +94,7 @@ class TestCronDenyMode:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -108,7 +108,7 @@ class TestCronDenyMode:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -120,7 +120,7 @@ class TestCronDenyMode:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         dangerous_commands = [
             "rm -rf /",
@@ -143,7 +143,7 @@ class TestCronDenyMode:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -160,7 +160,7 @@ class TestCronApproveMode:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
@@ -180,7 +180,7 @@ class TestCronDenyModeAllGuards:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -193,7 +193,7 @@ class TestCronDenyModeAllGuards:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -205,7 +205,7 @@ class TestCronDenyModeAllGuards:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
@@ -225,7 +225,7 @@ class TestCronModeInteractions:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -235,7 +235,7 @@ class TestCronModeInteractions:
     def test_yolo_overrides_cron_deny(self, monkeypatch):
         """--yolo still bypasses cron_mode=deny for dangerous (non-hardline) commands."""
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
 
@@ -261,7 +261,7 @@ class TestCronModeInteractions:
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
 
         result = check_dangerous_command("rm -rf /tmp/stuff", "local")
         assert result["approved"]
@@ -283,7 +283,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
@@ -305,7 +305,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
@@ -325,7 +325,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars

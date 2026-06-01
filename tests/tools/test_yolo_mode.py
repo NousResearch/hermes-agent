@@ -40,7 +40,7 @@ class TestYoloMode:
         """Without yolo mode, dangerous commands in interactive mode require approval."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
@@ -115,12 +115,11 @@ class TestYoloMode:
 
     def test_yolo_mode_empty_string_does_not_bypass(self, monkeypatch):
         """Empty string for HERMES_YOLO_MODE should not trigger bypass."""
-        monkeypatch.setenv("HERMES_YOLO_MODE", "")
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
 
-        # Empty string is falsy in Python, so getenv("HERMES_YOLO_MODE") returns ""
-        # which is falsy — bypass should NOT activate
+        # Empty string is falsy in Python, so bypass should NOT activate
         result = check_dangerous_command("rm -rf /", "local",
                                          approval_callback=lambda *a: "deny")
         assert not result["approved"]
@@ -128,7 +127,7 @@ class TestYoloMode:
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])
     def test_false_like_yolo_values_do_not_bypass_dangerous_command(self, monkeypatch, value):
         """False-like env strings must not silently enable YOLO bypass."""
-        monkeypatch.setenv("HERMES_YOLO_MODE", value)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
 
@@ -142,7 +141,7 @@ class TestYoloMode:
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])
     def test_false_like_yolo_values_do_not_bypass_combined_guard(self, monkeypatch, value):
         """Combined guard must treat false-like YOLO env strings as disabled."""
-        monkeypatch.setenv("HERMES_YOLO_MODE", value)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
         result = check_all_command_guards(
@@ -154,7 +153,7 @@ class TestYoloMode:
 
     def test_session_scoped_yolo_only_bypasses_current_session(self, monkeypatch):
         """Gateway /yolo should only bypass approvals for the active session."""
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
         enable_session_yolo("session-a")
@@ -185,7 +184,7 @@ class TestYoloMode:
 
     def test_session_scoped_yolo_bypasses_combined_guard_only_for_current_session(self, monkeypatch):
         """Combined guard should honor session-scoped YOLO without affecting others."""
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
         enable_session_yolo("session-a")

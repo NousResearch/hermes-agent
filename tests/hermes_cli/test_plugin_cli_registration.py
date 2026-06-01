@@ -95,7 +95,7 @@ class TestMemoryPluginCliDiscovery:
 
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
         # Set testplugin as the active provider
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "testplugin")
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: ["testplugin"])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:
@@ -110,7 +110,7 @@ class TestMemoryPluginCliDiscovery:
         assert cmds[0]["handler_fn"].__name__ == "testplugin_command"
 
     def test_returns_nothing_when_no_active_provider(self, tmp_path, monkeypatch):
-        """No commands when memory.provider is not set in config."""
+        """No commands when no memory providers configured."""
         plugin_dir = tmp_path / "testplugin"
         plugin_dir.mkdir()
         (plugin_dir / "__init__.py").write_text("pass\n")
@@ -121,7 +121,7 @@ class TestMemoryPluginCliDiscovery:
         import plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: None)
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: [])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:
@@ -139,7 +139,7 @@ class TestMemoryPluginCliDiscovery:
         import plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "noplugin")
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: ["noplugin"])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:
@@ -157,13 +157,53 @@ class TestMemoryPluginCliDiscovery:
         import plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "nocli")
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: ["nocli"])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:
             monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
 
         assert len(cmds) == 0
+
+    def test_discovers_multiple_active_plugins(self, tmp_path, monkeypatch):
+        """When two providers are active, both CLI commands are discovered."""
+        for pname in ("plugin1", "plugin2"):
+            plugin_dir = tmp_path / pname
+            plugin_dir.mkdir()
+            (plugin_dir / "__init__.py").write_text("pass\n")
+            (plugin_dir / "cli.py").write_text(
+                f"def register_cli(subparser):\n"
+                f"    subparser.add_argument('--{pname}-flag')\n"
+                f"\n"
+                f"def {pname}_command(args):\n"
+                f"    pass\n"
+            )
+            (plugin_dir / "plugin.yaml").write_text(
+                f"name: {pname}\ndescription: {pname} plugin\n"
+            )
+
+        import plugins.memory as pm
+        original_dir = pm._MEMORY_PLUGINS_DIR
+
+        monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
+        monkeypatch.setattr(
+            pm, "get_active_memory_providers", lambda: ["plugin1", "plugin2"]
+        )
+        try:
+            cmds = pm.discover_plugin_cli_commands()
+        finally:
+            monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
+            for pname in ("plugin1", "plugin2"):
+                sys.modules.pop(f"plugins.memory.{pname}.cli", None)
+
+        assert len(cmds) == 2
+        names = {c["name"] for c in cmds}
+        assert "plugin1" in names
+        assert "plugin2" in names
+        for cmd in cmds:
+            assert callable(cmd["setup_fn"])
+            assert callable(cmd["handler_fn"])
+            assert cmd["handler_fn"].__name__ == f"{cmd['name']}_command"
 
 
 # ── Honcho register_cli ──────────────────────────────────────────────────

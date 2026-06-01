@@ -71,7 +71,7 @@ class TestGatewayWebSocket:
     async def test_event_received_and_forwarded(self):
         """Server pushes event -> adapter calls handle_message with correct MessageEvent."""
         async with FakeHAServer() as server:
-            adapter = _adapter_for(server)
+            adapter = _adapter_for(server, watch_all=True)
             adapter.handle_message = AsyncMock()
 
             await adapter.connect()

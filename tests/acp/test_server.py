@@ -1601,6 +1601,12 @@ class TestSlashCommands:
         # globals (e.g. registers a custom provider that shadows
         # ``anthropic``) flakes this one — observed once in CI as
         # ``'custom' == 'anthropic'``.
+        #
+        # Patch at two levels: the low-level parse_model_input (handles
+        # direct calls) AND the HermesACPAgent static method that wraps it
+        # (safety net — in spawned xdist workers the module-level patch
+        # can sometimes fail to propagate to the local import inside
+        # _resolve_model_selection).
         monkeypatch.setattr(
             "hermes_cli.models.parse_model_input",
             lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
@@ -1608,6 +1614,11 @@ class TestSlashCommands:
         monkeypatch.setattr(
             "hermes_cli.models.detect_provider_for_model",
             lambda model, current: None,
+        )
+        from acp_adapter.server import HermesACPAgent as _ACP
+        monkeypatch.setattr(
+            _ACP, "_resolve_model_selection",
+            staticmethod(lambda raw, current: ("anthropic", "claude-sonnet-4-6")),
         )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 

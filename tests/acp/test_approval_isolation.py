@@ -209,7 +209,8 @@ class TestAcpExecAskGate:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        import tools.approval as apr_mod
+        monkeypatch.setattr(apr_mod, "_YOLO_MODE_FROZEN", False)
 
         from tools.approval import check_all_command_guards
 

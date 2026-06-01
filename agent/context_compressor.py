@@ -543,6 +543,7 @@ class ContextCompressor(ContextEngine):
         self._last_summary_error = None
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_compress_aborted = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
@@ -558,7 +559,7 @@ class ContextCompressor(ContextEngine):
         model: str,
         context_length: int,
         base_url: str = "",
-        api_key: Any = "",
+        api_key: str = "",
         provider: str = "",
         api_mode: str = "",
     ) -> None:
@@ -668,11 +669,6 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
-        # When summary generation fails we now ABORT compression entirely
-        # and return the original messages unchanged instead of dropping
-        # the middle window with a static placeholder.  Callers inspect
-        # this flag to know "compression was attempted but aborted, freeze
-        # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
@@ -1218,6 +1214,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self,
         turns_to_summarize: List[Dict[str, Any]],
         focus_topic: Optional[str] = None,
+        memory_context: str = "",
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -1375,6 +1372,17 @@ Use this exact structure:
 
 FOCUS TOPIC: "{focus_topic}"
 The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+
+        # Inject memory provider context extracted before compression.
+        # This contains insights or notes the memory provider wants to
+        # preserve before the conversation context is discarded.
+        if memory_context:
+            prompt += f"""
+
+MEMORY PROVIDER CONTEXT:
+The following context was extracted by active memory providers before this compaction. Treat it as additional important information that MUST be preserved in the summary:
+
+{memory_context}"""
 
         try:
             call_kwargs = {
@@ -1824,7 +1832,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, memory_context: str = "", force: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -1842,23 +1850,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 provided, the summariser will prioritise preserving information
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
-            force: If True, clear any active summary-failure cooldown before
-                running so a manual ``/compress`` can retry immediately after
-                an auto-compression abort.  Auto-compress callers pass False.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_summary_error = None
+        self._last_compress_aborted = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
-        self._last_compress_aborted = False
-
-        # Manual /compress (force=True) bypasses the failure cooldown so the
-        # user can retry immediately after an auto-compress abort.  Without
-        # this, /compress would silently no-op for 30-60s after a failure.
-        if force and self._summary_failure_cooldown_until > 0.0:
+        # When force=True (manual /compress), bypass the failure cooldown so
+        # the user can retry immediately instead of waiting 30-60s.
+        if force:
             self._summary_failure_cooldown_until = 0.0
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)

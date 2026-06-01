@@ -56,6 +56,7 @@ cleanup_vm = terminal_module.cleanup_vm
 
 
 def test_modal_requirements():
+    # smoke test — no assertion needed
     """Test that Modal requirements are met."""
     print("\n" + "=" * 60)
     print("TEST 1: Modal Requirements Check")
@@ -85,6 +86,7 @@ def test_modal_requirements():
 
 
 def test_simple_command():
+    # smoke test — no assertion needed
     """Test executing a simple command."""
     print("\n" + "=" * 60)
     print("TEST 2: Simple Command Execution")
@@ -111,6 +113,7 @@ def test_simple_command():
 
 
 def test_python_execution():
+    # smoke test — no assertion needed
     """Test executing Python code in Modal."""
     print("\n" + "=" * 60)
     print("TEST 3: Python Execution")
@@ -139,6 +142,7 @@ def test_python_execution():
 
 
 def test_pip_install():
+    # smoke test — no assertion needed
     """Test installing a package with pip in Modal."""
     print("\n" + "=" * 60)
     print("TEST 4: Pip Install Test")
@@ -172,6 +176,7 @@ def test_pip_install():
 
 
 def test_filesystem_persistence():
+    # smoke test — no assertion needed
     """Test that filesystem persists between commands in the same task."""
     print("\n" + "=" * 60)
     print("TEST 5: Filesystem Persistence")
@@ -206,6 +211,7 @@ def test_filesystem_persistence():
 
 
 def test_environment_isolation():
+    # smoke test — no assertion needed
     """Test that different task_ids get isolated environments."""
     print("\n" + "=" * 60)
     print("TEST 6: Environment Isolation")

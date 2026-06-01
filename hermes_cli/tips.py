@@ -177,6 +177,8 @@ TIPS = [
     "The agent can create its own skills as procedural memory using skill_manage.",
     "The plan skill saves markdown plans under .hermes/plans/ in the active workspace.",
     "skills.model_overrides in config.yaml lets you route specific skills to cheaper/faster models — or escalate to stronger ones.",
+    "Use openrouter/auto as a skill model override — OpenRouter picks the best model from 38 candidates per request.",
+    "Set model: openrouter/free for cost-safe auxiliary defaults — it errors if no free model is available.",
 
     # --- Cron & Scheduling ---
     "Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".",

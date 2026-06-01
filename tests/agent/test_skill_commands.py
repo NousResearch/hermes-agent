@@ -833,12 +833,12 @@ class TestResolveSkillModelOverride:
   hermes:
     model:
       provider: openrouter
-      model: google/gemini-2.5-flash
+      model: google/gemini-3.5-flash
 """,
             )
             scan_skill_commands()
             result = resolve_skill_model_override("gif-search")
-        assert result == {"model": "google/gemini-2.5-flash", "provider": "openrouter"}
+        assert result == {"model": "google/gemini-3.5-flash", "provider": "openrouter"}
 
     def test_skips_override_when_missing_model_key(self, tmp_path):
         """metadata.hermes.model exists but has no model key — returns None."""
@@ -877,7 +877,7 @@ class TestResolveSkillModelOverride:
   hermes:
     model:
       provider: openrouter
-      model: google/gemini-2.5-flash
+      model: google/gemini-3.5-flash
 """,
             )
             scan_skill_commands()

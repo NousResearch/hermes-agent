@@ -3224,6 +3224,45 @@ def fetch_api_models(
     return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
 
 
+# Providers whose endpoints are known NOT to publish GET /models (or its
+# Anthropic equivalent).  /model switches against these always trigger
+# the "could not verify" warning even though the model is perfectly valid;
+# the warning is pure noise and trains the user to ignore it.  Suppress
+# silently (set message to None) when the base_url matches one of these.
+#
+# Add a host to this allow-list when ALL of the following hold:
+#   - the gateway runs a known proxy class that documents the missing endpoint
+#   - models there are stable and identified via opaque internal IDs (e.g.
+#     `ri.language-model-service..language-model.*` for Palantir Foundry)
+#   - the user has expressed annoyance at the noise (so we know it's noise,
+#     not the only signal they had that the model name was wrong)
+#
+# Match by substring so region/tenant subdomains all match.
+_SILENT_MODELS_PROBE_HOSTS: tuple[str, ...] = (
+    # Palantir Foundry LLM-proxy: covers BOTH /llm/proxy/anthropic
+    # (api_mode=anthropic_messages) and /llm/proxy/openai/v1
+    # (chat_completions).  Foundry's LLM-proxy class doesn't implement
+    # /v1/models on either surface; you can only discover models via the
+    # Foundry UI.  Hermes pins each model via config.yaml `providers:`
+    # entry, so the runtime probe adds nothing.
+    "palantirfoundry.",
+)
+
+
+def _endpoint_skips_models_listing(base_url: Optional[str]) -> bool:
+    """True when this base_url is on the silent-probe allow-list.
+
+    Used to suppress the "could not verify against this endpoint's model
+    listing" warning for proxies that are known not to publish /models.
+    Returning True does NOT change acceptance — the model is still accepted
+    and persisted — it only mutes the warning string.
+    """
+    if not base_url:
+        return False
+    normalized = base_url.strip().lower()
+    return any(host in normalized for host in _SILENT_MODELS_PROBE_HOSTS)
+
+
 # ---------------------------------------------------------------------------
 # Ollama Cloud — merged model discovery with disk cache
 # ---------------------------------------------------------------------------
@@ -3500,6 +3539,20 @@ def validate_requested_model(
         if probe.get("suggested_base_url"):
             message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
 
+        # Silent allow-list (Palantir Foundry, etc.): suppress the warning
+        # entirely.  These proxies are known not to publish /models on either
+        # surface and the message is pure noise.  Acceptance follows the
+        # original semantics — anthropic_messages is auto-accepted, OpenAI-wire
+        # custom remains unaccepted unless the user confirms — we just stop
+        # printing.
+        if _endpoint_skips_models_listing(base_url):
+            return {
+                "accepted": api_mode == "anthropic_messages",
+                "persist": True,
+                "recognized": False,
+                "message": None,
+            }
+
         return {
             "accepted": api_mode == "anthropic_messages",
             "persist": True,
@@ -3659,7 +3712,16 @@ def validate_requested_model(
                     "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
                 }
         # Probe failed or model not found — accept anyway (proxy likely
-        # doesn't implement the Anthropic Models API).
+        # doesn't implement the Anthropic Models API).  For proxies on the
+        # silent allow-list (Palantir Foundry, etc.), suppress the warning
+        # entirely — it's pure noise and the user has already said so.
+        if _endpoint_skips_models_listing(base_url):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": None,
+            }
         return {
             "accepted": True,
             "persist": True,
@@ -3820,7 +3882,16 @@ def validate_requested_model(
         }
 
     # No catalog available — accept with a warning, matching the comment's
-    # stated intent ("Accept and persist, but warn").
+    # stated intent ("Accept and persist, but warn").  For proxies on the
+    # silent allow-list (Palantir Foundry, etc.) suppress the warning —
+    # the user already knows the proxy doesn't publish /models.
+    if _endpoint_skips_models_listing(base_url):
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": None,
+        }
     return {
         "accepted": True,
         "persist": True,

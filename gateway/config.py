@@ -786,6 +786,9 @@ def load_gateway_config() -> GatewayConfig:
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.
             yaml_platforms = yaml_cfg.get("platforms")
+            # Also check gateway.platforms for nested config style
+            if not yaml_platforms:
+                yaml_platforms = yaml_cfg.get("gateway", {}).get("platforms")
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
@@ -801,6 +804,13 @@ def load_gateway_config() -> GatewayConfig:
                             for idx, item in enumerate(plat_block):
                                 if not isinstance(item, dict):
                                     continue
+                                # Bridge Feishu keys to extra for list items
+                                if plat_name == "feishu":
+                                    item = dict(item)  # copy
+                                    extra = item.setdefault("extra", {})
+                                    for key in ("app_id", "app_secret", "domain", "connection_mode", "encrypt_key", "verification_token", "webhook_host", "webhook_port", "webhook_path"):
+                                        if key in item and key not in extra:
+                                            extra[key] = item[key]
                                 if idx < len(existing) and isinstance(existing[idx], dict):
                                     merged_extra = {**existing[idx].get("extra", {}), **item.get("extra", {})}
                                     merged = {**existing[idx], **item}
@@ -814,7 +824,19 @@ def load_gateway_config() -> GatewayConfig:
                                 merged_list.extend(existing[len(plat_block):])
                             platforms_data[plat_name] = merged_list
                         else:
-                            platforms_data[plat_name] = [item for item in plat_block if isinstance(item, dict)]
+                            # Bridge Feishu keys to extra for list items
+                            bridged_list = []
+                            for item in plat_block:
+                                if not isinstance(item, dict):
+                                    continue
+                                if plat_name == "feishu":
+                                    item = dict(item)  # copy
+                                    extra = item.setdefault("extra", {})
+                                    for key in ("app_id", "app_secret", "domain", "connection_mode", "encrypt_key", "verification_token", "webhook_host", "webhook_port", "webhook_path"):
+                                        if key in item and key not in extra:
+                                            extra[key] = item[key]
+                                bridged_list.append(item)
+                            platforms_data[plat_name] = bridged_list
                         continue
                     if not isinstance(plat_block, dict):
                         continue
@@ -858,6 +880,9 @@ def load_gateway_config() -> GatewayConfig:
                 if plat == Platform.LOCAL:
                     continue
                 platform_cfg = yaml_cfg.get(plat.value)
+                if not isinstance(platform_cfg, dict):
+                    # Also check gateway.platforms for nested config style
+                    platform_cfg = yaml_cfg.get("gateway", {}).get("platforms", {}).get(plat.value)
                 if not isinstance(platform_cfg, dict):
                     continue
                 # Collect bridgeable keys from this platform section
@@ -918,6 +943,11 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                # Bridge Feishu/Lark-specific keys to extra
+                if plat == Platform.FEISHU:
+                    for feishu_key in ("app_id", "app_secret", "domain", "connection_mode", "encrypt_key", "verification_token", "webhook_host", "webhook_port", "webhook_path"):
+                        if feishu_key in platform_cfg:
+                            bridged[feishu_key] = platform_cfg[feishu_key]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

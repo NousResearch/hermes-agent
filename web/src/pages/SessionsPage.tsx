@@ -61,6 +61,18 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     cron: { icon: Clock, color: "text-warning" },
   };
 
+function formatUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "-";
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
@@ -457,6 +469,7 @@ export default function SessionsPage() {
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
+  const [stoppingPeerPid, setStoppingPeerPid] = useState<number | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -546,6 +559,23 @@ export default function SessionsPage() {
     const id = setInterval(loadOverview, 5000);
     return () => clearInterval(id);
   }, []);
+
+  const stopDashboardPeer = useCallback(
+    async (pid: number) => {
+      setStoppingPeerPid(pid);
+      try {
+        const resp = await api.stopDashboardPeer(pid);
+        setStatus((current) => current ? { ...current, dashboard: resp.dashboard } : current);
+        showToast(t.status.stopPeerSucceeded, "success");
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        showToast(`${t.status.stopPeerFailed}: ${detail}`, "error");
+      } finally {
+        setStoppingPeerPid(null);
+      }
+    },
+    [showToast, t.status.stopPeerFailed, t.status.stopPeerSucceeded],
+  );
 
   useEffect(() => {
     const el = logScrollRef.current;
@@ -758,6 +788,65 @@ export default function SessionsPage() {
           </pre>
         </div>
       )}
+
+      {status?.dashboard ? (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Terminal className="h-5 w-5 text-muted-foreground" />
+                <CardTitle className="text-base">{t.status.dashboard}</CardTitle>
+              </div>
+              <Badge tone={status.dashboard.peer_count > 0 ? "warning" : "success"}>
+                {status.dashboard.peer_count} {t.status.dashboardPeers}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 text-sm sm:grid-cols-4">
+              <div>
+                <div className="text-xs text-muted-foreground">{t.status.pid}</div>
+                <div className="font-mono-ui">{status.dashboard.pid}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">URL</div>
+                <div className="font-mono-ui truncate">{status.dashboard.url ?? "-"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">{t.status.running}</div>
+                <div className="font-mono-ui">{formatUptime(status.dashboard.uptime_seconds)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">{t.status.dashboardPeers}</div>
+                <div className="font-mono-ui">{status.dashboard.peer_count}</div>
+              </div>
+            </div>
+            {status.dashboard.peer_processes.length > 0 ? (
+              <div className="mt-4 space-y-2 border-t border-border pt-3">
+                {status.dashboard.peer_processes.map((peer) => (
+                  <div
+                    key={peer.pid}
+                    className="flex flex-col gap-2 border border-border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-mono-ui text-xs">PID {peer.pid}</div>
+                      <div className="truncate text-xs text-muted-foreground">{peer.command}</div>
+                    </div>
+                    <Button
+                      size="sm"
+                      outlined
+                      disabled={stoppingPeerPid === peer.pid}
+                      onClick={() => void stopDashboardPeer(peer.pid)}
+                    >
+                      {stoppingPeerPid === peer.pid ? t.common.loading : t.status.stopPeer}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {platformEntries.length > 0 && status && (
         <PlatformsCard platforms={platformEntries} />

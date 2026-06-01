@@ -402,7 +402,7 @@ class ExternalCliChild:
             "messages": [],
             "api_calls": 0,
             "exit_reason": "completed" if completed else "error",
-            "error": "" if completed else (parsed_error or error or f"claude exited with code {code}"),
+        "error": "" if completed else (parsed_error or error or f"{self._runtime_name} exited with code {code}"),
             "duration_seconds": round(time.monotonic() - started, 2),
             "interrupted": self._interrupted,
         }
@@ -3947,6 +3947,87 @@ def _build_claude_code_prompt_args(workspace_hint: Optional[str]) -> list[str]:
     return args
 
 
+def _external_cli_runtime_profile(
+    runtime: str,
+    *,
+    workspace_hint: Optional[str],
+    agent_config: dict,
+    profile: dict,
+) -> tuple[list[str], list[str], str, str, str, bool]:
+    if runtime == "codex_cli":
+        command = _parse_external_command(
+            profile.get("command")
+            or agent_config.get("command")
+            or os.getenv("HERMES_CODEX_CLI_COMMAND"),
+            ["codex", "exec", "--sandbox", "read-only"],
+        )
+        return (
+            command,
+            [],
+            "codex-cli",
+            "codex-cli",
+            (
+                "runtime=codex_cli delegates execution to external Codex CLI; "
+                "model/backend is controlled by Codex CLI configuration."
+            ),
+            True,
+        )
+    if runtime == "deepseek_tui_cli":
+        command = _parse_external_command(
+            profile.get("command")
+            or agent_config.get("command")
+            or os.getenv("HERMES_DEEPSEEK_TUI_COMMAND"),
+            ["deepseek", "exec", "--auto", "--json"],
+        )
+        return (
+            command,
+            [],
+            "deepseek-tui-cli",
+            "deepseek-tui-cli",
+            (
+                "runtime=deepseek_tui_cli delegates execution to external DeepSeek TUI; "
+                "Hermes runs it non-interactively under the executor timeout."
+            ),
+            False,
+        )
+    if runtime == "opencode_cli":
+        command = _parse_external_command(
+            profile.get("command")
+            or agent_config.get("command")
+            or os.getenv("HERMES_OPENCODE_CLI_COMMAND"),
+            ["opencode", "run", "--pure"],
+        )
+        return (
+            command,
+            [],
+            "opencode-cli",
+            "opencode-cli",
+            (
+                "runtime=opencode_cli delegates execution to external OpenCode CLI; "
+                "Hermes runs it non-interactively under the executor timeout."
+            ),
+            False,
+        )
+    command = _parse_external_command(
+        profile.get("command")
+        or agent_config.get("command")
+        or os.getenv("HERMES_CLAUDE_CODE_COMMAND"),
+        ["claude"],
+    )
+    return (
+        command,
+        _build_claude_code_prompt_args(workspace_hint),
+        "claude-code-cli",
+        "claude-code-cli",
+        (
+            "runtime=claude_code_cli delegates execution to external Claude Code; "
+            "backend is controlled by Claude Code / CC Switch. Hermes runs it "
+            "non-interactively with bounded turns and edit permissions."
+        ),
+        False,
+    )
+
+
 def _build_external_cli_child(
     *,
     runtime: str,
@@ -3962,42 +4043,21 @@ def _build_external_cli_child(
     prompt = goal
     if context:
         prompt = f"{goal}\n\nContext:\n{context}"
-    if runtime == "codex_cli":
-        command = _parse_external_command(
-            profile.get("command")
-            or agent_config.get("command")
-            or os.getenv("HERMES_CODEX_CLI_COMMAND"),
-            ["codex", "exec", "--sandbox", "read-only"],
+    command, prompt_args, runtime_name, toolset_name, warning, output_last_message = (
+        _external_cli_runtime_profile(
+            runtime,
+            workspace_hint=workspace_hint,
+            agent_config=agent_config,
+            profile=profile,
         )
-        prompt_args: list[str] = []
-        runtime_name = "codex-cli"
-        toolset_name = "codex-cli"
-        warning = (
-            "runtime=codex_cli delegates execution to external Codex CLI; "
-            "model/backend is controlled by Codex CLI configuration."
-        )
-    else:
-        command = _parse_external_command(
-            profile.get("command")
-            or agent_config.get("command")
-            or os.getenv("HERMES_CLAUDE_CODE_COMMAND"),
-            ["claude"],
-        )
-        prompt_args = _build_claude_code_prompt_args(workspace_hint)
-        runtime_name = "claude-code-cli"
-        toolset_name = "claude-code-cli"
-        warning = (
-            "runtime=claude_code_cli delegates execution to external Claude Code; "
-            "backend is controlled by Claude Code / CC Switch. Hermes runs it "
-            "non-interactively with bounded turns and edit permissions."
-        )
+    )
     child = ExternalCliChild(
         goal=prompt,
         command=command,
         prompt_args=prompt_args,
         cwd=workspace_hint,
         runtime_name=runtime_name,
-        output_last_message=(runtime == "codex_cli"),
+        output_last_message=output_last_message,
         timeout_seconds=_get_child_timeout(),
     )
     child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
@@ -4254,7 +4314,7 @@ def delegate_task(
                         or (task_agent_config or {}).get("runtime")
                         or ""
                     )
-                    if runtime in {"claude_code_cli", "codex_cli"}:
+                    if runtime in {"claude_code_cli", "codex_cli", "deepseek_tui_cli", "opencode_cli"}:
                         child = _build_external_cli_child(
                             runtime=runtime,
                             task_index=i,

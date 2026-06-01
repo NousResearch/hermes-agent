@@ -118,6 +118,11 @@ export interface Translations {
     connected: string;
     connectedPlatforms: string;
     disconnected: string;
+    dashboard: string;
+    dashboardPeers: string;
+    stopPeer: string;
+    stopPeerFailed: string;
+    stopPeerSucceeded: string;
     error: string;
     failed: string;
     gateway: string;
@@ -460,6 +465,7 @@ export interface Translations {
     taskId: string;
     runId: string;
     agent: string;
+    allAgents: string;
     runType: string;
     exitCode: string;
     startedAt: string;
@@ -474,6 +480,26 @@ export interface Translations {
     processError: string;
     avgDuration: string;
     details: string;
+    taskView: string;
+    runView: string;
+    status: string;
+    runs: string;
+    agents: string;
+    currentPhase: string;
+    lifecycle: string;
+    latestRun: string;
+    lastError: string;
+    running: string;
+    stale: string;
+    failed: string;
+    unknown: string;
+    noTasks: string;
+    watchdog: string;
+    attention: string;
+    tasksNeedAttention: string;
+    taskNeedsAttention: string;
+    suggestedAction: string;
+    noAttention: string;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

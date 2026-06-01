@@ -15,7 +15,9 @@ import importlib.util
 import json
 import logging
 import os
+import contextlib
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -24,6 +26,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -97,6 +100,40 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+_DASHBOARD_STARTED_AT = time.time()
+_AGENT_RUNS_LOCK = threading.RLock()
+_EXECUTOR_ACTIVE_LOCK = threading.RLock()
+_EXECUTOR_ACTIVE_RUNS: Dict[str, Dict[str, Any]] = {}
+_EXECUTOR_SCHEDULER_LOCK = threading.RLock()
+_EXECUTOR_SCHEDULER_STOP = threading.Event()
+_EXECUTOR_SCHEDULER_THREAD: threading.Thread | None = None
+_EXECUTOR_SCHEDULER_ENABLED = False
+_EXECUTOR_SCHEDULER_INTERVAL_SECONDS = 5.0
+_EXECUTOR_SCHEDULER_TIMEOUT_SECONDS = 180.0
+_EXECUTOR_SCHEDULER_LAST_TICK: str | None = None
+_EXECUTOR_SCHEDULER_LAST_ERROR: str | None = None
+
+
+@contextlib.contextmanager
+def _agent_runs_file_lock():
+    lock_path = _AGENT_RUNS_PATH.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("a+")
+    try:
+        if sys.platform != "win32":
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if sys.platform != "win32":
+            try:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        lock_file.close()
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -497,6 +534,26 @@ class AgentModelStrategyUpdate(BaseModel):
     allow_deprecated: bool = False
 
 
+class AgentRunSmokeCreate(BaseModel):
+    project: str = "staam"
+    task_type: str = "tests"
+    risk_level: str = "R1"
+    failed_agent_id: str = "deepseek-tui"
+    failed_model_ref: str = "opencode_go_deepseek_flash"
+    classification: str = "timeout"
+
+
+class AgentEvalRunCreate(BaseModel):
+    project: str = "staam"
+    agent_ids: List[str] = []
+    timeout_seconds: float = 20.0
+    workspace: str = ""
+    prompt: str = (
+        "Hermes external agent evaluation smoke. Reply with exactly one short sentence "
+        "that includes the word HERMES_EVAL_OK. Do not edit files."
+    )
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -555,6 +612,139 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+def _find_dashboard_peer_processes() -> List[Dict[str, Any]]:
+    """Return other local Hermes dashboard processes from the process table."""
+    self_pid = os.getpid()
+    peers: List[Dict[str, Any]] = []
+
+    def is_dashboard_command(command: str) -> bool:
+        # Match only commands that are themselves a dashboard server process.
+        # Chat/tool processes may contain the literal launch command in JSON
+        # history; substring matching would incorrectly report those as peers.
+        patterns = (
+            r"^\S*python\S*\s+-m\s+hermes_cli\.main\s+dashboard(?:\s|$)",
+            r"^\S*python\S*\s+\S*hermes_cli/main\.py\s+dashboard(?:\s|$)",
+            r"^\S*hermes(?:\.exe)?\s+dashboard(?:\s|$)",
+        )
+        return any(re.search(pattern, command) for pattern in patterns)
+
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            if result.returncode != 0 or result.stdout is None:
+                return []
+            current_cmd = ""
+            for raw_line in result.stdout.splitlines():
+                line = raw_line.strip()
+                if line.startswith("CommandLine="):
+                    current_cmd = line[len("CommandLine="):]
+                elif line.startswith("ProcessId="):
+                    try:
+                        pid = int(line[len("ProcessId="):])
+                    except ValueError:
+                        continue
+                    if pid != self_pid and is_dashboard_command(current_cmd):
+                        peers.append({"pid": pid, "command": current_cmd[:500]})
+        else:
+            result = subprocess.run(
+                ["ps", "-A", "-o", "pid=,command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return []
+            for raw_line in result.stdout.splitlines():
+                stripped = raw_line.strip()
+                if not stripped or "grep" in stripped:
+                    continue
+                parts = stripped.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                try:
+                    pid = int(parts[0])
+                except ValueError:
+                    continue
+                command = parts[1]
+                if pid != self_pid and is_dashboard_command(command):
+                    peers.append({"pid": pid, "command": command[:500]})
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    return peers
+
+
+def _dashboard_self_status() -> Dict[str, Any]:
+    host = getattr(app.state, "bound_host", None)
+    port = getattr(app.state, "bound_port", None)
+    peers = _find_dashboard_peer_processes()
+    return {
+        "pid": os.getpid(),
+        "host": host,
+        "port": port,
+        "url": f"http://{host}:{port}" if host and port else None,
+        "started_at": _DASHBOARD_STARTED_AT,
+        "uptime_seconds": round(max(0.0, time.time() - _DASHBOARD_STARTED_AT), 3),
+        "peer_processes": peers,
+        "peer_count": len(peers),
+        "state": "running",
+    }
+
+
+def _stop_dashboard_peer_process(pid: int) -> Dict[str, Any]:
+    if pid == os.getpid():
+        raise HTTPException(status_code=400, detail="Refusing to stop the current dashboard process")
+    peer = next((item for item in _find_dashboard_peer_processes() if item.get("pid") == pid), None)
+    if peer is None:
+        raise HTTPException(status_code=404, detail="PID is not a recognized dashboard peer process")
+
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "taskkill failed").strip()
+            raise HTTPException(status_code=500, detail=detail)
+    else:
+        import signal as _signal
+
+        try:
+            os.kill(pid, _signal.SIGTERM)
+        except ProcessLookupError:
+            return {"pid": pid, "stopped": True, "already_gone": True, "peer": peer}
+        except (PermissionError, OSError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if not any(item.get("pid") == pid for item in _find_dashboard_peer_processes()):
+                return {"pid": pid, "stopped": True, "already_gone": False, "peer": peer}
+            time.sleep(0.1)
+
+        try:
+            os.kill(pid, _signal.SIGKILL)
+        except ProcessLookupError:
+            return {"pid": pid, "stopped": True, "already_gone": True, "peer": peer}
+        except (PermissionError, OSError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "pid": pid,
+        "stopped": not any(item.get("pid") == pid for item in _find_dashboard_peer_processes()),
+        "already_gone": False,
+        "peer": peer,
+    }
 
 
 @app.get("/api/status")
@@ -652,6 +842,7 @@ async def get_status():
         "env_path": str(get_env_path()),
         "config_version": current_ver,
         "latest_config_version": latest_ver,
+        "dashboard": _dashboard_self_status(),
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
         "gateway_health_url": _GATEWAY_HEALTH_URL,
@@ -661,6 +852,14 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
     }
+
+
+@app.post("/api/dashboard/peers/{pid}/stop")
+async def stop_dashboard_peer(pid: int):
+    """Stop a local dashboard peer process after re-validating it is safe."""
+    result = _stop_dashboard_peer_process(pid)
+    result["dashboard"] = _dashboard_self_status()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1166,7 +1365,12 @@ _AGENTS_CONFIG_PATH = PROJECT_ROOT / "configs" / "managed_agents" / "agents.yaml
 _RUNTIME_AGENT_REGISTRY_PATH = get_hermes_home() / "config" / "agent-registry.json"
 _MODELS_CONFIG_PATH = get_hermes_home() / "config" / "models.yaml"
 _MODEL_SUBSCRIPTIONS_PATH = get_hermes_home() / "config" / "model-subscriptions.yaml"
-_EXTERNAL_AGENT_RUNTIMES = frozenset({"claude_code_cli", "codex_cli"})
+_EXTERNAL_AGENT_RUNTIMES = frozenset({
+    "claude_code_cli",
+    "codex_cli",
+    "deepseek_tui_cli",
+    "opencode_cli",
+})
 _SUBSCRIPTION_CACHE_TTL_SECONDS = 300
 
 
@@ -1620,6 +1824,7 @@ def _normalize_strategy_update(
 @app.get("/api/agents/managed")
 async def get_managed_agents(days: int = 30):
     try:
+        from agent.managed_agents.capability_matrix import build_capability_matrix
         from agent.managed_agents.registry import load_agent_registry
 
         days = max(1, min(int(days or 30), 365))
@@ -1630,6 +1835,7 @@ async def get_managed_agents(days: int = 30):
         except Exception:
             get_model_health = None  # type: ignore[assignment]
         registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+        capability_matrix = build_capability_matrix(registry)
         model_usage, model_totals = _model_usage_by_model(days)
         agent_usage, attribution = _agent_usage_from_events(days)
 
@@ -1658,6 +1864,7 @@ async def get_managed_agents(days: int = 30):
             model_cfg = models_cfg.get(agent.model_ref, {}) if agent.model_ref else {}
             runtime = agent.runtime or ""
             editable = runtime not in _EXTERNAL_AGENT_RUNTIMES
+            capability_profile = capability_matrix.get(agent_id)
             agents.append({
                 "agent_id": agent_id,
                 "display_name": agent.name,
@@ -1671,6 +1878,7 @@ async def get_managed_agents(days: int = 30):
                 "status": str(model_cfg.get("status") or ""),
                 "tools": list(agent.tools),
                 "permission": agent.permission.value,
+                "capability_profile": capability_profile.to_dict() if capability_profile else None,
                 "usage": agent_usage.get(agent_id, _empty_usage()),
             })
 
@@ -1689,6 +1897,60 @@ async def get_managed_agents(days: int = 30):
     except Exception as exc:
         _log.exception("GET /api/agents/managed failed")
         raise HTTPException(status_code=500, detail=f"Failed to load managed agents: {exc}") from exc
+
+
+@app.get("/api/agents/capability-matrix")
+async def get_agent_capability_matrix(
+    task_type: Optional[str] = None,
+    risk_level: str = "R0",
+    failure: Optional[str] = None,
+    failed_agent_id: Optional[str] = None,
+    failed_model_ref: Optional[str] = None,
+):
+    try:
+        from agent.managed_agents.capability_matrix import build_capability_matrix, preview_route
+        from agent.managed_agents.failure_reroute import decide_failure_reroute
+        from agent.managed_agents.model_tier_router import resolve_model_tier
+        from agent.managed_agents.registry import load_agent_registry
+
+        registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+        models_cfg = _load_models_config()
+        matrix = build_capability_matrix(registry)
+        response: Dict[str, Any] = {
+            "agents": {agent_id: profile.to_dict() for agent_id, profile in matrix.items()},
+            "task_types": sorted({task for profile in matrix.values() for task in profile.task_types}),
+        }
+        if task_type:
+            response["preview"] = preview_route(
+                registry,
+                task_type=task_type,
+                risk_level=risk_level,
+                effectiveness=_agent_effectiveness_map(None),
+            )
+            response["model_route"] = resolve_model_tier(
+                registry,
+                models_cfg,
+                task_type=task_type,
+                risk_level=risk_level,
+                effectiveness=_agent_effectiveness_map(None),
+            ).to_dict()
+            if failure:
+                response["reroute"] = decide_failure_reroute(
+                    registry,
+                    models_cfg,
+                    task_type=task_type,
+                    risk_level=risk_level,
+                    failure=failure,
+                    failed_agent_id=failed_agent_id,
+                    failed_model_ref=failed_model_ref,
+                    effectiveness=_agent_effectiveness_map(None),
+                ).to_dict()
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("GET /api/agents/capability-matrix failed")
+        raise HTTPException(status_code=500, detail=f"Failed to load capability matrix: {exc}") from exc
 
 
 @app.put("/api/agents/{agent_id}/model")
@@ -1800,6 +2062,22 @@ async def update_managed_agent_model_strategy(agent_id: str, body: AgentModelStr
 # Run ledger endpoints — read-only, backed by ~/.claude/teams/<project>/runs/ledger.jsonl
 # ---------------------------------------------------------------------------
 
+_RUN_LEDGER_TEXT_LIMITS = {
+    "command": 1000,
+    "stdout_tail": 2000,
+    "stderr_tail": 2000,
+}
+
+_RUN_LEDGER_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(bearer\s+)([a-z0-9._~+/=-]{12,})"),
+    re.compile(r"(?i)\b(([a-z0-9_]*?(?:api[_-]?key|token|secret|password|passwd|authorization))\s*[=:]\s*)([^\s'\";]+)"),
+    re.compile(r"(?i)(--(?:api-key|token|secret|password)\s+)([^\s'\";]+)"),
+    re.compile(r"\b(sk-[A-Za-z0-9_-]{12,})\b"),
+    re.compile(r"\b(xox[baprs]-[A-Za-z0-9-]{12,})\b"),
+)
+
+_RUN_LEDGER_STALE_AFTER_SECONDS = 15 * 60
+
 
 def _run_ledger_path(project: Optional[str]) -> Path:
     name = (project or "staam").strip() or "staam"
@@ -1829,6 +2107,31 @@ def _load_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _redact_run_ledger_text(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value
+    for pattern in _RUN_LEDGER_SECRET_PATTERNS:
+        text = pattern.sub(lambda match: f"{match.group(1)}[REDACTED]" if match.lastindex and match.lastindex >= 2 else "[REDACTED]", text)
+    return text
+
+
+def _truncate_run_ledger_text(value: Any, limit: int) -> Any:
+    if not isinstance(value, str) or len(value) <= limit:
+        return value
+    omitted = len(value) - limit
+    return f"[truncated {omitted} chars]\n{value[-limit:]}"
+
+
+def _sanitize_run_ledger_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized = dict(row)
+    for key, limit in _RUN_LEDGER_TEXT_LIMITS.items():
+        if key in sanitized:
+            redacted = _redact_run_ledger_text(sanitized[key])
+            sanitized[key] = _truncate_run_ledger_text(redacted, limit)
+    return sanitized
+
+
 def _merged_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
     latest: Dict[str, Dict[str, Any]] = {}
     starts: Dict[str, Dict[str, Any]] = {}
@@ -1843,7 +2146,469 @@ def _merged_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
             latest[str(run_id)] = {**starts.get(str(run_id), {}), **row}
         else:
             latest[str(run_id)] = row
-    return list(latest.values())
+    return [_sanitize_run_ledger_row(row) for row in latest.values()]
+
+
+def _parse_run_ledger_time(value: Any) -> Optional[float]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return None
+
+
+def _run_started_timestamp(row: Dict[str, Any]) -> float:
+    return _parse_run_ledger_time(row.get("started_at") or row.get("finished_at")) or 0.0
+
+
+def _is_lifecycle_row(row: Dict[str, Any]) -> bool:
+    return row.get("event") == "lifecycle_event"
+
+
+def _task_run_status(row: Dict[str, Any], now_ts: float) -> str:
+    classification = row.get("classification")
+    if classification:
+        if classification == "ok":
+            return "ok"
+        if classification == "timeout":
+            return "timeout"
+        return "failed"
+    if row.get("event") == "run_started" and not row.get("finished_at"):
+        started_ts = _parse_run_ledger_time(row.get("started_at"))
+        if started_ts is not None and now_ts - started_ts > _RUN_LEDGER_STALE_AFTER_SECONDS:
+            return "stale"
+        return "running"
+    return "unknown"
+
+
+def _overall_task_status(run_statuses: List[str]) -> str:
+    if not run_statuses:
+        return "unknown"
+    for status in ("stale", "timeout", "failed", "running"):
+        if status in run_statuses:
+            return status
+    if all(status == "ok" for status in run_statuses):
+        return "ok"
+    return "unknown"
+
+
+def _run_error_excerpt(row: Dict[str, Any]) -> Optional[str]:
+    for key in ("stderr_tail", "stdout_tail"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:500]
+    return None
+
+
+def _task_lifecycle(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    lifecycle = []
+    for row in rows:
+        if not _is_lifecycle_row(row):
+            continue
+        lifecycle.append(
+            {
+                "event_id": row.get("event_id") or row.get("run_id"),
+                "phase": row.get("phase") or row.get("run_type") or "unknown",
+                "status": row.get("status") or row.get("classification") or "unknown",
+                "agent_id": row.get("agent_id"),
+                "started_at": row.get("started_at") or row.get("finished_at"),
+                "finished_at": row.get("finished_at") or row.get("started_at"),
+                "message": row.get("message"),
+                "decision": row.get("decision"),
+                "policy_action": row.get("policy_action"),
+                "revision_task_id": row.get("revision_task_id"),
+                "run_id": row.get("run_id"),
+                "related_run_id": row.get("related_run_id"),
+            }
+        )
+    lifecycle.sort(key=lambda item: str(item.get("started_at") or ""))
+    return lifecycle
+
+
+def _task_summaries(project: Optional[str], agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    now_ts = time.time()
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in _merged_run_ledger(project):
+        if agent_id and row.get("agent_id") != agent_id:
+            continue
+        task_id = str(row.get("task_id") or row.get("run_id") or "unknown")
+        grouped.setdefault(task_id, []).append(row)
+
+    summaries: List[Dict[str, Any]] = []
+    for task_id, rows in grouped.items():
+        rows.sort(key=_run_started_timestamp, reverse=True)
+        lifecycle = _task_lifecycle(rows)
+        runs = [row for row in rows if not _is_lifecycle_row(row)]
+        statuses = [_task_run_status(run, now_ts) for run in runs]
+        agents = sorted({str(row.get("agent_id")) for row in rows if row.get("agent_id")})
+        classifications: Dict[str, int] = {}
+        duration_total = 0.0
+        duration_count = 0
+        latest_row = rows[0]
+        error_excerpt = None
+        for run, status in zip(runs, statuses):
+            classification = str(run.get("classification") or status or "unknown")
+            classifications[classification] = classifications.get(classification, 0) + 1
+            duration = run.get("duration_seconds")
+            if isinstance(duration, (int, float)):
+                duration_total += float(duration)
+                duration_count += 1
+            if error_excerpt is None and status in {"failed", "timeout", "stale"}:
+                error_excerpt = _run_error_excerpt(run)
+        current_phase = None
+        if lifecycle:
+            current_phase = lifecycle[-1].get("phase")
+        elif runs:
+            current_phase = runs[0].get("run_type")
+        summaries.append(
+            {
+                "task_id": task_id,
+                "status": _overall_task_status(statuses),
+                "run_count": len(runs),
+                "agents": agents,
+                "classifications": classifications,
+                "latest_started_at": latest_row.get("started_at") or latest_row.get("finished_at"),
+                "latest_run_id": latest_row.get("run_id"),
+                "latest_agent_id": latest_row.get("agent_id"),
+                "latest_run_type": latest_row.get("run_type"),
+                "latest_classification": latest_row.get("classification"),
+                "current_phase": current_phase,
+                "lifecycle": lifecycle,
+                "total_duration_seconds": round(duration_total, 3),
+                "avg_duration_seconds": round(duration_total / duration_count, 3) if duration_count else 0,
+                "last_error_excerpt": error_excerpt,
+                "runs": runs[:5],
+            }
+        )
+    summaries.sort(key=lambda item: str(item.get("latest_started_at") or ""), reverse=True)
+    return summaries
+
+
+def _latest_task_summary(project: Optional[str], task_id: str) -> Dict[str, Any]:
+    for task in _task_summaries(project):
+        if task.get("task_id") == task_id:
+            return task
+    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+def _task_execution_policy(
+    project: Optional[str],
+    task_id: str,
+    *,
+    task_type: str = "tests",
+    risk_level: str = "R1",
+) -> Dict[str, Any]:
+    from agent.managed_agents.execution_policy import decide_execution_policy
+    from agent.managed_agents.registry import load_agent_registry
+
+    registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+    models_cfg = _load_models_config()
+    task = _latest_task_summary(project, task_id)
+    return decide_execution_policy(
+        registry,
+        models_cfg,
+        task,
+        task_type=task_type,
+        risk_level=risk_level,
+        effectiveness=_agent_effectiveness_map(project),
+    ).to_dict()
+
+
+def _append_run_lifecycle_event(
+    project: Optional[str],
+    task_id: str,
+    *,
+    phase: str,
+    status: str,
+    agent_id: Optional[str] = None,
+    run_type: Optional[str] = None,
+    message: Optional[str] = None,
+    **fields: Any,
+) -> Dict[str, Any]:
+    ledger_path = _run_ledger_path(project)
+    event_id = f"life_{task_id}_{int(time.time() * 1000)}"
+    timestamp = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "schema_version": "2.8",
+        "event": "lifecycle_event",
+        "event_id": event_id,
+        "run_id": event_id,
+        "task_id": task_id,
+        "agent_id": agent_id,
+        "run_type": run_type or phase,
+        "phase": phase,
+        "status": status,
+        "message": message,
+        "started_at": timestamp,
+        "finished_at": timestamp,
+        **fields,
+    }
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return payload
+
+
+_RUN_WATCHDOG_STATUSES = ("ok", "running", "stale", "timeout", "failed", "unknown")
+_RUN_WATCHDOG_ATTENTION_STATUSES = {"stale", "timeout", "failed"}
+
+
+def _watchdog_reason(status: str) -> str:
+    if status == "timeout":
+        return "Agent execution timed out"
+    if status == "stale":
+        return "Agent run started but has not finished past the stale threshold"
+    if status == "failed":
+        return "Agent execution finished with an error classification"
+    return "No action required"
+
+
+def _watchdog_suggested_action(status: str) -> str:
+    if status == "timeout":
+        return "Inspect the latest run output, then split the task or rerun with a smaller scope."
+    if status == "stale":
+        return "Check the child process or session state before marking the task stale."
+    if status == "failed":
+        return "Inspect the error excerpt, fix the failing precondition, then rerun the task."
+    return "Keep monitoring."
+
+
+def _run_watchdog_summary(project: Optional[str], agent_id: Optional[str] = None) -> Dict[str, Any]:
+    tasks = _task_summaries(project, agent_id=agent_id)
+    status_counts = {status: 0 for status in _RUN_WATCHDOG_STATUSES}
+    agent_counts: Dict[str, Dict[str, int]] = {}
+    attention_tasks: List[Dict[str, Any]] = []
+
+    for task in tasks:
+        status = str(task.get("status") or "unknown")
+        if status not in status_counts:
+            status = "unknown"
+        status_counts[status] += 1
+
+        agents = task.get("agents")
+        agent_names = agents if isinstance(agents, list) and agents else ["unknown"]
+        for agent in agent_names:
+            agent_key = str(agent or "unknown")
+            if agent_key not in agent_counts:
+                agent_counts[agent_key] = {item: 0 for item in _RUN_WATCHDOG_STATUSES}
+            agent_counts[agent_key][status] += 1
+
+        if status in _RUN_WATCHDOG_ATTENTION_STATUSES:
+            execution_policy = None
+            task_id = str(task.get("task_id") or "")
+            if task_id:
+                try:
+                    execution_policy = _task_execution_policy(project, task_id)
+                except Exception:
+                    _log.debug("Failed building execution policy for watchdog task %s", task_id, exc_info=True)
+            attention_tasks.append(
+                {
+                    "task_id": task.get("task_id"),
+                    "status": status,
+                    "agents": task.get("agents") or [],
+                    "latest_started_at": task.get("latest_started_at"),
+                    "latest_run_id": task.get("latest_run_id"),
+                    "latest_agent_id": task.get("latest_agent_id"),
+                    "latest_run_type": task.get("latest_run_type"),
+                    "last_error_excerpt": task.get("last_error_excerpt"),
+                    "reason": _watchdog_reason(status),
+                    "suggested_action": _watchdog_suggested_action(status),
+                    "execution_policy": execution_policy,
+                }
+            )
+
+    return {
+        "project": project or "staam",
+        "agent_id": agent_id,
+        "total_tasks": len(tasks),
+        "attention_count": len(attention_tasks),
+        "status_counts": status_counts,
+        "agent_counts": agent_counts,
+        "attention_tasks": attention_tasks[:10],
+    }
+
+
+def _percent(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round((numerator / denominator) * 100.0, 2)
+
+
+def _p95(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, int(round((len(ordered) - 1) * 0.95)))
+    return round(ordered[index], 3)
+
+
+def _empty_agent_effectiveness(agent_id: str) -> Dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "run_count": 0,
+        "ok_runs": 0,
+        "timeout_runs": 0,
+        "failed_runs": 0,
+        "running_runs": 0,
+        "unknown_runs": 0,
+        "success_rate": 0.0,
+        "timeout_rate": 0.0,
+        "failed_rate": 0.0,
+        "avg_duration_seconds": 0.0,
+        "p95_duration_seconds": 0.0,
+        "last_used_at": None,
+        "handoff_count": 0,
+        "handoff_completed": 0,
+        "handoff_failed": 0,
+        "handoff_cancelled": 0,
+        "handoff_success_rate": 0.0,
+        "revision_needed_count": 0,
+        "effectiveness_score": 0.0,
+    }
+
+
+def _agent_effectiveness_summary(project: Optional[str], agent_id: Optional[str] = None) -> Dict[str, Any]:
+    now_ts = time.time()
+    metrics: Dict[str, Dict[str, Any]] = {}
+    durations: Dict[str, List[float]] = {}
+
+    def entry(aid: str) -> Dict[str, Any]:
+        key = aid or "unknown"
+        if key not in metrics:
+            metrics[key] = _empty_agent_effectiveness(key)
+            durations[key] = []
+        return metrics[key]
+
+    for row in _load_run_ledger(project):
+        aid = str(row.get("agent_id") or "")
+        if not aid or (agent_id and aid != agent_id):
+            continue
+        item = entry(aid)
+        if _is_lifecycle_row(row):
+            phase = str(row.get("phase") or "")
+            status = str(row.get("status") or "")
+            policy_action = str(row.get("policy_action") or row.get("decision") or "")
+            if phase == "execution_policy_applied" and (
+                status == "revision_needed" or policy_action == "revision_needed"
+            ):
+                item["revision_needed_count"] += 1
+            continue
+
+        status = _task_run_status(row, now_ts)
+        item["run_count"] += 1
+        if status == "ok":
+            item["ok_runs"] += 1
+        elif status == "timeout":
+            item["timeout_runs"] += 1
+        elif status in {"failed", "stale"}:
+            item["failed_runs"] += 1
+        elif status == "running":
+            item["running_runs"] += 1
+        else:
+            item["unknown_runs"] += 1
+        duration = row.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            durations[aid].append(float(duration))
+        latest = row.get("finished_at") or row.get("started_at")
+        if isinstance(latest, str) and latest and (not item["last_used_at"] or latest > item["last_used_at"]):
+            item["last_used_at"] = latest
+
+    for run in _load_agent_runs():
+        aid = str(run.get("agent_id") or "")
+        if not aid or (agent_id and aid != agent_id):
+            continue
+        item = entry(aid)
+        status = str(run.get("status") or "unknown")
+        item["handoff_count"] += 1
+        if status == "completed":
+            item["handoff_completed"] += 1
+        elif status == "failed":
+            item["handoff_failed"] += 1
+        elif status == "cancelled":
+            item["handoff_cancelled"] += 1
+        duration = run.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            durations[aid].append(float(duration))
+        latest = run.get("updated_at") or run.get("created_at")
+        if isinstance(latest, str) and latest and (not item["last_used_at"] or latest > item["last_used_at"]):
+            item["last_used_at"] = latest
+
+    agents = []
+    for aid, item in metrics.items():
+        total = int(item["run_count"])
+        handoffs = int(item["handoff_count"])
+        item["success_rate"] = _percent(int(item["ok_runs"]), total)
+        item["timeout_rate"] = _percent(int(item["timeout_runs"]), total)
+        item["failed_rate"] = _percent(int(item["failed_runs"]), total)
+        item["handoff_success_rate"] = _percent(int(item["handoff_completed"]), handoffs)
+        values = durations.get(aid, [])
+        item["avg_duration_seconds"] = round(sum(values) / len(values), 3) if values else 0.0
+        item["p95_duration_seconds"] = _p95(values)
+        penalty = (
+            item["timeout_rate"] * 0.35
+            + item["failed_rate"] * 0.45
+            + min(20.0, float(item["revision_needed_count"]) * 5.0)
+        )
+        handoff_bonus = item["handoff_success_rate"] * 0.15 if handoffs else 0.0
+        item["effectiveness_score"] = round(max(0.0, min(100.0, item["success_rate"] + handoff_bonus - penalty)), 2)
+        agents.append(item)
+
+    agents.sort(key=lambda item: (item["effectiveness_score"], item["run_count"] + item["handoff_count"]), reverse=True)
+    return {
+        "project": project or "staam",
+        "agent_id": agent_id,
+        "agents": agents,
+        "totals": {
+            "agents": len(agents),
+            "run_count": sum(int(item["run_count"]) for item in agents),
+            "handoff_count": sum(int(item["handoff_count"]) for item in agents),
+            "revision_needed_count": sum(int(item["revision_needed_count"]) for item in agents),
+        },
+    }
+
+
+def _agent_effectiveness_map(project: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    summary = _agent_effectiveness_summary(project)
+    return {
+        str(item.get("agent_id")): item
+        for item in summary.get("agents", [])
+        if isinstance(item, dict) and item.get("agent_id")
+    }
+
+
+def _run_ledger_projects() -> List[Dict[str, Any]]:
+    teams_dir = Path.home() / ".claude" / "teams"
+    if not teams_dir.exists():
+        return []
+    projects: List[Dict[str, Any]] = []
+    for ledger_path in sorted(teams_dir.glob("*/runs/ledger.jsonl")):
+        project = ledger_path.parent.parent.name
+        runs = _merged_run_ledger(project)
+        latest_started_at = None
+        if runs:
+            latest_started_at = max(
+                (str(row.get("started_at") or row.get("finished_at") or "") for row in runs),
+                default="",
+            ) or None
+        projects.append(
+            {
+                "name": project,
+                "total_runs": len(runs),
+                "latest_started_at": latest_started_at,
+            }
+        )
+    projects.sort(key=lambda item: (item.get("latest_started_at") or "", item.get("name") or ""), reverse=True)
+    return projects
+
+
+@app.get("/api/runs/projects")
+async def get_run_projects():
+    """List projects with run ledgers under ~/.claude/teams."""
+    projects = _run_ledger_projects()
+    default_project = projects[0]["name"] if projects else "staam"
+    return {"projects": projects, "default_project": default_project}
 
 
 @app.get("/api/runs")
@@ -1872,15 +2637,553 @@ async def get_runs(
     return {"runs": paginated, "total": total, "limit": limit, "offset": offset}
 
 
+@app.get("/api/runs/tasks")
+async def get_run_tasks(
+    project: Optional[str] = None,
+    status: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    include_policy: bool = False,
+    task_type: str = "tests",
+    risk_level: str = "R1",
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Read task-level run summaries from the project run ledger JSONL file."""
+    tasks = _task_summaries(project, agent_id=agent_id)
+    if status:
+        tasks = [task for task in tasks if task.get("status") == status]
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    total = len(tasks)
+    paginated = tasks[offset : offset + limit]
+    if include_policy:
+        for task in paginated:
+            task_id = str(task.get("task_id") or "")
+            if not task_id:
+                continue
+            try:
+                task["execution_policy"] = _task_execution_policy(
+                    project,
+                    task_id,
+                    task_type=task_type,
+                    risk_level=risk_level,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                _log.exception("Failed building execution policy for task %s", task_id)
+                raise HTTPException(status_code=500, detail=f"Failed to build execution policy: {exc}") from exc
+    return {"tasks": paginated, "total": total, "limit": limit, "offset": offset}
+
+
+def _apply_run_task_execution_policy_sync(
+    task_id: str,
+    *,
+    project: Optional[str] = None,
+    task_type: str = "tests",
+    risk_level: str = "R1",
+) -> Dict[str, Any]:
+    decision = _task_execution_policy(project, task_id, task_type=task_type, risk_level=risk_level)
+    action = str(decision.get("action") or "")
+    if action in {"complete", "continue"}:
+        lifecycle = _append_run_lifecycle_event(
+            project,
+            task_id,
+            phase="execution_policy_applied",
+            status=action,
+            agent_id="hermes-policy",
+            message=f"No executor handoff needed: {decision.get('reason')}",
+            decision=action,
+            policy_action=action,
+            execution_policy=decision,
+            apply_result="noop",
+        )
+        return {
+            "ok": True,
+            "applied": False,
+            "reason": "policy_action_does_not_require_execution",
+            "event_id": lifecycle["event_id"],
+            "execution_policy": decision,
+            "agent_run": None,
+        }
+    if action == "manual_review" or decision.get("requires_human_approval"):
+        lifecycle = _append_run_lifecycle_event(
+            project,
+            task_id,
+            phase="execution_policy_applied",
+            status="manual_review",
+            agent_id="hermes-policy",
+            message=str(decision.get("reason") or "Manual review required"),
+            decision="manual_review",
+            policy_action="manual_review",
+            execution_policy=decision,
+            apply_result="manual_review_required",
+        )
+        return {
+            "ok": True,
+            "applied": False,
+            "reason": "manual_review_required",
+            "event_id": lifecycle["event_id"],
+            "execution_policy": decision,
+            "agent_run": None,
+        }
+
+    next_agent_id = str(decision.get("next_agent_id") or "").strip()
+    if not next_agent_id:
+        raise HTTPException(status_code=400, detail="Execution policy has no next_agent_id")
+    known = _known_agent_ids()
+    if known and next_agent_id not in known:
+        raise HTTPException(status_code=400, detail=f"Unknown next_agent_id: {next_agent_id}")
+
+    run_id = f"policy-{uuid.uuid4().hex[:12]}"
+    now_iso = _utc_iso()
+    prompt = (
+        f"Apply execution policy for task {task_id}.\n"
+        f"Action: {action}\n"
+        f"Reason: {decision.get('reason')}\n"
+        f"Previous run: {decision.get('latest_run_id')} ({decision.get('latest_classification')})\n"
+        f"Use model_ref: {decision.get('next_model_ref') or 'agent default'}\n"
+    )
+    agent_run = {
+        "run_id": run_id,
+        "agent_id": next_agent_id,
+        "display_name": next_agent_id,
+        "prompt": prompt,
+        "workspace": str(get_hermes_home()),
+        "risk_level": decision.get("risk_level") or risk_level,
+        "model_ref": decision.get("next_model_ref"),
+        "status": "queued",
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "task_id": task_id,
+        "session_id": None,
+        "project": project or "staam",
+        "source": "execution_policy",
+        "policy_action": action,
+        "execution_policy": decision,
+        "result_summary": "Queued by Apply Policy. Awaiting executor pickup.",
+        "error": None,
+    }
+    runs = _load_agent_runs()
+    runs.append(agent_run)
+    _save_agent_runs(runs)
+
+    lifecycle = _append_run_lifecycle_event(
+        project,
+        task_id,
+        phase="execution_policy_applied",
+        status="queued",
+        agent_id=next_agent_id,
+        run_type="execution_policy_handoff",
+        message=f"Queued {action} handoff to {next_agent_id}",
+        decision=action,
+        policy_action=action,
+        handoff_run_id=run_id,
+        execution_policy=decision,
+        apply_result="queued",
+    )
+    return {
+        "ok": True,
+        "applied": True,
+        "reason": "executor_handoff_queued",
+        "event_id": lifecycle["event_id"],
+        "execution_policy": decision,
+        "agent_run": agent_run,
+    }
+
+
+def _append_smoke_seed_run(
+    project: str,
+    task_id: str,
+    *,
+    agent_id: str,
+    model_ref: str,
+    classification: str,
+) -> Dict[str, Any]:
+    ledger_path = _run_ledger_path(project)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    run_id = f"smoke-seed-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "schema_version": "2.8",
+        "event": "run_finished",
+        "run_id": run_id,
+        "task_id": task_id,
+        "agent_id": agent_id,
+        "model_ref": model_ref,
+        "run_type": "kernelization_smoke_seed",
+        "started_at": timestamp,
+        "finished_at": timestamp,
+        "duration_seconds": 0.01,
+        "exit_code": 124 if classification == "timeout" else 1,
+        "classification": classification,
+        "stdout_tail": "",
+        "stderr_tail": "synthetic kernelization smoke seed; no external CLI was invoked",
+    }
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return payload
+
+
+def _append_run_ledger_row(project: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+    ledger_path = _run_ledger_path(project)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return payload
+
+
+def _agent_profile_mapping(agent: Any) -> Dict[str, Any]:
+    return {
+        "runtime": getattr(agent, "runtime", ""),
+        "command": None,
+        "model_ref": getattr(agent, "model_ref", ""),
+        "model_strategy": dict(getattr(agent, "model_strategy", None) or {}),
+        "skills": list(getattr(agent, "skills", None) or []),
+        "tools": list(getattr(agent, "tools", None) or []),
+        "permission": getattr(getattr(agent, "permission", None), "value", getattr(agent, "permission", "")),
+        "capabilities": list(getattr(agent, "capabilities", None) or []),
+    }
+
+
+def _classify_eval_result(result: Dict[str, Any]) -> str:
+    if result.get("exit_reason") == "timeout" or result.get("interrupted"):
+        return "timeout"
+    if result.get("completed") is True:
+        return "ok"
+    error = str(result.get("error") or "").lower()
+    if "not found" in error:
+        return "process_error"
+    if "auth" in error or "401" in error or "unauthorized" in error:
+        return "auth_error"
+    if not str(result.get("final_response") or "").strip():
+        return "empty_final_content"
+    return "process_error"
+
+
+def _run_external_agent_eval(body: AgentEvalRunCreate) -> Dict[str, Any]:
+    from agent.managed_agents.registry import load_agent_registry
+    from tools.delegate_tool import _build_external_cli_child
+
+    registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+    project = (body.project or "staam").strip() or "staam"
+    timeout_seconds = max(1.0, min(float(body.timeout_seconds or 20.0), 120.0))
+    requested_ids = [str(item).strip() for item in (body.agent_ids or []) if str(item).strip()]
+    external_ids = sorted(_external_agent_ids())
+    agent_ids = requested_ids or external_ids
+    workspace = body.workspace or str(get_hermes_home())
+    batch_id = f"eval-{uuid.uuid4().hex[:10]}"
+    results: List[Dict[str, Any]] = []
+
+    for requested_id in agent_ids:
+        resolved_agent_id = registry.resolve_agent_id(requested_id) or requested_id
+        if resolved_agent_id not in external_ids:
+            results.append({
+                "agent_id": resolved_agent_id,
+                "status": "skipped",
+                "classification": "not_external_runtime",
+                "error": "Only external CLI runtime agents are eligible for this eval.",
+            })
+            continue
+        agent = registry.get(resolved_agent_id)
+        task_id = f"{batch_id}-{resolved_agent_id}"
+        run_id = f"{batch_id}-{resolved_agent_id}-{uuid.uuid4().hex[:6]}"
+        started = time.time()
+        started_iso = _utc_iso(started)
+        run = {
+            "run_id": run_id,
+            "agent_id": resolved_agent_id,
+            "display_name": agent.name,
+            "prompt": body.prompt,
+            "workspace": workspace,
+            "risk_level": "R0",
+            "model_ref": agent.model_ref,
+            "status": "running",
+            "created_at": started_iso,
+            "updated_at": started_iso,
+            "task_id": task_id,
+            "session_id": None,
+            "project": project,
+            "source": "external_agent_eval",
+            "policy_action": "eval",
+            "result_summary": "External agent eval started.",
+            "error": None,
+            "executor": {
+                "mode": "inline_eval",
+                "timeout_seconds": timeout_seconds,
+                "started_at": started_iso,
+            },
+        }
+        runs = _load_agent_runs()
+        runs.append(run)
+        _save_agent_runs(runs)
+        _append_run_ledger_row(
+            project,
+            {
+                "schema_version": "2.8",
+                "event": "run_started",
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_id": resolved_agent_id,
+                "model_ref": agent.model_ref,
+                "run_type": "external_agent_eval",
+                "started_at": started_iso,
+                "command": f"{agent.runtime} eval smoke",
+            },
+        )
+        try:
+            parent = _build_console_parent(agent, workspace, run_id)
+            child = _build_external_cli_child(
+                runtime=agent.runtime,
+                task_index=0,
+                goal=body.prompt,
+                context=(
+                    "This is a Hermes external agent evaluation. "
+                    "Do not modify files. Return a concise final answer only."
+                ),
+                parent_agent=parent,
+                agent_id=resolved_agent_id,
+                agent_config=_agent_profile_mapping(agent),
+                profile=_agent_profile_mapping(agent),
+            )
+            child.timeout_seconds = timeout_seconds
+            result = child.run_conversation(body.prompt, task_id=task_id)
+            classification = _classify_eval_result(result)
+            finished = time.time()
+            summary = str(result.get("final_response") or "").strip()
+            error = str(result.get("error") or "").strip()
+        except Exception as exc:
+            finished = time.time()
+            result = {"completed": False, "error": str(exc), "final_response": ""}
+            classification = "process_error"
+            summary = ""
+            error = str(exc)
+
+        finished_iso = _utc_iso(finished)
+        duration = round(finished - started, 3)
+        status = "completed" if classification == "ok" else "failed"
+        run.update({
+            "status": status,
+            "ended_at": finished,
+            "updated_at": finished_iso,
+            "duration_seconds": duration,
+            "result_summary": summary or None,
+            "error": None if classification == "ok" else error or classification,
+            "executor": {
+                **dict(run.get("executor") or {}),
+                "finished_at": finished_iso,
+                "classification": classification,
+            },
+        })
+        _mutate_agent_run(run_id, lambda _current, updated=run: updated)
+        _append_run_ledger_row(
+            project,
+            {
+                "schema_version": "2.8",
+                "event": "run_finished",
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_id": resolved_agent_id,
+                "model_ref": agent.model_ref,
+                "run_type": "external_agent_eval",
+                "started_at": started_iso,
+                "finished_at": finished_iso,
+                "duration_seconds": duration,
+                "exit_code": 0 if classification == "ok" else 1,
+                "classification": classification,
+                "stdout_tail": summary[-2000:],
+                "stderr_tail": error[-2000:],
+            },
+        )
+        results.append({
+            "agent_id": resolved_agent_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "status": status,
+            "classification": classification,
+            "duration_seconds": duration,
+            "summary": summary,
+            "error": error,
+        })
+
+    return {
+        "ok": True,
+        "project": project,
+        "batch_id": batch_id,
+        "timeout_seconds": timeout_seconds,
+        "results": results,
+        "effectiveness": _agent_effectiveness_summary(project),
+    }
+
+
+def _run_kernelization_smoke(body: Any) -> Dict[str, Any]:
+    project = (body.project or "staam").strip() or "staam"
+    task_id = f"kernel-smoke-{uuid.uuid4().hex[:10]}"
+    seed = _append_smoke_seed_run(
+        project,
+        task_id,
+        agent_id=body.failed_agent_id,
+        model_ref=body.failed_model_ref,
+        classification=body.classification,
+    )
+    apply_response = _apply_run_task_execution_policy_sync(
+        task_id,
+        project=project,
+        task_type=body.task_type,
+        risk_level=body.risk_level,
+    )
+    if not isinstance(apply_response, dict) or not apply_response.get("applied"):
+        return {
+            "ok": False,
+            "task_id": task_id,
+            "project": project,
+            "seed_run": seed,
+            "apply_result": apply_response,
+            "error": "execution policy did not queue a handoff",
+        }
+    agent_run = apply_response.get("agent_run") or {}
+    claimed = _claim_agent_run_for_execution(str(agent_run.get("run_id") or ""), worker_mode="smoke")
+    finished = _finish_agent_run_execution(
+        claimed,
+        result={
+            "summary": (
+                "Kernelization smoke completed: ledger seed, execution policy, "
+                "queued handoff, executor claim, and run finish all succeeded."
+            ),
+            "status": "completed",
+            "duration_seconds": 0.01,
+            "api_calls": 0,
+            "usage": {},
+            "model": "smoke",
+            "model_ref": claimed.get("model_ref"),
+        },
+    )
+    watchdog = _run_watchdog_summary(project)
+    scheduler = _executor_scheduler_status()
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "project": project,
+        "seed_run": seed,
+        "execution_policy": apply_response.get("execution_policy"),
+        "apply_result": apply_response,
+        "agent_run": finished,
+        "watchdog": {
+            "total_tasks": watchdog.get("total_tasks"),
+            "attention_count": watchdog.get("attention_count"),
+            "status_counts": watchdog.get("status_counts"),
+        },
+        "scheduler": {
+            "queued_count": scheduler.get("queued_count"),
+            "active_count": scheduler.get("active_count"),
+            "enabled": scheduler.get("enabled"),
+        },
+        "steps": [
+            "seed_run_finished",
+            "execution_policy_applied",
+            "agent_run_queued",
+            "executor_claimed",
+            "agent_run_completed",
+            "run_ledger_lifecycle_recorded",
+        ],
+    }
+
+
+@app.post("/api/agents/runs/kernelization-smoke")
+async def run_agent_kernelization_smoke(body: AgentRunSmokeCreate):
+    """Run a durable end-to-end smoke over the executor kernel without spawning external CLIs."""
+    return await asyncio.to_thread(_run_kernelization_smoke, body)
+
+
+@app.post("/api/agents/eval")
+async def run_external_agent_eval(body: AgentEvalRunCreate):
+    """Run bounded real external CLI evals and record results in Run Ledger."""
+    return await asyncio.to_thread(_run_external_agent_eval, body)
+
+
+@app.get("/api/runs/tasks/{task_id}/execution-policy")
+async def get_run_task_execution_policy(
+    task_id: str,
+    project: Optional[str] = None,
+    task_type: str = "tests",
+    risk_level: str = "R1",
+):
+    """Return the next execution-policy decision for a ledger task."""
+    return _task_execution_policy(project, task_id, task_type=task_type, risk_level=risk_level)
+
+
+@app.post("/api/runs/tasks/{task_id}/execution-policy/record")
+async def record_run_task_execution_policy(
+    task_id: str,
+    project: Optional[str] = None,
+    task_type: str = "tests",
+    risk_level: str = "R1",
+):
+    """Append the current execution-policy decision into Run Ledger lifecycle."""
+    decision = _task_execution_policy(project, task_id, task_type=task_type, risk_level=risk_level)
+    payload = _append_run_lifecycle_event(
+        project,
+        task_id,
+        phase="execution_policy_decided",
+        status=decision["action"],
+        agent_id="hermes-policy",
+        message=decision["reason"],
+        decision=decision["action"],
+        policy_action=decision["action"],
+        execution_policy=decision,
+    )
+    return {"ok": True, "event_id": payload["event_id"], "execution_policy": decision}
+
+
+@app.post("/api/runs/tasks/{task_id}/execution-policy/apply")
+async def apply_run_task_execution_policy(
+    task_id: str,
+    project: Optional[str] = None,
+    task_type: str = "tests",
+    risk_level: str = "R1",
+):
+    """Apply the current execution policy as a durable executor handoff.
+
+    This endpoint does not synchronously spawn external CLIs from the dashboard
+    request.  It writes a ledger lifecycle event and creates an agent-run handoff
+    record that a worker/executor can claim.  That keeps policy application
+    observable without reintroducing browser/API hangs.
+    """
+    return await asyncio.to_thread(
+        _apply_run_task_execution_policy_sync,
+        task_id,
+        project=project,
+        task_type=task_type,
+        risk_level=risk_level,
+    )
+
+
+@app.get("/api/runs/watchdog")
+async def get_runs_watchdog(project: Optional[str] = None, agent_id: Optional[str] = None):
+    """Return a read-only watchdog summary over task-level run ledger state."""
+    return _run_watchdog_summary(project, agent_id=agent_id)
+
+
+@app.get("/api/agents/effectiveness")
+async def get_agent_effectiveness(project: Optional[str] = None, agent_id: Optional[str] = None):
+    """Return objective per-agent effectiveness metrics from Run Ledger and executor handoffs."""
+    return _agent_effectiveness_summary(project, agent_id=agent_id)
+
+
 @app.get("/api/runs/summary")
-async def get_runs_summary(project: Optional[str] = None):
+async def get_runs_summary(project: Optional[str] = None, agent_id: Optional[str] = None):
     """Return summary breakdown of the run ledger."""
     runs = _merged_run_ledger(project)
+    if agent_id:
+        runs = [r for r in runs if r.get("agent_id") == agent_id]
     classification_counts: Dict[str, int] = {}
+    agent_counts: Dict[str, int] = {}
     durations: List[float] = []
     for row in runs:
         classification = str(row.get("classification") or row.get("event") or "unknown")
         classification_counts[classification] = classification_counts.get(classification, 0) + 1
+        agent = str(row.get("agent_id") or "unknown")
+        agent_counts[agent] = agent_counts.get(agent, 0) + 1
         duration = row.get("duration_seconds")
         if isinstance(duration, (int, float)):
             durations.append(float(duration))
@@ -1893,6 +3196,7 @@ async def get_runs_summary(project: Optional[str] = None):
     return {
         "total": len(runs),
         "classification_counts": classification_counts,
+        "agent_counts": agent_counts,
         "avg_duration_seconds": round(sum(durations) / len(durations), 3) if durations else 0,
         "recent_runs": runs[:10],
     }
@@ -3234,7 +4538,7 @@ _AGENT_CONSOLE_SESSIONS_PATH = get_hermes_home() / "agent-console-sessions.json"
 
 # Managed agent IDs (lazy-loaded from agents.yaml + runtime registry)
 _valid_agent_ids: Optional[frozenset] = None
-# Agent IDs backed by external CLI runtimes (claude_code_cli, codex_cli)
+# Agent IDs backed by external CLI runtimes.
 _external_runtime_agent_ids: Optional[frozenset] = None
 
 
@@ -3278,7 +4582,7 @@ def _known_agent_ids() -> frozenset:
 
 
 def _external_agent_ids() -> frozenset:
-    """Return agent IDs backed by external CLI runtimes (claude/codex)."""
+    """Return agent IDs backed by external CLI runtimes."""
     global _external_runtime_agent_ids
     if _external_runtime_agent_ids is None:
         _reload_agent_ids()
@@ -3287,6 +4591,19 @@ def _external_agent_ids() -> frozenset:
 
 def _load_agent_runs() -> list:
     """Load the agent-runs.json file, returning a list of run dicts."""
+    with _AGENT_RUNS_LOCK:
+        with _agent_runs_file_lock():
+            return _read_agent_runs_unlocked()
+
+
+def _save_agent_runs(runs: list) -> None:
+    """Persist the run list to agent-runs.json atomically."""
+    with _AGENT_RUNS_LOCK:
+        with _agent_runs_file_lock():
+            _write_agent_runs_unlocked(runs)
+
+
+def _read_agent_runs_unlocked() -> list:
     if not _AGENT_RUNS_PATH.exists():
         return []
     try:
@@ -3299,8 +4616,7 @@ def _load_agent_runs() -> list:
         return []
 
 
-def _save_agent_runs(runs: list) -> None:
-    """Persist the run list to agent-runs.json atomically."""
+def _write_agent_runs_unlocked(runs: list) -> None:
     _AGENT_RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _AGENT_RUNS_PATH.with_suffix(".json.tmp")
     tmp.write_text(
@@ -3310,10 +4626,32 @@ def _save_agent_runs(runs: list) -> None:
     tmp.replace(_AGENT_RUNS_PATH)
 
 
+def _mutate_agent_run(run_id: str, mutator) -> dict | None:
+    with _AGENT_RUNS_LOCK:
+        with _agent_runs_file_lock():
+            runs = _read_agent_runs_unlocked()
+            idx = _find_run_index(runs, run_id)
+            if idx == -1:
+                return None
+            updated = mutator(runs[idx])
+            if updated is None:
+                return runs[idx]
+            runs[idx] = updated
+            _write_agent_runs_unlocked(runs)
+            return updated
+
+
 def _find_run_index(runs: list, run_id: str) -> int:
     """Return the index of a run by run_id, or -1 if not found."""
     for i, r in enumerate(runs):
         if r.get("run_id") == run_id:
+            return i
+    return -1
+
+
+def _find_next_queued_agent_run_index(runs: list) -> int:
+    for i, run in enumerate(runs):
+        if run.get("status") == "queued" and run.get("source") == "execution_policy":
             return i
     return -1
 
@@ -3661,6 +4999,428 @@ def _run_agent_console_turn(session: dict, prompt: str) -> dict:
     }
 
 
+def _run_policy_handoff_turn(run: dict) -> dict:
+    agent_id = str(run.get("agent_id") or "").strip()
+    if not agent_id:
+        raise RuntimeError("Queued policy run has no agent_id")
+    from agent.managed_agents.registry import load_agent_registry
+
+    registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+    resolved_agent_id = registry.resolve_agent_id(agent_id) or agent_id
+    known = _known_agent_ids()
+    if known and resolved_agent_id not in known:
+        raise RuntimeError(f"Unknown policy handoff agent: {agent_id}")
+    agent = registry.get(resolved_agent_id)
+    workspace = str(run.get("workspace") or get_hermes_home())
+    parent = _build_console_parent(agent, workspace, str(run.get("run_id") or "policy-run"))
+    from tools.delegate_tool import delegate_task
+
+    raw = delegate_task(
+        goal=str(run.get("prompt") or ""),
+        context=(
+            "This run was created by Hermes Apply Policy. "
+            "Use the embedded execution_policy and previous run context in the prompt. "
+            "Return a concise summary and do not claim completion unless work was actually performed."
+        ),
+        agent_id=resolved_agent_id,
+        parent_agent=parent,
+    )
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Agent returned non-JSON result: {raw[:500]}") from exc
+    if payload.get("error"):
+        raise RuntimeError(str(payload.get("error")))
+    results = payload.get("results") if isinstance(payload.get("results"), list) else []
+    entry = results[0] if results else {}
+    if not isinstance(entry, dict):
+        raise RuntimeError("Agent returned an invalid result entry")
+    summary = str(entry.get("summary") or "").strip()
+    error = str(entry.get("error") or "").strip()
+    if not summary and error:
+        raise RuntimeError(error)
+    if not summary:
+        raise RuntimeError("Agent did not produce a response")
+    return {
+        "summary": summary,
+        "status": str(entry.get("status") or "completed"),
+        "duration_seconds": entry.get("duration_seconds"),
+        "api_calls": entry.get("api_calls"),
+        "usage": entry.get("usage") or entry.get("tokens") or {},
+        "model": entry.get("model"),
+        "model_ref": entry.get("model_ref") or run.get("model_ref"),
+    }
+
+
+def _claim_agent_run_for_execution(run_id: str, *, worker_mode: str = "inline") -> dict:
+    missing = False
+
+    def claim(run: dict) -> dict:
+        if run.get("status") != "queued":
+            raise HTTPException(status_code=400, detail=f"Run status is {run.get('status')}, not queued")
+        if run.get("source") != "execution_policy":
+            raise HTTPException(status_code=400, detail="Only execution_policy queued runs are executable here")
+        now = time.time()
+        run["status"] = "running"
+        run["started_at"] = now
+        run["updated_at"] = _utc_iso(now)
+        run["executor"] = {
+            "mode": worker_mode,
+            "pid": os.getpid(),
+            "heartbeat_at": _utc_iso(now),
+            "started_at": _utc_iso(now),
+        }
+        return run
+
+    run = _mutate_agent_run(run_id, claim)
+    if run is None:
+        missing = True
+    if missing:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    task_id = str(run.get("task_id") or run_id)
+    project = str(run.get("project") or "staam")
+    _append_run_lifecycle_event(
+        project,
+        task_id,
+        phase="execution_handoff_started",
+        status="running",
+        agent_id=str(run.get("agent_id") or ""),
+        run_type="execution_policy_executor",
+        message=f"Executor started handoff run {run_id}",
+        handoff_run_id=run_id,
+        policy_action=run.get("policy_action"),
+        executor_mode=worker_mode,
+    )
+    return run
+
+
+def _finish_agent_run_execution(run: dict, result: dict | None = None, error: BaseException | str | None = None) -> dict:
+    finished = time.time()
+    started_at = float(run.get("started_at") or finished)
+    if error is None:
+        result = result or {}
+        run["status"] = "completed"
+        run["result_summary"] = result.get("summary")
+        run["model"] = result.get("model")
+        run["model_ref"] = result.get("model_ref") or run.get("model_ref")
+        run["usage"] = result.get("usage") or {}
+        run["api_calls"] = result.get("api_calls")
+        run["error"] = None
+        lifecycle_status = "completed"
+        lifecycle_message = str(result.get("summary") or "Execution handoff completed")
+    else:
+        run["status"] = "failed"
+        run["error"] = str(error)
+        run["result_summary"] = None
+        lifecycle_status = "failed"
+        lifecycle_message = str(error)
+
+    run["ended_at"] = finished
+    run["updated_at"] = _utc_iso(finished)
+    run["duration_seconds"] = round(float(finished - started_at), 3)
+    executor = dict(run.get("executor") or {})
+    executor["heartbeat_at"] = _utc_iso(finished)
+    executor["finished_at"] = _utc_iso(finished)
+    run["executor"] = executor
+
+    run_id = str(run.get("run_id") or "")
+
+    def finish(current: dict) -> dict:
+        if _is_agent_run_terminal(str(current.get("status") or "")):
+            return current
+        return run
+
+    if run_id:
+        persisted = _mutate_agent_run(run_id, finish)
+        if persisted is not None:
+            if persisted.get("status") != run.get("status"):
+                return persisted
+            run = persisted
+
+    task_id = str(run.get("task_id") or run.get("run_id") or "")
+    project = str(run.get("project") or "staam")
+    _append_run_lifecycle_event(
+        project,
+        task_id,
+        phase="execution_handoff_finished",
+        status=lifecycle_status,
+        agent_id=str(run.get("agent_id") or ""),
+        run_type="execution_policy_executor",
+        message=lifecycle_message,
+        handoff_run_id=run.get("run_id"),
+        policy_action=run.get("policy_action"),
+        duration_seconds=run.get("duration_seconds"),
+        error=run.get("error"),
+        executor=run.get("executor"),
+    )
+    return run
+
+
+def _execute_agent_run_sync(run_id: str) -> dict:
+    run = _claim_agent_run_for_execution(run_id, worker_mode="inline")
+    return _execute_claimed_agent_run_sync(run)
+
+
+def _execute_claimed_agent_run_sync(run: dict | str) -> dict:
+    if isinstance(run, str):
+        runs = _load_agent_runs()
+        idx = _find_run_index(runs, run)
+        if idx == -1:
+            raise HTTPException(status_code=404, detail="Run not found")
+        run = runs[idx]
+        if run.get("status") != "running":
+            raise HTTPException(status_code=400, detail=f"Run status is {run.get('status')}, not running")
+    try:
+        result = _run_policy_handoff_turn(run)
+        return _finish_agent_run_execution(run, result=result)
+    except Exception as exc:
+        return _finish_agent_run_execution(run, error=exc)
+
+
+def _is_agent_run_terminal(status: str | None) -> bool:
+    return status in {"completed", "failed", "cancelled"}
+
+
+def _refresh_agent_run_executor(run_id: str, updates: dict) -> None:
+    def refresh(run: dict) -> dict:
+        if _is_agent_run_terminal(str(run.get("status") or "")):
+            return run
+        executor = dict(run.get("executor") or {})
+        executor.update(updates)
+        executor["heartbeat_at"] = _utc_iso()
+        run["executor"] = executor
+        run["updated_at"] = _utc_iso()
+        return run
+
+    _mutate_agent_run(run_id, refresh)
+
+
+def _mark_agent_run_failed_if_running(run_id: str, message: str) -> dict | None:
+    run = _mutate_agent_run(run_id, lambda current: current)
+    if run is None:
+        return None
+    if run.get("status") != "running":
+        return run
+    return _finish_agent_run_execution(run, error=message)
+
+
+def _agent_run_worker_command(run_id: str) -> list[str]:
+    code = (
+        "from hermes_cli import web_server; "
+        f"web_server._execute_claimed_agent_run_sync({run_id!r})"
+    )
+    return [sys.executable, "-c", code]
+
+
+def _executor_log_paths(run_id: str) -> tuple[Path, Path]:
+    log_dir = get_hermes_home() / "executor-runs"
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id)
+    return log_dir / f"{safe_id}.out.log", log_dir / f"{safe_id}.err.log"
+
+
+def _tail_file(path: Path, max_chars: int = 4000) -> str:
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return data[-max_chars:]
+
+
+def _watch_agent_run_process(run_id: str, proc: subprocess.Popen, timeout_seconds: float) -> None:
+    stdout_path, stderr_path = _executor_log_paths(run_id)
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    while True:
+        returncode = proc.poll()
+        if returncode is not None:
+            _refresh_agent_run_executor(run_id, {"returncode": returncode})
+            if returncode != 0:
+                _mark_agent_run_failed_if_running(
+                    run_id,
+                    f"Execution worker exited with code {returncode}: {_tail_file(stderr_path) or _tail_file(stdout_path)}",
+                )
+            break
+        if time.monotonic() >= deadline:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                proc.wait(timeout=5)
+            _mark_agent_run_failed_if_running(
+                run_id,
+                f"Execution worker timed out after {timeout_seconds:.1f}s: {_tail_file(stderr_path) or _tail_file(stdout_path)}",
+            )
+            break
+        _refresh_agent_run_executor(run_id, {"pid": proc.pid, "deadline_at": _utc_iso(time.time() + max(0.0, deadline - time.monotonic()))})
+        time.sleep(2.0)
+    with _EXECUTOR_ACTIVE_LOCK:
+        _EXECUTOR_ACTIVE_RUNS.pop(run_id, None)
+
+
+def _start_agent_run_worker(run_id: str, *, timeout_seconds: float | None = None) -> dict:
+    timeout_seconds = float(timeout_seconds or _EXECUTOR_SCHEDULER_TIMEOUT_SECONDS)
+    with _EXECUTOR_ACTIVE_LOCK:
+        if run_id in _EXECUTOR_ACTIVE_RUNS:
+            raise HTTPException(status_code=409, detail=f"Run {run_id} is already claimed by an executor worker")
+        _EXECUTOR_ACTIVE_RUNS[run_id] = {"run_id": run_id, "status": "starting", "started_at": _utc_iso()}
+
+    try:
+        run = _claim_agent_run_for_execution(run_id, worker_mode="process")
+        stdout_path, stderr_path = _executor_log_paths(run_id)
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        stdout_file = stdout_path.open("ab")
+        stderr_file = stderr_path.open("ab")
+        try:
+            proc = subprocess.Popen(
+                _agent_run_worker_command(run_id),
+                cwd=str(PROJECT_ROOT),
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+            )
+        finally:
+            stdout_file.close()
+            stderr_file.close()
+        _refresh_agent_run_executor(
+            run_id,
+            {
+                "mode": "process",
+                "pid": proc.pid,
+                "pgid": proc.pid,
+                "timeout_seconds": timeout_seconds,
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+            },
+        )
+        with _EXECUTOR_ACTIVE_LOCK:
+            _EXECUTOR_ACTIVE_RUNS[run_id] = {
+                "run_id": run_id,
+                "status": "running",
+                "pid": proc.pid,
+                "timeout_seconds": timeout_seconds,
+                "started_at": _utc_iso(),
+            }
+        threading.Thread(
+            target=_watch_agent_run_process,
+            args=(run_id, proc, timeout_seconds),
+            daemon=True,
+            name=f"hermes-executor-watch-{run_id}",
+        ).start()
+        run["executor"] = {
+            **dict(run.get("executor") or {}),
+            "mode": "process",
+            "pid": proc.pid,
+            "pgid": proc.pid,
+            "timeout_seconds": timeout_seconds,
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+        }
+        return run
+    except Exception:
+        with _EXECUTOR_ACTIVE_LOCK:
+            _EXECUTOR_ACTIVE_RUNS.pop(run_id, None)
+        raise
+
+
+def _claim_next_agent_run_worker(*, timeout_seconds: float | None = None) -> dict | None:
+    runs = _load_agent_runs()
+    idx = _find_next_queued_agent_run_index(runs)
+    if idx == -1:
+        return None
+    run_id = str(runs[idx].get("run_id") or "")
+    if not run_id:
+        return None
+    return _start_agent_run_worker(run_id, timeout_seconds=timeout_seconds)
+
+
+def _executor_scheduler_status() -> Dict[str, Any]:
+    with _EXECUTOR_ACTIVE_LOCK:
+        active = list(_EXECUTOR_ACTIVE_RUNS.values())
+    with _EXECUTOR_SCHEDULER_LOCK:
+        thread = _EXECUTOR_SCHEDULER_THREAD
+        enabled = _EXECUTOR_SCHEDULER_ENABLED
+        interval = _EXECUTOR_SCHEDULER_INTERVAL_SECONDS
+        timeout = _EXECUTOR_SCHEDULER_TIMEOUT_SECONDS
+        last_tick = _EXECUTOR_SCHEDULER_LAST_TICK
+        last_error = _EXECUTOR_SCHEDULER_LAST_ERROR
+    queued = [
+        run for run in _load_agent_runs()
+        if run.get("status") == "queued" and run.get("source") == "execution_policy"
+    ]
+    return {
+        "enabled": enabled,
+        "running": bool(thread and thread.is_alive()),
+        "interval_seconds": interval,
+        "timeout_seconds": timeout,
+        "last_tick": last_tick,
+        "last_error": last_error,
+        "active_runs": active,
+        "active_count": len(active),
+        "queued_count": len(queued),
+    }
+
+
+def _executor_scheduler_loop() -> None:
+    global _EXECUTOR_SCHEDULER_LAST_ERROR, _EXECUTOR_SCHEDULER_LAST_TICK
+    while not _EXECUTOR_SCHEDULER_STOP.is_set():
+        try:
+            with _EXECUTOR_ACTIVE_LOCK:
+                has_active = bool(_EXECUTOR_ACTIVE_RUNS)
+            if not has_active:
+                _claim_next_agent_run_worker(timeout_seconds=_EXECUTOR_SCHEDULER_TIMEOUT_SECONDS)
+            _EXECUTOR_SCHEDULER_LAST_ERROR = None
+        except Exception as exc:
+            _EXECUTOR_SCHEDULER_LAST_ERROR = str(exc)
+            _log.warning("Executor scheduler tick failed: %s", exc)
+        _EXECUTOR_SCHEDULER_LAST_TICK = _utc_iso()
+        _EXECUTOR_SCHEDULER_STOP.wait(_EXECUTOR_SCHEDULER_INTERVAL_SECONDS)
+
+
+def _start_executor_scheduler(interval_seconds: float | None = None, timeout_seconds: float | None = None) -> Dict[str, Any]:
+    global _EXECUTOR_SCHEDULER_ENABLED, _EXECUTOR_SCHEDULER_INTERVAL_SECONDS
+    global _EXECUTOR_SCHEDULER_TIMEOUT_SECONDS, _EXECUTOR_SCHEDULER_THREAD
+    with _EXECUTOR_SCHEDULER_LOCK:
+        if interval_seconds is not None:
+            _EXECUTOR_SCHEDULER_INTERVAL_SECONDS = max(1.0, min(float(interval_seconds), 300.0))
+        if timeout_seconds is not None:
+            _EXECUTOR_SCHEDULER_TIMEOUT_SECONDS = max(5.0, min(float(timeout_seconds), 3600.0))
+        _EXECUTOR_SCHEDULER_ENABLED = True
+        _EXECUTOR_SCHEDULER_STOP.clear()
+        if _EXECUTOR_SCHEDULER_THREAD is None or not _EXECUTOR_SCHEDULER_THREAD.is_alive():
+            _EXECUTOR_SCHEDULER_THREAD = threading.Thread(
+                target=_executor_scheduler_loop,
+                daemon=True,
+                name="hermes-executor-scheduler",
+            )
+            _EXECUTOR_SCHEDULER_THREAD.start()
+    return _executor_scheduler_status()
+
+
+def _stop_executor_scheduler() -> Dict[str, Any]:
+    global _EXECUTOR_SCHEDULER_ENABLED
+    with _EXECUTOR_SCHEDULER_LOCK:
+        _EXECUTOR_SCHEDULER_ENABLED = False
+        _EXECUTOR_SCHEDULER_STOP.set()
+    return _executor_scheduler_status()
+
+
 @app.get("/api/agents/console/sessions")
 async def get_agent_console_sessions(agent_id: Optional[str] = None, limit: int = 50):
     sessions = _load_console_sessions()
@@ -3802,7 +5562,7 @@ async def create_agent_run(agent_id: str, body: AgentRunCreate):
 
     No LLM is invoked. The run is recorded as ``status: completed`` with
     the provided ``preview``. Unknown agent IDs and external CLI runtimes
-    (claude/codex) are rejected.
+    are rejected.
     """
     requested_id = agent_id.strip()
     if not requested_id:
@@ -3884,6 +5644,69 @@ async def cancel_agent_run(run_id: str):
     run["updated_at"] = now_iso
     _save_agent_runs(runs)
     return run
+
+
+@app.post("/api/agents/runs/{run_id}/execute")
+async def execute_agent_run(run_id: str, wait: bool = False, timeout_seconds: float = 180.0):
+    """Execute one queued execution-policy handoff run.
+
+    By default this starts an isolated worker process and returns after claim.
+    ``wait=true`` keeps the old inline behavior for tests/debugging.
+    """
+    if wait:
+        return await asyncio.to_thread(_execute_agent_run_sync, run_id)
+    return await asyncio.to_thread(_start_agent_run_worker, run_id, timeout_seconds=timeout_seconds)
+
+
+@app.post("/api/agents/runs/executor/tick")
+async def tick_agent_run_executor(limit: int = 1, wait: bool = False, timeout_seconds: float = 180.0):
+    """Claim and execute queued execution-policy handoffs.
+
+    This is intentionally explicit: dashboard/manual automation can tick the
+    executor, while the HTTP request only runs a bounded number of queued items.
+    """
+    limit = int(limit)
+    if limit < 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than or equal to 0")
+    if limit == 0:
+        return {"ok": True, "executed": [], "count": 0}
+    limit = min(limit, 5)
+    executed = []
+    for _ in range(limit):
+        if wait:
+            runs = _load_agent_runs()
+            idx = _find_next_queued_agent_run_index(runs)
+            if idx == -1:
+                break
+            run_id = str(runs[idx].get("run_id") or "")
+            if not run_id:
+                break
+            executed.append(await asyncio.to_thread(_execute_agent_run_sync, run_id))
+        else:
+            claimed = await asyncio.to_thread(_claim_next_agent_run_worker, timeout_seconds=timeout_seconds)
+            if not claimed:
+                break
+            executed.append(claimed)
+    return {"ok": True, "executed": executed, "count": len(executed)}
+
+
+@app.get("/api/agents/runs/executor/scheduler")
+async def get_agent_run_executor_scheduler():
+    return _executor_scheduler_status()
+
+
+@app.post("/api/agents/runs/executor/scheduler/start")
+async def start_agent_run_executor_scheduler(interval_seconds: float = 5.0, timeout_seconds: float = 180.0):
+    return await asyncio.to_thread(
+        _start_executor_scheduler,
+        interval_seconds=interval_seconds,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+@app.post("/api/agents/runs/executor/scheduler/stop")
+async def stop_agent_run_executor_scheduler():
+    return await asyncio.to_thread(_stop_executor_scheduler)
 
 
 # ---------------------------------------------------------------------------

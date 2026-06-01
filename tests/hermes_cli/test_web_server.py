@@ -236,12 +236,119 @@ class TestWebServerEndpoints:
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_get_status(self):
-        resp = self.client.get("/api/status")
+        resp = self.client.get("/api/status", headers={"Host": "127.0.0.1:9119"})
         assert resp.status_code == 200
         data = resp.json()
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+
+    def test_get_status_reports_dashboard_process_identity(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_find_dashboard_peer_processes", lambda: [
+            {"pid": 22222, "command": "python -m hermes_cli.main dashboard --port 9120"},
+        ])
+        monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(web_server.app.state, "bound_port", 9119, raising=False)
+
+        resp = self.client.get("/api/status", headers={"Host": "127.0.0.1:9119"})
+
+        assert resp.status_code == 200
+        dashboard = resp.json()["dashboard"]
+        assert dashboard["pid"] == web_server.os.getpid()
+        assert dashboard["host"] == "127.0.0.1"
+        assert dashboard["port"] == 9119
+        assert dashboard["url"] == "http://127.0.0.1:9119"
+        assert dashboard["state"] == "running"
+        assert dashboard["peer_count"] == 1
+        assert dashboard["peer_processes"][0]["pid"] == 22222
+
+    def test_dashboard_peer_scan_ignores_commands_that_only_quote_dashboard(self, monkeypatch):
+        import subprocess
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as web_server
+
+        def _ps_line(pid: int, command: str) -> str:
+            return f"{pid:>5} {command}"
+
+        monkeypatch.setattr(web_server.os, "getpid", lambda: 11111)
+        monkeypatch.setattr(web_server.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "run",
+            lambda *a, **kw: SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(
+                    [
+                        _ps_line(22222, "python -m hermes_cli.main dashboard --port 9119"),
+                        _ps_line(33333, "SkyComputerUseClient turn-ended '{\"cmd\":\"python -m hermes_cli.main dashboard --port 9119\"}'"),
+                    ]
+                ),
+            ),
+        )
+
+        peers = web_server._find_dashboard_peer_processes()
+
+        assert peers == [
+            {"pid": 22222, "command": "python -m hermes_cli.main dashboard --port 9119"}
+        ]
+
+    def test_stop_dashboard_peer_rejects_current_process(self):
+        import hermes_cli.web_server as web_server
+
+        resp = self.client.post(
+            f"/api/dashboard/peers/{web_server.os.getpid()}/stop",
+            headers={"Host": "127.0.0.1:9119"},
+        )
+
+        assert resp.status_code == 400
+        assert "current dashboard" in resp.json()["detail"]
+
+    def test_stop_dashboard_peer_rejects_unrecognized_pid(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_find_dashboard_peer_processes", lambda: [])
+
+        resp = self.client.post(
+            "/api/dashboard/peers/22222/stop",
+            headers={"Host": "127.0.0.1:9119"},
+        )
+
+        assert resp.status_code == 404
+        assert "recognized dashboard peer" in resp.json()["detail"]
+
+    def test_stop_dashboard_peer_sends_term_and_reports_refreshed_status(self, monkeypatch):
+        import signal
+
+        import hermes_cli.web_server as web_server
+
+        calls = {"scan": 0, "kills": []}
+
+        def fake_scan():
+            calls["scan"] += 1
+            if calls["scan"] == 1:
+                return [{"pid": 22222, "command": "python -m hermes_cli.main dashboard --port 9120"}]
+            return []
+
+        def fake_kill(pid, sig):
+            calls["kills"].append((pid, sig))
+
+        monkeypatch.setattr(web_server, "_find_dashboard_peer_processes", fake_scan)
+        monkeypatch.setattr(web_server.os, "kill", fake_kill)
+
+        resp = self.client.post(
+            "/api/dashboard/peers/22222/stop",
+            headers={"Host": "127.0.0.1:9119"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pid"] == 22222
+        assert body["stopped"] is True
+        assert calls["kills"] == [(22222, signal.SIGTERM)]
+        assert body["dashboard"]["peer_count"] == 0
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config

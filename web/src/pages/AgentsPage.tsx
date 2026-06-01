@@ -7,6 +7,7 @@ import {
   ChevronUp,
   Clock,
   MessageSquare,
+  PlayCircle,
   X,
   ExternalLink,
   Plus,
@@ -18,6 +19,7 @@ import {
 import { api } from "@/lib/api";
 import type {
   ManagedAgentEntry,
+  AgentCapabilityMatrixResponse,
   AgentConsoleSession,
   ManagedAgentsResponse,
   ManagedModelEntry,
@@ -78,6 +80,18 @@ function sourceTone(source: string): "success" | "warning" | "secondary" | "dest
   if (source === "live") return "success";
   if (source === "cache" || source === "manual") return "warning";
   return "secondary";
+}
+
+function isExternalRuntime(agent: ManagedAgentEntry): boolean {
+  return agent.runtime.endsWith("_cli");
+}
+
+function runtimeDisplayName(runtime: string): string {
+  if (runtime === "claude_code_cli") return "Claude Code CLI";
+  if (runtime === "codex_cli") return "Codex CLI";
+  if (runtime === "deepseek_tui_cli") return "DeepSeek TUI";
+  if (runtime === "opencode_cli") return "OpenCode CLI";
+  return runtime || "native";
 }
 
 function ModelLabel({ model }: { model?: ManagedModelEntry }) {
@@ -248,11 +262,12 @@ function AgentModelSelect({
       <div className="min-w-[14rem] space-y-1">
         <div className="flex items-center gap-1.5 text-xs font-medium">
           <ExternalLink className="h-3.5 w-3.5" />
-          External CLI default
+          Runtime-controlled model
         </div>
         <div className="text-[11px] text-muted-foreground">
-          {agent.runtime || "external runtime"} controls this model.
+          {runtimeDisplayName(agent.runtime)} owns this binding; execution still flows through Policy Executor and Run Ledger.
         </div>
+        <ModelStrategySummary agent={agent} />
       </div>
     );
   }
@@ -403,6 +418,14 @@ export default function AgentsPage() {
   const [consoleElapsed, setConsoleElapsed] = useState(0);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
+  const [routeTaskType, setRouteTaskType] = useState("tests");
+  const [routeRisk, setRouteRisk] = useState("R1");
+  const [routeFailure, setRouteFailure] = useState("timeout");
+  const [routeFailedAgent, setRouteFailedAgent] = useState("deepseek-tui");
+  const [routeFailedModel, setRouteFailedModel] = useState("opencode_go_deepseek_flash");
+  const [routeData, setRouteData] = useState<AgentCapabilityMatrixResponse | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -417,6 +440,24 @@ export default function AgentsPage() {
       setLoading(false);
     }
   }, [period.days]);
+
+  const loadRoutePreview = useCallback(async () => {
+    setRouteLoading(true);
+    setRouteError(null);
+    try {
+      setRouteData(await api.getAgentCapabilityMatrix({
+        task_type: routeTaskType,
+        risk_level: routeRisk,
+        failure: routeFailure,
+        failed_agent_id: routeFailedAgent,
+        failed_model_ref: routeFailedModel,
+      }));
+    } catch (e) {
+      setRouteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRouteLoading(false);
+    }
+  }, [routeFailedAgent, routeFailedModel, routeFailure, routeRisk, routeTaskType]);
 
   const loadConsoleSessions = useCallback(async (agentId?: string) => {
     try {
@@ -445,6 +486,10 @@ export default function AgentsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    loadRoutePreview();
+  }, [loadRoutePreview]);
 
   useEffect(() => {
     api.getStatus()
@@ -562,7 +607,7 @@ export default function AgentsPage() {
     [models],
   );
   const editableCount = agents.filter((a) => a.editable).length;
-  const externalCount = agents.length - editableCount;
+  const externalCount = agents.filter(isExternalRuntime).length;
   const sortedAgents = useMemo(
     () => [...agents].sort((a, b) => usageTotal(b) - usageTotal(a)),
     [agents],
@@ -616,14 +661,201 @@ export default function AgentsPage() {
             <Stats
               items={[
                 { label: "Agents", value: String(agents.length) },
-                { label: "Editable", value: String(editableCount) },
-                { label: "External CLI", value: String(externalCount) },
+                { label: "Model Editable", value: String(editableCount) },
+                { label: "Worker CLI", value: String(externalCount) },
                 { label: "Est. Cost", value: formatCost(data?.totals.estimated_cost ?? 0) },
               ]}
             />
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle className="text-base">Model Tier Router</CardTitle>
+            <Button
+              size="sm"
+              outlined
+              onClick={loadRoutePreview}
+              disabled={routeLoading}
+              prefix={routeLoading ? <Spinner /> : <RefreshCw className="h-4 w-4" />}
+            >
+              Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-[180px_120px_180px_180px_220px]">
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Task type</span>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
+                value={routeTaskType}
+                onChange={(event) => setRouteTaskType(event.target.value)}
+              >
+                {(routeData?.task_types.length ? routeData.task_types : ["tests", "implementation", "code_review", "architecture_review"]).map((taskType) => (
+                  <option key={taskType} value={taskType}>{taskType}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Risk</span>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
+                value={routeRisk}
+                onChange={(event) => setRouteRisk(event.target.value)}
+              >
+                {["R0", "R1", "R2", "R3", "R4"].map((risk) => (
+                  <option key={risk} value={risk}>{risk}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Failure</span>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
+                value={routeFailure}
+                onChange={(event) => setRouteFailure(event.target.value)}
+              >
+                {["timeout", "rate_limited", "revision_needed", "auth_error", "ineffective", "empty_final_content"].map((failure) => (
+                  <option key={failure} value={failure}>{failure}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Failed agent</span>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
+                value={routeFailedAgent}
+                onChange={(event) => setRouteFailedAgent(event.target.value)}
+              >
+                {(routeData ? Object.keys(routeData.agents) : agents.map((agent) => agent.agent_id)).map((agentId) => (
+                  <option key={agentId} value={agentId}>{agentId}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Failed model</span>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
+                value={routeFailedModel}
+                onChange={(event) => setRouteFailedModel(event.target.value)}
+              >
+                {models.map((model) => (
+                  <option key={model.model_ref} value={model.model_ref}>{model.model_ref}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <div className="min-w-0 rounded-md border border-border p-3 text-sm">
+              <div className="mb-3 text-xs font-medium text-muted-foreground">Model route</div>
+              {routeError ? (
+                <div className="flex items-center gap-2 text-destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  {routeError}
+                </div>
+              ) : routeData?.model_route ? (
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div>
+                    <div className="text-xs text-muted-foreground">Agent</div>
+                    <div className="font-mono text-xs">{routeData.model_route.agent_id || "unresolved"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Model</div>
+                    <div className="font-mono text-xs">{routeData.model_route.model_ref || "none"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Budget</div>
+                    <div className="text-xs">
+                      {routeData.model_route.timeout_seconds}s · {Math.round(routeData.model_route.max_context_chars / 1000)}k ctx
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Source</div>
+                    <div className="text-xs">{routeData.model_route.source}</div>
+                  </div>
+                  <div className="md:col-span-4">
+                    <div className="text-xs text-muted-foreground">Fallback chain</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {routeData.model_route.fallback_chain.length ? routeData.model_route.fallback_chain.map((modelRef) => (
+                        <span key={modelRef} className="bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          {modelRef}
+                        </span>
+                      )) : (
+                        <span className="text-xs text-muted-foreground">No model route</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  {routeLoading ? <Spinner /> : null}
+                  Loading route preview...
+                </div>
+              )}
+            </div>
+            <div className="min-w-0 rounded-md border border-border p-3 text-sm">
+              <div className="mb-3 text-xs font-medium text-muted-foreground">Failure reroute</div>
+              {routeError ? (
+                <div className="flex items-center gap-2 text-destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  {routeError}
+                </div>
+              ) : routeData?.reroute ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <div className="text-xs text-muted-foreground">Action</div>
+                    <div className="font-mono text-xs">{routeData.reroute.action}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Reason</div>
+                    <div className="text-xs">{routeData.reroute.reason}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Next agent</div>
+                    <div className="font-mono text-xs">{routeData.reroute.next_agent_id || "manual"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Next model</div>
+                    <div className="font-mono text-xs">{routeData.reroute.next_model_ref || "none"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Budget</div>
+                    <div className="text-xs">
+                      {routeData.reroute.timeout_seconds}s · {Math.round(routeData.reroute.max_context_chars / 1000)}k ctx
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Human gate</div>
+                    <Badge tone={routeData.reroute.requires_human_approval ? "warning" : "success"}>
+                      {routeData.reroute.requires_human_approval ? "required" : "not required"}
+                    </Badge>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-muted-foreground">Fallback chain</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {routeData.reroute.fallback_chain.length ? routeData.reroute.fallback_chain.map((modelRef) => (
+                        <span key={modelRef} className="bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          {modelRef}
+                        </span>
+                      )) : (
+                        <span className="text-xs text-muted-foreground">No fallback chain</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  {routeLoading ? <Spinner /> : null}
+                  Loading failure reroute...
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -643,12 +875,13 @@ export default function AgentsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1100px] text-left text-sm">
+              <table className="w-full min-w-[1320px] text-left text-sm">
                 <thead className="border-b border-border text-xs text-muted-foreground">
                   <tr>
                     <th className="py-2 pr-4 font-medium">Agent</th>
                     <th className="py-2 pr-4 font-medium">Model</th>
                     <th className="py-2 pr-4 font-medium">Runtime</th>
+                    <th className="py-2 pr-4 font-medium">Routing Profile</th>
                     <th className="py-2 pr-4 font-medium">Usage</th>
                     <th className="py-2 pr-4 font-medium">Subscription</th>
                     <th className="py-2 font-medium">Tools</th>
@@ -678,16 +911,50 @@ export default function AgentsPage() {
                         </td>
                         <td className="py-3 pr-4">
                           <div className="space-y-1">
-                            <Badge tone={agent.editable ? "success" : "secondary"}>
-                              {agent.editable ? "managed" : "external"}
+                            <Badge tone={isExternalRuntime(agent) ? "success" : "secondary"}>
+                              {isExternalRuntime(agent) ? "executor-ready" : "native"}
                             </Badge>
                             <div className="text-xs text-muted-foreground">
-                              {agent.runtime || "native"}
+                              {runtimeDisplayName(agent.runtime)}
                             </div>
+                            {isExternalRuntime(agent) ? (
+                              <div className="flex flex-wrap gap-1">
+                                <Badge tone="outline">policy handoff</Badge>
+                                <Badge tone="outline">isolated worker</Badge>
+                              </div>
+                            ) : null}
                             {model ? (
                               <Badge tone={statusTone(model.status)}>{model.status}</Badge>
                             ) : null}
                           </div>
+                        </td>
+                        <td className="py-3 pr-4">
+                          {agent.capability_profile ? (
+                            <div className="max-w-[18rem] space-y-2 text-xs">
+                              <div className="flex flex-wrap gap-1">
+                                <Badge tone="secondary">{agent.capability_profile.model_tier}</Badge>
+                                <Badge tone="secondary">{agent.capability_profile.default_timeout_seconds}s</Badge>
+                                <Badge tone="secondary">
+                                  {Math.round(agent.capability_profile.max_context_chars / 1000)}k ctx
+                                </Badge>
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {agent.capability_profile.task_types.slice(0, 5).map((taskType) => (
+                                  <span
+                                    key={taskType}
+                                    className="bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                                  >
+                                    {taskType}
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="line-clamp-2 text-[11px] text-muted-foreground">
+                                {agent.capability_profile.failure_policy}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">No profile</span>
+                          )}
                         </td>
                         <td className="py-3 pr-4">
                           <div className="space-y-1 text-xs">
@@ -725,9 +992,14 @@ export default function AgentsPage() {
                           >
                             Open Console
                           </Button>
-                          {!agent.editable ? (
+                          {isExternalRuntime(agent) ? (
+                            <div className="mt-1 flex max-w-[16rem] items-start gap-1.5 text-[11px] text-muted-foreground">
+                              <PlayCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                              Executes via Apply Policy / Run Ledger worker; direct chat console is disabled for CLI agents.
+                            </div>
+                          ) : !agent.editable ? (
                             <div className="mt-1 text-[11px] text-muted-foreground">
-                              External CLI only
+                              Model binding is read-only here.
                             </div>
                           ) : null}
                         </td>

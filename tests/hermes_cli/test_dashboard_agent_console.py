@@ -44,6 +44,36 @@ agents:
     can_delegate: false
     capabilities: [code_edit]
     risk_allowed: [R1, R2, R3]
+  - agent_id: deepseek-tui
+    name: DeepSeek 低成本快工
+    role: fast_worker
+    role_summary: 外部 DeepSeek TUI。
+    model_ref: deepseek_pro
+    model_strategy:
+      mode: external
+      primary: deepseek_pro
+      chain: [deepseek_pro]
+    runtime: deepseek_tui_cli
+    tools: [file, terminal]
+    permission: ask
+    can_delegate: false
+    capabilities: [small_fix]
+    risk_allowed: [R0, R1, R2]
+  - agent_id: opencode
+    name: OpenCode 协作执行员
+    role: external_collaboration_worker
+    role_summary: 外部 OpenCode CLI。
+    model_ref: opencode_go_kimi25
+    model_strategy:
+      mode: external
+      primary: opencode_go_kimi25
+      chain: [opencode_go_kimi25]
+    runtime: opencode_cli
+    tools: [file, terminal]
+    permission: ask
+    can_delegate: false
+    capabilities: [code_review, external_quick_check]
+    risk_allowed: [R0, R1, R2]
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -66,6 +96,7 @@ models:
     base_url: https://deepseek.test
     api_key_env: DEEPSEEK_API_KEY
     model: deepseek-v4-pro
+    role: complex_reasoning
     status: active
 """.strip()
         + "\n",
@@ -256,6 +287,20 @@ def test_update_agent_model_strategy_rejects_external_cli_agent(tmp_path, monkey
     assert "external CLI runtime" in resp.text
 
 
+def test_external_runtime_agent_ids_include_collaboration_agents(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+    monkeypatch.setattr(ws, "_valid_agent_ids", None)
+    monkeypatch.setattr(ws, "_external_runtime_agent_ids", None)
+
+    external = ws._external_agent_ids()
+
+    assert {"claude", "deepseek-tui", "opencode"}.issubset(external)
+
+
 def test_agent_console_records_managed_run(tmp_path, monkeypatch):
     monkeypatch.setattr(ws, "_AGENT_RUNS_PATH", tmp_path / "agent-runs.json")
     monkeypatch.setattr(ws, "_valid_agent_ids", None)
@@ -279,6 +324,78 @@ def test_agent_console_records_managed_run(tmp_path, monkeypatch):
 
     stored = json.loads((tmp_path / "agent-runs.json").read_text(encoding="utf-8"))
     assert stored["runs"][0]["run_id"] == body["run_id"]
+
+
+def test_managed_agents_include_capability_profile(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    resp = _client().get("/api/agents/managed?days=7", headers=_headers())
+
+    assert resp.status_code == 200, resp.text
+    agents = {agent["agent_id"]: agent for agent in resp.json()["agents"]}
+    profile = agents["claude"]["capability_profile"]
+    assert profile["model_tier"] == "strong"
+    assert "implementation" in profile["task_types"]
+    assert profile["failure_policy"] == "timeout_then_switch_agent"
+
+
+def test_capability_matrix_endpoint_returns_preview(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    resp = _client().get(
+        "/api/agents/capability-matrix?task_type=implementation&risk_level=R2",
+        headers=_headers(),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "claude" in body["agents"]
+    assert body["preview"]["primary_agent"] == "claude"
+    assert body["preview"]["reason"] == "capability_and_risk_match"
+    assert body["model_route"]["agent_id"] == "claude"
+    assert body["model_route"]["model_ref"] == "deepseek_pro"
+    assert body["model_route"]["source"] == "agent_model_strategy"
+
+
+def test_capability_matrix_endpoint_returns_failure_reroute(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    resp = _client().get(
+        "/api/agents/capability-matrix"
+        "?task_type=implementation"
+        "&risk_level=R2"
+        "&failure=timeout"
+        "&failed_agent_id=claude"
+        "&failed_model_ref=deepseek_pro",
+        headers=_headers(),
+    )
+
+    assert resp.status_code == 200, resp.text
+    reroute = resp.json()["reroute"]
+    assert reroute["action"] == "retry_same_agent"
+    assert reroute["next_agent_id"] == "claude"
+    assert reroute["reason"] == "timeout_no_alternate_agent"
 
 
 def test_agent_console_rejects_unknown_and_external_agents(tmp_path, monkeypatch):

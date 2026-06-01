@@ -27,6 +27,7 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
         "ambrosini",
         "agent-tars",
         "hermes-internal",
+        "opencode",
     }
     assert all(agent.can_delegate is False for agent in registry.agents.values())
     assert registry.get("codex").permission is PermissionMode.READ_ONLY
@@ -39,6 +40,8 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
     assert registry.resolve_agent_id("kanban") is None
     assert registry.get("claude").runtime == "claude_code_cli"
     assert registry.get("codex").runtime == "codex_cli"
+    assert registry.get("deepseek-tui").runtime == "deepseek_tui_cli"
+    assert registry.get("opencode").runtime == "opencode_cli"
 
 
 def test_managed_agents_aliases_and_user_facing_fields_are_consistent():
@@ -62,8 +65,9 @@ def test_managed_agents_model_refs_are_declared_in_models_config():
     models = yaml.safe_load(models_path.read_text(encoding="utf-8"))["models"]
 
     expected = {
-        "claude": "claude_opus",
-        "deepseek-tui": "opencode_go_deepseek_pro",
+        "claude": "claude_sonnet",
+        "deepseek-tui": "opencode_go_deepseek_flash",
+        "opencode": "opencode_go_deepseek_flash",
         "intelligence": "opencode_go_kimi26",
         "pirlo": "opencode_go_kimi26",
         "designer": "opencode_go_kimi26",
@@ -108,6 +112,7 @@ def test_managed_agent_model_strategies_prefer_subscription_pool_before_api_fall
         assert any(ref in api_fallbacks for ref in chain[1:]), agent_id
 
     assert registry.get("claude").model_strategy["mode"] == "external"
+    assert registry.get("claude").model_strategy["chain"] == ["claude_sonnet", "claude_opus"]
     assert registry.get("codex").model_strategy["mode"] == "external"
 
 
@@ -138,6 +143,7 @@ def test_managed_agents_skill_whitelists_are_declared():
     assert "codebase-scout" in registry.get("deepseek-tui").skills
     assert "systematic-debugging" in registry.get("deepseek-tui").skills
     assert "codex-superpowers" in registry.get("codex").skills
+    assert "github-code-review" in registry.get("opencode").skills
     assert "context-skill-audit" in registry.get("codex").skills
     assert "hermes-orchestration-closeout" in registry.get("codex").skills
     assert "playwright-mcp" not in registry.get("codex").skills
@@ -218,6 +224,7 @@ def test_active_skill_frontmatter_uses_canonical_agent_ids():
         "claude",
         "deepseek-tui",
         "codex",
+        "opencode",
         "intelligence",
         "pirlo",
         "designer",

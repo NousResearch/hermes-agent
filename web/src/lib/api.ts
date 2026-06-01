@@ -100,6 +100,10 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  stopDashboardPeer: (pid: number) =>
+    fetchJSON<DashboardPeerStopResponse>(`/api/dashboard/peers/${pid}/stop`, {
+      method: "POST",
+    }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -139,6 +143,36 @@ export const api = {
     }),
   getManagedAgents: (days: number) =>
     fetchJSON<ManagedAgentsResponse>(`/api/agents/managed?days=${days}`),
+  getAgentCapabilityMatrix: (params: {
+    task_type?: string;
+    risk_level?: string;
+    failure?: string;
+    failed_agent_id?: string;
+    failed_model_ref?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.task_type) qs.set("task_type", params.task_type);
+    if (params.risk_level) qs.set("risk_level", params.risk_level);
+    if (params.failure) qs.set("failure", params.failure);
+    if (params.failed_agent_id) qs.set("failed_agent_id", params.failed_agent_id);
+    if (params.failed_model_ref) qs.set("failed_model_ref", params.failed_model_ref);
+    return fetchJSON<AgentCapabilityMatrixResponse>(
+      `/api/agents/capability-matrix${qs.toString() ? `?${qs.toString()}` : ""}`,
+    );
+  },
+  getAgentEffectiveness: (params: { project?: string; agent_id?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.project) qs.set("project", params.project);
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    return fetchJSON<AgentEffectivenessResponse>(
+      `/api/agents/effectiveness${qs.toString() ? `?${qs.toString()}` : ""}`,
+    );
+  },
+  runExternalAgentEval: (body: AgentEvalRunRequest = {}) =>
+    fetchJSON<AgentEvalRunResponse>("/api/agents/eval", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   setManagedAgentModelStrategy: (agentId: string, body: UpdateAgentModelStrategyRequest) =>
     fetchJSON<UpdateAgentModelStrategyResponse>(
       `/api/agents/${encodeURIComponent(agentId)}/model-strategy`,
@@ -155,6 +189,38 @@ export const api = {
     if (params.limit) qs.set("limit", String(params.limit));
     return fetchJSON<AgentRunsResponse>(`/api/agents/runs?${qs.toString()}`);
   },
+  executeAgentRun: (runId: string) =>
+    fetchJSON<AgentRunEntry>(`/api/agents/runs/${encodeURIComponent(runId)}/execute`, {
+      method: "POST",
+    }),
+  cancelAgentRun: (runId: string) =>
+    fetchJSON<AgentRunEntry>(`/api/agents/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+    }),
+  tickAgentRunExecutor: (limit = 1) =>
+    fetchJSON<AgentRunExecutorTickResponse>(`/api/agents/runs/executor/tick?limit=${limit}`, {
+      method: "POST",
+    }),
+  runKernelizationSmoke: (body: AgentRunSmokeRequest = {}) =>
+    fetchJSON<AgentRunSmokeResponse>("/api/agents/runs/kernelization-smoke", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getAgentRunExecutorScheduler: () =>
+    fetchJSON<AgentRunExecutorSchedulerStatus>("/api/agents/runs/executor/scheduler"),
+  startAgentRunExecutorScheduler: (params: { interval_seconds?: number; timeout_seconds?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.interval_seconds) qs.set("interval_seconds", String(params.interval_seconds));
+    if (params.timeout_seconds) qs.set("timeout_seconds", String(params.timeout_seconds));
+    return fetchJSON<AgentRunExecutorSchedulerStatus>(
+      `/api/agents/runs/executor/scheduler/start${qs.toString() ? `?${qs.toString()}` : ""}`,
+      { method: "POST" },
+    );
+  },
+  stopAgentRunExecutorScheduler: () =>
+    fetchJSON<AgentRunExecutorSchedulerStatus>("/api/agents/runs/executor/scheduler/stop", {
+      method: "POST",
+    }),
   createAgentRun: (agentId: string, body: AgentRunCreateRequest) =>
     fetchJSON<AgentRunEntry>(`/api/agents/${encodeURIComponent(agentId)}/runs`, {
       method: "POST",
@@ -445,9 +511,56 @@ export const api = {
     if (params.offset) qs.set("offset", String(params.offset));
     return fetchJSON<RunsResponse>(`/api/runs?${qs.toString()}`);
   },
-  getRunsSummary: (project?: string) => {
-    const qs = project ? `?project=${encodeURIComponent(project)}` : "";
-    return fetchJSON<RunsSummaryResponse>(`/api/runs/summary${qs}`);
+  getRunsSummary: (params: { project?: string; agent_id?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.project) qs.set("project", params.project);
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    const query = qs.toString();
+    return fetchJSON<RunsSummaryResponse>(`/api/runs/summary${query ? `?${query}` : ""}`);
+  },
+  getRunTasks: (params: {
+    project?: string;
+    status?: string;
+    agent_id?: string;
+    include_policy?: boolean;
+    task_type?: string;
+    risk_level?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.project) qs.set("project", params.project);
+    if (params.status) qs.set("status", params.status);
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    if (params.include_policy) qs.set("include_policy", "true");
+    if (params.task_type) qs.set("task_type", params.task_type);
+    if (params.risk_level) qs.set("risk_level", params.risk_level);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.offset) qs.set("offset", String(params.offset));
+    return fetchJSON<RunTasksResponse>(`/api/runs/tasks?${qs.toString()}`);
+  },
+  getRunsWatchdog: (params: { project?: string; agent_id?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.project) qs.set("project", params.project);
+    if (params.agent_id) qs.set("agent_id", params.agent_id);
+    const query = qs.toString();
+    return fetchJSON<RunsWatchdogResponse>(`/api/runs/watchdog${query ? `?${query}` : ""}`);
+  },
+  getRunProjects: () => fetchJSON<RunProjectsResponse>("/api/runs/projects"),
+  applyRunTaskExecutionPolicy: (taskId: string, params: {
+    project?: string;
+    task_type?: string;
+    risk_level?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.project) qs.set("project", params.project);
+    if (params.task_type) qs.set("task_type", params.task_type);
+    if (params.risk_level) qs.set("risk_level", params.risk_level);
+    const query = qs.toString();
+    return fetchJSON<RunExecutionPolicyApplyResponse>(
+      `/api/runs/tasks/${encodeURIComponent(taskId)}/execution-policy/apply${query ? `?${query}` : ""}`,
+      { method: "POST" },
+    );
   },
 
   // Dashboard themes
@@ -489,8 +602,114 @@ export interface RunsResponse {
 export interface RunsSummaryResponse {
   total: number;
   classification_counts: Record<string, number>;
+  agent_counts: Record<string, number>;
   avg_duration_seconds: number;
   recent_runs: RunEntry[];
+}
+
+export interface RunExecutionPolicy {
+  task_id: string;
+  status: string;
+  action: string;
+  reason: string;
+  task_type: string;
+  risk_level: string;
+  current_agent_id?: string | null;
+  current_model_ref?: string | null;
+  next_agent_id?: string | null;
+  next_model_ref?: string | null;
+  max_attempts: number;
+  attempt_count: number;
+  should_execute: boolean;
+  requires_human_approval: boolean;
+  latest_run_id?: string | null;
+  latest_classification?: string | null;
+}
+
+export interface RunExecutionPolicyApplyResponse {
+  ok: boolean;
+  applied: boolean;
+  reason: string;
+  event_id: string;
+  execution_policy: RunExecutionPolicy;
+  agent_run?: AgentRunEntry | null;
+}
+
+export interface RunTaskSummary {
+  task_id: string;
+  status: "ok" | "running" | "stale" | "timeout" | "failed" | "unknown";
+  run_count: number;
+  agents: string[];
+  classifications: Record<string, number>;
+  current_phase?: string | null;
+  latest_started_at?: string | null;
+  latest_run_id?: string | null;
+  latest_agent_id?: string | null;
+  latest_run_type?: string | null;
+  latest_classification?: string | null;
+  lifecycle: RunLifecycleEvent[];
+  total_duration_seconds: number;
+  avg_duration_seconds: number;
+  last_error_excerpt?: string | null;
+  runs: RunEntry[];
+  execution_policy?: RunExecutionPolicy | null;
+}
+
+export interface RunLifecycleEvent {
+  event_id?: string | null;
+  phase: string;
+  status: string;
+  agent_id?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  message?: string | null;
+  decision?: string | null;
+  policy_action?: string | null;
+  revision_task_id?: string | null;
+  run_id?: string | null;
+  related_run_id?: string | null;
+}
+
+export interface RunTasksResponse {
+  tasks: RunTaskSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RunsWatchdogTask {
+  task_id: string;
+  status: "stale" | "timeout" | "failed";
+  agents: string[];
+  latest_started_at?: string | null;
+  latest_run_id?: string | null;
+  latest_agent_id?: string | null;
+  latest_run_type?: string | null;
+  last_error_excerpt?: string | null;
+  reason: string;
+  suggested_action: string;
+  execution_policy?: RunExecutionPolicy | null;
+}
+
+export interface RunsWatchdogResponse {
+  project: string;
+  agent_id?: string | null;
+  total_tasks: number;
+  attention_count: number;
+  status_counts: Record<string, number>;
+  agent_counts: Record<string, Record<string, number>>;
+  attention_tasks: RunsWatchdogTask[];
+}
+
+export interface RunProject {
+  name: string;
+  total_runs: number;
+  latest_started_at?: string | null;
+}
+
+export interface RunProjectsResponse {
+  projects: RunProject[];
+  default_project: string;
 }
 
 export interface ActionResponse {
@@ -514,10 +733,36 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+export interface DashboardPeerProcess {
+  command: string;
+  pid: number;
+}
+
+export interface DashboardProcessStatus {
+  host: string | null;
+  peer_count: number;
+  peer_processes: DashboardPeerProcess[];
+  pid: number;
+  port: number | null;
+  started_at: number;
+  state: string;
+  uptime_seconds: number;
+  url: string | null;
+}
+
+export interface DashboardPeerStopResponse {
+  already_gone: boolean;
+  dashboard: DashboardProcessStatus;
+  peer: DashboardPeerProcess;
+  pid: number;
+  stopped: boolean;
+}
+
 export interface StatusResponse {
   active_sessions: number;
   config_path: string;
   config_version: number;
+  dashboard: DashboardProcessStatus;
   env_path: string;
   gateway_exit_reason: string | null;
   gateway_health_url: string | null;
@@ -865,7 +1110,68 @@ export interface ManagedAgentEntry {
   status: string;
   tools: string[];
   permission: string;
+  capability_profile?: AgentCapabilityProfile | null;
   usage: AgentUsageSummary;
+}
+
+export interface AgentCapabilityProfile {
+  agent_id: string;
+  role: string;
+  runtime: string;
+  task_types: string[];
+  default_timeout_seconds: number;
+  max_context_chars: number;
+  model_tier: string;
+  failure_policy: string;
+  risk_allowed: string[];
+  strengths: string[];
+  weak_spots: string[];
+}
+
+export interface AgentRoutePreview {
+  task_type: string;
+  risk_level: string;
+  primary_agent?: string | null;
+  candidate_agents: string[];
+  reason: string;
+}
+
+export interface AgentModelRoute {
+  agent_id: string;
+  task_type: string;
+  risk_level: string;
+  model_tier: string;
+  model_ref?: string | null;
+  fallback_chain: string[];
+  fallback_on: string[];
+  timeout_seconds: number;
+  max_context_chars: number;
+  source: string;
+  reason: string;
+}
+
+export interface AgentFailureReroute {
+  action: string;
+  reason: string;
+  task_type: string;
+  risk_level: string;
+  failed_agent_id?: string | null;
+  failed_model_ref?: string | null;
+  next_agent_id?: string | null;
+  next_model_ref?: string | null;
+  fallback_chain: string[];
+  fallback_on: string[];
+  timeout_seconds: number;
+  max_context_chars: number;
+  requires_human_approval: boolean;
+}
+
+export interface AgentCapabilityMatrixResponse {
+  agents: Record<string, AgentCapabilityProfile>;
+  task_types: string[];
+  preview?: AgentRoutePreview;
+  model_route?: AgentModelRoute;
+  reroute?: AgentFailureReroute;
 }
 
 export interface ManagedModelEntry {
@@ -927,11 +1233,124 @@ export interface AgentRunEntry {
   session_id?: string | null;
   result_summary?: string;
   error?: string | null;
+  executor?: Record<string, unknown> | null;
 }
 
 export interface AgentRunsResponse {
   runs: AgentRunEntry[];
   total: number;
+}
+
+export interface AgentRunExecutorTickResponse {
+  ok: boolean;
+  executed: AgentRunEntry[];
+  count: number;
+}
+
+export interface AgentRunSmokeRequest {
+  project?: string;
+  task_type?: string;
+  risk_level?: string;
+  failed_agent_id?: string;
+  failed_model_ref?: string;
+  classification?: string;
+}
+
+export interface AgentRunSmokeResponse {
+  ok: boolean;
+  task_id: string;
+  project: string;
+  seed_run: RunEntry;
+  execution_policy?: RunExecutionPolicy | null;
+  apply_result?: RunExecutionPolicyApplyResponse | null;
+  agent_run?: AgentRunEntry | null;
+  watchdog?: {
+    total_tasks?: number;
+    attention_count?: number;
+    status_counts?: Record<string, number>;
+  };
+  scheduler?: {
+    queued_count?: number;
+    active_count?: number;
+    enabled?: boolean;
+  };
+  steps?: string[];
+  error?: string;
+}
+
+export interface AgentRunExecutorSchedulerStatus {
+  enabled: boolean;
+  running: boolean;
+  interval_seconds: number;
+  timeout_seconds: number;
+  last_tick?: string | null;
+  last_error?: string | null;
+  active_runs: Array<Record<string, unknown>>;
+  active_count: number;
+  queued_count: number;
+}
+
+export interface AgentEffectivenessEntry {
+  agent_id: string;
+  run_count: number;
+  ok_runs: number;
+  timeout_runs: number;
+  failed_runs: number;
+  running_runs: number;
+  unknown_runs: number;
+  success_rate: number;
+  timeout_rate: number;
+  failed_rate: number;
+  avg_duration_seconds: number;
+  p95_duration_seconds: number;
+  last_used_at?: string | null;
+  handoff_count: number;
+  handoff_completed: number;
+  handoff_failed: number;
+  handoff_cancelled: number;
+  handoff_success_rate: number;
+  revision_needed_count: number;
+  effectiveness_score: number;
+}
+
+export interface AgentEffectivenessResponse {
+  project: string;
+  agent_id?: string | null;
+  agents: AgentEffectivenessEntry[];
+  totals: {
+    agents: number;
+    run_count: number;
+    handoff_count: number;
+    revision_needed_count: number;
+  };
+}
+
+export interface AgentEvalRunRequest {
+  project?: string;
+  agent_ids?: string[];
+  timeout_seconds?: number;
+  workspace?: string;
+  prompt?: string;
+}
+
+export interface AgentEvalRunResult {
+  agent_id: string;
+  run_id?: string;
+  task_id?: string;
+  status: string;
+  classification: string;
+  duration_seconds?: number;
+  summary?: string;
+  error?: string;
+}
+
+export interface AgentEvalRunResponse {
+  ok: boolean;
+  project: string;
+  batch_id: string;
+  timeout_seconds: number;
+  results: AgentEvalRunResult[];
+  effectiveness?: AgentEffectivenessResponse;
 }
 
 export interface AgentRunCreateRequest {

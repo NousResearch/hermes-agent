@@ -67,6 +67,7 @@ import ModelsPage from "@/pages/ModelsPage";
 import AgentsPage from "@/pages/AgentsPage";
 import DelegationsPage from "@/pages/DelegationsPage";
 import RunsPage from "@/pages/RunsPage";
+import OperationsPage from "@/pages/OperationsPage";
 import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
@@ -83,7 +84,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/operations" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -112,6 +113,7 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/operations": OperationsPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -137,6 +139,11 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/operations",
+    label: "Operations",
+    icon: Activity,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",

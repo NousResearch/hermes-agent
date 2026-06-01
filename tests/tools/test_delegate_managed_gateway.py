@@ -37,6 +37,7 @@ agents:
     aliases: [低成本快工, deepseek]
     role_summary: 小改、小测试、低风险机械执行。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用 anysearch-lite。
     model_ref: deepseek_pro
+    runtime: deepseek_tui_cli
     model_strategy:
       mode: fallback
       primary: deepseek_pro
@@ -47,6 +48,36 @@ agents:
     permission: ask
     can_delegate: false
     capabilities: [test_generation, small_fix]
+    risk_allowed: [R0, R1, R2]
+  - agent_id: hermes-internal
+    name: Hermes 内部执行员
+    role: managed_worker
+    aliases: [内部执行员, internal-worker]
+    role_summary: 测试用内部模型执行员。
+    model_ref: deepseek_pro
+    model_strategy:
+      mode: fallback
+      primary: deepseek_pro
+      chain: [deepseek_pro, opencode_go_deepseek_flash]
+      fallback_on: [quota_exceeded, rate_limited, timeout, server_error, empty_final_content]
+    skills: [spike]
+    tools: [file, terminal]
+    permission: ask
+    can_delegate: false
+    capabilities: [test_generation, small_fix]
+    risk_allowed: [R0, R1, R2]
+  - agent_id: opencode
+    name: OpenCode 协作执行员
+    role: external_collaboration_worker
+    aliases: [opencode, opencode-go]
+    role_summary: 窄范围代码复核、廉价二审、失败样本采集和协作链路 smoke。
+    model_ref: opencode_go_deepseek_flash
+    runtime: opencode_cli
+    skills: [codebase-inspection, github-code-review]
+    tools: [file, terminal]
+    permission: ask
+    can_delegate: false
+    capabilities: [code_review, external_quick_check, collaboration_smoke]
     risk_allowed: [R0, R1, R2]
   - agent_id: codex
     name: Codex 代码审查官
@@ -208,9 +239,9 @@ def test_managed_gateway_accepts_agent_alias_before_legacy_child_execution(tmp_p
     assert result["results"][0]["status"] == "completed"
     child = mock_run.call_args.args[2]
     assert child._subagent_agent_id == "deepseek-tui"
-    assert child._skill_scope_agent_id == "deepseek-tui"
-    assert "DeepSeek Worker Search Policy" in child.ephemeral_system_prompt
-    assert "anysearch-lite" in child.ephemeral_system_prompt
+    assert isinstance(child, ExternalCliChild)
+    assert child.command == ["deepseek", "exec", "--auto", "--json"]
+    assert "runtime=deepseek_tui_cli" in child._subagent_warnings[0]
 
 
 def test_managed_agent_model_ref_overrides_provider_model_for_internal_agent(tmp_path, monkeypatch):
@@ -243,7 +274,7 @@ def test_managed_agent_model_ref_overrides_provider_model_for_internal_agent(tmp
         }
 
         delegate_task(
-            tasks=[{"goal": "test", "agent_id": "低成本快工"}],
+            tasks=[{"goal": "test", "agent_id": "hermes-internal"}],
             parent_agent=parent,
         )
 
@@ -284,7 +315,7 @@ def test_managed_agent_fallback_chain_passes_to_child_agent(tmp_path, monkeypatc
             "duration_seconds": 1.0,
         }
 
-        delegate_task(goal="write tests", agent_id="deepseek-tui", parent_agent=parent)
+        delegate_task(goal="write tests", agent_id="hermes-internal", parent_agent=parent)
 
     call = mock_build.call_args.kwargs
     assert call["model"] == "deepseek-v4-pro"
@@ -337,7 +368,7 @@ def test_managed_agent_strategy_skips_unhealthy_primary_model(tmp_path, monkeypa
         }
 
         delegate_task(
-            tasks=[{"goal": "test", "agent_id": "低成本快工"}],
+            tasks=[{"goal": "test", "agent_id": "hermes-internal"}],
             parent_agent=parent,
         )
 
@@ -627,6 +658,62 @@ def test_codex_agent_uses_external_codex_cli_runtime(tmp_path, monkeypatch):
     assert child._subagent_agent_id == "codex"
     assert child.command == ["codex", "exec", "--sandbox", "read-only"]
     assert child.output_last_message is True
+
+
+def test_deepseek_tui_agent_uses_external_cli_runtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_managed_agents_yaml(tmp_path)
+    parent = _make_parent()
+
+    with (
+        patch("tools.delegate_tool._build_child_agent") as mock_build,
+        patch("tools.delegate_tool._run_single_child") as mock_run,
+    ):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        delegate_task(goal="write focused tests", agent_id="deepseek-tui", parent_agent=parent)
+
+    assert mock_build.call_count == 0
+    child = mock_run.call_args.args[2]
+    assert isinstance(child, ExternalCliChild)
+    assert child._subagent_agent_id == "deepseek-tui"
+    assert child.command == ["deepseek", "exec", "--auto", "--json"]
+    assert child.output_last_message is False
+
+
+def test_opencode_agent_uses_external_cli_runtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_managed_agents_yaml(tmp_path)
+    parent = _make_parent()
+
+    with (
+        patch("tools.delegate_tool._build_child_agent") as mock_build,
+        patch("tools.delegate_tool._run_single_child") as mock_run,
+    ):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        delegate_task(goal="run collaboration smoke", agent_id="opencode", parent_agent=parent)
+
+    assert mock_build.call_count == 0
+    child = mock_run.call_args.args[2]
+    assert isinstance(child, ExternalCliChild)
+    assert child._subagent_agent_id == "opencode"
+    assert child.command == ["opencode", "run", "--pure"]
+    assert child.output_last_message is False
 
 
 def test_managed_gateway_rejection_short_circuits_legacy_execution(tmp_path, monkeypatch):

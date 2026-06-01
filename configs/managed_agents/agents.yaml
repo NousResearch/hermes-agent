@@ -64,12 +64,13 @@ agents:
   - 主执行人
   - 代码执行官
   - claude
-  role_summary: 外部 Claude Code CLI 执行器；后端由 CC Switch 控制。
-  model_ref: claude_opus
+  role_summary: 外部 Claude Code CLI 执行器；标准实现默认 Sonnet，复杂/高风险实现再升级 Opus。
+  model_ref: claude_sonnet
   model_strategy:
     mode: external
-    primary: claude_opus
+    primary: claude_sonnet
     chain:
+    - claude_sonnet
     - claude_opus
   runtime: claude_code_cli
   skills:
@@ -118,21 +119,22 @@ agents:
   - deepseek
   role_summary: 小改、小测试、低风险机械执行；不负责复杂重构和高风险操作。外部搜索遵循 DeepSeek Worker Search Policy：本地优先，必要时用
     anysearch-lite，已知 URL 用 scrapling-fetch。
-  model_ref: opencode_go_deepseek_pro
+  model_ref: opencode_go_deepseek_flash
   model_strategy:
     mode: fallback
-    primary: opencode_go_deepseek_pro
+    primary: opencode_go_deepseek_flash
     chain:
-    - opencode_go_deepseek_pro
     - opencode_go_deepseek_flash
-    - deepseek_pro
+    - opencode_go_deepseek_pro
     - deepseek_flash
+    - deepseek_pro
     fallback_on:
     - quota_exceeded
     - rate_limited
     - timeout
     - server_error
     - empty_final_content
+  runtime: deepseek_tui_cli
   skills:
   - codebase-inspection
   - codebase-scout
@@ -156,6 +158,41 @@ agents:
   - log_analysis
   - external_quick_check
   - url_extraction
+  risk_allowed:
+  - R0
+  - R1
+  - R2
+- agent_id: opencode
+  name: OpenCode 协作执行员
+  role: external_collaboration_worker
+  aliases:
+  - OpenCode 协作执行员
+  - OpenCode
+  - opencode
+  - opencode-go
+  role_summary: 外部 OpenCode CLI 适配器；用于窄范围代码复核、廉价二审、失败样本采集和协作链路 smoke，不进入主执行 fallback。
+  model_ref: opencode_go_deepseek_flash
+  model_strategy:
+    mode: external
+    primary: opencode_go_deepseek_flash
+    chain:
+    - opencode_go_deepseek_flash
+    - opencode_go_deepseek_pro
+  runtime: opencode_cli
+  skills:
+  - codebase-inspection
+  - github-code-review
+  - systematic-debugging
+  tools:
+  - file
+  - terminal
+  permission: ask
+  can_delegate: false
+  capabilities:
+  - code_review
+  - external_quick_check
+  - bug_reproduction
+  - collaboration_smoke
   risk_allowed:
   - R0
   - R1

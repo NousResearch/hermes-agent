@@ -1,25 +1,30 @@
 domains:
   gateway-core:
+    advisory: true
     paths:
       - "gateway/run.py"
       - "gateway/stream_consumer.py"
 
   gateway-platforms:
+    advisory: true
     paths:
       - "gateway/platforms/*.py"
 
   kanban:
+    advisory: true
     paths:
       - "hermes_cli/kanban_db.py"
       - "hermes_cli/plugins.py"
 
   run-agent:
+    advisory: true
     paths:
       - "run_agent.py"
       - "agent/*.py"
       - "acp_adapter/*.py"
 
   ci-workflows:
+    advisory: true
     paths:
       - ".github/workflows/*.yml"
       - ".github/workflows/*.yaml"

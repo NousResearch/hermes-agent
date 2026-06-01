@@ -5441,6 +5441,20 @@ class TestStreamingApiCall:
         assert resp.id.startswith("stream-")
         assert len(resp.id) > len("stream-")
 
+    def test_replace_primary_openai_client_noops_for_anthropic_messages(self):
+        """Native Anthropic/Bedrock paths do not need an OpenAI client rebuild."""
+        agent = AIAgent.__new__(AIAgent)
+        setattr(agent, "api_mode", "anthropic_messages")
+        setattr(agent, "client", None)
+        setattr(agent, "_client_kwargs", {})
+        agent._client_log_context = MagicMock(return_value="provider=bedrock")
+        agent._create_openai_client = MagicMock(
+            side_effect=AssertionError("should not build OpenAI client")
+        )
+
+        assert agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup") is True
+        agent._create_openai_client.assert_not_called()
+
     def test_empty_choices_chunk_skipped(self, agent):
         empty_chunk = SimpleNamespace(model="gpt-4", choices=[])
         chunks = [

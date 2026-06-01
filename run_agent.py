@@ -3010,6 +3010,14 @@ class AIAgent:
             )
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        if getattr(self, "api_mode", "") == "anthropic_messages":
+            logger.info(
+                "Skipping shared OpenAI client rebuild for anthropic_messages (%s) %s",
+                reason,
+                self._client_log_context(),
+            )
+            return True
+
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:

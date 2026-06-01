@@ -31,8 +31,10 @@ def _model_supports_reasoning_effort(model: str | None) -> bool:
     m = (model or "").strip().lower()
     if not m:
         return False
-    # step-3.7-flash and any obvious future reasoning siblings
-    if "3.7" in m or "reasoning" in m:
+    # Anchor on the ``step-3.7`` token (not a bare ``3.7`` substring) so we
+    # don't accidentally match unrelated version strings like ``step-13.7``.
+    # ``stepfun/step-3.7-flash`` still matches since the token is a substring.
+    if "step-3.7" in m or "reasoning" in m:
         return True
     return False
 

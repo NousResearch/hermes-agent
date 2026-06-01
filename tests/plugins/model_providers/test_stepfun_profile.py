@@ -134,6 +134,7 @@ class TestStepFunModelGating:
             None,                     # missing
             "step-3-unknown",         # unrecognized
             "some-other-model",
+            "step-13.7-flash",        # bare-substring over-match guard
         ],
     )
     def test_non_reasoning_models_emit_nothing(self, stepfun_profile, model):

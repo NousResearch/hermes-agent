@@ -40,12 +40,40 @@ def test_recommended_update_command_pip():
 
 
 def test_stamp_file_takes_precedence(tmp_path):
-    (tmp_path / ".git").mkdir()
+    """A valid stamp file takes precedence over .git detection.
+
+    When the stamp says 'docker' and there is no .git directory (matching
+    the published image which excludes .git via .dockerignore), the stamp
+    wins.  When .git *does* exist alongside a 'docker' stamp, the stamp
+    is stale (e.g. shared $HERMES_HOME volume from a prior official-image
+    run) — see test_stale_docker_stamp_with_git_falls_through.
+    """
+    # No .git dir → stamp is valid
     (tmp_path / ".install_method").write_text("docker\n")
     with patch("hermes_cli.config.get_managed_system", return_value=None), \
          patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
         from hermes_cli.config import detect_install_method
         assert detect_install_method(project_root=tmp_path) == "docker"
+
+
+def test_stale_docker_stamp_with_git_falls_through(tmp_path):
+    """A 'docker' stamp with .git present is stale → detect real method (#35835).
+
+    The published image excludes .git via .dockerignore.  When a user
+    shares $HERMES_HOME across installations and a 'docker' stamp from
+    a prior official-image run persists into a git-based custom
+    container, the stamp must be ignored so ``hermes update`` can
+    proceed with ``git pull`` instead of bailing with the docker-pull
+    message.
+    """
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".install_method").write_text("docker\n")
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=tmp_path) == "git"
+        # The stale stamp should be auto-corrected for next time.
+        assert (tmp_path / ".install_method").read_text().strip() == "git"
 
 
 def test_container_without_stamp_is_not_docker(tmp_path):

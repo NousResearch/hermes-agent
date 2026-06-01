@@ -302,21 +302,42 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     so ``hermes update`` bailed with "doesn't apply inside the Docker
     container". Without that fallback such installs fall through to the
     ``.git``/pip checks and behave like any off-path install. See issue #34397.
+
+    Stale-stamp guard (issue #35835): when ``$HERMES_HOME`` is a shared
+    bind-mounted volume, the ``.install_method`` stamp from a prior
+    official-image run can persist after the user switches to a custom
+    container that installed Hermes via git or pip.  The published image
+    excludes ``.git`` via ``.dockerignore``, so a ``.git`` directory at
+    ``project_root`` is definitive proof the stamp is stale — we ignore
+    it, auto-correct the stamp to the real method, and let the update
+    path proceed normally.
     """
     stamp = get_hermes_home() / ".install_method"
+    # Resolve project_root once so the stale-stamp guard can use it.
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.resolve()
     try:
         method = stamp.read_text(encoding="utf-8").strip().lower()
         if method:
-            return method
+            # A "docker" stamp is only valid inside the published image,
+            # which excludes .git.  If .git exists, the stamp is stale
+            # — ignore it and fall through to the real detection below.
+            if method == "docker" and (project_root / ".git").is_dir():
+                pass  # stale stamp — fall through
+            else:
+                return method
     except OSError:
         pass
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    if project_root is None:
-        project_root = Path(__file__).parent.parent.resolve()
     if (project_root / ".git").is_dir():
+        # If we got here past a stale "docker" stamp, correct it for
+        # next time so the user doesn't hit this again.
+        stamp_install_method("git")
         return "git"
+    # Likewise, correct a stale "docker" stamp for pip installs.
+    stamp_install_method("pip")
     return "pip"
 
 

@@ -2300,10 +2300,17 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             now = int(time.time())
             # Rate-limit repeats: at most one warning per 5 minutes.
             if now - health_state["last_warn_at"] >= 300:
+                # Per-board diagnosis so the operator knows WHICH board.
+                try:
+                    diag = kb.board_dispatch_health()
+                except Exception:
+                    diag = []
+                board_detail = kb.BoardDispatchHealth.format_stuck(diag)
                 print(
                     f"[{_fmt_ts(now)}] WARN dispatcher stuck: "
                     f"ready queue non-empty for {health_state['bad_ticks']} "
-                    f"consecutive ticks but 0 workers spawned successfully. "
+                    f"consecutive ticks but 0 workers spawned "
+                    f"[boards: {board_detail}]. "
                     f"Check profile health (venv, PATH, credentials) and "
                     f"`hermes kanban list --status ready` / "
                     f"`hermes kanban list --status blocked` for recent "

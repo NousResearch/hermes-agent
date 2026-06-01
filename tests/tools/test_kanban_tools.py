@@ -57,6 +57,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     expected = {
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -138,6 +139,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
+        "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -2030,7 +2032,7 @@ def test_board_param_rejects_invalid_slug(multi_board_env):
 
 
 def test_board_param_in_all_schemas():
-    """All nine kanban_* tool schemas must expose an optional ``board``
+    """Every kanban_* tool schema must expose an optional ``board``
     parameter. This pins the contract surfaced to the LLM — adding a
     new kanban tool without ``board`` will fail CI immediately."""
     from tools import kanban_tools as kt
@@ -2045,6 +2047,9 @@ def test_board_param_in_all_schemas():
         kt.KANBAN_CREATE_SCHEMA,
         kt.KANBAN_UNBLOCK_SCHEMA,
         kt.KANBAN_LINK_SCHEMA,
+        kt.KANBAN_ATTACH_SCHEMA,
+        kt.KANBAN_ATTACH_URL_SCHEMA,
+        kt.KANBAN_ATTACHMENTS_SCHEMA,
     ]
     for schema in schemas:
         props = schema["parameters"]["properties"]
@@ -2246,3 +2251,229 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     d = json.loads(out)
     assert d["ok"] is True, d
     assert d["subscribed"] is False, d
+
+
+# ---------------------------------------------------------------------------
+# Attachments — kanban_attach / kanban_attach_url / kanban_attachments
+# ---------------------------------------------------------------------------
+
+
+def test_attach_roundtrips_bytes_to_row_and_disk(worker_env):
+    """kanban_attach decodes base64, writes the blob, and records the row."""
+    import base64
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    content = b"hello attachment from a tool"
+    out = kt._handle_attach({
+        "filename": "notes.txt",
+        "content_base64": base64.b64encode(content).decode(),
+        "content_type": "text/plain",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(content)
+    att_id = d["attachment_id"]
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["notes.txt"]
+        a = atts[0]
+        assert a.id == att_id
+        assert a.content_type == "text/plain"
+        assert a.uploaded_by == "agent"
+        # Blob is on disk under the task's attachments dir with the bytes.
+        assert Path(a.stored_path).read_bytes() == content
+        assert Path(a.stored_path).resolve().is_relative_to(
+            kb.task_attachments_dir(worker_env).resolve()
+        )
+    finally:
+        conn.close()
+
+
+def test_attach_rejects_oversize(worker_env, monkeypatch):
+    """A decoded payload over the cap returns a clean tool error, no row."""
+    import base64
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Shrink the cap so we don't have to build a 25 MB payload.
+    monkeypatch.setattr(kb, "_MAX_ATTACHMENT_BYTES", 8)
+    out = kt._handle_attach({
+        "filename": "big.bin",
+        "content_base64": base64.b64encode(b"0123456789").decode(),
+    })
+    d = json.loads(out)
+    assert "error" in d
+    assert "MB limit" in d["error"]
+
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_rejects_bad_base64(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach({"filename": "x.txt", "content_base64": "not base64!!!"})
+    d = json.loads(out)
+    assert "error" in d and "base64" in d["error"]
+
+
+def test_attach_requires_filename_and_content(worker_env):
+    from tools import kanban_tools as kt
+
+    assert "error" in json.loads(kt._handle_attach({"content_base64": "QQ=="}))
+    assert "error" in json.loads(kt._handle_attach({"filename": "x.txt"}))
+
+
+def test_attach_enforces_worker_task_ownership(worker_env):
+    """A worker scoped to its own task can't attach to a foreign task."""
+    import base64
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="someone else's task", assignee="peer")
+    finally:
+        conn.close()
+
+    out = kt._handle_attach({
+        "task_id": other,
+        "filename": "x.txt",
+        "content_base64": base64.b64encode(b"x").decode(),
+    })
+    d = json.loads(out)
+    assert "error" in d
+    assert "scoped to task" in d["error"]
+
+
+def test_attachments_lists_uploaded_files(worker_env):
+    import base64
+
+    from tools import kanban_tools as kt
+
+    kt._handle_attach({
+        "filename": "a.txt",
+        "content_base64": base64.b64encode(b"aaa").decode(),
+    })
+    kt._handle_attach({
+        "filename": "b.txt",
+        "content_base64": base64.b64encode(b"bbbb").decode(),
+    })
+    out = kt._handle_attachments({})
+    d = json.loads(out)
+    assert d.get("ok") is True
+    names = sorted(a["filename"] for a in d["attachments"])
+    assert names == ["a.txt", "b.txt"]
+    sizes = {a["filename"]: a["size"] for a in d["attachments"]}
+    assert sizes == {"a.txt": 3, "b.txt": 4}
+
+
+def test_attachments_unknown_task_errors(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attachments({"task_id": "t_nope"})
+    assert "error" in json.loads(out)
+
+
+def test_attach_url_fetches_local_fixture(worker_env):
+    """kanban_attach_url downloads from an http(s) URL and stores the bytes."""
+    import http.server
+    import threading
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    payload = b"downloaded-by-url body"
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):  # silence
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        port = srv.server_address[1]
+        out = kt._handle_attach_url({
+            "url": f"http://127.0.0.1:{port}/files/report.bin",
+        })
+    finally:
+        srv.shutdown()
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(payload)
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        # Filename derived from the URL path leaf.
+        assert atts[0].filename == "report.bin"
+        assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()
+
+
+def test_attach_url_rejects_oversize_stream(worker_env, monkeypatch):
+    """An oversize response body is rejected during download, no row written."""
+    import http.server
+    import threading
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    big = b"x" * (64 * 1024)
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(big)))
+            self.end_headers()
+            self.wfile.write(big)
+
+        def log_message(self, *a):
+            pass
+
+    monkeypatch.setattr(kb, "_MAX_ATTACHMENT_BYTES", 1024)
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        port = srv.server_address[1]
+        out = kt._handle_attach_url({"url": f"http://127.0.0.1:{port}/big.bin"})
+    finally:
+        srv.shutdown()
+    d = json.loads(out)
+    assert "error" in d
+    assert "MB limit" in d["error"]
+
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_url_rejects_non_http_scheme(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach_url({"url": "file:///etc/passwd"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "scheme" in d["error"]

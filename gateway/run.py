@@ -1032,6 +1032,7 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
+    build_channel_continuity_note,
     build_session_key,
     is_shared_multi_user_session,
 )
@@ -8537,6 +8538,14 @@ class GatewayRunner:
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+            # Slack/Discord channels/threads are long-lived: point the agent at
+            # the specific prior same-channel session so it recalls that context
+            # via session_search instead of an unrelated recent session.  Returns
+            # None (appends nothing) for other platforms or when there's no prior
+            # activity to recall.  Deterministic — no extra API/DB calls.
+            continuity_note = build_channel_continuity_note(session_entry, source)
+            if continuity_note:
+                context_note = context_note + "\n\n" + continuity_note
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:

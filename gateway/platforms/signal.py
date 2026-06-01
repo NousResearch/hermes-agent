@@ -987,6 +987,23 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("send", params)
 
         if result is not None:
+            # Inspect the per-recipient delivery status. signal-cli returns
+            # `result = {"results": [{"recipientAddress": {...}, "type": "SUCCESS"}], ...}`
+            # on a successful transport send, but Signal itself can still reject
+            # the recipient (UNREGISTERED_FAILURE, RATE_LIMITED, etc.) — those
+            # only surface inside `results[*].type`, not as an RPC-level error.
+            # Without this check, a UNREGISTERED_FAILURE returns a non-None
+            # `result` and the live-adapter path silently reports success.
+            per_recipient = result.get("results") if isinstance(result, dict) else None
+            if isinstance(per_recipient, list) and per_recipient:
+                non_success = [
+                    r.get("type") for r in per_recipient
+                    if isinstance(r, dict) and r.get("type") and r.get("type") != "SUCCESS"
+                ]
+                if non_success:
+                    err = f"Signal rejected send: {','.join(non_success)}"
+                    logger.warning("Signal send to %s failed: %s", chat_id, err)
+                    return SendResult(success=False, error=err)
             self._track_sent_timestamp(result)
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending

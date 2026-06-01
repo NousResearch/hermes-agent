@@ -568,6 +568,153 @@ class TestSignalRecipientResolution:
         assert captured[0]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
 
 
+
+
+# ---------------------------------------------------------------------------
+# send() per-recipient type inspection
+#
+# Regression: signal-cli's `send` RPC returns a non-None envelope on a
+# successful transport send even when Signal itself rejects the recipient
+# (UNREGISTERED_FAILURE, RATE_LIMITED, etc.). Those errors only surface
+# inside `result["results"][*].type`, not at the RPC envelope level. The
+# adapter previously only checked `if result is not None` and silently
+# reported success in that case, so the cron scheduler's live-adapter
+# path logged "delivered" for messages that were never sent.
+# ---------------------------------------------------------------------------
+
+class TestSignalSendPerRecipientType:
+    """send() must inspect result.results[].type and surface rejections."""
+
+    @pytest.mark.asyncio
+    async def test_send_returns_success_when_all_recipients_success(self, monkeypatch):
+        """The happy path: signal-cli returns SUCCESS for the recipient."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._remember_recipient_identifiers("+155****0000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        success_envelope = {
+            "results": [
+                {
+                    "recipientAddress": {
+                        "uuid": "68680952-6d86-45bc-85e0-1a4d186d53ee",
+                        "number": "+155****0000",
+                        "username": None,
+                    },
+                    "type": "SUCCESS",
+                }
+            ],
+            "timestamp": 1780328867122,
+        }
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            return success_envelope
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+155****0000", content="hello")
+
+        assert result.success is True
+        assert result.message_id is None
+
+    @pytest.mark.asyncio
+    async def test_send_returns_failure_on_unregistered_failure(self, monkeypatch):
+        """UNREGISTERED_FAILURE inside results[].type must be surfaced as failure.
+
+        The RPC transport itself succeeds (non-None envelope returned), but
+        Signal rejected the recipient. The adapter must NOT report success in
+        that case — doing so caused the cron scheduler to silently drop
+        quit-smoking check-ins for both Samuel and Tyler.
+        """
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._remember_recipient_identifiers("+155****0000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        unregistered_envelope = {
+            "results": [
+                {
+                    "recipientAddress": {
+                        "uuid": None,
+                        "number": "+155****0000",
+                        "username": None,
+                    },
+                    "type": "UNREGISTERED_FAILURE",
+                }
+            ],
+            "timestamp": 1780146077705,
+        }
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            return unregistered_envelope
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+155****0000", content="hello")
+
+        assert result.success is False
+        assert "UNREGISTERED_FAILURE" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_send_returns_failure_when_any_recipient_rejected(self, monkeypatch):
+        """Multi-recipient sends: one rejection among many must fail the whole send."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._remember_recipient_identifiers("+155****0000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        mixed_envelope = {
+            "results": [
+                {
+                    "recipientAddress": {
+                        "uuid": "68680952-6d86-45bc-85e0-1a4d186d53ee",
+                        "number": "+155****0000",
+                        "username": None,
+                    },
+                    "type": "SUCCESS",
+                },
+                {
+                    "recipientAddress": {
+                        "uuid": None,
+                        "number": "+155****9999",
+                        "username": None,
+                    },
+                    "type": "RATE_LIMITED",
+                },
+            ],
+            "timestamp": 1780329000000,
+        }
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            return mixed_envelope
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+155****0000", content="hello")
+
+        assert result.success is False
+        assert "RATE_LIMITED" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_send_tolerates_legacy_envelope_without_results_key(self, monkeypatch):
+        """Old signal-cli versions and some test mocks return only a timestamp.
+
+        The adapter should still report success in that case so existing
+        tests and older daemons don't regress. The new type inspection
+        kicks in only when `results` is a non-empty list.
+        """
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._remember_recipient_identifiers("+155****0000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        legacy_envelope = {"timestamp": 1234567890}
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            return legacy_envelope
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+155****0000", content="hello")
+
+        assert result.success is True
+
 # ---------------------------------------------------------------------------
 # send_voice method (#5105)
 # ---------------------------------------------------------------------------

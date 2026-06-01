@@ -1,0 +1,21 @@
+name: lm-twitterer
+version: 0.1.0
+description: "Generate X posts and replies with the active Hermes model."
+author: "soichi11208 (original LM-twitterer), Hermes Agent contributors"
+kind: standalone
+requires_env:
+  - name: LM_TWITTERER_BOT_SCREEN_NAME
+    description: "X screen name for the bot account, without @."
+    secret: false
+  - name: LM_TWITTERER_AUTH_TOKEN
+    description: "X auth_token cookie from the logged-in account session."
+    secret: true
+  - name: LM_TWITTERER_CT0
+    description: "X ct0 cookie from the same browser session."
+    secret: true
+provides_tools:
+  - lm_twitterer_post
+  - lm_twitterer_reply_mentions
+  - lm_twitterer_status
+  - lm_twitterer_auth_check
+  - lm_twitterer_mentions

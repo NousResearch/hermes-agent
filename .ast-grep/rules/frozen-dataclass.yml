@@ -1,0 +1,11 @@
+id: frozen-dataclass-in-contract
+language: python
+severity: error
+message: dataclasses in types.py must be @dataclass(frozen=True).
+rule:
+  pattern: |
+    @dataclass
+    class $NAME:
+      $$$
+files:
+  - "gateway/calls/native/streaming/types.py"

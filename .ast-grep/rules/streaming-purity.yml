@@ -1,0 +1,11 @@
+id: ports-types-stay-pure
+language: python
+severity: error
+message: types.py/ports.py must not import run_agent or heavy deps (keep the contract pure).
+rule:
+  any:
+    - pattern: import run_agent
+    - pattern: from run_agent import $$$
+files:
+  - "gateway/calls/native/streaming/types.py"
+  - "gateway/calls/native/streaming/ports.py"

@@ -1,0 +1,13 @@
+id: no-walltime-in-streaming
+language: python
+severity: error
+message: Use the injected Clock, not wall-clock. Only clock.py may call time.*.
+rule:
+  any:
+    - pattern: time.time()
+    - pattern: time.sleep($$$)
+    - pattern: asyncio.sleep($$$)
+files:
+  - "gateway/calls/native/streaming/**"
+ignores:
+  - "gateway/calls/native/streaming/clock.py"

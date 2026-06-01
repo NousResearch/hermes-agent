@@ -1378,6 +1378,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     )
                 updated["next_run_at"] = next_run
 
+            # Validate the fully merged job at the data-layer chokepoint so
+            # direct callers, the model tool, and dashboard updates cannot
+            # bypass the lifecycle guard by changing only prompt or script.
+            from cron.lifecycle_guard import check_gateway_lifecycle
+
+            check_gateway_lifecycle(updated.get("prompt"), updated.get("script"))
+
             jobs[i] = updated
             save_jobs(jobs)
             return _normalize_job_record(jobs[i])

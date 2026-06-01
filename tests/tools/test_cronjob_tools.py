@@ -5,9 +5,17 @@ import pytest
 
 from tools.cronjob_tools import (
     _scan_cron_prompt,
+    _validate_cron_script_path,
     check_cronjob_requirements,
     cronjob,
 )
+
+
+def test_validate_cron_script_path_rejects_quoted_absolute_executable():
+    error = _validate_cron_script_path('"/tmp/outside script.py" --flag')
+
+    assert error is not None
+    assert "must be relative" in error
 
 
 # =========================================================================

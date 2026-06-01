@@ -52,6 +52,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cron.script_command import format_script_command, parse_script_command
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
     cfg_get,
@@ -10137,7 +10138,13 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
         return None
 
     scripts_root = (profile_home / "scripts").resolve()
-    raw_path = Path(text).expanduser()
+    try:
+        executable, script_args = parse_script_command(text, scripts_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"invalid script command: {exc}"
+        ) from exc
+    raw_path = Path(executable).expanduser()
     candidate = raw_path.resolve() if raw_path.is_absolute() else (scripts_root / raw_path).resolve()
     try:
         relative = candidate.relative_to(scripts_root)
@@ -10150,7 +10157,7 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
         raise HTTPException(status_code=400, detail=f"script does not exist: {candidate}")
     if not candidate.is_file():
         raise HTTPException(status_code=400, detail=f"script is not a file: {candidate}")
-    return str(relative)
+    return format_script_command(str(relative), script_args)
 
 
 def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:

@@ -33,6 +33,7 @@ from cron.jobs import (
     resume_job,
     update_job,
 )
+from cron.script_command import parse_script_command
 
 
 def _notify_provider_jobs_changed_safe() -> None:
@@ -539,7 +540,12 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     from hermes_constants import get_hermes_home
 
-    raw = script.strip()
+    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        raw, _args = parse_script_command(script, scripts_dir)
+    except ValueError as exc:
+        return f"Invalid script command: {exc}"
 
     # Reject absolute paths and ~ expansion at the API boundary.
     # Only relative paths within ~/.hermes/scripts/ are allowed.
@@ -553,8 +559,6 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     # Validate containment after resolution
     from tools.path_security import validate_within_dir
 
-    scripts_dir = get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
     containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
     if containment_error:
         return (

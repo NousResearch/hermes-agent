@@ -39,6 +39,7 @@ from typing import Any, List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from cron.script_command import parse_script_command
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
@@ -2034,9 +2035,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     (SECURITY.md §2.3), matching terminal and MCP child processes.
 
     Args:
-        script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+        script_path: Path to the script, optionally followed by CLI arguments.
+            Relative paths are resolved against HERMES_HOME/scripts/.
+            Absolute and ~-prefixed paths are also validated to ensure they stay
+            within the scripts dir.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2046,7 +2048,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
+    try:
+        executable, script_args = parse_script_command(script_path, scripts_dir)
+    except ValueError as exc:
+        return False, f"Invalid script command: {exc}"
+
+    raw = Path(executable).expanduser()
     if raw.is_absolute():
         path = raw.resolve()
     else:
@@ -2089,9 +2096,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        argv = [_bash, str(path), *script_args]
     else:
-        argv = [sys.executable, str(path)]
+        argv = [sys.executable, str(path), *script_args]
 
     try:
         from tools.environments.local import _sanitize_subprocess_env

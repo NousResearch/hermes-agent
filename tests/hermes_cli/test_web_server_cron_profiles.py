@@ -391,6 +391,65 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
 
 
 @pytest.mark.asyncio
+async def test_create_cron_job_preserves_dashboard_script_arguments(isolated_profiles):
+    from hermes_cli import web_server
+
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "collect report.py").write_text("print('ok')\n", encoding="utf-8")
+
+    created = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            schedule="every 1h",
+            script='"collect report.py" --mode "full scan"',
+            no_agent=True,
+        ),
+        profile="worker_alpha",
+    )
+
+    from cron.script_command import parse_script_command
+
+    assert parse_script_command(created["script"]) == (
+        "collect report.py",
+        ["--mode", "full scan"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_checks_effective_script_lifecycle_guard(
+    isolated_profiles,
+):
+    from hermes_cli import web_server
+
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir()
+    script = scripts_dir / "ops.sh"
+    script.write_text("echo safe\n", encoding="utf-8")
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="daily ops",
+        schedule="every 1h",
+        script="ops.sh",
+    )
+    script.write_text("hermes gateway restart\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.update_cron_job(
+            job["id"],
+            web_server.CronJobUpdate(updates={"prompt": "updated daily ops"}),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "#30719" in exc.value.detail
+    unchanged = web_server._call_cron_for_profile(
+        "worker_alpha", "get_job", job["id"]
+    )
+    assert unchanged["prompt"] == "daily ops"
+
+
+@pytest.mark.asyncio
 async def test_create_cron_job_rejects_script_outside_profile_scripts(
     isolated_profiles, tmp_path
 ):

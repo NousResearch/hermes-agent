@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -2377,6 +2377,74 @@ class FeishuAdapter(BasePlatformAdapter):
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
         return content.strip()
+
+    @staticmethod
+    def truncate_message(
+        content: str,
+        max_length: int = 4096,
+        len_fn: Optional["Callable[[str], int]"] = None,
+    ) -> List[str]:
+        """Override base truncate_message to preserve markdown table boundaries.
+
+        When a split would fall inside a markdown table, back up to the start
+        of the table so the header+separator rows stay with the data rows.
+        """
+        _len = len_fn or len
+        if _len(content) <= max_length:
+            return [content]
+
+        # Delegate to base implementation first
+        chunks = BasePlatformAdapter.truncate_message(content, max_length, len_fn)
+        if len(chunks) <= 1:
+            return chunks
+
+        # Post-process: ensure no chunk starts inside a table (without header).
+        # If a chunk consists entirely of table rows but has no header separator,
+        # carry those rows forward to the next chunk.
+        fixed: List[str] = []
+        carry = ""
+        for chunk in chunks:
+            if carry:
+                chunk = carry + "\n" + chunk
+                carry = ""
+
+            lines = chunk.split("\n")
+            # Strip chunk indicator from last line for analysis
+            last_line = re.sub(r" \(\d+/\d+\)$", "", lines[-1])
+
+            # Check if chunk ends inside a table (last line is a table row)
+            if len(lines) >= 2 and last_line.strip().startswith("|"):
+                has_header = any(
+                    re.match(r"^[ \t]*\|[-:\s|]+\|[ \t]*$", line)
+                    for line in lines
+                )
+                if not has_header:
+                    # This chunk has table rows but no header.
+                    # Carry all table rows to next chunk.
+                    # Find first table row (from start).
+                    first_table_idx = 0
+                    for i, line in enumerate(lines):
+                        if line.strip().startswith("|"):
+                            first_table_idx = i
+                            break
+                    if first_table_idx < len(lines):
+                        carry = "\n".join(lines[first_table_idx:])
+                        chunk = "\n".join(lines[:first_table_idx])
+
+            if chunk.strip():
+                fixed.append(chunk)
+
+        if carry.strip():
+            fixed.append(carry)
+
+        # Re-apply chunk indicators
+        if len(fixed) > 1:
+            total = len(fixed)
+            fixed = [
+                f"{chunk} ({i + 1}/{total})" for i, chunk in enumerate(fixed)
+            ]
+
+        return fixed if fixed else chunks
 
     # =========================================================================
     # Inbound event handlers

@@ -91,8 +91,12 @@ fi
 # agent-browser: symlink to the build-time browser install so the
 # runtime user (hermes) finds it under $HERMES_HOME/.agent-browser.
 # Force-update on every start so the symlink stays valid after image rebuilds.
+# rm -rf first: without it, ln -snf TARGET into an existing directory creates
+# TARGET/.agent-browser -> TARGET instead of replacing the entry (a POSIX
+# footgun when the volume carries a stale .agent-browser directory).
 _AGENT_BROWSER_SRC="$INSTALL_DIR/.agent-browser"
 if [ -d "$_AGENT_BROWSER_SRC/browsers" ]; then
+    rm -rf "$HERMES_HOME/.agent-browser" 2>/dev/null || true
     ln -snf "$_AGENT_BROWSER_SRC" "$HERMES_HOME/.agent-browser"
 fi
 

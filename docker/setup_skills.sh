@@ -50,16 +50,6 @@ echo "SOUL_FILE: $SOUL_FILE"
 echo "MEMORY_FILE: $MEMORY_FILE"
 echo ""
 
-# agent-browser: 建立浏览器路径软链接
-_AB_SRC="/opt/hermes/.agent-browser"
-_AB_DST="$HERMES_HOME/.agent-browser"
-if [ -d "$_AB_SRC/browsers" ]; then
-    echo "发现 agent-browser 浏览器: $_AB_SRC"
-    rm -rf "$_AB_DST"
-    ln -s "$_AB_SRC" "$_AB_DST"
-    echo "✓ agent-browser 浏览器路径已连接: $_AB_DST → $_AB_SRC"
-fi
-
 # 检查配置文件是否存在
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "错误: 配置文件 $CONFIG_FILE 不存在"

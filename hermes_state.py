@@ -2919,6 +2919,50 @@ class SessionDB:
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
 
+            # If exact substring found nothing, try jieba-segmented AND LIKE.
+            if not matches:
+                try:
+                    import jieba
+                    jieba.setLogLevel(logging.WARNING)
+                    _stopwords = set("的了是在和有就不也都会要能可这那个们着过把被")
+                    jieba_tokens = [
+                        w for w in jieba.lcut(raw_query)
+                        if len(w) > 1 and w not in _stopwords
+                    ]
+                except ImportError:
+                    jieba_tokens = []
+                if jieba_tokens:
+                    seg_where = ["m.content LIKE ?" for _ in jieba_tokens]
+                    seg_params: list = [f"%{t}%" for t in jieba_tokens]
+                    if source_filter is not None:
+                        seg_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+                        seg_params.extend(source_filter)
+                    if exclude_sources is not None:
+                        seg_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+                        seg_params.extend(exclude_sources)
+                    if role_filter:
+                        seg_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+                        seg_params.extend(role_filter)
+                    seg_sql = f"""
+                        SELECT m.id, m.session_id, m.role,
+                               substr(m.content,
+                                      max(1, instr(m.content, ?) - 40),
+                                      120) AS snippet,
+                               m.content, m.timestamp, m.tool_name,
+                               s.source, s.model, s.started_at AS session_started
+                        FROM messages m
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE {' AND '.join(seg_where)}
+                        ORDER BY m.timestamp DESC
+                        LIMIT ? OFFSET ?
+                    """
+                    seg_params.extend([limit, offset])
+                    # instr() snippet uses first jieba token as anchor
+                    seg_params = [jieba_tokens[0]] + seg_params
+                    with self._lock:
+                        seg_cursor = self._conn.execute(seg_sql, seg_params)
+                        matches = [dict(row) for row in seg_cursor.fetchall()]
+
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
         for match in matches:

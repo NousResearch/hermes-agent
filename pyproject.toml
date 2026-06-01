@@ -50,6 +50,7 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  "jieba>=0.42.1,<1",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.12.1",  # CVE-2026-32597
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``

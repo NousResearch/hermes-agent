@@ -228,6 +228,44 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def should_bridge_previous_session(
+    *,
+    bridge_enabled: bool,
+    was_auto_reset: bool,
+    previous_session_id: Optional[str],
+    has_session_db: bool,
+    shared_multi_user_session: bool,
+    redact_pii: bool,
+) -> bool:
+    """
+    Predicate for whether the previous-session bridge should fire on this turn.
+
+    Centralizes the gating rules so they can be tested in isolation and so
+    new constraints don't drift across call sites.
+
+    Returns True only when ALL of the following hold:
+    - the bridge feature is enabled in config
+    - this is the first turn after an idle/daily auto-reset
+    - the prior session_id is known (i.e. the prior session had activity)
+    - SessionDB is available to read the prior messages
+    - the session is not shared across multiple users (no cross-user leak)
+    - PII redaction is not active (we'd otherwise re-emit unredacted content)
+    """
+    if not bridge_enabled:
+        return False
+    if not was_auto_reset:
+        return False
+    if not previous_session_id:
+        return False
+    if not has_session_db:
+        return False
+    if shared_multi_user_session:
+        return False
+    if redact_pii:
+        return False
+    return True
+
+
 def render_previous_session_tail(
     messages: List[Dict[str, Any]],
     *,
@@ -285,13 +323,8 @@ def render_previous_session_tail(
         body = f"[…earlier turns truncated…]\n{truncated}"
 
     header = "## Previous Session Tail"
-    intro = (
-        "The previous session just rotated out due to inactivity. "
-        "Here are the most recent user/assistant turns from that session "
-        "so you have continuity with what the user last saw. "
-        "Tool calls and intermediate data are omitted."
-    )
-    return f"{header}\n\n{intro}\n\n{body}"
+    intro = "(Auto-reset rotation; tool calls omitted.)"
+    return f"{header}\n{intro}\n\n{body}"
 
 
 def build_session_context_prompt(

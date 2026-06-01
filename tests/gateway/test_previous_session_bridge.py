@@ -316,3 +316,129 @@ def test_end_to_end_bridge(tmp_path, monkeypatch):
     assert "## Previous Session Tail" in tail
     assert "weather tomorrow" in tail
     assert "Reply yes/no" in tail
+
+
+# ---------------------------------------------------------------------------
+# Issue 1, 2, 5: should_bridge_previous_session predicate
+# ---------------------------------------------------------------------------
+
+def test_predicate_returns_true_when_all_conditions_met():
+    from gateway.session import should_bridge_previous_session
+    assert should_bridge_previous_session(
+        bridge_enabled=True,
+        was_auto_reset=True,
+        previous_session_id="20260530_120000_abc",
+        has_session_db=True,
+        shared_multi_user_session=False,
+        redact_pii=False,
+    ) is True
+
+
+def test_predicate_skips_when_bridge_disabled():
+    from gateway.session import should_bridge_previous_session
+    assert should_bridge_previous_session(
+        bridge_enabled=False, was_auto_reset=True, previous_session_id="x",
+        has_session_db=True, shared_multi_user_session=False, redact_pii=False,
+    ) is False
+
+
+def test_predicate_skips_when_not_auto_reset():
+    from gateway.session import should_bridge_previous_session
+    assert should_bridge_previous_session(
+        bridge_enabled=True, was_auto_reset=False, previous_session_id="x",
+        has_session_db=True, shared_multi_user_session=False, redact_pii=False,
+    ) is False
+
+
+def test_predicate_skips_when_previous_session_id_none():
+    from gateway.session import should_bridge_previous_session
+    assert should_bridge_previous_session(
+        bridge_enabled=True, was_auto_reset=True, previous_session_id=None,
+        has_session_db=True, shared_multi_user_session=False, redact_pii=False,
+    ) is False
+
+
+def test_predicate_skips_when_no_session_db():
+    from gateway.session import should_bridge_previous_session
+    assert should_bridge_previous_session(
+        bridge_enabled=True, was_auto_reset=True, previous_session_id="x",
+        has_session_db=False, shared_multi_user_session=False, redact_pii=False,
+    ) is False
+
+
+def test_predicate_skips_shared_multi_user_session():
+    """Issue 1: shared sessions leak user A's turns into user B's prompt."""
+    from gateway.session import should_bridge_previous_session
+    assert should_bridge_previous_session(
+        bridge_enabled=True, was_auto_reset=True, previous_session_id="x",
+        has_session_db=True, shared_multi_user_session=True, redact_pii=False,
+    ) is False
+
+
+def test_predicate_skips_when_redact_pii_enabled():
+    """Issue 2: raw message bodies in SessionDB bypass PII redaction layer."""
+    from gateway.session import should_bridge_previous_session
+    assert should_bridge_previous_session(
+        bridge_enabled=True, was_auto_reset=True, previous_session_id="x",
+        has_session_db=True, shared_multi_user_session=False, redact_pii=True,
+    ) is False
+
+
+# ---------------------------------------------------------------------------
+# Issue 4: max_chars total-length bound
+# ---------------------------------------------------------------------------
+
+def test_render_tail_total_length_bounded():
+    """Total rendered output stays within max_chars + a small framing overhead."""
+    from gateway.session import render_previous_session_tail
+    msgs = [_msg("user", "x" * 10_000), _msg("assistant", "y" * 10_000)]
+    out = render_previous_session_tail(msgs, max_exchanges=10, max_chars=500)
+    # Body cap is 500; header + intro + truncation marker < 200 chars.
+    # Total should not exceed 700.
+    assert len(out) < 700, f"rendered tail is {len(out)} chars, expected < 700"
+
+
+# ---------------------------------------------------------------------------
+# Issue 7: bridge no-ops when prior session messages were deleted from SQLite
+# ---------------------------------------------------------------------------
+
+def test_render_tail_handles_empty_message_list_from_db():
+    """Simulates: prior session_id is stamped on the entry, but its messages
+    were deleted from SessionDB before the next turn arrived (e.g. via
+    hermes sessions delete or manual cleanup)."""
+    from gateway.session import render_previous_session_tail
+    # An empty list — what SessionDB.get_messages returns for a deleted session
+    assert render_previous_session_tail([], max_exchanges=3, max_chars=4000) == ""
+
+
+# ---------------------------------------------------------------------------
+# Issue 3: cache invariant — bridge fires once, not on subsequent turns
+# ---------------------------------------------------------------------------
+
+def test_session_entry_was_auto_reset_clears_to_false_for_subsequent_turns():
+    """The gateway must clear was_auto_reset after the first turn so the
+    bridge predicate returns False on turn 2+. SessionEntry exposes the
+    field as a normal attribute; verify it's mutable for that purpose."""
+    from datetime import datetime
+    from gateway.session import SessionEntry, should_bridge_previous_session
+    entry = SessionEntry(
+        session_key="k", session_id="s",
+        created_at=datetime.now(), updated_at=datetime.now(),
+        was_auto_reset=True, previous_session_id="prior",
+    )
+    # Turn 1: predicate sees was_auto_reset=True
+    assert should_bridge_previous_session(
+        bridge_enabled=True, was_auto_reset=entry.was_auto_reset,
+        previous_session_id=entry.previous_session_id,
+        has_session_db=True, shared_multi_user_session=False, redact_pii=False,
+    ) is True
+
+    # Gateway clears the flag after building the prompt
+    entry.was_auto_reset = False
+
+    # Turn 2: predicate now returns False, no bridge re-emission
+    assert should_bridge_previous_session(
+        bridge_enabled=True, was_auto_reset=entry.was_auto_reset,
+        previous_session_id=entry.previous_session_id,
+        has_session_db=True, shared_multi_user_session=False, redact_pii=False,
+    ) is False

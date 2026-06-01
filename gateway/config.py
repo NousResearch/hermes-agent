@@ -291,7 +291,11 @@ class PreviousSessionBridge:
     """
     enabled: bool = True
     max_exchanges: int = 3   # user+assistant pairs included in the tail
-    max_chars: int = 4000    # hard cap on the rendered tail
+    # Hard cap on the rendered conversation BODY in chars (the User:/Assistant:
+    # lines, not the surrounding header/intro). Total block size is roughly
+    # ``max_chars`` + ~60 chars of framing. Defaults sized for a ~1000-token
+    # ceiling on most tokenizers.
+    max_chars: int = 4000
 
     def to_dict(self) -> Dict[str, Any]:
         return {

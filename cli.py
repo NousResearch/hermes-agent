@@ -5137,6 +5137,7 @@ class HermesCLI:
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
+                show_update_banner=self.config.get("display", {}).get("show_update_banner", True),
             )
         
         # Tool discovery is intentionally deferred on the Termux bare prompt
@@ -8480,6 +8481,7 @@ class HermesCLI:
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
                         context_length=ctx_len,
+                        show_update_banner=self.config.get("display", {}).get("show_update_banner", True),
                     )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session

@@ -1267,6 +1267,11 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
+        # When False, suppress the startup update-available banner entirely
+        # (the "commits behind" / "update available" / pip-install warning
+        # lines). Useful for docker / managed installs where the user can't
+        # act on the suggestion in-place.
+        "show_update_banner": True,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the

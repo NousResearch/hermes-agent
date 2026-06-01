@@ -480,7 +480,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: int = None,
+                         show_update_banner: bool = True):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -682,42 +683,48 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
     # Update check — use prefetched result if available
-    try:
-        behind = get_update_result(timeout=0.5)
-        if behind is not None and behind != 0:
-            from hermes_cli.config import get_managed_update_command, recommended_update_command
-            if behind > 0:
-                commits_word = "commit" if behind == 1 else "commits"
-                right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                    f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
-                )
-            else:
-                # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
-                # exists but not by how much, and we don't know how the user
-                # installed it (nix run, profile, system flake, home-manager).
-                managed_cmd = get_managed_update_command()
-                line = "[bold yellow]⚠ update available[/]"
-                if managed_cmd:
-                    line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
-                right_lines.append(line)
-    except Exception:
-        pass  # Never break the banner over an update check
+    if show_update_banner:
+        try:
+            behind = get_update_result(timeout=0.5)
+            if behind is not None and behind != 0:
+                from hermes_cli.config import get_managed_update_command, recommended_update_command
+                if behind > 0:
+                    commits_word = "commit" if behind == 1 else "commits"
+                    right_lines.append(
+                        f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                        f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
+                    )
+                else:
+                    # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
+                    # exists but not by how much, and we don't know how the user
+                    # installed it (nix run, profile, system flake, home-manager).
+                    managed_cmd = get_managed_update_command()
+                    line = "[bold yellow]⚠ update available[/]"
+                    if managed_cmd:
+                        line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
+                    else:
+                        fallback_cmd = recommended_update_command()
+                        if fallback_cmd and fallback_cmd.strip().lower() != "hermes update":
+                            line += f"[dim yellow] — run [bold]{fallback_cmd}[/bold] to update[/]"
+                    right_lines.append(line)
+        except Exception:
+            pass  # Never break the banner over an update check
 
     # Pip-install warning — `pip install hermes-agent` is not the supported
     # install path (it exists on PyPI for internal/CI reasons, not end users).
     # Such installs miss the git checkout + installer-managed deps, so updates,
     # self-update, and issue triage don't behave correctly. Warn, don't block.
-    try:
-        from hermes_cli.config import detect_install_method
-        if detect_install_method() == "pip":
-            right_lines.append(
-                "[bold yellow]⚠ pip install not officially supported[/]"
-                "[dim yellow] — exists for reasons other than user install; "
-                "expect instability and an inability to support issues[/]"
-            )
-    except Exception:
-        pass  # Never break the banner over the install-method check
+    if show_update_banner:
+        try:
+            from hermes_cli.config import detect_install_method
+            if detect_install_method() == "pip":
+                right_lines.append(
+                    "[bold yellow]⚠ pip install not officially supported[/]"
+                    "[dim yellow] — exists for reasons other than user install; "
+                    "expect instability and an inability to support issues[/]"
+                )
+        except Exception:
+            pass  # Never break the banner over the install-method check
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

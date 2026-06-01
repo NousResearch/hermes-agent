@@ -133,3 +133,64 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     raw = buf.getvalue()
     assert "Hermes Agent v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
+
+
+def _render_banner(show_update_banner=True, update_result=None, install_method="git"):
+    """Helper: render a banner with controlled update-check + install-method state."""
+    import hermes_cli.banner as _banner
+    import hermes_cli.config as _config
+    import model_tools as _mt
+    import tools.mcp_tool as _mcp
+
+    with (
+        patch.object(_mt, "check_tool_availability", return_value=(["web"], [])),
+        patch.object(_banner, "get_available_skills", return_value={}),
+        patch.object(_banner, "get_update_result", return_value=update_result),
+        patch.object(_mcp, "get_mcp_status", return_value=[]),
+        patch.object(_config, "detect_install_method", return_value=install_method),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        _banner.build_welcome_banner(
+            console=console,
+            model="x",
+            cwd="/tmp",
+            session_id="abc123",
+            tools=[{"function": {"name": "read_file"}}],
+            get_toolset_for_tool=lambda n: "file",
+            show_update_banner=show_update_banner,
+        )
+    return console.export_text()
+
+
+def test_show_update_banner_false_suppresses_update_line():
+    """When show_update_banner=False, the update-available line is not rendered."""
+    output = _render_banner(
+        show_update_banner=False,
+        update_result=banner.UPDATE_AVAILABLE_NO_COUNT,
+        install_method="docker",
+    )
+    assert "update available" not in output
+    assert "commits behind" not in output
+    assert "pip install not officially supported" not in output
+
+
+def test_show_update_banner_true_renders_update_line():
+    """Default (True) still renders the update line."""
+    output = _render_banner(
+        show_update_banner=True,
+        update_result=banner.UPDATE_AVAILABLE_NO_COUNT,
+        install_method="docker",
+    )
+    assert "update available" in output
+
+
+def test_no_count_branch_docker_includes_pull_command():
+    """For docker installs, the no-count branch falls back to recommended_update_command()."""
+    import hermes_cli.config as _config
+    with patch.object(_config, "get_managed_update_command", return_value=None):
+        output = _render_banner(
+            show_update_banner=True,
+            update_result=banner.UPDATE_AVAILABLE_NO_COUNT,
+            install_method="docker",
+        )
+    assert "docker pull nousresearch/hermes-agent:latest" in output

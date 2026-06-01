@@ -414,8 +414,8 @@ NOUS_EXTRA_BODY = _nous_extra_body()
 auxiliary_is_nous: bool = False
 
 # Default auxiliary models per provider
-_OPENROUTER_MODEL = "google/gemini-3-flash-preview"
-_NOUS_MODEL = "google/gemini-3-flash-preview"
+_OPENROUTER_MODEL = "openrouter/free"
+_NOUS_MODEL = "openrouter/free"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -1576,7 +1576,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     # The /api/nous/recommended-models endpoint is the authoritative source:
     # it distinguishes paid vs free tier recommendations, and get_nous_recommended_aux_model
     # auto-detects the caller's tier via check_nous_free_tier().  Fall back to
-    # _NOUS_MODEL (google/gemini-3-flash-preview) when the Portal is unreachable
+    # _NOUS_MODEL (openrouter/free) when the Portal is unreachable
     # or returns a null recommendation for this task type.
     model = _NOUS_MODEL
     try:

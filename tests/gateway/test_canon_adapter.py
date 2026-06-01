@@ -301,10 +301,14 @@ class TestCanonHttpClient:
             calls.append((method, path, params, json_body))
             if path == "/runtime-input/request":
                 return {"success": True, "messageId": "input-card"}
+            if path == "/runtime-card/request":
+                return {"success": True, "messageId": "runtime-card", "cardId": "card-1"}
             if path == "/runtime-approval/request":
                 return {"success": True, "messageId": "approval-card"}
             if path == "/runtime-input/consume":
-                return {"status": "pending", "inputId": "input-1"}
+                return {"status": "submitted", "inputId": "input-1", "answers": {"field": {"answers": ["supplier"]}}}
+            if path == "/runtime-card/consume":
+                return {"status": "submitted", "cardId": "card-1", "actionId": "approve"}
             if path == "/runtime-approval/consume":
                 return {"status": "pending", "approvalId": "approval-1"}
             if path == "/runtime/signal/consume":
@@ -338,8 +342,26 @@ class TestCanonHttpClient:
                 expires_at=1234,
                 prompt="Pick one",
                 choices=[{"label": "A", "value": "a"}],
+                questions=[{"id": "field", "question": "Which field?"}],
+                response_user_id="owner-1",
+                turn_id="turn-1",
             )
             await client.consume_runtime_input_response("convo-1", "input-1")
+            await client.create_runtime_card_request(
+                "convo-1",
+                card={
+                    "schema": "canon.card.v1",
+                    "title": "Review",
+                    "fallbackText": "Review",
+                    "blocks": [{"kind": "actions", "actions": [{"id": "approve", "label": "Approve"}]}],
+                },
+                card_id="card-1",
+                expires_at=1234,
+                response_user_id="owner-1",
+                runtime_id="hermes",
+                turn_id="turn-1",
+            )
+            await client.consume_runtime_card_response("convo-1", "card-1")
             await client.create_runtime_approval_request(
                 "convo-1",
                 approval_id="approval-1",
@@ -359,6 +381,8 @@ class TestCanonHttpClient:
             "/conversations/convo-1/read",
             "/runtime-input/request",
             "/runtime-input/consume",
+            "/runtime-card/request",
+            "/runtime-card/consume",
             "/runtime-approval/request",
             "/runtime-approval/consume",
             "/runtime/signal/consume",
@@ -379,10 +403,48 @@ class TestCanonHttpClient:
             "expiresAt": 1234,
             "prompt": "Pick one",
             "choices": [{"label": "A", "value": "a"}],
+            "questions": [{"id": "field", "question": "Which field?"}],
+            "responseUserId": "owner-1",
+            "turnId": "turn-1",
+        }
+        assert calls[6][3] == {
+            "conversationId": "convo-1",
+            "cardId": "card-1",
+            "card": {
+                "schema": "canon.card.v1",
+                "title": "Review",
+                "fallbackText": "Review",
+                "blocks": [{"kind": "actions", "actions": [{"id": "approve", "label": "Approve"}]}],
+            },
+            "expiresAt": 1234,
+            "responseUserId": "owner-1",
+            "runtimeId": "hermes",
+            "turnId": "turn-1",
         }
 
 
 class TestCanonInbound:
+    def test_message_text_includes_rich_contact_card_identity(self):
+        text = _canon._message_text(
+            {
+                "contentType": "contact_card",
+                "text": "Please meet Moty.",
+                "contactCard": {
+                    "userId": "agent-moty",
+                    "displayName": "Moty",
+                    "userType": "ai_agent",
+                    "ownerName": "Matan",
+                    "about": "Priority invoice review agent",
+                },
+            }
+        )
+
+        assert text == (
+            '[Contact card] "Moty" - ai_agent; userId: agent-moty; '
+            "owner: Matan; about: Priority invoice review agent\n"
+            "Please meet Moty."
+        )
+
     class FakeClient:
         def __init__(self, *, fail_read: bool = False):
             self.dispositions = []

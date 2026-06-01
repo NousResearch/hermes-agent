@@ -391,8 +391,11 @@ class CanonHttpClient:
         title: Optional[str] = None,
         prompt: Optional[str] = None,
         choices: Optional[list[dict[str, Any]]] = None,
+        questions: Optional[list[dict[str, Any]]] = None,
+        response_user_id: Optional[str] = None,
         native: Optional[dict[str, Any]] = None,
         sensitive: Optional[bool] = None,
+        turn_id: Optional[str] = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "conversationId": conversation_id,
@@ -406,10 +409,16 @@ class CanonHttpClient:
             body["prompt"] = prompt
         if choices:
             body["choices"] = choices
+        if questions:
+            body["questions"] = questions
+        if response_user_id:
+            body["responseUserId"] = response_user_id
         if native:
             body["native"] = native
         if sensitive is not None:
             body["sensitive"] = bool(sensitive)
+        if turn_id:
+            body["turnId"] = turn_id
         data = await self._request_json("POST", "/runtime-input/request", json_body=body)
         return data if isinstance(data, dict) else {}
 
@@ -427,6 +436,53 @@ class CanonHttpClient:
         if cancel:
             body["cancel"] = True
         data = await self._request_json("POST", "/runtime-input/consume", json_body=body)
+        return data if isinstance(data, dict) else {}
+
+    async def create_runtime_card_request(
+        self,
+        conversation_id: str,
+        *,
+        card: dict[str, Any],
+        card_id: Optional[str] = None,
+        expires_at: Optional[int] = None,
+        response_user_id: Optional[str] = None,
+        runtime_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        native: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "conversationId": conversation_id,
+            "card": card,
+        }
+        if card_id:
+            body["cardId"] = card_id
+        if expires_at is not None:
+            body["expiresAt"] = expires_at
+        if response_user_id:
+            body["responseUserId"] = response_user_id
+        if runtime_id:
+            body["runtimeId"] = runtime_id
+        if turn_id:
+            body["turnId"] = turn_id
+        if native:
+            body["native"] = native
+        data = await self._request_json("POST", "/runtime-card/request", json_body=body)
+        return data if isinstance(data, dict) else {}
+
+    async def consume_runtime_card_response(
+        self,
+        conversation_id: str,
+        card_id: str,
+        *,
+        cancel: bool = False,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "conversationId": conversation_id,
+            "cardId": card_id,
+        }
+        if cancel:
+            body["cancel"] = True
+        data = await self._request_json("POST", "/runtime-card/consume", json_body=body)
         return data if isinstance(data, dict) else {}
 
     async def create_runtime_approval_request(
@@ -2327,20 +2383,45 @@ def _canon_channel_prompt(
     )
 
 
+def _format_contact_card_text(message: dict[str, Any]) -> str:
+    card = message.get("contactCard")
+    if not isinstance(card, dict):
+        return "[Contact card]"
+
+    display_name = (_first_string(card, "displayName") or "Unknown").strip() or "Unknown"
+    user_id = _first_string(card, "userId")
+    user_type = _first_string(card, "userType")
+    owner_name = _first_string(card, "ownerName")
+    about = _first_string(card, "about")
+
+    parts: list[str] = []
+    if user_type:
+        parts.append(user_type)
+    if user_id:
+        parts.append(f"userId: {user_id}")
+    if owner_name:
+        parts.append(f"owner: {owner_name}")
+    if about:
+        parts.append(f"about: {about}")
+
+    summary = f'[Contact card] "{display_name}"'
+    if parts:
+        summary = f"{summary} - {'; '.join(parts)}"
+
+    text = message.get("text")
+    if isinstance(text, str) and text.strip():
+        return f"{summary}\n{text.strip()}"
+    return summary
+
+
 def _message_text(message: dict[str, Any]) -> str:
+    content_type = message.get("contentType")
+    if content_type == "contact_card":
+        return _format_contact_card_text(message)
+
     text = message.get("text")
     if isinstance(text, str) and text.strip():
         return text
-
-    content_type = message.get("contentType")
-    if content_type == "contact_card":
-        card = message.get("contactCard")
-        name = (
-            _first_string(card, "displayName", "userId")
-            if isinstance(card, dict)
-            else None
-        )
-        return f"[Contact card: {name}]" if name else "[Contact card]"
 
     attachments = message.get("attachments")
     if isinstance(attachments, list) and attachments:

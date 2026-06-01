@@ -787,6 +787,14 @@ def validate_toolset(name: str) -> bool:
         return True
     if name in _get_plugin_toolset_names():
         return True
+    if name.startswith("hermes-"):
+        try:
+            from gateway.platform_registry import platform_registry
+
+            if platform_registry.is_registered(name[len("hermes-"):]):
+                return True
+        except Exception:
+            pass
     return name in _get_registry_toolset_aliases()
 
 

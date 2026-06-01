@@ -13,6 +13,7 @@ import secrets
 import subprocess
 import time
 import wave
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1650,9 +1651,19 @@ def _create_pcm_streaming_track(target_rate: int):
                 maxsize=_PCM_STREAMING_QUEUE_MAXSIZE
             )
             # Persistent resampler: phase continuity across frames (M1).
+            # frame_size chunks output into 20ms frames; a single large TTS
+            # chunk therefore resamples to MULTIPLE output frames in one
+            # resample() call (e.g. 12000 samples -> 12x 960-sample frames).
+            self._frame_size = target_rate // 50
             self._resampler = AudioResampler(
-                format="s16", layout="mono", rate=target_rate
+                format="s16",
+                layout="mono",
+                rate=target_rate,
+                frame_size=self._frame_size,
             )
+            # Buffer for resampled frames not yet emitted: resample() can return
+            # more than one frame, and recv() emits one per call (drained FIFO).
+            self._pending_out: deque = deque()
             self._pts = 0
             self._time_base = fractions.Fraction(1, target_rate)
             self._start_time = 0.0
@@ -1679,10 +1690,19 @@ def _create_pcm_streaming_track(target_rate: int):
                 except asyncio.QueueEmpty:
                     break
                 count += 1
+            # Barge-in must also drop already-resampled-but-unsent frames, else
+            # buffered audio keeps playing after the flush. The transport derives
+            # its own dropped-frame metric from its pending list and ignores this
+            # return value, so counting these toward the total is safe.
+            count += len(self._pending_out)
+            self._pending_out.clear()
             return count
 
         async def recv(self):
             await self._pace()
+            # Drain any frames left over from a prior multi-frame resample().
+            if self._pending_out:
+                return self._pending_out.popleft()
             try:
                 frame = self._queue.get_nowait()
             except asyncio.QueueEmpty:
@@ -1695,7 +1715,9 @@ def _create_pcm_streaming_track(target_rate: int):
                 converted.pts = self._pts
                 converted.time_base = self._time_base
                 self._pts += samples
-                return converted
+                self._pending_out.append(converted)
+            if self._pending_out:
+                return self._pending_out.popleft()
             # Resampler buffered everything (0 output frames): emit silence.
             return self._silence_frame()
 

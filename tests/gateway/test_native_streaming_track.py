@@ -90,6 +90,43 @@ async def test_track_resampler_continuity_across_frames():
     assert abs(total_out - 3 * total_in) <= 96  # within ~one 48k frame
 
 
+async def test_recv_drains_multiple_resampler_frames():
+    pytest.importorskip("aiortc")
+    pytest.importorskip("av")
+    from gateway.calls.native.aiortc_engine import _create_pcm_streaming_track
+
+    track = _create_pcm_streaming_track(48000)
+    # A single LARGE 16k input frame (4000 samples, 8000 bytes int16) resamples
+    # to ~12000 samples at 48k, which spans MORE than one output AudioFrame.
+    # av.AudioResampler.resample() returns >1 frame; the pre-fix recv() returned
+    # only the first and discarded the rest, falling short of the ~3x count.
+    input_samples = 4000
+    await track.enqueue(_make_16k_frame(input_samples))
+
+    real_frames = []
+    last_pts = -1
+    for _ in range(40):
+        out = await asyncio.wait_for(track.recv(), timeout=1.0)
+        samples = int(getattr(out, "samples", 0) or 0)
+        pts = int(getattr(out, "pts", 0) or 0)
+        assert pts > last_pts  # pts strictly monotonically increasing
+        last_pts = pts
+        # Silence fallback frames carry exactly target_rate//50 (= 960) samples
+        # of zeros once the resampled audio is exhausted; the real resampled
+        # frames are the ones we accumulate until we hit that fallback.
+        if not out.to_ndarray().any():
+            break
+        real_frames.append(out)
+
+    # (a) More than one real resampled frame returned (nothing discarded).
+    assert len(real_frames) > 1
+    # (b) Total samples across drained real frames ~= 3x input (16k -> 48k).
+    # The resampler holds back a partial trailing frame (< one frame_size of
+    # 960 samples) until the next input/flush, so allow up to one frame of slack.
+    total_out = sum(int(getattr(f, "samples", 0) or 0) for f in real_frames)
+    assert abs(total_out - 3 * input_samples) <= 960  # within ~one 48k frame
+
+
 async def test_direct_feed_accumulator_calls_process_pcm16_and_ignores_ack():
     pytest.importorskip("aiortc")
     pytest.importorskip("av")

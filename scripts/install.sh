@@ -2332,9 +2332,19 @@ postinstall_mode() {
 install_desktop() {
     local desktop_dir="$INSTALL_DIR/apps/desktop"
 
+    # The desktop stage only runs when a build is explicitly requested
+    # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
+    # failure, not a silent skip — a silent skip yields a "complete" install
+    # with no app and a confusing "couldn't find a built desktop" at launch.
+    # Try the Hermes-managed Node first (check_node adds $HERMES_HOME/node/bin
+    # to PATH or installs it) before giving up.
     if ! command -v npm >/dev/null 2>&1; then
-        log_warn "Skipping desktop build (Node.js / npm not on PATH)"
-        return 0
+        check_node
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        log_error "Cannot build desktop app: Node.js / npm unavailable"
+        log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
+        return 1
     fi
     if [ ! -f "$desktop_dir/package.json" ]; then
         log_warn "Skipping desktop build (apps/desktop not present in checkout)"
@@ -2472,6 +2482,11 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             require_install_dir
+            # Each stage runs in its own process, so the Hermes-managed Node
+            # provisioned during prerequisites/node-deps (at $HERMES_HOME/node/bin)
+            # isn't on PATH here. check_node re-adds it (or installs if missing)
+            # so install_desktop can find npm instead of silently skipping.
+            check_node
             install_desktop
             ;;
         complete)

@@ -326,6 +326,32 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
     return True
 
 
+def _extract_tirith_binary(tar: tarfile.TarFile, dest_dir: str, log) -> tuple[str | None, str]:
+    """Extract the tirith binary from a release archive into dest_dir."""
+    for member in tar.getmembers():
+        if member.name == "tirith" or member.name.endswith("/tirith"):
+            if ".." in member.name:
+                continue
+            if not member.isfile():
+                log("tirith archive member is not a regular file: %s", member.name)
+                return None, "binary_not_regular_file"
+            src_file = tar.extractfile(member)
+            if src_file is None:
+                log("tirith binary could not be read from archive")
+                return None, "binary_extract_failed"
+
+            dest_path = os.path.join(dest_dir, "tirith")
+            try:
+                with open(dest_path, "wb") as out:
+                    shutil.copyfileobj(src_file, out)
+            finally:
+                src_file.close()
+            return dest_path, ""
+
+    log("tirith binary not found in archive")
+    return None, "binary_not_in_archive"
+
+
 def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     """Download and install tirith to $HERMES_HOME/bin/tirith.
 
@@ -394,19 +420,10 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             return None, "checksum_failed"
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
-            for member in tar.getmembers():
-                if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
-                        continue
-                    member.name = "tirith"
-                    tar.extract(member, tmpdir)
-                    break
-            else:
-                log("tirith binary not found in archive")
-                return None, "binary_not_in_archive"
+            src, reason = _extract_tirith_binary(tar, tmpdir, log)
+            if src is None:
+                return None, reason
 
-        src = os.path.join(tmpdir, "tirith")
         dest = os.path.join(_hermes_bin_dir(), "tirith")
         try:
             shutil.move(src, dest)
@@ -771,4 +788,33 @@ def check_command_security(command: str) -> dict:
         elif action == "warn":
             summary = "security warning detected (details unavailable)"
 
+    # Suppress warn verdicts that consist solely of a lookalike_tld finding for
+    # the .app TLD.  .app is a legitimate gTLD used by many production services
+    # and the "can be confused with file extensions" heuristic generates false
+    # positives for normal API calls.  Any other finding (including other
+    # lookalike_tld entries for non-.app TLDs) preserves the warn action.
+    if action == "warn" and findings:
+        non_suppressible = [f for f in findings if not _is_app_tld_finding(f)]
+        if not non_suppressible:
+            action = "allow"
+            findings = []
+            summary = ""
+
     return {"action": action, "findings": findings, "summary": summary}
+
+
+def _is_app_tld_finding(finding: dict) -> bool:
+    """Return True if this finding is a lookalike_tld warning for the .app TLD only.
+
+    Checks the rule_id and inspects common value/detail field names that
+    Tirith may use to carry the TLD string.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("rule_id") != "lookalike_tld":
+        return False
+    for field in ("value", "tld", "detail", "description", "message"):
+        val = finding.get(field)
+        if val is not None and ".app" in str(val).lower():
+            return True
+    return False

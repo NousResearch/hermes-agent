@@ -55,6 +55,40 @@ If scan-to-create is not available, the wizard falls back to manual input:
 Keep the App Secret private. Anyone with it can impersonate your app.
 :::
 
+### Configure Permissions
+
+In the Feishu developer console, go to **Permission Management** and add the following scopes. You can bulk-import them in the permissions page.
+
+**Required permissions:**
+
+| Scope | Purpose |
+|-------|---------|
+| `im:message` | Receive and read messages |
+| `im:message:send_as_bot` | Send messages as the bot |
+| `im:resource` | Access images, files, and audio sent by users |
+| `im:chat` | Access chat/group metadata |
+| `im:chat:readonly` | Read chat list and membership |
+
+**Recommended permissions (for full functionality):**
+
+| Scope | Purpose |
+|-------|---------|
+| `im:message.reactions:readonly` | Receive emoji reaction events |
+| `admin:app.info:readonly` | Auto-detect bot identity for @mention gating |
+| `contact:user.id:readonly` | Resolve user IDs for allowlist matching |
+
+### Configure Events
+
+In **Events and Callbacks**:
+
+1. Set the connection mode to **Long Connection (WebSocket)** (recommended) or configure a webhook URL
+2. In the **Event Configuration** section, subscribe to:
+   - `im.message.receive_v1` — required for receiving messages
+
+### Publish the App
+
+After configuring permissions and events, go to **Version Management** and publish a new version of the app. The permissions won't take effect until a version is published and approved (for enterprise apps, this may require admin approval).
+
 ## Step 2: Choose a Connection Mode
 
 ### Recommended: WebSocket mode
@@ -93,7 +127,7 @@ FEISHU_WEBHOOK_PORT=8765         # default: 8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console.
+When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. The challenge response is gated on `FEISHU_VERIFICATION_TOKEN` when set — challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data.
 
 ## Step 3: Configure Hermes
 

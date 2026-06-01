@@ -76,6 +76,10 @@ type Props = {
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
   readonly onHoverAt: (col: number, row: number) => void
+  // Copy the active fullscreen text selection without clearing the highlight.
+  // Used for terminal-native right-click-copy behaviour.
+  readonly onCopySelectionNoClear: () => Promise<string>
+  readonly getSelectedText: () => string
   // Look up the OSC 8 hyperlink at (col, row) synchronously at click
   // time. Returns the URL or undefined. The browser-open is deferred by
   // MULTI_CLICK_TIMEOUT_MS so double-click can cancel it.
@@ -631,6 +635,28 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
+
+      if (baseButton === 2 && hasSelection(sel)) {
+        if ((m.button & 0x20) !== 0) {
+          return
+        }
+
+        if (!app.props.getSelectedText()) {
+          return
+        }
+
+        void app.props
+          .onCopySelectionNoClear()
+          .then(text => {
+            if (!text) {
+              app.props.onMouseDownAt(col, row, baseButton)
+            }
+          })
+          .catch(() => app.props.onMouseDownAt(col, row, baseButton))
+
+        return
+      }
+
       app.props.onMouseDownAt(col, row, baseButton)
 
       return

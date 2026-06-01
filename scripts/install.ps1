@@ -1,11 +1,11 @@
-﻿# ============================================================================
+# ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
 # Uses uv for fast Python provisioning and package management.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+#   iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 #
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
@@ -16,8 +16,15 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
-    [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent",
+    # -Commit and -Tag are higher-precedence variants of -Branch for users
+    # who need reproducible installs (desktop installer pinning, CI, release
+    # bundles).  When set, the repository stage clones $Branch (faster than
+    # cloning the full default-branch history) and then `git checkout`s the
+    # exact ref.  Precedence: Commit > Tag > Branch.
+    [string]$Commit = "",
+    [string]$Tag = "",
+    [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
+    [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
@@ -28,7 +35,28 @@ param(
     [string]$Stage,
     [switch]$ProtocolVersion,
     [switch]$NonInteractive,
-    [switch]$Json
+    [switch]$Json,
+
+    # --- Ensure mode (dep_ensure.py entry point) ---
+    [string]$Ensure = "",
+    [switch]$PostInstall,
+
+    # --- Desktop GUI build (opt-in) ---
+    # When set, install.ps1 includes Stage-Desktop in the manifest and
+    # builds apps/desktop into a launchable Hermes.exe.
+    #
+    # Why opt-in:
+    #   * Hermes-Setup.exe (the signed Tauri bootstrap installer) passes
+    #     -IncludeDesktop so a user who installed via the GUI ends up
+    #     with a launchable desktop binary.
+    #   * The Electron desktop's own bootstrap-runner.cjs runs install.ps1
+    #     from inside an already-launched Hermes.exe; if THAT recursively
+    #     built apps/desktop it would try to overwrite the live Hermes.exe
+    #     on disk and fail. The recursive path omits the flag.
+    #   * The canonical CLI one-liner (irm | iex) omits the flag too;
+    #     terminal users don't need a desktop binary built for them, and
+    #     `hermes desktop` already builds on demand.
+    [switch]$IncludeDesktop
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +104,55 @@ $InstallStageProtocolVersion = 1
 
 # ============================================================================
 # Helper functions
+
+# Return the real OS processor architecture as a lowercase string suitable for
+# Node.js / electron download URL slugs: "arm64", "x64", or "x86".
+#
+# Why not just trust [Environment]::Is64BitOperatingSystem or
+# [RuntimeInformation]::OSArchitecture?  On Windows on ARM, when this script
+# is invoked from Windows PowerShell 5.1 (the default `powershell.exe`) or
+# any x64 PowerShell host, the process runs under Prism x64 emulation and
+# BOTH of those APIs report `X64` -- they describe the emulated view, not
+# the real OS.  We've seen this concretely on Snapdragon X1 hardware: an
+# ARM64-based Surface Laptop returns OSArchitecture=X64 from an emulated
+# PowerShell session.
+#
+# Win32_Processor.Architecture is invariant to emulation.  Values:
+#   0=x86, 5=ARM, 9=AMD64/x64, 12=ARM64.  We fall back to
+#   PROCESSOR_ARCHITEW6432 (set on WoW64 with the real OS arch) and then
+#   PROCESSOR_ARCHITECTURE so we still produce a sensible answer if CIM
+#   isn't available (locked-down WMI, container, etc.).
+function Get-WindowsArch {
+    try {
+        $proc = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop |
+            Select-Object -First 1
+        switch ([int]$proc.Architecture) {
+            12 { return "arm64" }
+            9  { return "x64" }
+            0  { return "x86" }
+            5  { return "arm" }
+        }
+    } catch {
+        # CIM unavailable -- fall through to env-var path
+    }
+
+    $envArch = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+    switch ($envArch) {
+        "ARM64" { return "arm64" }
+        "AMD64" { return "x64" }
+        "x86"   { return "x86" }
+        default {
+            # Last-resort: respect 64-bitness so we don't ship a 32-bit
+            # toolchain to anyone.
+            if ([Environment]::Is64BitOperatingSystem) { return "x64" } else { return "x86" }
+        }
+    }
+}
+
 # ============================================================================
 
 function Write-Banner {
@@ -106,6 +183,105 @@ function Write-Warn {
 function Write-Err {
     param([string]$Message)
     Write-Host "[X] $Message" -ForegroundColor Red
+}
+
+# --- Ensure-mode helpers ---
+
+function Resolve-NpmCmd {
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) { return $null }
+    $npmExe = $npmCmd.Source
+    if ($npmExe -like "*.ps1") {
+        $npmCmdSibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+        if (Test-Path $npmCmdSibling) { return $npmCmdSibling }
+    }
+    return $npmExe
+}
+
+function Find-SystemBrowser {
+    $candidates = @(
+        "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "${env:LOCALAPPDATA}\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles}\Chromium\Application\chrome.exe",
+        "${env:LOCALAPPDATA}\Chromium\Application\chrome.exe"
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+function Write-BrowserEnv {
+    param([string]$BrowserPath)
+    if (-not (Test-Path $HermesHome)) {
+        New-Item -ItemType Directory -Force -Path $HermesHome | Out-Null
+    }
+    $envFile = Join-Path $HermesHome ".env"
+    if (-not (Test-Path $envFile)) {
+        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+        return
+    }
+    $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
+    if ($content -and $content -match "AGENT_BROWSER_EXECUTABLE_PATH=") { return }
+    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+}
+
+function Install-AgentBrowser {
+    param([switch]$SkipChromium)
+    $npm = Resolve-NpmCmd
+    if (-not $npm) {
+        Write-Err "npm not found -- install Node.js first"
+        throw "npm not found"
+    }
+
+    Write-Info "Installing agent-browser via npm -g --prefix..."
+    $prefixDir = Join-Path $HermesHome "node"
+    if (-not (Test-Path $prefixDir)) {
+        New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
+    }
+    $npmLog = [System.IO.Path]::GetTempFileName()
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    $npmExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($npmExit -ne 0) {
+        $npmDetail = Get-Content $npmLog -Raw -ErrorAction SilentlyContinue
+        Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
+        Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
+        throw "npm install failed"
+    }
+    Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
+
+    if (-not $SkipChromium) {
+        $sysBrowser = Find-SystemBrowser
+        if ($sysBrowser) {
+            Write-BrowserEnv -BrowserPath $sysBrowser
+            Write-Info "System browser detected -- skipping Chromium download"
+        } else {
+            $abExe = Join-Path $prefixDir "agent-browser.cmd"
+            if (Test-Path $abExe) {
+                Write-Info "Installing Chromium via agent-browser install..."
+                $abLog = [System.IO.Path]::GetTempFileName()
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                & $abExe install 2>&1 | Tee-Object -FilePath $abLog | Out-Null
+                $abExit = $LASTEXITCODE
+                $ErrorActionPreference = $prevEAP
+                if ($abExit -ne 0) {
+                    $abDetail = Get-Content $abLog -Raw -ErrorAction SilentlyContinue
+                    Write-Warn "Chromium install failed (exit $abExit): $abDetail"
+                }
+                Remove-Item $abLog -Force -ErrorAction SilentlyContinue
+            } else {
+                Write-Warn "agent-browser.cmd not found at $abExe"
+            }
+        }
+    }
+    Write-Success "Agent-browser ready"
 }
 
 # ============================================================================
@@ -415,46 +591,49 @@ function Install-Git {
     Write-Info "(no admin rights required; isolated from any system Git install)"
 
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) {
-            # Detect ARM64 vs x64 explicitly; PortableGit ships separate assets.
-            if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
-                "arm64"
-            } else {
-                "64-bit"
-            }
+        $arch = Get-WindowsArch
+        if ($arch -eq 'arm64') {
+            $assetTag = 'arm64'
+            $downloadIsZip = $false
+        } elseif ($arch -eq 'x64') {
+            $assetTag = '64-bit'
+            $downloadIsZip = $false
         } else {
-            # PortableGit does not ship a 32-bit build -- fall back to MinGit 32-bit
-            # with a warning that bash-based features will be unavailable.
-            "32-bit-mingit"
+            # PortableGit does not ship 32-bit / arm builds -- fall back to MinGit
+            # 32-bit with a warning that bash-based features will be unavailable.
+            $assetTag = '32-bit-mingit'
+            $downloadIsZip = $true
         }
 
-        $releaseApi = "https://api.github.com/repos/git-for-windows/git/releases/latest"
-        $release = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ "User-Agent" = "hermes-installer" }
+        # Pinned git-for-windows release. We deliberately do NOT hit
+        # api.github.com/repos/.../releases/latest here: that endpoint
+        # is rate-limited to 60 requests/hour/IP for unauthenticated
+        # callers, and users behind CGNAT / corporate NAT / dorm WiFi
+        # routinely hit the limit, breaking the installer.
+        # Static github.com/.../releases/download/<tag>/<asset> URLs
+        # are not subject to the API rate limit.
+        $gitTag    = "v2.54.0.windows.1"
+        $gitVer    = "2.54.0"
+        $gitVerTag = "$gitVer.windows.1"
 
         if ($arch -eq "32-bit-mingit") {
             Write-Warn "32-bit Windows detected -- PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
-            $assetPattern = "MinGit-*-32-bit.zip"
+            $assetName    = "MinGit-$gitVer-32-bit.zip"
             $downloadIsZip = $true
         } elseif ($arch -eq "arm64") {
-            $assetPattern = "PortableGit-*-arm64.7z.exe"
+            $assetName    = "PortableGit-$gitVer-arm64.7z.exe"
             $downloadIsZip = $false
         } else {
-            $assetPattern = "PortableGit-*-64-bit.7z.exe"
+            $assetName    = "PortableGit-$gitVer-64-bit.7z.exe"
             $downloadIsZip = $false
         }
 
-        $asset = $release.assets | Where-Object { $_.name -like $assetPattern } | Select-Object -First 1
-
-        if (-not $asset) {
-            throw "Could not find $assetPattern in latest git-for-windows release"
-        }
-
-        $downloadUrl = $asset.browser_download_url
+        $downloadUrl = "https://github.com/git-for-windows/git/releases/download/$gitTag/$assetName"
         $downloadExt = if ($downloadIsZip) { "zip" } else { "7z.exe" }
-        $tmpFile = "$env:TEMP\$($asset.name)"
+        $tmpFile = "$env:TEMP\$assetName"
         $gitDir = "$HermesHome\git"
 
-        Write-Info "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)..."
+        Write-Info "Downloading $assetName (Git for Windows $gitVerTag)..."
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
 
         if (Test-Path $gitDir) {
@@ -609,7 +788,7 @@ function Test-Node {
     Write-Info "Downloading portable Node.js $NodeVersion to $HermesHome\node\ ..."
     Write-Info "(no admin rights required; isolated from any system Node install)"
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+        $arch = Get-WindowsArch
         $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
         $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
         $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
@@ -671,7 +850,19 @@ function Test-Node {
             # check the post-condition.  See the long comment in Install-Uv
             # for the same pattern.
             $ErrorActionPreference = "Continue"
-            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # On ARM64, force winget to fetch the ARM64 installer.  Without
+            # the explicit override, winget on WoW64 sometimes still resolves
+            # to x64 manifests, leaving us with an emulated Node toolchain
+            # even after a "successful" install.  The OpenJS manifest does
+            # publish an arm64 installer, so this is safe.
+            $wingetArgs = @(
+                'install','OpenJS.NodeJS.LTS','--silent',
+                '--accept-package-agreements','--accept-source-agreements'
+            )
+            if ((Get-WindowsArch) -eq 'arm64') {
+                $wingetArgs += @('--architecture','arm64')
+            }
+            winget @wingetArgs 2>&1 | Out-Null
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -744,22 +935,57 @@ function Install-SystemPackages {
     # Try winget first (most common on modern Windows)
     if ($hasWinget) {
         Write-Info "Installing $description via winget..."
+        # Per-package log paths -- key the lookup by package id so we can
+        # decide AFTER the post-install Get-Command check whether to keep
+        # the log (still missing -> keep as breadcrumb) or delete it (now
+        # present -> happy path, no clutter).
+        $pkgLogs = @{}
         foreach ($pkg in $wingetPkgs) {
+            $log = "$env:TEMP\hermes-winget-$($pkg -replace '[^A-Za-z0-9]','_')-$(Get-Random).log"
+            $pkgLogs[$pkg] = $log
+            # --source winget pins us to the github-backed source.  Without this,
+            # a broken msstore source (cert validation failures like 0x8a15005e
+            # are common on Windows-on-ARM and some corporate networks) makes
+            # winget bail with "please specify --source" *before* attempting any
+            # install -- and it exits 0, so the surrounding try/catch never fires.
+            # We don't ship anything from msstore, so pinning is safe.
             try {
-                winget install $pkg --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            } catch { }
+                $output = winget install --exact --id $pkg --source winget --silent `
+                    --accept-package-agreements --accept-source-agreements 2>&1
+                $output | Out-File -FilePath $log -Encoding utf8
+                "winget exit: $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+            } catch {
+                $_ | Out-File -FilePath $log -Encoding utf8 -Append
+                "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
+            }
         }
-        # Refresh PATH and recheck
-        $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+        # Refresh PATH from both env-var hives AND winget's alias shim directory.
+        # winget exposes packages via "command line aliases" in %LOCALAPPDATA%\
+        # Microsoft\WinGet\Links, which is added to PATH by the AppExecutionAlias
+        # machinery only in *newly-spawned* shells -- not the current process.
+        # Without this addition, Get-Command rg below would falsely return null
+        # immediately after a successful install.
+        $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
+        $envPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if (Test-Path $wingetLinks) {
+            $envPath = "$envPath;$wingetLinks"
+        }
+        $env:Path = $envPath
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed"
             $script:HasRipgrep = $true
             $needRipgrep = $false
+            Remove-Item -Path $pkgLogs["BurntSushi.ripgrep.MSVC"] -ErrorAction SilentlyContinue
+        } elseif ($pkgLogs.ContainsKey("BurntSushi.ripgrep.MSVC")) {
+            Write-Warn "winget could not install ripgrep; details: $($pkgLogs['BurntSushi.ripgrep.MSVC'])"
         }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed"
             $script:HasFfmpeg = $true
             $needFfmpeg = $false
+            Remove-Item -Path $pkgLogs["Gyan.FFmpeg"] -ErrorAction SilentlyContinue
+        } elseif ($pkgLogs.ContainsKey("Gyan.FFmpeg")) {
+            Write-Warn "winget could not install ffmpeg; details: $($pkgLogs['Gyan.FFmpeg'])"
         }
         if (-not $needRipgrep -and -not $needFfmpeg) { return }
     }
@@ -852,14 +1078,36 @@ function Install-Repository {
         if ($repoValid) {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
+            # Wrap the entire fetch+checkout block in EAP=Continue so git's
+            # routine stderr output (e.g. 'From <url>' info lines emitted by
+            # `git fetch`) doesn't terminate the script under the global
+            # EAP=Stop.  We rely on $LASTEXITCODE for actual failures.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             try {
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
-                git -c windows.appendAtomically=false checkout $Branch
-                if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                git -c windows.appendAtomically=false pull origin $Branch
-                if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                # Precedence: Commit > Tag > Branch.  Commit and Tag check
+                # out as detached HEAD intentionally -- they're meant to be
+                # reproducible pins, not branches the user pulls into.
+                if ($Commit) {
+                    # Make sure we have the commit locally (a tag-less commit
+                    # SHA isn't always reachable from any one branch fetch).
+                    git -c windows.appendAtomically=false fetch origin $Commit
+                    git -c windows.appendAtomically=false checkout --detach $Commit
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                } elseif ($Tag) {
+                    git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                    git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
+                } else {
+                    git -c windows.appendAtomically=false checkout $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+                    git -c windows.appendAtomically=false pull origin $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                }
             } finally {
+                $ErrorActionPreference = $prevEAP
                 Pop-Location
             }
             $didUpdate = $true
@@ -917,8 +1165,20 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Warn "Git clone failed -- downloading ZIP archive instead..."
             try {
-                $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
-                $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
+                # Pick the ZIP URL for the most-specific ref the caller asked
+                # for.  GitHub supports archive URLs for commits, tags, and
+                # branches; we honour Commit > Tag > Branch.
+                if ($Commit) {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipLabel = $Commit
+                } elseif ($Tag) {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipLabel = $Tag
+                } else {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipLabel = $Branch
+                }
+                $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"
                 $extractPath = "$env:TEMP\hermes-agent-extract"
 
                 Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
@@ -959,6 +1219,37 @@ function Install-Repository {
     # Set per-repo config (harmless if it fails)
     Push-Location $InstallDir
     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+
+    # Post-clone pin: when a clone (or ZIP-fallback init) just landed us on
+    # $Branch's tip, honour the higher-precedence $Commit / $Tag by checking
+    # the exact ref out as a detached HEAD.  Skipped for the in-place update
+    # path (above) since that already routed via the same precedence.
+    if (-not $didUpdate) {
+        # Same EAP=Continue wrap as the update path -- git fetch's 'From <url>'
+        # info line goes to stderr and would terminate the script under the
+        # global EAP=Stop otherwise.  We check $LASTEXITCODE for real errors.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            if ($Commit) {
+                Write-Info "Pinning to commit $Commit..."
+                git -c windows.appendAtomically=false fetch origin $Commit
+                git -c windows.appendAtomically=false checkout --detach $Commit
+                if ($LASTEXITCODE -ne 0) {
+                    throw "git checkout $Commit failed (exit $LASTEXITCODE)"
+                }
+            } elseif ($Tag) {
+                Write-Info "Pinning to tag $Tag..."
+                git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                if ($LASTEXITCODE -ne 0) {
+                    throw "git checkout tag $Tag failed (exit $LASTEXITCODE)"
+                }
+            }
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
+    }
 
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules..."
@@ -1233,6 +1524,83 @@ function Set-PathVariable {
     Write-Success "hermes command ready"
 }
 
+function Write-BootstrapMarker {
+    # Writes $InstallDir\.hermes-bootstrap-complete which tells the Hermes
+    # desktop app (apps/desktop/electron/main.cjs) "install.ps1 ran
+    # successfully — DON'T trigger the legacy first-launch bootstrap
+    # runner."
+    #
+    # Schema mirrors what main.cjs's writeBootstrapMarker() / isBootstrap
+    # Complete() expect. Keep this in lockstep when either side changes:
+    #   apps/desktop/electron/main.cjs lines 1199-1222
+    #   BOOTSTRAP_MARKER_SCHEMA_VERSION = 1 (line 187)
+    #
+    # Pinned commit/branch come from -Commit + -Branch flags (passed by
+    # Hermes-Setup.exe) or fall back to whatever git resolves in the
+    # checkout. The desktop validates schemaVersion + pinnedCommit
+    # length but doesn't enforce that HEAD matches the pin (users
+    # update via `hermes update` which moves HEAD legitimately).
+    if (-not (Test-Path $InstallDir)) {
+        Write-Warn "Skipping bootstrap marker: $InstallDir doesn't exist"
+        return
+    }
+
+    # Resolve the pinned commit: explicit -Commit wins, otherwise read
+    # the checkout's HEAD via git. If git can't run, leave commit empty
+    # and the marker will fail desktop validation (pinnedCommit.length
+    # >= 7) — better to be invalid than wrong.
+    $pinnedCommit = $Commit
+    if (-not $pinnedCommit) {
+        # PS 5.1 doesn't support the ?. null-conditional operator, so
+        # check Get-Command's result explicitly before reading .Source.
+        $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+        $gitExe = if ($gitCmd) { $gitCmd.Source } else { $null }
+        if ($gitExe) {
+            Push-Location $InstallDir
+            try {
+                $resolved = & $gitExe rev-parse HEAD 2>$null
+                if ($LASTEXITCODE -eq 0 -and $resolved) {
+                    $pinnedCommit = $resolved.Trim()
+                }
+            } catch {
+                # Ignore — pinnedCommit stays empty, marker stays invalid,
+                # desktop falls through to its legacy bootstrap path.
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    $pinnedBranch = $Branch
+    if (-not $pinnedBranch) {
+        $pinnedBranch = "main"  # install.ps1's own default for -Branch
+    }
+
+    $markerPath = Join-Path $InstallDir ".hermes-bootstrap-complete"
+    $marker = [ordered]@{
+        schemaVersion = 1
+        pinnedCommit  = $pinnedCommit
+        pinnedBranch  = $pinnedBranch
+        completedAt   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        # desktopVersion field intentionally omitted — only the desktop
+        # app knows its own version, and the marker validator doesn't
+        # require it. The desktop fills it in if/when it writes its
+        # own marker (e.g. after a future in-app upgrade).
+    }
+    $json = $marker | ConvertTo-Json -Compress:$false
+
+    # Write WITHOUT a UTF-8 BOM. PowerShell 5.1's `Set-Content -Encoding UTF8`
+    # always emits a BOM, and Node's plain JSON.parse rejects the BOM as an
+    # unexpected character — so a BOM'd marker would silently fail the
+    # desktop's readJson(), make isBootstrapComplete() return null, and the
+    # desktop would re-run the legacy bootstrap runner anyway. Defeats the
+    # whole point. Use the .NET API directly for BOM-less UTF-8.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($markerPath, $json, $utf8NoBom)
+
+    Write-Success "Bootstrap marker written: $markerPath"
+}
+
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
@@ -1331,8 +1699,15 @@ Delete the contents (or this file) to use the default personality.
 
 function Install-NodeDeps {
     if (-not $HasNode) {
-        Write-Info "Skipping Node.js dependencies (Node not installed)"
-        return
+        # Cross-process driver mode (Hermes-Setup.exe runs each -Stage NAME
+        # in a fresh powershell.exe) means $script:HasNode set by Stage-Node
+        # in the previous process isn't visible here. Re-probe rather than
+        # trust the stale global — Stage-Node already ran successfully or
+        # the bootstrap would've aborted, so npm is reachable.
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            Write-Info "Skipping Node.js dependencies (Node not installed)"
+            return
+        }
     }
 
     # Resolve npm explicitly to npm.cmd, NOT npm.ps1.  Node.js on Windows
@@ -1543,6 +1918,249 @@ function Install-NodeDeps {
         Write-Info "Installing TUI dependencies..."
         $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
         [void](_Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe)
+    }
+}
+
+function Install-Desktop {
+    # Build apps/desktop into a launchable Hermes.exe. Only called from
+    # Stage-Desktop, which is itself only included in the manifest when
+    # -IncludeDesktop was passed to install.ps1.
+    #
+    # The workspace npm install at repo root (done by Install-NodeDeps for
+    # browser tools) does NOT pull apps/desktop's dependencies, because the
+    # browser-tools workspace at $InstallDir\package.json is a separate
+    # workspace from apps/*. We do a full root-level `npm install` here
+    # so the workspace resolves apps/desktop's deps (including Electron
+    # itself, ~150MB), then run `npm run pack` in apps/desktop which
+    # produces the unpacked binary at apps/desktop/release/<os>-unpacked/.
+    #
+    # The Tauri bootstrap installer's launch_hermes_desktop command
+    # resolves apps/desktop/release/win-unpacked/Hermes.exe directly,
+    # so an "unpacked" build (electron-builder --dir) is enough — we
+    # don't need to produce an NSIS/MSI artifact here.
+
+    if (-not $HasNode) {
+        # Cross-process driver mode: each `-Stage NAME` invocation runs in a
+        # fresh PowerShell process, so $script:HasNode set by Stage-Node
+        # in the previous process isn't visible. Re-detect rather than
+        # trusting the global.
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            Write-Warn "Skipping desktop build (Node.js / npm not on PATH)"
+            $script:_StageSkippedReason = "Node.js not available"
+            return
+        }
+    }
+
+    $desktopDir = "$InstallDir\apps\desktop"
+    if (-not (Test-Path "$desktopDir\package.json")) {
+        Write-Warn "Skipping desktop build (apps/desktop not present in checkout)"
+        $script:_StageSkippedReason = "apps/desktop not present"
+        return
+    }
+
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        Write-Warn "Skipping desktop build (npm not on PATH)"
+        $script:_StageSkippedReason = "npm not found"
+        return
+    }
+    $npmExe = $npmCmd.Source
+    if ($npmExe -like "*.ps1") {
+        $sibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+        if (Test-Path $sibling) { $npmExe = $sibling }
+    }
+
+    # 1. Workspace-level install so apps/desktop's deps (Electron, Vite,
+    # node-pty prebuilds, etc.) actually land in node_modules. This is
+    # the SAME `npm install` Install-NodeDeps does for browser tools,
+    # but at the root rather than the browser-tools workspace, so all
+    # apps/* workspaces resolve.
+    Write-Info "Installing desktop workspace dependencies (this includes Electron ~150MB, takes 1-3min)..."
+    Push-Location $InstallDir
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        # Drop --silent so npm emits its full progress + error trail.
+        # When this fails on a non-dev box (e.g. native-module build
+        # without VS Build Tools, ETARGET on a transitive, etc.), the
+        # actual reason needs to reach the Tauri installer's log; with
+        # --silent it was completely suppressed and the user just saw
+        # "exit 1" with no actionable detail.
+        #
+        # The streaming sink in bootstrap.rs's run_install_script
+        # captures every stdout/stderr line as it's emitted, so we don't
+        # need a side TEMP log file — the installer's bootstrap log
+        # IS the artifact a support engineer reads.
+        & $npmExe install 2>&1 | ForEach-Object { "$_" }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($code -ne 0) {
+            throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+        }
+        Write-Success "Desktop workspace dependencies installed"
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Pop-Location
+        throw
+    }
+    Pop-Location
+
+    # 2. Build apps/desktop. `npm run pack` runs:
+    #      assert-root-install + write-build-stamp + stage-native-deps +
+    #      tsc -b + vite build + electron-builder --dir
+    # The --dir mode produces an unpacked Hermes.exe in
+    # apps/desktop/release/win-unpacked/ without bundling NSIS/MSI;
+    # we don't need a distributable installer artifact, just a
+    # launchable binary the Tauri installer can spawn.
+    #
+    # CSC_IDENTITY_AUTO_DISCOVERY=false tells electron-builder we are
+    # NOT signing the output. Combined with signAndEditExecutable=false in
+    # apps/desktop/package.json's build.win block, electron-builder never
+    # invokes signtool and therefore never fetches/extracts winCodeSign
+    # (whose macOS symlinks crash 7-Zip on non-admin Windows — a dead end we
+    # are NOT trying to work around). The Hermes icon + product name are
+    # stamped onto Hermes.exe by our own rcedit step (Set-DesktopExeIdentity)
+    # AFTER this build, completely decoupled from electron-builder signing.
+    #
+    # WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD explicitly cleared as
+    # belt-and-suspenders: if the user's environment has them set
+    # for some other tool, electron-builder would still try to sign.
+    Write-Info "Building desktop app (this takes 1-3 minutes)..."
+    $buildLog = "$env:TEMP\hermes-desktop-build-$(Get-Random).log"
+    Push-Location $desktopDir
+    $prevEAP = $ErrorActionPreference
+    $prevCSCAuto = $env:CSC_IDENTITY_AUTO_DISCOVERY
+    $prevWinCscLink = $env:WIN_CSC_LINK
+    $prevWinCscKeyPassword = $env:WIN_CSC_KEY_PASSWORD
+    try {
+        $ErrorActionPreference = "Continue"
+        $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+        $env:WIN_CSC_LINK = ""
+        $env:WIN_CSC_KEY_PASSWORD = ""
+        & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($code -ne 0) {
+            $errText = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue
+            if ($errText) {
+                $snippet = if ($errText.Length -gt 1800) { $errText.Substring(0, 1800) + "..." } else { $errText }
+                Write-Info "  desktop build output:"
+                foreach ($line in $snippet -split "`n") { Write-Host "    $line" -ForegroundColor DarkGray }
+                Write-Info "  Full log: $buildLog"
+            }
+            throw "apps/desktop build failed (exit $code)"
+        }
+        Write-Success "Desktop app built"
+        Remove-Item -Force $buildLog -ErrorAction SilentlyContinue
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Pop-Location
+        throw
+    } finally {
+        # Restore env to whatever the caller had — don't leak our
+        # signing-off override into anything install.ps1 invokes later
+        # (Stage-PlatformSdks, etc.).
+        $env:CSC_IDENTITY_AUTO_DISCOVERY = $prevCSCAuto
+        $env:WIN_CSC_LINK = $prevWinCscLink
+        $env:WIN_CSC_KEY_PASSWORD = $prevWinCscKeyPassword
+    }
+    Pop-Location
+
+    # 3. Sanity-check the produced binary. Probe both arches so this works
+    # on x64 and arm64 build machines.
+    $exeCandidates = @(
+        "$desktopDir\release\win-unpacked\Hermes.exe",
+        "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
+    )
+    $found = $false
+    $desktopExe = $null
+    foreach ($cand in $exeCandidates) {
+        if (Test-Path $cand) {
+            Write-Success "Desktop ready: $cand"
+            $desktopExe = $cand
+            $found = $true
+            break
+        }
+    }
+    if (-not $found) {
+        throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
+    }
+
+    # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
+    #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.cjs)
+    #     during `npm run pack` above — for every build, so the installer's
+    #     --update rebuild stays branded too. No separate stamp step needed here.
+    #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
+    #     =false) because enabling it drags in signtool -> winCodeSign -> the
+    #     unfixable symlink crash; the afterPack hook runs rcedit directly.
+
+    # 4. Create Start Menu + Desktop shortcuts pointing DIRECTLY at the packed
+    #    Hermes.exe. We deliberately do NOT point them at `hermes desktop`: that
+    #    command rebuilds (npm install + electron-builder) on every launch,
+    #    which would cost minutes each time. The packed exe is the consumer —
+    #    launching it directly is instant, and updates flow through the
+    #    installer's --update path (which rebuilds once, then relaunches).
+    New-DesktopShortcuts -TargetExe $desktopExe
+}
+
+function New-DesktopShortcuts {
+    param([Parameter(Mandatory = $true)][string]$TargetExe)
+
+    # Best-effort: a shortcut failure must never fail an otherwise-good install.
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $workDir = Split-Path -Parent $TargetExe
+
+        # Prefer the standalone icon.ico (shipped beside the exe via
+        # electron-builder extraResources -> resources/icon.ico) over the exe's
+        # embedded resource. An explicit .ico path is more stable across update
+        # cycles: pointing at "$TargetExe,0" makes Windows cache the icon it
+        # extracted from the exe at shortcut-creation time, and that cached
+        # bitmap can persist (showing the OLD/Electron icon) even after the exe
+        # is re-stamped on update. A dedicated .ico sidesteps that extraction.
+        $iconIco = Join-Path $workDir 'resources\icon.ico'
+        if (Test-Path $iconIco) {
+            $iconLocation = "$iconIco,0"
+        } else {
+            $iconLocation = "$TargetExe,0"
+        }
+
+        $targets = @(
+            (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes.lnk'),
+            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk')
+        )
+
+        foreach ($lnkPath in $targets) {
+            try {
+                $parent = Split-Path -Parent $lnkPath
+                if (-not (Test-Path $parent)) {
+                    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+                }
+                $sc = $shell.CreateShortcut($lnkPath)
+                $sc.TargetPath = $TargetExe
+                $sc.WorkingDirectory = $workDir
+                $sc.IconLocation = $iconLocation
+                $sc.Description = 'Hermes Agent'
+                $sc.Save()
+                Write-Success "Shortcut created: $lnkPath"
+            } catch {
+                Write-Warn "Could not create shortcut $lnkPath : $($_.Exception.Message)"
+            }
+        }
+
+        # Bust the Windows shell icon cache so the desktop/Start-Menu shortcut
+        # repaints with the (possibly newly-stamped) icon instead of a stale
+        # cached bitmap. Critical on the --update path: the exe was re-stamped
+        # with the Hermes icon, but without this the shortcut can keep drawing
+        # the old Electron icon until the user manually refreshes / reboots.
+        # Best-effort and silent — never fail the install over a cosmetic cache.
+        try {
+            & ie4uinit.exe -show 2>$null
+        } catch {
+            # ie4uinit may be absent/renamed on some SKUs — ignore.
+        }
+    } catch {
+        Write-Warn "Skipping shortcut creation: $($_.Exception.Message)"
     }
 }
 
@@ -1903,9 +2521,18 @@ $InstallStages = @(
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
+)
+if ($IncludeDesktop) {
+    # Insert AFTER node-deps so workspace npm is already installed when
+    # the desktop build runs. Inserted only when explicitly requested
+    # (Hermes-Setup.exe), never via the irm|iex CLI one-liner.
+    $InstallStages += @{ Name = "desktop"; Title = "Building desktop app"; Category = "install"; NeedsUserInput = $false; Worker = "Stage-Desktop" }
+}
+$InstallStages += @(
     @{ Name = "path";             Title = "Adding Hermes to PATH";                Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-Path" }
     @{ Name = "config-templates"; Title = "Writing configuration templates";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-ConfigTemplates" }
     @{ Name = "platform-sdks";    Title = "Installing messaging platform SDKs";   Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-PlatformSdks" }
+    @{ Name = "bootstrap-marker"; Title = "Marking install complete";              Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-BootstrapMarker" }
     # Interactive stages.  In non-interactive mode these become no-ops; the
     # caller (GUI / CI) handles the equivalent UX themselves.
     @{ Name = "configure";        Title = "Configuring API keys and models";      Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Configure" }
@@ -1942,9 +2569,11 @@ function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
+function Stage-Desktop          { Install-Desktop }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }
+function Stage-BootstrapMarker  { Write-BootstrapMarker }
 function Stage-Configure        { Invoke-SetupWizard }
 function Stage-Gateway          { Start-GatewayIfConfigured }
 
@@ -2043,6 +2672,48 @@ function Invoke-AllStages {
     }
 }
 
+function Invoke-EnsureMode {
+    param([string]$Deps)
+    $depList = $Deps -split ","
+    foreach ($dep in $depList) {
+        $dep = $dep.Trim()
+        switch ($dep) {
+            "node" {
+                [void](Test-Node)
+                if (-not $script:HasNode) {
+                    Write-Err "Node.js could not be installed"
+                    exit 1
+                }
+            }
+            "browser" {
+                [void](Test-Node)
+                if ($script:HasNode) {
+                    Install-AgentBrowser
+                } else {
+                    Write-Err "Node.js is required for browser tools but could not be installed"
+                    exit 1
+                }
+            }
+            "ripgrep" {
+                Write-Info "ripgrep: install manually on Windows (scoop install ripgrep)"
+            }
+            "ffmpeg" {
+                Write-Info "ffmpeg: install manually on Windows (scoop install ffmpeg)"
+            }
+            default {
+                Write-Err "Unknown dependency: $dep"
+                exit 1
+            }
+        }
+    }
+}
+
+function Invoke-PostInstallMode {
+    Write-Info "Running post-install setup..."
+    Invoke-EnsureMode -Deps "node,browser"
+    Write-Info "Post-install complete"
+}
+
 function Main {
     Write-Banner
     Invoke-AllStages
@@ -2062,6 +2733,19 @@ function Main {
 # structured JSON error frame instead of a bare exception.
 
 try {
+    if ($Ensure -ne "") {
+        if ($PSBoundParameters.ContainsKey("Stage")) {
+            Write-Err "Cannot use -Ensure and -Stage simultaneously"
+            exit 1
+        }
+        Invoke-EnsureMode -Deps $Ensure
+        exit 0
+    }
+    if ($PostInstall) {
+        Invoke-PostInstallMode
+        exit 0
+    }
+
     if ($ProtocolVersion) {
         Write-Output $InstallStageProtocolVersion
         exit 0

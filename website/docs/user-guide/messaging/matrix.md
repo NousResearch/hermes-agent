@@ -345,6 +345,34 @@ Add this to your `~/.hermes/.env`:
 MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 ```
 
+## Room allowlist (`allowed_rooms`)
+
+Restrict the bot to a fixed set of Matrix rooms. When set, the bot **only** responds in rooms whose ID appears in the list — messages from any other room are silently ignored, even if the bot is mentioned.
+
+**DMs (direct chat rooms) are exempt** from this filter, so authorized users can always reach the bot one-on-one.
+
+```yaml
+matrix:
+  allowed_rooms:
+    - "!abc123def456:matrix.example.org"
+    - "!opsroom789:matrix.example.org"
+```
+
+Or via env var (comma-separated):
+
+```bash
+MATRIX_ALLOWED_ROOMS="!abc123def456:matrix.example.org,!opsroom789:matrix.example.org"
+```
+
+Behavior:
+
+- Empty / unset → no restriction (default).
+- Non-empty → room ID must be on the list. The check runs **before** any other gating (mention requirement, sender allowlist, etc.).
+- Use the room's **internal ID** (`!abc...:server`), not its alias (`#room:server`). You can find a room's internal ID in Element via Room → Settings → Advanced.
+
+See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
+
 :::tip
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
 :::

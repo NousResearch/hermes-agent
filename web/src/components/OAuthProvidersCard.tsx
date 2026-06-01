@@ -4,9 +4,7 @@ import {
   ShieldOff,
   ExternalLink,
   RefreshCw,
-  LogOut,
   Terminal,
-  LogIn,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -18,9 +16,9 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
 
@@ -105,13 +103,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
             </CardTitle>
           </div>
           <Button
-            size="sm"
-            outlined
+            ghost
+            size="icon"
+            className="text-muted-foreground hover:text-foreground"
             onClick={refresh}
             disabled={loading}
-            prefix={loading ? <Spinner /> : <RefreshCw />}
+            aria-label={t.common.refresh}
           >
-            {t.common.refresh}
+            {loading ? <Spinner /> : <RefreshCw />}
           </Button>
         </div>
         <CardDescription>
@@ -154,46 +153,57 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       <span className="font-medium text-sm">{p.name}</span>
                       <Badge
                         tone="outline"
-                        className="text-[11px] uppercase tracking-wide"
+                        className="text-xs tracking-wide"
                       >
                         {t.oauth.flowLabels[p.flow]}
                       </Badge>
                       {p.status.logged_in && (
-                        <Badge tone="success" className="text-[11px]">
+                        <Badge tone="success" className="text-xs">
                           {t.oauth.connected}
                         </Badge>
                       )}
                       {expiresLabel === "expired" && (
-                        <Badge tone="destructive" className="text-[11px]">
+                        <Badge tone="destructive" className="text-xs">
                           {t.oauth.expired}
                         </Badge>
                       )}
                       {expiresLabel && expiresLabel !== "expired" && (
-                        <Badge tone="outline" className="text-[11px]">
+                        <Badge tone="outline" className="text-xs">
                           {expiresLabel}
                         </Badge>
                       )}
                     </div>
                     {p.status.logged_in && p.status.token_preview && (
-                      <code className="text-xs font-mono-ui truncate">
-                        <span className="opacity-50">token </span>
+                      <span className="truncate text-xs font-mono-ui text-text-secondary">
+                        <span className="text-text-tertiary">token </span>
                         {p.status.token_preview}
                         {p.status.source_label && (
-                          <span className="opacity-40">
+                          <span className="text-text-tertiary">
                             {" "}
                             · {p.status.source_label}
                           </span>
                         )}
-                      </code>
+                      </span>
                     )}
                     {!p.status.logged_in && (
-                      <span className="text-xs text-muted-foreground/80">
-                        {t.oauth.notConnected.split("{command}")[0]}
-                        <code className="text-foreground bg-secondary/40 px-1">
-                          {p.cli_command}
-                        </code>
-                        {t.oauth.notConnected.split("{command}")[1]}
-                      </span>
+                      <>
+                        <span className="text-xs text-text-secondary">
+                          {t.oauth.notConnected.split("{command}")[0].trimEnd()}
+                          {t.oauth.notConnected.split("{command}")[1] ?? ""}
+                        </span>
+
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <code className="font-courier truncate text-xs opacity-60">
+                            {p.cli_command}
+                          </code>
+
+                          <CopyButton
+                            text={p.cli_command}
+                            label={t.oauth.cli}
+                            copiedLabel={t.oauth.copied}
+                          />
+                        </div>
+                      </>
                     )}
                     {p.status.error && (
                       <span className="text-xs text-destructive">
@@ -220,32 +230,26 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   {!p.status.logged_in && p.flow !== "external" && (
                     <Button
                       size="sm"
+                      className="uppercase"
                       onClick={() => setLoginFor(p)}
-                      prefix={<LogIn />}
                     >
                       {t.oauth.login}
                     </Button>
-                  )}
-                  {!p.status.logged_in && (
-                    <CopyButton
-                      text={p.cli_command}
-                      label={t.oauth.cli}
-                      copiedLabel={t.oauth.copied}
-                    />
                   )}
                   {p.status.logged_in && p.flow !== "external" && (
                     <Button
                       size="sm"
                       outlined
+                      className="uppercase"
                       onClick={() => setDisconnectTarget(p)}
                       disabled={isBusy}
-                      prefix={isBusy ? <Spinner /> : <LogOut />}
+                      prefix={isBusy ? <Spinner /> : undefined}
                     >
                       {t.oauth.disconnect}
                     </Button>
                   )}
                   {p.status.logged_in && p.flow === "external" && (
-                    <span className="text-[11px] text-muted-foreground italic px-2">
+                    <span className="text-xs text-text-tertiary italic px-2">
                       <Terminal className="h-3 w-3 inline mr-0.5" />
                       {t.oauth.managedExternally}
                     </span>

@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Dict, Optional, Any, List, Union, Iterable
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -1161,6 +1161,8 @@ logger = logging.getLogger(__name__)
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+_GRACEFUL_SHUTDOWN_DELIVERY_GRACE_SECONDS = 5.0
+_GRACEFUL_SHUTDOWN_DELIVERY_POLL_SECONDS = 0.05
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -3558,6 +3560,43 @@ class GatewayRunner:
         timed_out = bool(self._running_agents)
         _maybe_update_status(force=True)
         return snapshot, timed_out
+
+    def _pending_session_delivery_keys(self, session_keys: Iterable[str]) -> set[str]:
+        pending: set[str] = set()
+        for session_key in session_keys:
+            for adapter in self.adapters.values():
+                session_tasks = getattr(adapter, "_session_tasks", None)
+                if not hasattr(session_tasks, "get"):
+                    continue
+                task = session_tasks.get(session_key)
+                if task is None:
+                    continue
+                done = getattr(task, "done", None)
+                if callable(done):
+                    if done():
+                        continue
+                pending.add(session_key)
+                break
+        return pending
+
+    async def _drain_session_delivery(
+        self,
+        session_keys: Iterable[str],
+        timeout: float,
+    ) -> tuple[set[str], set[str]]:
+        pending = self._pending_session_delivery_keys(session_keys)
+        initial_pending = set(pending)
+        if not pending or timeout <= 0:
+            return initial_pending, pending
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while pending:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(_GRACEFUL_SHUTDOWN_DELIVERY_POLL_SECONDS, remaining))
+            pending = self._pending_session_delivery_keys(pending)
+        return initial_pending, pending
 
     def _interrupt_running_agents(self, reason: str) -> None:
         for session_key, agent in list(self._running_agents.items()):
@@ -6350,18 +6389,40 @@ class GatewayRunner:
             )
 
             if not timed_out:
-                # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
+                # Drain completed gracefully — all running agents finished.
+                # Their platform delivery may still be unwinding in adapter
+                # background tasks, so only clear resume_pending after those
+                # per-session tasks drain too. If delivery does not finish
+                # within the short grace window, leave resume_pending armed so
+                # startup auto-resume can recover the stranded turn.
+                delivery_started, delivery_pending = await self._drain_session_delivery(
+                    _pre_drain_keys,
+                    _GRACEFUL_SHUTDOWN_DELIVERY_GRACE_SECONDS,
+                )
+                if delivery_started:
+                    logger.info(
+                        "Shutdown phase: post-turn delivery drain checked %d session(s); pending after %.2fs: %d",
+                        len(delivery_started),
+                        _GRACEFUL_SHUTDOWN_DELIVERY_GRACE_SECONDS,
+                        len(delivery_pending),
+                    )
+                if delivery_pending:
+                    logger.warning(
+                        "Graceful shutdown delivery drain exceeded %.2fs for %d session(s); "
+                        "leaving resume_pending armed for startup recovery.",
+                        _GRACEFUL_SHUTDOWN_DELIVERY_GRACE_SECONDS,
+                        len(delivery_pending),
+                    )
                 for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            self.session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
+                    if _sk in self._running_agents or _sk in delivery_pending:
+                        continue
+                    try:
+                        self.session_store.clear_resume_pending(_sk)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending after drain failed for %s: %s",
+                            _sk, _e,
+                        )
 
             if timed_out:
                 logger.warning(

@@ -41,7 +41,7 @@ from gateway.run import (
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
 )
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
@@ -170,6 +170,15 @@ def _simulate_note_injection(
             + message
         )
     return message
+
+
+async def _wait_for(predicate, timeout: float = 0.5) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met before timeout")
 
 
 # ---------------------------------------------------------------------------
@@ -852,6 +861,94 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     calls = session_store.mark_resume_pending.call_args_list
     marked = {args[0][0] for args in calls}
     assert marked == {session_key_real}
+
+
+@pytest.mark.asyncio
+async def test_graceful_drain_waits_for_delivery_before_clearing_resume_pending(monkeypatch):
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    monkeypatch.setattr("gateway.run._GRACEFUL_SHUTDOWN_DELIVERY_GRACE_SECONDS", 0.2)
+
+    source = make_restart_source(chat_id="delivery-chat")
+    session_key = build_session_key(source)
+    runner._running_agents = {session_key: MagicMock()}
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=True)
+    session_store.clear_resume_pending = MagicMock(return_value=True)
+    runner.session_store = session_store
+
+    release_send = asyncio.Event()
+
+    async def delayed_send(*_args, **_kwargs):
+        await release_send.wait()
+        return SendResult(success=True, message_id="final-1")
+
+    adapter._send_with_retry = AsyncMock(side_effect=delayed_send)
+    adapter.set_message_handler(AsyncMock(return_value="final reply"))
+
+    event = MessageEvent(text="work", source=source, message_id="1")
+    await adapter.handle_message(event)
+    await _wait_for(lambda: adapter._send_with_retry.await_count == 1)
+
+    async def finish_agent_and_delivery():
+        await asyncio.sleep(0.05)
+        runner._running_agents.clear()
+        await asyncio.sleep(0.02)
+        release_send.set()
+
+    asyncio.create_task(finish_agent_and_delivery())
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    session_store.mark_resume_pending.assert_called_once_with(session_key, "shutdown_timeout")
+    session_store.clear_resume_pending.assert_called_once_with(session_key)
+
+
+@pytest.mark.asyncio
+async def test_graceful_drain_keeps_resume_pending_when_delivery_stalls(monkeypatch):
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    monkeypatch.setattr("gateway.run._GRACEFUL_SHUTDOWN_DELIVERY_GRACE_SECONDS", 0.05)
+
+    source = make_restart_source(chat_id="stalled-delivery-chat")
+    session_key = build_session_key(source)
+    runner._running_agents = {session_key: MagicMock()}
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=True)
+    session_store.clear_resume_pending = MagicMock(return_value=True)
+    runner.session_store = session_store
+
+    release_send = asyncio.Event()
+
+    async def stalled_send(*_args, **_kwargs):
+        await release_send.wait()
+        return SendResult(success=True, message_id="final-1")
+
+    adapter._send_with_retry = AsyncMock(side_effect=stalled_send)
+    adapter.set_message_handler(AsyncMock(return_value="final reply"))
+
+    event = MessageEvent(text="work", source=source, message_id="1")
+    await adapter.handle_message(event)
+    await _wait_for(lambda: adapter._send_with_retry.await_count == 1)
+
+    async def finish_agent_only():
+        await asyncio.sleep(0.01)
+        runner._running_agents.clear()
+
+    asyncio.create_task(finish_agent_only())
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    session_store.mark_resume_pending.assert_called_once_with(session_key, "shutdown_timeout")
+    session_store.clear_resume_pending.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

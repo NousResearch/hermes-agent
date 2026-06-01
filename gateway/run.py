@@ -1505,14 +1505,45 @@ def _teams_pipeline_plugin_enabled() -> bool:
     return "teams_pipeline" in enabled or "teams-pipeline" in enabled
 
 
+def _deep_merge_config(base: dict, overlay: dict) -> dict:
+    """Recursively merge ``overlay`` onto ``base`` (overlay wins for scalars/lists).
+
+    Used to layer a profile's ``config.yaml`` on top of the global one. Only
+    nested dicts are merged; lists and scalars from ``overlay`` replace the
+    corresponding ``base`` entry wholesale (matches the CLI's profile
+    semantics where ``disabled_toolsets`` is a list override, not append).
+    """
+    if not isinstance(overlay, dict):
+        return overlay if overlay is not None else base
+    if not isinstance(base, dict):
+        return dict(overlay)
+    out = dict(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge_config(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
     Uses the module-level ``_hermes_home`` (so tests that monkeypatch it
     still see their fixture) and shares the mtime-keyed raw-yaml cache
     from ``hermes_cli.config.read_raw_config`` when the paths match.
+
+    When the gateway is launched without ``HERMES_HOME`` redirected into a
+    profile directory (the common case for the WebUI / standalone gateway
+    processes), the sticky ``active_profile`` file and ``$HERMES_PROFILE``
+    env var are also honored: the profile\'s ``config.yaml`` is
+    deep-merged on top of the global config so profile-level
+    ``agent.disabled_toolsets`` (and other overrides) take effect for the
+    WebUI gateway too. See issue #36729.
     """
     config_path = _hermes_home / 'config.yaml'
+    base: dict = {}
+    used_fast_path = False
     try:
         from hermes_cli.config import get_config_path, read_raw_config
         # Fast path: if _hermes_home agrees with the canonical config
@@ -1520,18 +1551,80 @@ def _load_gateway_config() -> dict:
         # direct read (keeps test fixtures with a monkeypatched
         # _hermes_home working).
         if config_path == get_config_path():
-            return read_raw_config()
+            base = read_raw_config() or {}
+            used_fast_path = True
     except Exception:
         pass
 
+    if not used_fast_path:
+        try:
+            if config_path.exists():
+                import yaml
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    base = yaml.safe_load(f) or {}
+        except Exception:
+            logger.debug("Could not load gateway config from %s", config_path)
+            base = {}
+
+    # Profile-level overlay (#36729). Only when _hermes_home is NOT itself
+    # a profile directory — otherwise we\'d be re-loading the same file.
     try:
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
+        import os as _os
+        from hermes_cli.profiles import (
+            _get_default_hermes_home,
+            _get_profiles_root,
+            get_active_profile,
+            normalize_profile_name,
+            validate_profile_name,
+        )
+        default_home = _get_default_hermes_home().resolve()
+        try:
+            current_home = _hermes_home.resolve()
+        except Exception:
+            current_home = _hermes_home
+        # Skip overlay if we're already inside a profile dir; the loaded
+        # config IS the profile config in that case.
+        already_profile = False
+        try:
+            _get_profiles_root().resolve()
+            rel = current_home.relative_to(_get_profiles_root().resolve())
+            if len(rel.parts) >= 1:
+                already_profile = True
+        except Exception:
+            pass
+        if not already_profile and current_home == default_home:
+            profile_name = (_os.environ.get("HERMES_PROFILE") or "").strip()
+            if not profile_name:
+                try:
+                    profile_name = get_active_profile()
+                except Exception:
+                    profile_name = "default"
+            if profile_name and profile_name != "default":
+                canon = None
+                try:
+                    canon = normalize_profile_name(profile_name)
+                    validate_profile_name(canon)
+                except Exception:
+                    canon = None
+                if canon:
+                    overlay_path = _get_profiles_root() / canon / "config.yaml"
+                    if overlay_path.exists():
+                        try:
+                            import yaml
+                            with open(overlay_path, "r", encoding="utf-8") as f:
+                                overlay = yaml.safe_load(f) or {}
+                            if isinstance(overlay, dict) and overlay:
+                                base = _deep_merge_config(base, overlay)
+                        except Exception:
+                            logger.debug(
+                                "Could not merge profile config from %s",
+                                overlay_path,
+                            )
     except Exception:
-        logger.debug("Could not load gateway config from %s", config_path)
-    return {}
+        # Profile resolution must never break gateway config loading.
+        logger.debug("Profile overlay skipped due to unexpected error", exc_info=True)
+
+    return base
 
 
 def _load_gateway_runtime_config() -> dict:

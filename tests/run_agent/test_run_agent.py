@@ -1676,6 +1676,14 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
 
+    def test_provider_preferences_drop_invalid_sort(self, agent):
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.provider_sort = "intelligence"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "sort" not in kwargs.get("extra_body", {}).get("provider", {})
+
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""
         agent.provider = "openrouter"
@@ -3491,6 +3499,20 @@ class TestHandleMaxIterations:
         assert result == "Summary"
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
+
+    def test_summary_drops_invalid_provider_sort(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "openrouter"
+        agent.provider_sort = "intelligence"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "sort" not in kwargs.get("extra_body", {}).get("provider", {})
 
     def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
         agent.api_mode = "codex_responses"

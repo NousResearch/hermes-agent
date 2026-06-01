@@ -306,6 +306,23 @@ class TestResolveProvider:
         with pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto")
 
+    def test_auto_skips_bedrock_when_discovery_disabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.auth.read_raw_config",
+            lambda: {"bedrock": {"discovery": {"enabled": False}}},
+        )
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda env=None: True)
+        with pytest.raises(AuthError, match="No inference provider configured"):
+            resolve_provider("auto")
+
+    def test_auto_detects_bedrock_when_discovery_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.auth.read_raw_config",
+            lambda: {"bedrock": {"discovery": {"enabled": True}}},
+        )
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda env=None: True)
+        assert resolve_provider("auto") == "bedrock"
+
 
 # =============================================================================
 # API Key Provider Status tests

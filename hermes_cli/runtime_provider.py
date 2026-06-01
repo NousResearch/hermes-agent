@@ -425,8 +425,11 @@ def _resolve_runtime_from_pool_entry(
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
     """Resolve provider request from explicit arg, config, then env."""
-    if requested and requested.strip():
-        return requested.strip().lower()
+    requested_norm = (requested or "").strip().lower()
+    # "auto" means "use configured/default provider resolution", not
+    # "force auto-detect and ignore config provider".
+    if requested_norm and requested_norm != "auto":
+        return requested_norm
 
     model_cfg = _get_model_config()
     cfg_provider = model_cfg.get("provider")

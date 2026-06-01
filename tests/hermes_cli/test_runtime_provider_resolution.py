@@ -225,6 +225,30 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     # The fallthrough means it won't be qwen-oauth
     assert resolved["provider"] != "qwen-oauth"
 
+def test_resolve_requested_provider_auto_uses_config_provider(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "custom"},
+    )
+    assert rp.resolve_requested_provider("auto") == "custom"
+
+
+def test_resolve_runtime_provider_requested_auto_respects_config_custom(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://relay.example/v1",
+            "api_key": "cfg-key",
+        },
+    )
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://relay.example/v1"
+
 
 def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")

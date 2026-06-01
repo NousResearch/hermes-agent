@@ -73,6 +73,18 @@ _CRON_THREAT_PATTERNS = [
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    # Gateway lifecycle commands: mirror hermes_cli/cron.py so agents cannot
+    # schedule gateway restart loops through the tool path.
+    (r'hermes\s+gateway\s+(?:restart|stop|start)', "gateway_lifecycle"),
+    (
+        r'launchctl\s+(?:kickstart|unload|load|stop|restart)\s+\S*hermes',
+        "gateway_lifecycle_launchctl",
+    ),
+    (
+        r'systemctl\s+(?:restart|stop|start)\s+\S*hermes',
+        "gateway_lifecycle_systemctl",
+    ),
+    (r'p?kill\s+.*hermes.*gateway', "gateway_lifecycle_kill"),
 ]
 
 # Looser pattern set — applied to the assembled prompt when skills are
@@ -377,6 +389,20 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
+def _scan_cron_script_content(script: Optional[str]) -> str:
+    """Scan an existing cron script for blocked lifecycle/injection payloads."""
+    if not script or not script.strip():
+        return ""
+
+    from hermes_constants import get_hermes_home
+
+    script_path = get_hermes_home() / "scripts" / script.strip()
+    try:
+        return _scan_cron_prompt(script_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
@@ -469,11 +495,15 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
 
-            # Validate script path before storing
+            # Validate script path before storing; scan content too when the
+            # file exists, matching the CLI-side gateway lifecycle guard.
             if script:
                 script_error = _validate_cron_script_path(script)
                 if script_error:
                     return tool_error(script_error, success=False)
+                script_scan_error = _scan_cron_script_content(script)
+                if script_scan_error:
+                    return tool_error(script_scan_error, success=False)
 
             # Validate context_from references existing jobs
             if context_from:
@@ -612,6 +642,9 @@ def cronjob(
                     script_error = _validate_cron_script_path(script)
                     if script_error:
                         return tool_error(script_error, success=False)
+                    script_scan_error = _scan_cron_script_content(script)
+                    if script_scan_error:
+                        return tool_error(script_scan_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate

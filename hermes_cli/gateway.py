@@ -5822,6 +5822,17 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     return True
 
 
+def _block_forever_until_signal() -> None:
+    """Keep the s6 CMD process alive without depending on external tools."""
+    pause = getattr(signal, "pause", None)
+    if pause is not None:
+        while True:
+            pause()
+
+    import threading
+
+    threading.Event().wait()
+
 
 def gateway_command(args):
     """Handle gateway subcommands."""
@@ -5911,7 +5922,17 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
     # process is a no-op heartbeat that keeps /init alive until
     # `docker stop` sends SIGTERM, at which point /init runs stage 3
     # shutdown (which tears down the supervised gateway cleanly).
-    os.execvp("sleep", ["sleep", "infinity"])
+    try:
+        os.execvp("sleep", ["sleep", "infinity"])
+    except FileNotFoundError:
+        print(
+            "→ `sleep` was not found; keeping the s6 CMD alive with Python "
+            "until the container is stopped.",
+            file=sys.stderr,
+            flush=True,
+        )
+        _block_forever_until_signal()
+    return True
 
 
 def _gateway_command_inner(args):

@@ -401,6 +401,56 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram,discord"
 
+    def test_create_scans_script_content_for_gateway_lifecycle(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (scripts_dir / "restart.py").write_text(
+            "import os\nos.system('hermes gateway restart')\n",
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                script="restart.py",
+                no_agent=True,
+            )
+        )
+
+        assert result["success"] is False
+        assert "Blocked" in result["error"]
+
+    def test_update_scans_script_content_for_gateway_lifecycle(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (scripts_dir / "restart.py").write_text(
+            "import os\nos.system('systemctl restart hermes-agent')\n",
+            encoding="utf-8",
+        )
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h")
+        )
+
+        result = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                script="restart.py",
+            )
+        )
+
+        assert result["success"] is False
+        assert "Blocked" in result["error"]
+
     def test_update_normalizes_list_form_deliver(self):
         """update with deliver=['telegram'] stores the canonical string."""
         from cron.jobs import get_job

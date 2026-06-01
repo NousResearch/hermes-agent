@@ -719,6 +719,22 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
+    def _ensure_response_store(self) -> ResponseStore:
+        store = getattr(self, "_response_store", None)
+        if store is None:
+            store = ResponseStore()
+            self._response_store = store
+        return store
+
+    def _close_response_store(self) -> None:
+        store = getattr(self, "_response_store", None)
+        if store is None:
+            return
+        try:
+            store.close()
+        finally:
+            self._response_store = None
+
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
         """Normalize configured CORS origins into a stable tuple."""
@@ -4085,6 +4101,20 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
 
+        # Refuse to start without authentication before opening the aiohttp
+        # app or sweep task. The API server can dispatch terminal-capable
+        # agent work, so every deployment needs an explicit API_SERVER_KEY.
+        if not self._api_key:
+            logger.error(
+                "[%s] Refusing to start: API_SERVER_KEY is required for the API server, "
+                "including loopback-only binds on %s.",
+                self.name, self._host,
+            )
+            self._close_response_store()
+            return False
+
+        self._ensure_response_store()
+
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
@@ -4140,17 +4170,6 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
-            # Refuse to start without authentication. The API server can
-            # dispatch terminal-capable agent work, so every deployment needs
-            # an explicit API_SERVER_KEY regardless of bind address.
-            if not self._api_key:
-                logger.error(
-                    "[%s] Refusing to start: API_SERVER_KEY is required for the API server, "
-                    "including loopback-only binds on %s.",
-                    self.name, self._host,
-                )
-                return False
-
             # Refuse to start network-accessible with a placeholder key.
             # Ported from openclaw/openclaw#64586.
             if is_network_accessible(self._host) and self._api_key:
@@ -4204,6 +4223,7 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        self._close_response_store()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

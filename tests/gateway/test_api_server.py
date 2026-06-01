@@ -2415,8 +2415,15 @@ class TestConfigIntegration:
     def test_platform_enum_has_api_server(self):
         assert Platform.API_SERVER.value == "api_server"
 
-    def test_env_override_enables_api_server(self, monkeypatch):
+    def test_env_override_requires_key_to_enable_api_server(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
+    def test_env_override_enables_api_server_with_key(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "sk-mykey")
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.API_SERVER in config.platforms
@@ -2431,6 +2438,7 @@ class TestConfigIntegration:
 
     def test_env_override_port_and_host(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "sk-mykey")
         monkeypatch.setenv("API_SERVER_PORT", "9999")
         monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
         from gateway.config import load_gateway_config
@@ -2440,6 +2448,7 @@ class TestConfigIntegration:
 
     def test_env_override_cors_origins(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "sk-mykey")
         monkeypatch.setenv(
             "API_SERVER_CORS_ORIGINS",
             "http://localhost:3000, http://127.0.0.1:3000",
@@ -2453,13 +2462,25 @@ class TestConfigIntegration:
 
     def test_api_server_in_connected_platforms(self):
         config = GatewayConfig()
-        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True)
+        config.platforms[Platform.API_SERVER] = PlatformConfig(
+            enabled=True,
+            extra={"key": "sk-mykey"},
+        )
         connected = config.get_connected_platforms()
         assert Platform.API_SERVER in connected
 
+    def test_api_server_not_in_connected_without_key(self):
+        config = GatewayConfig()
+        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True)
+        connected = config.get_connected_platforms()
+        assert Platform.API_SERVER not in connected
+
     def test_api_server_not_in_connected_when_disabled(self):
         config = GatewayConfig()
-        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=False)
+        config.platforms[Platform.API_SERVER] = PlatformConfig(
+            enabled=False,
+            extra={"key": "sk-mykey"},
+        )
         connected = config.get_connected_platforms()
         assert Platform.API_SERVER not in connected
 
@@ -2510,6 +2531,39 @@ class TestSendMethod:
         result = await adapter.send("chat1", "hello")
         assert result.success is False
         assert "HTTP request/response" in result.error
+
+
+# ---------------------------------------------------------------------------
+# lifecycle cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestAPIServerLifecycleCleanup:
+    @pytest.mark.asyncio
+    async def test_connect_without_key_closes_response_store(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        store = MagicMock()
+        adapter._response_store = store
+
+        result = await adapter.connect()
+
+        assert result is False
+        store.close.assert_called_once()
+        assert adapter._response_store is None
+        assert adapter._app is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_response_store(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"key": "sk-mykey"}),
+        )
+        store = MagicMock()
+        adapter._response_store = store
+
+        await adapter.disconnect()
+
+        store.close.assert_called_once()
+        assert adapter._response_store is None
 
 
 # ---------------------------------------------------------------------------

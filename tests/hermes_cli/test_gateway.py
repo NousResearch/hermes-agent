@@ -73,7 +73,7 @@ def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, caps
     (project_root / "docker" / "entrypoint.sh").write_text("#!/bin/sh\n")
 
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.delenv("HERMES_ALLOW_ROOT_GATEWAY", raising=False)
     monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
 
@@ -95,7 +95,7 @@ def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
 
     _install_fake_gateway_run(monkeypatch, fake_start_gateway)
     monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
     monkeypatch.setenv("HERMES_ALLOW_ROOT_GATEWAY", "1")
 
@@ -356,6 +356,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
         raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr(gateway, "_ensure_user_systemd_env", lambda: None)
 
     gateway.systemd_status(deep=False)
 
@@ -379,6 +380,7 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
     monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+    monkeypatch.setattr(gateway, "_ensure_user_systemd_env", lambda: None)
 
     gateway.systemd_install(force=False)
 
@@ -479,7 +481,7 @@ def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
 
 def test_install_linux_gateway_from_setup_system_choice_without_root_prints_followup(monkeypatch, capsys):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000, raising=False)
     monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
     monkeypatch.setattr(gateway, "systemd_install", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not install")))
 
@@ -493,7 +495,7 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
 
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
 
     calls = []

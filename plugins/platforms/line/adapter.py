@@ -936,7 +936,7 @@ class LineAdapter(BasePlatformAdapter):
                 verify_cmd = parse_verify_command(msg.get("text", ""))
                 if verify_cmd:
                     result = await redeem_verify_code(
-                        platform="line",
+                        platform=self.platform.value,
                         code=verify_cmd["code"],
                         user_id=sender_user_id,
                     )

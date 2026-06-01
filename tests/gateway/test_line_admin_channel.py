@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _line = load_plugin_adapter("line")
@@ -193,3 +195,53 @@ def test_admin_sources_use_distinct_session_namespace(monkeypatch):
     assert admin_source.platform.value == "line_admin"
     assert build_session_key(customer_source) == "agent:main:line:dm:U123"
     assert build_session_key(admin_source) == "agent:main:line_admin:dm:U123"
+
+
+@pytest.mark.asyncio
+async def test_verify_code_uses_adapter_platform(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "customer-token")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "customer-secret")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_SECRET", "admin-secret")
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        customer = LineAdapter(PlatformConfig(enabled=True))
+        admin = LineAdapter(
+            PlatformConfig(enabled=True),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    redeem = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(_line, "redeem_verify_code", redeem, raising=False)
+    event = {
+        "type": "message",
+        "replyToken": "reply-token",
+        "source": {"type": "user", "userId": "U123"},
+        "message": {"type": "text", "text": "verify 123456"},
+    }
+    for adapter in (customer, admin):
+        adapter._client = MagicMock()
+        adapter._client.reply = AsyncMock()
+
+    await customer._dispatch_event(event)
+    await admin._dispatch_event(event)
+
+    assert redeem.await_args_list[0].kwargs["platform"] == "line"
+    assert redeem.await_args_list[1].kwargs["platform"] == "line_admin"

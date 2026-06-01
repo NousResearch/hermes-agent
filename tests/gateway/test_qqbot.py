@@ -431,6 +431,7 @@ class TestDispatchPayload:
         assert adapter._heartbeat_interval == 40.0
 
     def test_op11_heartbeat_ack(self):
+        # smoke test — no assertion needed
         adapter = self._make_adapter(app_id="a", client_secret="b")
         # Should not raise
         adapter._dispatch_payload({"op": 11, "t": "HEARTBEAT_ACK", "s": 42})
@@ -1268,6 +1269,7 @@ class TestAdapterInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_callback_exception_does_not_propagate(self):
+        # smoke test — no assertion needed
         adapter = self._make_adapter()
 
         async def fake_ack(interaction_id, code=0):
@@ -1289,6 +1291,7 @@ class TestAdapterInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_explicit_no_callback_is_harmless(self):
+        # smoke test — no assertion needed
         adapter = self._make_adapter()
 
         async def fake_ack(interaction_id, code=0):
@@ -1693,6 +1696,7 @@ class TestDefaultInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_unknown_button_data_is_harmless(self):
+        # smoke test — no assertion needed
         """Unrecognised button_data is logged and dropped — no exception."""
         adapter = self._make_adapter()
 
@@ -1706,12 +1710,14 @@ class TestDefaultInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_empty_button_data_is_harmless(self):
+        # smoke test — no assertion needed
         adapter = self._make_adapter()
         from gateway.platforms.qqbot.keyboards import InteractionEvent
         await adapter._default_interaction_dispatch(InteractionEvent(id="i"))
 
     @pytest.mark.asyncio
     async def test_resolve_exception_is_swallowed(self):
+        # smoke test — no assertion needed
         """If resolve_gateway_approval raises, we log but don't propagate."""
         adapter = self._make_adapter()
 
@@ -1771,6 +1777,7 @@ class TestSendExecApproval:
 
     @pytest.mark.asyncio
     async def test_accepts_metadata_arg(self):
+        # smoke test — no assertion needed
         """Gateway always passes metadata=…; the adapter must accept + ignore it."""
         adapter = self._make_adapter()
 

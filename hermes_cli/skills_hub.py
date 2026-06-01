@@ -1072,6 +1072,107 @@ def do_reset(name: str, restore: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
 
+def do_opt_out(remove: bool = False,
+               console: Optional[Console] = None,
+               skip_confirm: bool = False,
+               invalidate_cache: bool = True) -> None:
+    """Opt the active profile out of bundled-skill seeding.
+
+    Always writes the .no-bundled-skills marker (stop future seeding). With
+    ``remove``, also deletes already-present bundled skills that are pristine
+    (manifest-tracked AND unmodified); user-edited and non-bundled skills are
+    never touched.
+    """
+    from tools.skills_sync import (
+        set_bundled_skills_opt_out,
+        remove_pristine_bundled_skills,
+    )
+
+    c = console or _console
+
+    # Write the marker first (the always-safe part).
+    res = set_bundled_skills_opt_out(True)
+    if not res["ok"]:
+        c.print(f"[bold red]Error:[/] {res['message']}\n")
+        return
+    c.print(f"[bold green]{res['message']}[/]")
+    c.print(f"[dim]Marker: {res['marker']}[/]")
+
+    if not remove:
+        c.print("[dim]Existing skills on disk were left in place. "
+                "Re-run with --remove to also delete unmodified bundled skills.[/]\n")
+        return
+
+    # Destructive step: preview, confirm, then delete.
+    preview = remove_pristine_bundled_skills(dry_run=True)
+    candidates = preview["removed"]
+    kept = preview["skipped"]
+    if not candidates:
+        c.print("[dim]No pristine bundled skills to remove "
+                "(nothing tracked, or all are user-modified/local).[/]\n")
+        return
+
+    c.print(f"\n[bold]Will remove {len(candidates)} unmodified bundled skill(s):[/]")
+    c.print(f"[dim]{', '.join(candidates)}[/]")
+    if kept:
+        c.print(f"[dim]Keeping {len(kept)} (user-modified or non-bundled).[/]")
+
+    if not skip_confirm:
+        c.print("[dim]This deletes the on-disk copies. User-edited and "
+                "hub/local skills are NOT touched.[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in {"y", "yes"}:
+            c.print("[dim]Marker kept; no skills deleted.[/]\n")
+            return
+
+    result = remove_pristine_bundled_skills(dry_run=False)
+    c.print(f"[bold green]{result['message']}[/]")
+    if result["removed"]:
+        c.print(f"[dim]Removed: {', '.join(result['removed'])}[/]")
+    c.print()
+
+    if invalidate_cache:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+
+
+def do_opt_in(sync: bool = False,
+              console: Optional[Console] = None,
+              invalidate_cache: bool = True) -> None:
+    """Remove the opt-out marker so bundled-skill seeding resumes.
+
+    With ``sync``, immediately re-seed bundled skills instead of waiting for
+    the next ``hermes update``.
+    """
+    from tools.skills_sync import set_bundled_skills_opt_out, sync_skills
+
+    c = console or _console
+
+    res = set_bundled_skills_opt_out(False)
+    if not res["ok"]:
+        c.print(f"[bold red]Error:[/] {res['message']}\n")
+        return
+    c.print(f"[bold green]{res['message']}[/]")
+
+    if sync:
+        synced = sync_skills(quiet=True)
+        copied = len(synced.get("copied", []))
+        c.print(f"[dim]Re-seeded {copied} bundled skill(s).[/]")
+        if invalidate_cache:
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+    c.print()
+
+
 def do_repair_official(name: str, restore: bool = False,
                        console: Optional[Console] = None,
                        skip_confirm: bool = False,
@@ -1446,6 +1547,11 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "opt-out":
+        do_opt_out(remove=getattr(args, "remove", False),
+                   skip_confirm=getattr(args, "yes", False))
+    elif action == "opt-in":
+        do_opt_in(sync=getattr(args, "sync", False))
     elif action == "repair-official":
         do_repair_official(args.name, restore=getattr(args, "restore", False),
                            skip_confirm=getattr(args, "yes", False))
@@ -1471,7 +1577,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

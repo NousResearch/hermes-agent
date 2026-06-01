@@ -30,15 +30,16 @@ injected clock and to the fakes/engines that own the generators.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 from .cancellation import CancellationScope
 from .clock import Clock
-from .interruption import InterruptionPolicy
 from .ledger import HeardSpanLedger
 from .ports import (
     AudioTransportPort,
     HermesBrainPort,
+    InterruptionPolicyPort,
     SpeechToTextPort,
     StreamingCallTracerPort,
     TextToSpeechPort,
@@ -58,6 +59,8 @@ from .types import (
     TurnEvent,
     TurnEventKind,
 )
+
+logger = logging.getLogger(__name__)
 
 LedgerFactory = Callable[[str, int], HeardSpanLedger]
 BrainFactory = Callable[[], HermesBrainPort]
@@ -79,7 +82,7 @@ class StreamingCallSession:
         turns: TurnDetectionPort,
         tts: TextToSpeechPort,
         brain_factory: BrainFactory,
-        policy: InterruptionPolicy,
+        policy: InterruptionPolicyPort,
         tracer: StreamingCallTracerPort,
         clock: Clock,
         ledger_factory: LedgerFactory | None = None,
@@ -110,6 +113,11 @@ class StreamingCallSession:
         self._last_mark: PlaybackMark | None = None
 
         self._assistant_task: asyncio.Task[None] | None = None
+        # A handle to the most recent assistant-turn task that survives
+        # _cleanup_turn() (which nulls _assistant_task).  run() uses this to
+        # await the task and observe an unexpected exception even after the
+        # turn body has cleaned up its own reflex state (Fix B).
+        self._pending_assistant_task: asyncio.Task[None] | None = None
         self._stt_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------
@@ -119,6 +127,9 @@ class StreamingCallSession:
     async def run(self) -> None:
         """Run the call to completion (until inbound stream ends)."""
         self._stt_task = asyncio.create_task(self._consume_stt_events())
+        # Fix C: surface any failure in the background STT consumer instead of
+        # letting it be swallowed silently by the event loop.
+        self._stt_task.add_done_callback(self._on_stt_task_done)
         try:
             async for frame in self.transport.inbound():
                 await self.stt.push(frame)
@@ -126,15 +137,29 @@ class StreamingCallSession:
                     await self._on_turn_event(te)
         finally:
             # Inbound ended: let any in-flight assistant turn finish, then stop
-            # the STT consumer.
-            if self._assistant_task is not None:
-                await self._assistant_task
-            if self._stt_task is not None:
-                self._stt_task.cancel()
-                try:
-                    await self._stt_task
-                except asyncio.CancelledError:
-                    pass
+            # the STT consumer.  The STT cancellation lives in a nested finally
+            # so that an exception raised while awaiting the assistant turn
+            # cannot leak the STT task (Fix B).
+            try:
+                # Await via the surviving handle (_cleanup_turn nulls
+                # _assistant_task), so an unexpected turn exception propagates
+                # out of run() instead of being stranded on an orphaned task.
+                if self._pending_assistant_task is not None:
+                    await self._pending_assistant_task
+            finally:
+                if self._stt_task is not None:
+                    self._stt_task.cancel()
+                    try:
+                        await self._stt_task
+                    except asyncio.CancelledError:
+                        pass
+
+    def _on_stt_task_done(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("STT consumer task failed", exc_info=exc)
 
     # ------------------------------------------------------------------
     # Background STT consumer
@@ -217,7 +242,9 @@ class StreamingCallSession:
     # ------------------------------------------------------------------
 
     def _launch_assistant_turn(self, final: TranscriptEvent) -> None:
-        self._assistant_task = asyncio.create_task(self._do_assistant_turn(final))
+        task = asyncio.create_task(self._do_assistant_turn(final))
+        self._assistant_task = task
+        self._pending_assistant_task = task
 
     def _cleanup_turn(self) -> None:
         self._active_scope = None
@@ -233,6 +260,20 @@ class StreamingCallSession:
         self.tracer.turn_committed(rec)
 
     async def _do_assistant_turn(self, final: TranscriptEvent) -> None:
+        # Fix B: the normal paths below each call _cleanup_turn() exactly once.
+        # If brain.respond()/tts.synthesize() raises an UNEXPECTED exception
+        # (i.e. not the handled BrainEventKind.ERROR path), we clean up the turn
+        # state here so no _thinking/_speaking/_active_scope/_active_ledger flag
+        # is left dirty, then re-raise so the failure is not silently swallowed
+        # (run()'s finally still tears down the STT task).  CancelledError is
+        # NOT caught — cooperative cancellation must propagate untouched.
+        try:
+            await self._run_assistant_turn(final)
+        except Exception:
+            self._cleanup_turn()
+            raise
+
+    async def _run_assistant_turn(self, final: TranscriptEvent) -> None:
         self._turn_index += 1
         scope = CancellationScope()
         self._active_scope = scope
@@ -274,7 +315,7 @@ class StreamingCallSession:
             return
 
         if not self._full_text:
-            # Nothing to say.
+            # Nothing to say: intentionally commit no record (Slice-1 behavior).
             self._cleanup_turn()
             return
 

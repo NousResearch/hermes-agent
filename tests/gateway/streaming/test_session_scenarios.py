@@ -255,6 +255,12 @@ async def test_scenario_b_barge_in_during_speech():
     # Sustain just past min_speech_ms (40) so policy escalates to INTERRUPT,
     # while the long TTS stream is still in progress.
     await driver.advance(params.min_speech_ms + 20)
+
+    # Capture the exact heard prefix at the moment of interrupt (mirror D).
+    last_mark_before = driver.session._last_mark
+    assert last_mark_before is not None
+    heard_at_interrupt = last_mark_before.text_so_far
+
     await driver.push(2)  # escalating event → INTERRUPT
 
     await driver.end()
@@ -271,9 +277,10 @@ async def test_scenario_b_barge_in_during_speech():
     assert "vad_trigger" in driver.transport.flushes
     assert "barge_in" in driver.transport.flushes
     assert driver.tts._cancelled is True
-    # heard is a strict prefix of full_text; abandoned is the remaining suffix.
-    assert rec.assistant_heard_text != ""
-    assert text.startswith(rec.assistant_heard_text)
+    # heard equals exactly the prefix confirmed at interrupt time; abandoned is
+    # the remaining suffix.
+    assert rec.assistant_heard_text == heard_at_interrupt
+    assert rec.assistant_abandoned_text == text[len(heard_at_interrupt):]
     assert rec.assistant_heard_text + rec.assistant_abandoned_text == text
 
 
@@ -508,3 +515,68 @@ async def test_ledger_factory_is_used():
 
     assert len(built) == 1
     assert built[0].turn_index == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix B — unexpected brain exception leaves no dirty state / no leaked task
+# ---------------------------------------------------------------------------
+
+
+async def test_unexpected_brain_exception_cleans_up():
+    # Behavior decision: an UNEXPECTED exception (not BrainEventKind.ERROR) is
+    # PROPAGATED out of run() — it signals a real bug, not a recoverable brain
+    # failure — but only AFTER the turn state is cleaned up and the STT task is
+    # torn down, so nothing is left dirty or leaked.
+    class _RaisingBrain:
+        def respond(self, turn, ctx, scope):
+            return self._gen()
+
+        async def _gen(self):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover - makes this an async generator
+
+    clock = VirtualClock()
+    ctx = make_ctx()
+    transport = FakeAudioTransport(MEDIA)
+    turns = FakeTurnDetection([(0, turn_event(TurnEventKind.ENDPOINT_DETECTED))])
+    tts = FakeTTS(clock)
+    stt = FakeSTT(final=final_transcript("hi"))
+
+    session = StreamingCallSession(
+        ctx,
+        transport=transport,
+        stt=stt,
+        turns=turns,
+        tts=tts,
+        brain_factory=_RaisingBrain,
+        policy=InterruptionPolicy(),
+        tracer=StreamingCallTracer(ctx.call_id),
+        clock=clock,
+    )
+    run_task = asyncio.create_task(session.run())
+    await asyncio.sleep(0)
+    await transport.push_inbound(make_frame(0))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    await transport.end_inbound()
+    for _ in range(30):
+        if run_task.done():
+            break
+        await clock.advance(20)
+        await asyncio.sleep(0)
+
+    # The unexpected exception propagates out of run().
+    with pytest.raises(RuntimeError, match="boom"):
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+    # No dirty state remains after the unexpected exception.
+    assert session._thinking is False
+    assert session._speaking is False
+    assert session._active_scope is None
+    assert session._active_ledger is None
+    assert session._assistant_task is None
+    # No record committed for the failed turn.
+    assert session.records == []
+    # The background STT task did not leak.
+    assert session._stt_task is not None
+    assert session._stt_task.done()

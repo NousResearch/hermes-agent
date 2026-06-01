@@ -1138,6 +1138,38 @@ DEFAULT_CONFIG = {
             "public_exposure_enabled": False,
             "ttl_seconds": 600,
         },
+        "native": {
+            # Call engine selector: "turn_based" (default) or "streaming".
+            # "turn_based" uses the existing aiortc turn-based voice pipeline.
+            # "streaming" routes to the Pipecat streaming pipeline (deferred
+            # to a follow-on slice — raises PipecatIntegrationDeferred today).
+            # The selector in gateway.calls.native.streaming.engine guarantees
+            # fallback to "turn_based" even when this key is absent.
+            "engine": "turn_based",
+            "debug": {
+                # Keep speech content out of traces by default. Enable this
+                # only during local call debugging on a trusted machine.
+                "transcript_previews": False,
+                "max_preview_chars": 240,
+            },
+            "agent": {
+                # Optional override for live native-call turns. When unset,
+                # Hermes falls back to the normal runtime provider. Configure
+                # this to a low-latency model so phone calls do not inherit a
+                # heavyweight coding model or Codex-only backend.
+                "provider": "",
+                "model": "",
+                "base_url": "",
+                "api_mode": "",
+                "max_iterations": 4,
+                "max_tokens": 512,
+                "enabled_toolsets": [],
+                "disabled_toolsets": ["terminal"],
+                "skip_context_files": True,
+                "skip_memory": False,
+                "system_prompt": "",
+            },
+        },
     },
     
     "human_delay": {

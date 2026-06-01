@@ -3162,7 +3162,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
                     code_challenge=challenge,
                     state=state,
                 )
-        device_data = await asyncio.get_event_loop().run_in_executor(
+        device_data = await asyncio.get_running_loop().run_in_executor(
             None, _do_minimax_request
         )
         sid, sess = _new_oauth_session("minimax-oauth", "device_code")

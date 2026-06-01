@@ -1142,7 +1142,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # gateway process is alive and reports "connected" but
                 # no messages are received or sent.
                 if self._polling_conflict_count < MAX_CONFLICT_RETRIES:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     self._polling_error_task = loop.create_task(
                         self._handle_polling_conflict(retry_err)
                     )

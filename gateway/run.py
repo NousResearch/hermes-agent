@@ -5096,6 +5096,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=True,
             )
 
+        # Load approval delegation (cross-platform approval routing)
+        try:
+            from gateway.approval_delegation import register as _register_approval_delegation
+            _register_approval_delegation()
+        except Exception:
+            logger.debug(
+                "approval-delegation registration failed at gateway startup",
+                exc_info=True,
+            )
+
         # Discover and load event hooks
         self.hooks.discover_and_load()
 

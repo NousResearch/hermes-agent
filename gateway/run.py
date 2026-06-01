@@ -8022,11 +8022,23 @@ class GatewayRunner:
         if canonical == "undo":
             async def _do_undo():
                 return await self._handle_undo_command(event)
+            _undo_n = 1
+            _undo_raw = event.get_command_args().strip()
+            if _undo_raw:
+                try:
+                    _undo_n = max(1, int(_undo_raw.split()[0]))
+                except (ValueError, IndexError):
+                    _undo_n = 1
+            _undo_detail = (
+                "This removes the last user/assistant exchange from history."
+                if _undo_n == 1
+                else f"This removes the last {_undo_n} user turns from history."
+            )
             return await self._maybe_confirm_destructive_slash(
                 event=event,
                 command="undo",
                 title="/undo",
-                detail="This removes the last user/assistant exchange from history.",
+                detail=_undo_detail,
                 execute=_do_undo,
             )
         
@@ -11618,29 +11630,53 @@ class GatewayRunner:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
-        """Handle /undo command - remove the last user/assistant exchange."""
+        """Handle /undo [N] — back up N user turns (default 1), soft-deleting
+        the truncated rows on disk and echoing the backed-up message text so
+        the user can copy/edit and resend.
+
+        Mirrors the CLI/TUI /undo: rewound rows stay in state.db (active=0)
+        for audit and are hidden from re-prompts and search. The cached agent
+        is evicted so the next message rebuilds context from the truncated
+        (active-only) transcript — the gateway's equivalent of the CLI's
+        in-place history surgery + memory-cache invalidation.
+        """
         source = event.source
+
+        # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
+        n = 1
+        raw_args = event.get_command_args().strip()
+        if raw_args:
+            try:
+                n = int(raw_args.split()[0])
+            except (ValueError, IndexError):
+                return t("gateway.undo.invalid_count", arg=raw_args.split()[0])
+            if n < 1:
+                n = 1
+
         session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
-        
-        # Find the last user message and remove everything from it onward
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx is None:
+        result = self.session_store.rewind_session(session_entry.session_id, n)
+
+        if result is None:
             return t("gateway.undo.nothing")
-        
-        removed_msg = history[last_user_idx].get("content", "")
-        removed_count = len(history) - last_user_idx
-        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
-        # Reset stored token count — transcript was truncated
+
+        # Reset stored token count — transcript was truncated.
         session_entry.last_prompt_tokens = 0
-        
-        preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
-        return t("gateway.undo.removed", count=removed_count, preview=preview)
+        # Evict the cached agent so the next turn rebuilds from the active-only
+        # transcript and memory providers refresh their per-session caches.
+        try:
+            session_key = build_session_key(source)
+            self._evict_cached_agent(session_key)
+        except Exception as e:
+            logger.debug("undo: cached-agent eviction skipped: %s", e)
+
+        target_text = result["target_text"]
+        preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
+        return t(
+            "gateway.undo.removed",
+            turns=result["turns_undone"],
+            count=result["rewound_count"],
+            preview=preview,
+        )
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

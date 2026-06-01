@@ -367,20 +367,122 @@ The next phase should add dashboard UI integration for listing packets,
 reviewing imported worker results, and copying approved next prompts. It should
 not add MCP/OAuth or execution tools yet.
 
-Phase 3: ChatGPT MCP bridge, local/stdout first
+Phase 3: Dashboard packet UI
+
+- List Mission Control packets in the dashboard.
+- Review packet details, warnings, source refs, approval gates, and worker
+  metadata.
+- Copy prompt/preview text only; do not add execution controls.
+
+Phase 4: ChatGPT MCP bridge, local/stdout first
 
 - Expose the narrow Mission Control tools through a dedicated FastMCP server.
 - Use stdio/local development first; no public endpoint.
 - Add OAuth only when remote transport is necessary and reviewed.
 
-Phase 4: OAuth-protected remote bridge
+### Phase 4 Implementation Note
+
+Phase 4 adds a dedicated local/stdout Mission Control MCP scaffold in
+`hermes_cli/mission_control_mcp.py`. This is a narrow bridge for future
+ChatGPT/Hermes integration, not a public endpoint and not a general Hermes tool
+export. The module can list its tool manifest with:
+
+```bash
+python -m hermes_cli.mission_control_mcp --list-tools
+```
+
+The command prints local discovery metadata only. It does not start a remote
+server, does not run tools, and does not expose dashboard session tokens,
+OAuth tokens, API keys, cookies, SMTP/Gmail credentials, payment/customer
+credentials, Authorization headers, or credential values.
+
+Existing Hermes MCP patterns found:
+
+- `mcp_serve.py` uses FastMCP over stdio for messaging/channel bridge tools.
+- `agent/transports/hermes_tools_mcp_server.py` uses FastMCP over stdio to
+  expose a curated Hermes subset to Codex subprocesses.
+- `tools/mcp_tool.py` is the outbound MCP client layer for stdio, SSE, and
+  Streamable HTTP servers.
+- `tools/mcp_oauth.py` and `tools/mcp_oauth_manager.py` implement OAuth 2.1
+  PKCE and secure profile-local token storage for outbound MCP clients.
+
+Recommended local/stdout bridge shape:
+
+- Keep `hermes_cli/mission_control_mcp.py` as a separate FastMCP server module
+  with stdio as the only supported transport in this phase.
+- Call `hermes_cli.mission_control` read helpers and packet helpers directly,
+  so dashboard REST auth/session tokens are not needed.
+- Return redacted structured data with explicit safety metadata:
+  `dry_run=true`, `review_required=true`, `trusted_for_execution=false`,
+  `local_only=true`, and `executes_or_dispatches=false`.
+- Keep write tools local-packet-only. Packet writes save/audit JSON review
+  artifacts and never dispatch the packet.
+
+This bridge is separate from the broad Hermes tool registry because Mission
+Control is an operator-control surface, not an agent capability dump. It must
+not inherit terminal, browser, file mutation, email, publishing, payment,
+credential, worker, Codex-run, Hermes-run, or arbitrary shell tools from the
+general registry.
+
+OAuth and remote transport are deferred because they require a separate
+security review: scopes, token lifecycle, storage permissions, audit logs, rate
+limits, host binding, reverse-proxy behavior, incident recovery, and explicit
+rules for what a remote ChatGPT client may read or write. Until that review is
+complete, the bridge remains local/stdout only.
+
+Safe Phase 4 tools:
+
+- Read-only: `get_project_status`, `get_open_tasks`,
+  `get_latest_worker_results`, `get_repo_status`, `get_approval_gates`,
+  `get_recent_audit_log`, `list_mission_packets`, and `get_mission_packet`.
+- Local packet writes: `save_next_codex_prompt`, `import_worker_result`, and
+  `save_block_flag_packet`.
+
+Blocked tools/actions remain absent from the MCP registry:
+
+- `send_email`, `publish_video`, `activate_payment`, `delete_files`,
+  `run_unbounded_codex`, `run_codex`, `start_codex`, `start_worker`,
+  `start_hermes_run`, `autonomous_computer_use`, `browser_control`,
+  `mouse_control`, `keyboard_control`, `start_bulk_outreach`,
+  `arbitrary_shell`, `reveal_secret`, and `update_credentials`.
+
+Test strategy:
+
+- Unit-test the Mission Control MCP registry and `--list-tools` manifest.
+- Assert only approved tools are discoverable and blocked tools are absent.
+- Assert read tools return redacted structured data or controlled warnings.
+- Assert packet write tools create only local packets, preserve safety flags,
+  append audit records, and keep worker result text untrusted display data.
+- Assert malformed input returns controlled redacted errors.
+
+Future ChatGPT path:
+
+```text
+ChatGPT -> local/stdio or future OAuth MCP bridge -> narrow Mission Control tools -> Hermes dashboard/API state
+```
+
+This phase does not connect ChatGPT yet. It makes the local tool contract
+concrete so future integration can avoid using Codex as a relay for status,
+worker-result, and next-prompt state.
+
+Phase 5 remote OAuth/security review prerequisites:
+
+- Threat model remote ChatGPT access and define exact read/write scopes.
+- Choose transport and binding rules; no public route until reviewed.
+- Add OAuth client/server flow, token storage permissions, token revocation,
+  audit events, and rate limits.
+- Reconfirm no broad Hermes registry, terminal, browser control, credential
+  reveal, send/publish/payment/delete, Codex-run, Hermes-run, or worker-start
+  path is exposed.
+
+Phase 5: OAuth-protected remote bridge
 
 - Add strict scopes, token storage, redaction, audit, rate limits, and explicit
   network binding rules.
 - Keep the dashboard private. The MCP bridge should be the only remote surface,
   and only for narrow Mission Control tools.
 
-Phase 5: Carefully gated actions
+Phase 6: Carefully gated actions
 
 - Consider additional fixed, dry-run-first local actions only after Phase 1-4
   are stable.

@@ -102,6 +102,63 @@ def extract_media_tags_broken(result_messages):
 
 class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
+
+    def test_gateway_auto_append_ignores_media_examples_in_skill_docs(self):
+        """Skill/documentation examples must not be appended as real attachments."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "How should I format gateway media?"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_skill", "function": {"name": "skill_view"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_skill",
+                "content": """
+Recommended pattern:
+```text
+MEDIA:/absolute/path/to/image.png
+```
+Second message:
+```text
+caption
+```
+""",
+            },
+            {"role": "assistant", "content": "Use a standalone media message."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == []
+        assert voice is False
+
+    def test_gateway_auto_append_keeps_real_tts_media_tag(self):
+        """TTS tool media tags are still auto-appended when the model omits them."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Say this as audio"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_tts", "function": {"name": "text_to_speech"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_tts",
+                "content": '{"success": true, "media_tag": "[[audio_as_voice]]\\nMEDIA:/tmp/voice.ogg"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/voice.ogg"]
+        assert voice is True
     
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""

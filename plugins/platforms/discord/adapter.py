@@ -4811,14 +4811,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # to keep the partition rule clean.
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm:
-            _needed_mention = (
-                require_mention
-                and not is_free_channel
-                and not in_bot_thread
-            )
-            _backfill_enabled = self._discord_history_backfill()
-            if _needed_mention and _backfill_enabled:
+        if not _is_dm and self._discord_history_backfill():
+            # Run backfill when there's a real gap to fill:
+            #   - mention-gated channels with no free-response override
+            #     (messages between bot turns aren't in the transcript)
+            #   - any thread (in_bot_thread bypasses the mention check, but
+            #     processing-window gaps and post-restart context still need
+            #     recovery)
+            # DMs skip entirely because every DM message triggers the bot,
+            # so the session transcript already has everything.
+            # Auto-threaded messages also skip — we just created the thread,
+            # there's nothing prior to backfill.
+            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
+            if (_has_mention_gap or is_thread) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                 )
@@ -6088,16 +6093,17 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
-    throughout the connect / handle code paths (``DISCORD_REQUIRE_MENTION``,
-    ``DISCORD_FREE_RESPONSE_CHANNELS``, ``DISCORD_AUTO_THREAD``,
-    ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
-    ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
-    ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
-    ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
-    ``DISCORD_THREAD_REQUIRE_MENTION``).  Rather than rewrite ~50 call sites
-    inside the adapter to read from ``PlatformConfig.extra`` instead, this
-    hook keeps the existing env-driven model and merely owns the
-    YAML→env translation here, next to the adapter that consumes it.
+    throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
+    ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
+    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
+    ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
+    ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
+    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
+    Rather than rewrite ~50 call sites inside the adapter to read from
+    ``PlatformConfig.extra`` instead, this hook keeps the existing
+    env-driven model and merely owns the YAML→env translation here, next to
+    the adapter that consumes it.
 
     Env vars take precedence over YAML — every assignment is guarded by
     ``not os.getenv(...)`` so explicit env vars survive a config.yaml
@@ -6108,6 +6114,22 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    platforms_cfg = yaml_cfg.get("platforms")
+    platform_extra_cfg = {}
+    if isinstance(platforms_cfg, dict):
+        discord_platform_cfg = platforms_cfg.get("discord")
+        if isinstance(discord_platform_cfg, dict):
+            candidate_extra = discord_platform_cfg.get("extra")
+            if isinstance(candidate_extra, dict):
+                platform_extra_cfg = candidate_extra
+    allowed_users_cfg = (
+        discord_cfg["allow_from"] if "allow_from" in discord_cfg
+        else platform_extra_cfg.get("allow_from")
+    )
+    if allowed_users_cfg is not None and not os.getenv("DISCORD_ALLOWED_USERS"):
+        if isinstance(allowed_users_cfg, list):
+            allowed_users_cfg = ",".join(str(v) for v in allowed_users_cfg)
+        os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
     frc = discord_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):

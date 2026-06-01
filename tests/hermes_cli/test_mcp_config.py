@@ -6,12 +6,7 @@ any actual MCP servers or API keys.
 """
 
 import argparse
-import json
-import os
-import types
 from pathlib import Path
-from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
@@ -599,4 +594,59 @@ class TestMcpLogin:
         cmd_mcp_login(_make_args(name="srv"))
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
+
+    def test_login_false_success_no_token(self, tmp_path, capsys, monkeypatch):
+        """Probe lists tools without auth (Google Drive), but no token landed.
+
+        The server allows tools/list without auth (DCR 400'd), so the probe
+        succeeds yet no OAuth token exists. Login must NOT claim success — it
+        should warn and point the user at pre-registered client_id config.
+        """
+        _seed_config(tmp_path, {
+            "googledrive": {
+                "url": "https://drivemcp.googleapis.com/mcp/v1",
+                "auth": "oauth",
+            },
+        })
+        # Probe returns tools even though auth never completed.
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg: [("search_files", "d"), ("read_file_content", "d")],
+        )
+        # No token file is created → _oauth_tokens_present() returns False.
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="googledrive"))
+        out = capsys.readouterr().out
+
+        assert "no OAuth token was obtained" in out
+        assert "Authenticated" not in out
+        assert "client_id" in out
+
+    def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
+        """Probe lists tools AND a token exists → report real success."""
+        _seed_config(tmp_path, {
+            "realserver": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+
+        # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
+        # writes a fresh token during the probe. Simulate that: the mocked
+        # probe drops a token file, mirroring a successful authorization.
+        def mock_probe(name, cfg):
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "realserver.json").write_text('{"access_token": "x"}')
+            return [("a", "d"), ("b", "d"), ("c", "d")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="realserver"))
+        out = capsys.readouterr().out
+
+        assert "Authenticated — 3 tool(s) available" in out
+        assert "no OAuth token" not in out
 

@@ -26,19 +26,23 @@ The Portal proxies a curated catalog of agentic models from across the ecosystem
 
 | Family | Models |
 |--------|--------|
-| **Anthropic Claude** | Opus, Sonnet, Haiku (4.x series) |
-| **OpenAI** | GPT-5.4, o-series reasoning models |
-| **Google Gemini** | 2.5 Pro, 2.5 Flash |
-| **DeepSeek** | DeepSeek V3.2, DeepSeek-R1 |
-| **Qwen** | Qwen3 family, Qwen Coder |
-| **Kimi / Moonshot** | Kimi-K2, Kimi-Latest |
-| **GLM / Zhipu** | GLM-4.6, GLM-4-Plus |
-| **MiniMax** | M2.7, M1 |
-| **xAI** | Grok-4, Grok-3 |
+| **Anthropic Claude** | Opus 4.7, Opus 4.6, Sonnet 4.6, Haiku 4.5 |
+| **OpenAI** | GPT-5.5, GPT-5.5 Pro, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
+| **Google Gemini** | Gemini 3 Pro Preview, Gemini 3 Flash Preview, Gemini 3.1 Pro Preview, Gemini 3.1 Flash Lite Preview |
+| **DeepSeek** | DeepSeek V4 Pro |
+| **Qwen** | Qwen3.7-Max, Qwen3.6-35B-A3B |
+| **Kimi / Moonshot** | Kimi K2.6 |
+| **GLM / Zhipu** | GLM-5.1 |
+| **MiniMax** | MiniMax M2.7 |
+| **xAI** | Grok 4.3 |
+| **NVIDIA** | Nemotron-3 Super 120B-A12B |
+| **Tencent** | Hunyuan 3 Preview |
+| **Xiaomi** | MiMo V2.5 Pro |
+| **StepFun** | Step 3.5 Flash |
 | **Hermes** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |
-| **+ everything else** | 240+ additional models — the full agentic frontier |
+| **+ everything else** | 280+ additional models — the full agentic frontier |
 
-Routing happens through OpenRouter under the hood, so model availability and failover behavior matches what you'd get with an OpenRouter key — just billed against your Nous subscription instead. Switch between Claude Sonnet 4.6 for code and Gemini 2.5 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
+Routing happens through OpenRouter under the hood, so model availability and failover behavior matches what you'd get with an OpenRouter key — just billed against your Nous subscription instead. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
 
 ### The Nous Tool Gateway
 
@@ -66,7 +70,7 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 ### Cross-platform parity
 
-[Native Windows](/user-guide/windows-native) is still early beta, and per-tool API key setup is its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
+[Native Windows](/user-guide/windows-native) makes per-tool API key setup its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
 ## A note on Hermes 4
 
@@ -76,9 +80,9 @@ They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is t
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
-/model openai/gpt-5.4                  # strong reasoning + tool calling
-/model google/gemini-2.5-pro           # huge context window
-/model deepseek/deepseek-v3.2          # cost-effective coder
+/model openai/gpt-5.5-pro              # strong reasoning + tool calling
+/model google/gemini-3-pro-preview     # huge context window
+/model deepseek/deepseek-v4-pro        # cost-effective coder
 ```
 
 The Portal's own [model info page](https://portal.nousresearch.com/info) carries the same warning, so this isn't a Hermes-side opinion — it's the official guidance from Nous Research.
@@ -155,8 +159,8 @@ Inside a session:
 
 ```bash
 /model anthropic/claude-sonnet-4.6
-/model openai/gpt-5.4
-/model google/gemini-2.5-pro
+/model openai/gpt-5.5-pro
+/model google/gemini-3-pro-preview
 ```
 
 Or open the picker:
@@ -184,7 +188,7 @@ hermes tools
 # → TTS              → "Nous Subscription"
 ```
 
-The Tool Gateway is opt-in per tool, not all-or-nothing. See the [Tool Gateway docs](/user-guide/features/tool-gateway) for the full per-tool configuration matrix.
+The Tool Gateway is opt-in per tool, not all-or-nothing. The managed backends show up in `hermes tools` whether or not you're logged into Nous Portal — if you pick "Nous Subscription" before authenticating, Hermes runs the Portal login inline (it won't change your inference provider or touch your other tools). See the [Tool Gateway docs](/user-guide/features/tool-gateway) for the full per-tool configuration matrix.
 
 ### Subscription management
 
@@ -201,7 +205,7 @@ After `hermes setup --portal`, `~/.hermes/config.yaml` will look like:
 model:
   provider: nous
   default: anthropic/claude-sonnet-4.6     # or whatever model you picked
-  base_url: https://inference.nousresearch.com/v1
+  base_url: https://inference-api.nousresearch.com/v1
 ```
 
 The Tool Gateway settings live under their respective tool sections:

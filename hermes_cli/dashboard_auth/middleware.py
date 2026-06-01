@@ -26,10 +26,15 @@ from hermes_cli.dashboard_auth import list_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError
 from hermes_cli.dashboard_auth.cookies import read_session_cookies
+from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
 
-# Paths that bypass the auth gate. Order matters: prefix match.
+# Prefixes that bypass the auth gate. Match via ``path == prefix`` or
+# ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
+# matches ``/assets/foo.css`` but not ``/assetsleak``. Auth-bootstrap
+# (login page, OAuth round trip, provider listing) and static asset
+# mounts go here.
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
@@ -45,6 +50,20 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
 
 
 def _path_is_public(path: str) -> bool:
+    """True if ``path`` bypasses the OAuth auth gate.
+
+    Two sources of public-ness:
+
+    * :data:`PUBLIC_API_PATHS` — the shared ``/api/*`` allowlist that
+      the legacy ``_SESSION_TOKEN`` middleware also honours. Matched
+      exactly (no prefix expansion) so adding ``/api/status`` doesn't
+      accidentally expose ``/api/status/secret-extension``.
+    * :data:`_GATE_PUBLIC_PREFIXES` — auth-bootstrap routes and static
+      mounts. Prefix-matched so ``/assets/foo.css`` lights up via
+      ``/assets/``.
+    """
+    if path in PUBLIC_API_PATHS:
+        return True
     return any(
         path == prefix or path.startswith(prefix)
         for prefix in _GATE_PUBLIC_PREFIXES
@@ -130,6 +149,16 @@ def _safe_next_target(request: Request) -> str:
         path == p or path.startswith(p)
         for p in ("/login", "/auth/", "/api/auth/")
     ):
+        return ""
+    # Reject ALL ``/api/*`` paths. The 401-envelope code path fires for
+    # any unauthenticated SPA fetch (e.g. ``GET /api/analytics/models``
+    # from ModelsPage), and the SPA's global 401 handler full-page
+    # navigates to ``login_url``. After the OAuth round trip the user
+    # would land on the API URL and see raw JSON instead of the
+    # dashboard. SPA routes survive (they don't start with ``/api/``);
+    # the SPA's own ``sessionStorage["hermes.lastLocation"]`` fallback
+    # in ``web/src/lib/api.ts`` covers the deep-link case.
+    if path == "/api" or path.startswith("/api/"):
         return ""
     # Preserve query string if present (e.g. /sessions?page=2).
     query = request.url.query

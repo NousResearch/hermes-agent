@@ -31,9 +31,15 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        TypeHandler,
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import ApplicationHandlerStop as _ApplicationHandlerStop
+    except ImportError:  # pragma: no cover - old/fake PTB in tests
+        _ApplicationHandlerStop = Exception
+    ApplicationHandlerStop = _ApplicationHandlerStop
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -46,9 +52,11 @@ except ImportError:
     InlineKeyboardMarkup = Any
     LinkPreviewOptions = None
     Application = Any
+    ApplicationHandlerStop = Exception
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    TypeHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -87,6 +95,7 @@ from gateway.platforms.telegram_network import (
     parse_fallback_ip_env,
 )
 from utils import atomic_replace
+from hermes_cli.plugins import invoke_hook_async
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -118,7 +127,8 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global ApplicationHandlerStop, CommandHandler, CallbackQueryHandler
+    global TelegramMessageHandler, TypeHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -137,9 +147,13 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
-            MessageHandler as _MH,
+            MessageHandler as _MH, TypeHandler as _TH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import ApplicationHandlerStop as _AHS
+        except ImportError:  # pragma: no cover - old/fake PTB in tests
+            _AHS = Exception
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -151,9 +165,11 @@ def check_telegram_requirements() -> bool:
     InlineKeyboardMarkup = _IKM
     LinkPreviewOptions = _LPO
     Application = _App
+    ApplicationHandlerStop = _AHS
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    TypeHandler = _TH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -491,6 +507,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Raw Telegram hook de-duplication. Do not store markers on PTB Update
+        # instances: real Update objects may be slotted/immutable.
+        self._raw_update_hook_seen: Dict[tuple, None] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1602,6 +1621,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            self._app.add_handler(TypeHandler(Update, self._handle_raw_update_hook), group=-100)
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -3209,6 +3229,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
         """Handle inline keyboard button clicks."""
+        if await self._invoke_raw_update_hooks(update, context, handler="callback_query"):
+            return
         query = update.callback_query
         if not query or not query.data:
             return
@@ -5050,6 +5072,65 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
 
+    async def _handle_raw_update_hook(
+        self, update, context
+    ) -> None:
+        """Run plugin raw-update hooks before Telegram's normal handlers.
+
+        ``TypeHandler(Update, ...)`` catches every PTB update shape, including
+        update types that do not pass the message/callback filters below. If a
+        plugin consumes the update, stop PTB from running subsequent handlers.
+        """
+        handled = await self._invoke_raw_update_hooks(update, context, handler="raw")
+        if handled:
+            raise ApplicationHandlerStop
+
+    def _raw_update_hook_cache_key(self, update) -> tuple:
+        update_id = getattr(update, "update_id", None)
+        if update_id is not None:
+            return ("update_id", update_id)
+        return ("object", id(update))
+
+    def _raw_update_hook_seen_cache(self) -> Dict[tuple, None]:
+        cache = getattr(self, "_raw_update_hook_seen", None)
+        if cache is None:
+            cache = {}
+            self._raw_update_hook_seen = cache
+        return cache
+
+    async def _invoke_raw_update_hooks(
+        self,
+        update,
+        context,
+        *,
+        handler: str,
+    ) -> bool:
+        """Return True when a plugin raw-update hook consumes an update."""
+        cache = self._raw_update_hook_seen_cache()
+        cache_key = self._raw_update_hook_cache_key(update)
+        if cache_key in cache:
+            return False
+
+        cache[cache_key] = None
+        while len(cache) > 2048:
+            cache.pop(next(iter(cache)), None)
+        results = await invoke_hook_async(
+            "telegram_raw_update",
+            update=update,
+            context=context,
+            adapter=self,
+            handler=handler,
+        )
+        for result in results:
+            if result is True:
+                return True
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action", "")).strip().lower()
+            if action in {"handled", "skip", "stop", "consume", "consumed"}:
+                return True
+        return False
+
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
 
@@ -5067,6 +5148,8 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        if await self._invoke_raw_update_hooks(update, context, handler="text"):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5083,6 +5166,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        if await self._invoke_raw_update_hooks(update, context, handler="command"):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5097,6 +5182,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
+        if await self._invoke_raw_update_hooks(update, context, handler="location"):
+            return
         msg = self._effective_update_message(update)
         if not msg:
             return
@@ -5280,6 +5367,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        if await self._invoke_raw_update_hooks(update, context, handler="media"):
+            return
         if not update.message:
             return
         if not self._should_process_message(update.message):

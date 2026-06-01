@@ -2798,6 +2798,48 @@ async def snooze_ops_approval(approval_id: str, body: ApprovalDecision):
         raise _approval_error(exc) from exc
 
 
+@app.get("/api/mission-control/project-status")
+async def get_mission_control_project_status():
+    from hermes_cli.mission_control import project_status
+
+    return project_status()
+
+
+@app.get("/api/mission-control/open-tasks")
+async def get_mission_control_open_tasks():
+    from hermes_cli.mission_control import open_tasks
+
+    return open_tasks()
+
+
+@app.get("/api/mission-control/latest-worker-results")
+async def get_mission_control_latest_worker_results():
+    from hermes_cli.mission_control import latest_worker_results
+
+    return latest_worker_results()
+
+
+@app.get("/api/mission-control/repo-status")
+async def get_mission_control_repo_status():
+    from hermes_cli.mission_control import repo_status
+
+    return repo_status()
+
+
+@app.get("/api/mission-control/approval-gates")
+async def get_mission_control_approval_gates():
+    from hermes_cli.mission_control import approval_gates
+
+    return approval_gates()
+
+
+@app.get("/api/mission-control/recent-audit-log")
+async def get_mission_control_recent_audit_log():
+    from hermes_cli.mission_control import recent_audit_log
+
+    return recent_audit_log()
+
+
 _CRON_PROFILE_LOCK = threading.RLock()
 
 

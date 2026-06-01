@@ -2525,7 +2525,12 @@ def select_provider_and_model(args=None):
         member_labels = [
             provider_labels.get(m, m) for m in selected_members
         ]
-        member_idx = _prompt_provider_choice(member_labels, default=member_default)
+        group_label = ordered[provider_idx][1].split(" ▸", 1)[0]
+        member_idx = _prompt_provider_choice(
+            member_labels,
+            default=member_default,
+            title=f"Select {group_label} provider:",
+        )
         if member_idx is None:
             print("No change.")
             return
@@ -3026,7 +3031,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))
 
 
-def _prompt_provider_choice(choices, *, default=0):
+def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     """Show provider selection menu with curses arrow-key navigation.
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
@@ -3036,7 +3041,7 @@ def _prompt_provider_choice(choices, *, default=0):
     try:
         from hermes_cli.setup import _curses_prompt_choice
 
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
             return idx
@@ -3044,7 +3049,7 @@ def _prompt_provider_choice(choices, *, default=0):
         pass
 
     # Fallback: numbered list
-    print("Select provider:")
+    print(title)
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
@@ -3063,6 +3068,40 @@ def _prompt_provider_choice(choices, *, default=0):
         except (KeyboardInterrupt, EOFError):
             print()
             return None
+
+
+def _prompt_auth_credentials_choice(title: str) -> str:
+    """Prompt for reuse / reauthenticate / cancel with the standard radio UI."""
+    choices = [
+        "Use existing credentials",
+        "Reauthenticate (new OAuth login)",
+        "Cancel",
+    ]
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice(title, choices, 0)
+        if idx >= 0:
+            print()
+            return ("use", "reauth", "cancel")[idx]
+    except Exception:
+        pass
+
+    print(title)
+    for i, label in enumerate(choices, 1):
+        marker = "→" if i == 1 else " "
+        print(f"  {marker} {i}. {label}")
+    print()
+    try:
+        choice = input("  Choice [1/2/3]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        choice = "1"
+
+    if choice == "2":
+        return "reauth"
+    if choice == "3":
+        return "cancel"
+    return "use"
 
 
 def _model_flow_openrouter(config, current_model=""):
@@ -3453,16 +3492,11 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     if status.get("logged_in"):
         print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
+        choice = _prompt_auth_credentials_choice(
+            "xAI Grok OAuth (SuperGrok / Premium+) credentials:"
+        )
 
-        if choice == "2":
+        if choice == "reauth":
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
@@ -3486,7 +3520,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             except Exception as exc:
                 print(f"Login failed: {exc}")
                 return
-        elif choice == "3":
+        elif choice == "cancel":
             return
     else:
         print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")

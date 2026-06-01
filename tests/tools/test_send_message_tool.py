@@ -31,6 +31,7 @@ from tools.send_message_tool import (
     _parse_target_ref,
     _send_matrix_via_adapter,
     _send_signal,
+    _send_slack,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -226,6 +227,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            slack_blocks=None,
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -265,6 +267,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            slack_blocks=None,
         )
 
     def test_resolved_slack_thread_name_preserves_thread_id(self):
@@ -299,6 +302,121 @@ class TestSendMessageTool:
             thread_id="171.000001",
             media_files=[],
             force_document=False,
+            slack_blocks=None,
+        )
+
+    def test_slack_blocks_require_fallback_text(self):
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "slack:C123ABCDEF",
+                        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "body"}}],
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "fallback" in result["error"]
+
+    def test_slack_blocks_reject_interactive_elements(self):
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "slack:C123ABCDEF",
+                        "text": "approval card",
+                        "blocks": [
+                            {
+                                "type": "actions",
+                                "elements": [
+                                    {"type": "button", "text": {"type": "plain_text", "text": "Approve"}, "value": "ok"}
+                                ],
+                            }
+                        ],
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "Interactive Slack Block Kit" in result["error"]
+
+    def test_slack_raw_blocks_json_message_is_rejected(self):
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        raw_json = json.dumps({"text": "fallback", "blocks": [{"type": "section"}]})
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "slack:C123ABCDEF",
+                        "message": raw_json,
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "raw Slack Block Kit JSON" in result["error"]
+        send_mock.assert_not_awaited()
+
+    def test_slack_blocks_are_forwarded_with_text_fallback(self):
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: slack_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "body"}}]
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "slack:C123ABCDEF",
+                        "text": "fallback text",
+                        "blocks": blocks,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.SLACK,
+            slack_cfg,
+            "C123ABCDEF",
+            "fallback text",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+            slack_blocks=blocks,
         )
 
     def test_resolved_matrix_thread_name_preserves_thread_id(self):
@@ -340,6 +458,7 @@ class TestSendMessageTool:
             thread_id="$thread123:matrix.example.org",
             media_files=[],
             force_document=False,
+            slack_blocks=None,
         )
 
     def test_mirror_receives_current_session_user_id(self):
@@ -411,6 +530,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            slack_blocks=None,
         )
 
     def test_top_level_send_failure_redacts_query_token(self):
@@ -678,6 +798,86 @@ class TestSendToPlatformChunking:
         assert result["success"] is True
         sent_text = send.await_args.args[2]
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
+
+    def test_slack_blocks_skip_chunking_and_pass_payload(self, monkeypatch):
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "body"}}]
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        with patch("tools.send_message_tool._send_slack", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "C123",
+                    "**fallback**",
+                    thread_id="171.000001",
+                    slack_blocks=blocks,
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            "***",
+            "C123",
+            "*fallback*",
+            blocks=blocks,
+            thread_id="171.000001",
+        )
+
+    def test_send_slack_includes_blocks_in_api_payload(self, monkeypatch):
+        captured = {}
+
+        class FakeResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return {"ok": True, "ts": "171.000001"}
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, *, headers=None, json=None, **kwargs):
+                captured["url"] = url
+                captured["headers"] = headers
+                captured["json"] = json
+                captured["kwargs"] = kwargs
+                return FakeResponse()
+
+        fake_aiohttp = SimpleNamespace(
+            ClientSession=FakeSession,
+            ClientTimeout=lambda **_kwargs: object(),
+        )
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "body"}}]
+
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        with patch("gateway.platforms.base.resolve_proxy_url", return_value=None), \
+             patch("gateway.platforms.base.proxy_kwargs_for_aiohttp", return_value=({}, {})):
+            result = asyncio.run(
+                _send_slack("xoxb-test", "C123", "fallback", blocks=blocks, thread_id="171.000001")
+            )
+
+        assert result["success"] is True
+        assert captured["json"] == {
+            "channel": "C123",
+            "text": "fallback",
+            "mrkdwn": True,
+            "thread_ts": "171.000001",
+            "blocks": blocks,
+        }
 
     def test_telegram_media_attaches_to_last_chunk(self):
 

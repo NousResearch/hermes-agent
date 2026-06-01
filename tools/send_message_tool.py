@@ -148,6 +148,15 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "text": {
+                "type": "string",
+                "description": "Slack Block Kit fallback text. Required when sending Slack blocks; used for notifications, accessibility, and fallback rendering."
+            },
+            "blocks": {
+                "type": "array",
+                "description": "Slack-only Block Kit blocks. Requires a non-empty text/message fallback. Interactive blocks are rejected by default.",
+                "items": {"type": "object"}
             }
         },
         "required": []
@@ -174,16 +183,114 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _looks_like_slack_blocks_json_message(message: str) -> bool:
+    """Return True when a plain-text Slack message appears to be raw Block Kit JSON."""
+    if not isinstance(message, str):
+        return False
+    stripped = message.strip()
+    if not stripped or stripped[0] not in "[{":
+        return False
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        return False
+    if isinstance(parsed, dict):
+        return "blocks" in parsed
+    if isinstance(parsed, list):
+        return any(isinstance(item, dict) and "blocks" in item for item in parsed)
+    return False
+
+
+def _find_interactive_slack_block_path(value, path: str = "blocks") -> str | None:
+    """Find a Block Kit interactive element path, or None when blocks are passive."""
+    interactive_types = {
+        "actions",
+        "button",
+        "checkboxes",
+        "datepicker",
+        "datetimepicker",
+        "email_text_input",
+        "external_select",
+        "file_input",
+        "image_button",
+        "multi_external_select",
+        "multi_static_select",
+        "multi_users_select",
+        "multi_channels_select",
+        "multi_conversations_select",
+        "number_input",
+        "overflow",
+        "plain_text_input",
+        "radio_buttons",
+        "rich_text_input",
+        "static_select",
+        "timepicker",
+        "url_text_input",
+        "users_select",
+        "channels_select",
+        "conversations_select",
+        "workflow_button",
+    }
+    if isinstance(value, dict):
+        block_type = value.get("type")
+        if block_type in interactive_types or "action_id" in value:
+            return f"{path}.{block_type or 'action_id'}"
+        for key, child in value.items():
+            found = _find_interactive_slack_block_path(child, f"{path}.{key}")
+            if found:
+                return found
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            found = _find_interactive_slack_block_path(child, f"{path}[{idx}]")
+            if found:
+                return found
+    return None
+
+
+def _validate_slack_blocks(blocks):
+    """Validate a Slack Block Kit payload for send_message."""
+    if not isinstance(blocks, list) or not blocks:
+        return "Slack blocks must be a non-empty array."
+    for idx, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            return f"Slack blocks[{idx}] must be an object."
+        if not isinstance(block.get("type"), str) or not block["type"].strip():
+            return f"Slack blocks[{idx}].type is required."
+    interactive_path = _find_interactive_slack_block_path(blocks)
+    if interactive_path:
+        return f"Interactive Slack Block Kit elements are not supported by send_message: {interactive_path}"
+    return None
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    blocks = args.get("blocks")
+    slack_text = args.get("text", "")
+    if not target:
+        return tool_error("'target' is required when action='send'")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
     target_ref = parts[1].strip() if len(parts) > 1 else None
+    slack_blocks = None
+    if blocks is not None:
+        if platform_name != "slack":
+            return tool_error("'blocks' is currently supported only for Slack targets")
+        message = slack_text or message
+        if not isinstance(message, str) or not message.strip():
+            return tool_error("Slack 'blocks' sends require non-empty fallback 'text' or 'message'")
+        validation_error = _validate_slack_blocks(blocks)
+        if validation_error:
+            return tool_error(validation_error)
+        slack_blocks = blocks
+    elif platform_name == "slack" and _looks_like_slack_blocks_json_message(message):
+        return tool_error("Refusing to send raw Slack Block Kit JSON as plain text. Pass structured 'blocks' with fallback 'text' instead.")
+
+    if not message:
+        return tool_error("'message' is required when action='send'")
+
     chat_id = None
     thread_id = None
 
@@ -258,9 +365,14 @@ def _handle_send(args):
     # JPGs where Telegram's sendPhoto recompresses to 1280px).
     force_document_attachments = "[[as_document]]" in message
 
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-    mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
+    if slack_blocks is not None:
+        media_files = []
+        cleaned_message = message
+        mirror_text = message.strip()
+    else:
+        media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+        media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+        mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
     if not chat_id:
@@ -320,6 +432,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                slack_blocks=slack_blocks,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -570,7 +683,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, slack_blocks=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -604,6 +717,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         except Exception:
             logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
 
+    if slack_blocks is not None and platform != Platform.SLACK:
+        return {"error": "Slack blocks can only be sent to Slack targets"}
+
+    if slack_blocks is not None and media_files:
+        return {"error": "Slack blocks cannot be combined with MEDIA attachments"}
+
     # Platform message length limits (from adapter class attributes for
     # built-in platforms; from PlatformEntry.max_message_length for plugins).
     _MAX_LENGTHS = {
@@ -627,7 +746,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # For short messages or platforms without a known limit this is a no-op.
     # Telegram measures length in UTF-16 code units, not Unicode codepoints.
     max_len = _MAX_LENGTHS.get(platform)
-    if max_len:
+    if slack_blocks is not None:
+        chunks = [message]
+    elif max_len:
         _len_fn = utf16_len if platform == Platform.TELEGRAM else None
         chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
     else:
@@ -767,7 +888,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            slack_kwargs = {}
+            if slack_blocks is not None:
+                slack_kwargs["blocks"] = slack_blocks
+            if thread_id is not None:
+                slack_kwargs["thread_id"] = thread_id
+            result = await _send_slack(pconfig.token, chat_id, chunk, **slack_kwargs)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1049,7 +1175,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, *, blocks=None, thread_id=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -1063,6 +1189,10 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id is not None:
+                payload["thread_ts"] = str(thread_id)
+            if blocks is not None:
+                payload["blocks"] = blocks
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

@@ -10174,8 +10174,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # agent runs drain instead of being SIGKILLed.
                             # The gateway's SIGUSR1 handler calls
                             # request_restart(via_service=True) → drain →
-                            # exit(75); systemd's Restart=on-failure (and
-                            # RestartForceExitStatus=75) respawns the unit.
+                            # exit; systemd's Restart=always respawns the unit.
                             _main_pid = 0
                             try:
                                 _show = subprocess.run(
@@ -10209,9 +10208,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 )
 
                             if _graceful_ok:
-                                # Gateway exited 75. ``Restart=always`` +
-                                # ``RestartForceExitStatus=75`` means systemd
-                                # WILL respawn the unit — but only after
+                                # Gateway exited after a planned restart.
+                                # ``Restart=always`` means systemd WILL respawn
+                                # the unit — but only after
                                 # ``RestartSec`` (default 60s on our unit
                                 # file). That 60s wait is a crash-loop guard,
                                 # and is the right default when the gateway

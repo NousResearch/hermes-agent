@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import gateway.run as gateway_run
+from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
@@ -132,14 +134,125 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
 
 
 @pytest.mark.asyncio
-async def test_gateway_stop_service_restart_sets_named_exit_code():
+async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+    runner._launch_systemd_restart_shortcut = MagicMock()
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
         await runner.stop(restart=True, service_restart=True)
 
+    runner._launch_systemd_restart_shortcut.assert_called_once_with()
+    assert runner._exit_code == 0
+    assert (tmp_path / ".restart_pending.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+
+    with patch("gateway.run.sys.platform", "darwin"), patch(
+        "gateway.status.remove_pid_file"
+    ), patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True, service_restart=True)
+
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+@pytest.mark.asyncio
+async def test_restart_shutdown_warning_uses_restart_command_reply_anchor_for_active_session():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(thread_id="42")
+    session_key = build_session_key(source)
+    runner._running_agents = {session_key: MagicMock()}
+    runner._cache_session_source(session_key, source)
+    restart_source = make_restart_source(thread_id="42")
+    restart_source.message_id = "restart-command"
+    runner._restart_requested = True
+    runner._restart_command_source = restart_source
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id=source.chat_id,
+        name="Telegram",
+        thread_id=source.thread_id,
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent_calls) == 1
+    chat_id, message, metadata = adapter.sent_calls[0]
+    assert chat_id == source.chat_id
+    assert "Gateway restarting" in message
+    assert metadata["thread_id"] == source.thread_id
+    assert metadata["telegram_dm_topic_reply_fallback"] is True
+    assert metadata["direct_messages_topic_id"] == source.thread_id
+    assert metadata["telegram_reply_to_message_id"] == "restart-command"
+
+
+@pytest.mark.asyncio
+async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(thread_id="42")
+    session_key = build_session_key(source)
+    runner._running_agents = {session_key: MagicMock()}
+    runner._cache_session_source(session_key, source)
+    restart_source = make_restart_source(thread_id="42")
+    restart_source.message_id = "restart-command"
+    runner._restart_requested = True
+    runner._restart_command_source = restart_source
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-chat",
+        name="Telegram Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent_calls) == 1
+    chat_id, message, metadata = adapter.sent_calls[0]
+    assert chat_id == source.chat_id
+    assert "Gateway restarting" in message
+    assert metadata["telegram_reply_to_message_id"] == "restart-command"
+
+
+@pytest.mark.asyncio
+async def test_idle_in_chat_restart_does_not_send_interruption_warning():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(thread_id="42")
+    source.message_id = "restart-command"
+    runner._restart_requested = True
+    runner._restart_command_source = source
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id=source.chat_id,
+        name="Telegram",
+        thread_id=source.thread_id,
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent_calls == []
+
+
+@pytest.mark.asyncio
+async def test_in_chat_restart_does_not_write_home_startup_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    source = make_restart_source(thread_id="42")
+    source.message_id = "restart-command"
+    runner._restart_command_source = source
+    runner._launch_systemd_restart_shortcut = MagicMock()
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True, service_restart=True)
+
+    assert not (tmp_path / ".restart_pending.json").exists()
 
 
 @pytest.mark.asyncio

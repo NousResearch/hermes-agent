@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -152,27 +153,46 @@ def build_command(
 def run_subprocess(cmd: Sequence[str], *, cwd: Path, timeout_s: float) -> CommandResult:
     started = time.monotonic()
 
+    env = os.environ.copy()
+    env.setdefault("PYTHONFAULTHANDLER", "1")
+    env.setdefault("HERMES_ONESHOT_FAULTHANDLER", "1")
+    start_new_session = os.name != "nt"
+    proc = subprocess.Popen(
+        list(cmd),
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=start_new_session,
+    )
+
     try:
-        completed = subprocess.run(
-            list(cmd),
-            cwd=str(cwd),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_s,
-            check=False,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout_s)
         elapsed_s = time.monotonic() - started
         return CommandResult(
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            returncode=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
             elapsed_s=elapsed_s,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        if start_new_session and hasattr(signal, "SIGUSR1"):
+            try:
+                os.killpg(proc.pid, signal.SIGUSR1)
+                time.sleep(1.0)
+            except Exception:
+                pass
+        try:
+            proc.terminate()
+            stdout, stderr = proc.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            stdout, stderr = proc.communicate()
         elapsed_s = time.monotonic() - started
-        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace")
-        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace")
         return CommandResult(returncode=124, stdout=stdout, stderr=stderr, elapsed_s=elapsed_s, timed_out=True)
 
 

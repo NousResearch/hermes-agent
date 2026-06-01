@@ -110,6 +110,25 @@ def test_run_case_uses_runner_and_sanitizes_prompt_from_logged_command(tmp_path)
     assert record["stdout"] == "OK\n"
 
 
+def test_run_subprocess_timeout_requests_thread_dump(tmp_path):
+    code = (
+        "import faulthandler, signal, sys, time; "
+        "faulthandler.enable(file=sys.stderr, all_threads=True); "
+        "faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True, chain=False); "
+        "time.sleep(30)"
+    )
+
+    result = canary.run_subprocess(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        timeout_s=0.2,
+    )
+
+    assert result.timed_out is True
+    assert result.returncode == 124
+    assert "Current thread" in result.stderr
+
+
 def test_hardening_loop_failure_task_id_is_stable_and_sanitized():
     record = {"case": "MeshBoard Onboard", "failure": "nonzero_exit"}
 

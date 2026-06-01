@@ -3602,17 +3602,33 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
                 timeout=getattr(args, "timeout", None) or 15.0,
             )
             _login_minimax_oauth(mock_args, PROVIDER_REGISTRY["minimax-oauth"])
+        except KeyboardInterrupt:
+            print()
+            print("MiniMax OAuth login cancelled. Provider not configured.", flush=True)
+            return
         except SystemExit:
-            print("Login cancelled or failed.")
+            # _login_minimax_oauth raises SystemExit(1) after printing
+            # format_auth_error(exc); surface a clear next step so the wizard
+            # doesn't appear to silently advance (#19336).
+            print(
+                "MiniMax OAuth login did not complete. Provider not configured. "
+                "Re-run 'hermes model' to retry.",
+                flush=True,
+            )
             return
         except Exception as exc:
-            print(f"Login failed: {exc}")
+            logger.warning("MiniMax OAuth login failed", exc_info=True)
+            print(f"MiniMax OAuth login failed: {exc}", flush=True)
+            print(
+                "Provider not configured. Re-run 'hermes model' to retry.",
+                flush=True,
+            )
             return
 
     try:
         creds = resolve_minimax_oauth_runtime_credentials()
     except AuthError as exc:
-        print(format_auth_error(exc))
+        print(format_auth_error(exc), flush=True)
         return
 
     from hermes_cli.models import _PROVIDER_MODELS

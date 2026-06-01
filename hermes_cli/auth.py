@@ -6874,6 +6874,33 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
 # ==================== MiniMax Portal OAuth ====================
 
+# MiniMax's /oauth/code endpoint currently returns a verification_uri pointing
+# at https://www.minimax.io/oauth-authorize?... which 307-redirects to the
+# marketing homepage and has no OAuth approval UI. The live approval page is
+# served from platform.minimax.io. Rewrite the host client-side until upstream
+# returns the correct one. Tracked in issue #19337.
+_MINIMAX_STALE_VERIFY_HOSTS = frozenset({"www.minimax.io", "minimax.io"})
+_MINIMAX_LIVE_VERIFY_HOST = "platform.minimax.io"
+
+
+def _normalize_minimax_verification_uri(url: str) -> str:
+    """Return *url* with the OAuth approval host rewritten if it is stale."""
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if (parsed.hostname or "").lower() not in _MINIMAX_STALE_VERIFY_HOSTS:
+        return url
+    if not parsed.path.startswith("/oauth-authorize"):
+        return url
+    new_netloc = _MINIMAX_LIVE_VERIFY_HOST
+    if parsed.port:
+        new_netloc = f"{new_netloc}:{parsed.port}"
+    return parsed._replace(netloc=new_netloc).geturl()
+
+
 def _minimax_pkce_pair() -> tuple:
     """Generate (code_verifier, code_challenge_S256, state) for MiniMax OAuth."""
     import secrets
@@ -6922,6 +6949,9 @@ def _minimax_request_user_code(
             "MiniMax OAuth state mismatch (possible CSRF).",
             provider="minimax-oauth", code="state_mismatch",
         )
+    payload["verification_uri"] = _normalize_minimax_verification_uri(
+        str(payload["verification_uri"])
+    )
     return payload
 
 

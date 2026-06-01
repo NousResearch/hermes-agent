@@ -30,6 +30,7 @@ from hermes_cli.auth import (
     _minimax_request_user_code,
     _minimax_poll_token,
     _minimax_resolve_token_expiry_unix,
+    _normalize_minimax_verification_uri,
     _refresh_minimax_oauth_state,
     resolve_minimax_oauth_runtime_credentials,
     get_minimax_oauth_auth_status,
@@ -837,3 +838,104 @@ def test_resolve_returns_string_by_default():
 
     assert creds["api_key"] == "tok"
     assert isinstance(creds["api_key"], str)
+
+
+# ---------------------------------------------------------------------------
+# 16. test_normalize_verification_uri_rewrites_stale_host
+# ---------------------------------------------------------------------------
+
+def test_normalize_verification_uri_rewrites_stale_host():
+    """www.minimax.io/oauth-authorize 307s to the homepage; rewrite to platform."""
+    stale = "https://www.minimax.io/oauth-authorize?user_code=ABC&client=OpenClaw"
+    rewritten = _normalize_minimax_verification_uri(stale)
+    assert rewritten == (
+        "https://platform.minimax.io/oauth-authorize?user_code=ABC&client=OpenClaw"
+    )
+
+
+def test_normalize_verification_uri_preserves_unrelated_urls():
+    """Don't rewrite hosts or paths that aren't the known stale OAuth approval URL."""
+    cases = [
+        "https://platform.minimax.io/oauth-authorize?user_code=ABC",
+        "https://www.minimax.io/some-other-page",
+        "https://example.com/oauth-authorize?user_code=ABC",
+        "https://api.minimax.io/oauth/code",
+        "",
+        "not a url at all",
+    ]
+    for url in cases:
+        assert _normalize_minimax_verification_uri(url) == url, url
+
+
+def test_request_user_code_normalizes_stale_verification_uri():
+    """End-to-end: a stale verification_uri from /oauth/code is rewritten."""
+    state = "test-state-rewrite"
+    stale = "https://www.minimax.io/oauth-authorize?user_code=ABC-123&client=OpenClaw"
+    mock_response = _make_httpx_response(200, {
+        "user_code": "ABC-123",
+        "verification_uri": stale,
+        "expired_in": int(time.time() * 1000) + 300_000,
+        "state": state,
+    })
+
+    client = MagicMock()
+    client.post.return_value = mock_response
+
+    result = _minimax_request_user_code(
+        client,
+        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        code_challenge="challenge",
+        state=state,
+    )
+
+    assert result["verification_uri"] == (
+        "https://platform.minimax.io/oauth-authorize?user_code=ABC-123&client=OpenClaw"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 17. test_model_flow_minimax_oauth_surfaces_login_failure
+# ---------------------------------------------------------------------------
+
+def test_model_flow_minimax_oauth_surfaces_login_failure_systemexit(capsys):
+    """If _login_minimax_oauth raises SystemExit, the wizard must announce it."""
+    from hermes_cli.main import _model_flow_minimax_oauth
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=None), \
+         patch("hermes_cli.auth._login_minimax_oauth", side_effect=SystemExit(1)):
+        _model_flow_minimax_oauth({}, current_model="")
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "Provider not configured" in combined
+    assert "hermes model" in combined  # tells user how to retry
+
+
+def test_model_flow_minimax_oauth_surfaces_login_failure_exception(capsys):
+    """Generic exceptions from login must not be swallowed silently."""
+    from hermes_cli.main import _model_flow_minimax_oauth
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=None), \
+         patch("hermes_cli.auth._login_minimax_oauth",
+               side_effect=RuntimeError("network blew up")):
+        _model_flow_minimax_oauth({}, current_model="")
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "network blew up" in combined
+    assert "Provider not configured" in combined
+
+
+def test_model_flow_minimax_oauth_surfaces_keyboard_interrupt(capsys):
+    """User Ctrl-C during login should print a clear cancelled message."""
+    from hermes_cli.main import _model_flow_minimax_oauth
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=None), \
+         patch("hermes_cli.auth._login_minimax_oauth", side_effect=KeyboardInterrupt):
+        _model_flow_minimax_oauth({}, current_model="")
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "cancelled" in combined.lower()
+    assert "Provider not configured" in combined

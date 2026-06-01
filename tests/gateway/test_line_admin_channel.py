@@ -17,6 +17,7 @@ _line = load_plugin_adapter("line")
 LineAdapter = _line.LineAdapter
 check_requirements = _line.check_requirements
 check_requirements_admin = getattr(_line, "check_requirements_admin", lambda: "missing")
+interactive_setup_admin = getattr(_line, "interactive_setup_admin", None)
 register = _line.register
 verify_line_signature = _line.verify_line_signature
 
@@ -101,6 +102,7 @@ def test_register_adds_customer_and_admin_platforms():
     assert set(by_name) == {"line", "line_admin"}
     assert by_name["line"]["check_fn"] is check_requirements
     assert by_name["line_admin"]["check_fn"] is check_requirements_admin
+    assert by_name["line_admin"]["setup_fn"] is interactive_setup_admin
 
 
 def test_admin_requirements_gate_needs_token_and_secret(monkeypatch):

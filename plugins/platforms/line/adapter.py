@@ -1692,14 +1692,19 @@ async def _standalone_send_for_prefix(
         return {"error": str(exc)}
 
 
-def interactive_setup() -> None:
+def interactive_setup(
+    env_prefix: str = "LINE",
+    *,
+    title: str = "LINE Messaging API setup",
+    webhook_path: str = DEFAULT_WEBHOOK_PATH,
+) -> None:
     """Minimal stdin wizard for ``hermes setup line``.
 
     Mirrors the irc/teams style: prompts for the two required vars, plus
     one optional public URL. Writes to ``~/.hermes/.env`` via ``hermes_cli.config``.
     """
     print()
-    print("LINE Messaging API setup")
+    print(title)
     print("------------------------")
     print("Create a Messaging API channel at https://developers.line.biz/console/")
     print("then copy the values below.")
@@ -1726,12 +1731,21 @@ def interactive_setup() -> None:
         if value:
             set_env_var(var, value)
 
-    _prompt("LINE_CHANNEL_ACCESS_TOKEN", "Channel access token", secret=True)
-    _prompt("LINE_CHANNEL_SECRET", "Channel secret", secret=True)
-    _prompt("LINE_PUBLIC_URL", "Public HTTPS base URL (optional, e.g. https://my-tunnel.example.com)")
-    _prompt("LINE_ALLOWED_USERS", "Allowed user IDs (comma-separated; blank=skip)")
+    _prompt(_line_env_name(env_prefix, "ACCESS_TOKEN"), "Channel access token", secret=True)
+    _prompt(_line_env_name(env_prefix, "SECRET"), "Channel secret", secret=True)
+    _prompt(_line_env_name(env_prefix, "PUBLIC_URL"), "Public HTTPS base URL (optional, e.g. https://my-tunnel.example.com)")
+    _prompt(_line_env_name(env_prefix, "ALLOWED_USERS"), "Allowed user IDs (comma-separated; blank=skip)")
     print("Done. Set the webhook URL in the LINE console to "
-          "<your-public-url>/line/webhook and enable 'Use webhook'.")
+          f"<your-public-url>{webhook_path} and enable 'Use webhook'.")
+
+
+def interactive_setup_admin() -> None:
+    """Minimal stdin wizard for ``hermes setup line_admin``."""
+    interactive_setup(
+        "LINE_ADMIN_CHANNEL",
+        title="LINE internal/admin Messaging API setup",
+        webhook_path="/line-admin/webhook",
+    )
 
 
 def register(ctx) -> None:
@@ -1784,7 +1798,7 @@ def register(ctx) -> None:
         is_connected=is_connected_admin,
         required_env=[],
         install_hint="pip install aiohttp",
-        setup_fn=interactive_setup,
+        setup_fn=interactive_setup_admin,
         env_enablement_fn=_env_enablement_admin,
         cron_deliver_env_var="LINE_ADMIN_CHANNEL_HOME",
         standalone_sender_fn=_standalone_send_admin,

@@ -42,7 +42,7 @@ ULTRAPLINIAN_MODELS = [
     'x-ai/grok-code-fast-1',
     'xiaomi/mimo-v2-flash',
     'openai/gpt-oss-20b',
-    'stepfun/step-3.7-flash',  # updated for reasoning_effort support
+    'stepfun/step-3.5-flash',
     'nvidia/nemotron-3-nano-30b-a3b',
     # STANDARD TIER (11-24)
     'anthropic/claude-3.5-sonnet',

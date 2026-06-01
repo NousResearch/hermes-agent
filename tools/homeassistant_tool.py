@@ -16,6 +16,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -78,12 +79,15 @@ def _filter_and_summarize(
     states: list,
     domain: Optional[str] = None,
     area: Optional[str] = None,
+    area_entity_ids: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """Filter raw HA states by domain/area and return a compact summary."""
     if domain:
         states = [s for s in states if s.get("entity_id", "").startswith(f"{domain}.")]
 
-    if area:
+    if area_entity_ids is not None:
+        states = [s for s in states if s.get("entity_id", "") in area_entity_ids]
+    elif area:
         area_lower = area.lower()
         states = [
             s for s in states
@@ -102,6 +106,92 @@ def _filter_and_summarize(
     return {"count": len(entities), "entities": entities}
 
 
+def _websocket_url(hass_url: str) -> str:
+    """Convert a Home Assistant HTTP base URL into its WebSocket endpoint."""
+    parsed = urlsplit(hass_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return urlunsplit((scheme, parsed.netloc, "/api/websocket", "", ""))
+
+
+def _entity_ids_for_area(
+    areas: list,
+    devices: list,
+    entities: list,
+    area: str,
+) -> set[str]:
+    """Map Home Assistant registry data to entity IDs assigned to *area*."""
+    needle = area.strip().lower()
+    area_ids = {
+        str(a.get("area_id", ""))
+        for a in areas or []
+        if needle in {
+            str(a.get("area_id", "")).lower(),
+            str(a.get("name", "")).lower(),
+        }
+    }
+    device_ids = {
+        str(d.get("id", ""))
+        for d in devices or []
+        if str(d.get("area_id", "")) in area_ids
+    }
+    return {
+        str(e.get("entity_id", ""))
+        for e in entities or []
+        if str(e.get("area_id", "")) in area_ids
+        or str(e.get("device_id", "")) in device_ids
+    }
+
+
+async def _ha_ws_result(ws, msg_id: int) -> Any:
+    """Read WebSocket messages until the result for *msg_id* arrives."""
+    import aiohttp
+
+    while True:
+        msg = await ws.receive(timeout=10)
+        if msg.type != aiohttp.WSMsgType.TEXT:
+            raise RuntimeError("Home Assistant WebSocket closed before result")
+        data = json.loads(msg.data)
+        if data.get("id") != msg_id:
+            continue
+        if data.get("type") != "result" or not data.get("success", False):
+            raise RuntimeError(f"Home Assistant WebSocket command failed: {data}")
+        return data.get("result")
+
+
+async def _async_area_entity_ids(
+    session,
+    hass_url: str,
+    hass_token: str,
+    area: str,
+) -> set[str]:
+    """Resolve entity IDs assigned to a Home Assistant area via WS registries."""
+    import aiohttp
+
+    async with session.ws_connect(_websocket_url(hass_url), timeout=10) as ws:
+        msg = await ws.receive(timeout=10)
+        if msg.type != aiohttp.WSMsgType.TEXT:
+            raise RuntimeError("Home Assistant WebSocket did not request auth")
+
+        await ws.send_json({"type": "auth", "access_token": hass_token})
+        msg = await ws.receive(timeout=10)
+        if msg.type != aiohttp.WSMsgType.TEXT:
+            raise RuntimeError("Home Assistant WebSocket auth failed")
+        auth = json.loads(msg.data)
+        if auth.get("type") != "auth_ok":
+            raise RuntimeError(f"Home Assistant WebSocket auth failed: {auth}")
+
+        await ws.send_json({"id": 1, "type": "config/area_registry/list"})
+        areas = await _ha_ws_result(ws, 1)
+
+        await ws.send_json({"id": 2, "type": "config/device_registry/list"})
+        devices = await _ha_ws_result(ws, 2)
+
+        await ws.send_json({"id": 3, "type": "config/entity_registry/list"})
+        entities = await _ha_ws_result(ws, 3)
+
+    return _entity_ids_for_area(areas, devices, entities, area)
+
+
 async def _async_list_entities(
     domain: Optional[str] = None,
     area: Optional[str] = None,
@@ -116,7 +206,20 @@ async def _async_list_entities(
             resp.raise_for_status()
             states = await resp.json()
 
-    return _filter_and_summarize(states, domain, area)
+        area_entity_ids = None
+        if area:
+            try:
+                area_entity_ids = await _async_area_entity_ids(
+                    session,
+                    hass_url,
+                    hass_token,
+                    area,
+                )
+            except Exception as exc:
+                logger.debug("HA area registry lookup failed; falling back to attributes: %s", exc)
+
+    return _filter_and_summarize(states, domain, area, area_entity_ids)
+
 
 
 async def _async_get_state(entity_id: str) -> Dict[str, Any]:

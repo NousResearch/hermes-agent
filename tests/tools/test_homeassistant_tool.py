@@ -11,12 +11,14 @@ import pytest
 
 from tools.homeassistant_tool import (
     _check_ha_available,
+    _entity_ids_for_area,
     _filter_and_summarize,
     _build_service_payload,
     _parse_service_response,
     _get_headers,
     _handle_get_state,
     _handle_call_service,
+    _websocket_url,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
     _SERVICE_NAME_RE,
@@ -82,6 +84,15 @@ class TestFilterAndSummarize:
         assert "light.bedroom" in ids
         assert "sensor.humidity" in ids
 
+    def test_area_filter_prefers_registry_entity_ids(self):
+        result = _filter_and_summarize(
+            SAMPLE_STATES,
+            area="bedroom",
+            area_entity_ids={"sensor.humidity"},
+        )
+        ids = {e["entity_id"] for e in result["entities"]}
+        assert ids == {"sensor.humidity"}
+
     def test_area_filter_case_insensitive(self):
         result = _filter_and_summarize(SAMPLE_STATES, area="KITCHEN")
         assert result["count"] == 2
@@ -105,6 +116,39 @@ class TestFilterAndSummarize:
         result = _filter_and_summarize(states)
         assert result["count"] == 1
         assert result["entities"][0]["friendly_name"] == ""
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketUrl:
+    def test_http_url_uses_ws_scheme(self):
+        assert _websocket_url("http://ha.local:8123") == "ws://ha.local:8123/api/websocket"
+
+    def test_https_url_uses_wss_scheme(self):
+        assert _websocket_url("https://ha.example") == "wss://ha.example/api/websocket"
+
+
+class TestAreaRegistryMapping:
+    def test_entity_ids_for_area_matches_direct_and_device_area(self):
+        areas = [{"area_id": "bedroom", "name": "Bedroom"}]
+        devices = [{"id": "device-a", "area_id": "bedroom"}]
+        entities = [
+            {"entity_id": "light.bedroom", "device_id": "device-a"},
+            {"entity_id": "sensor.bedroom_temp", "area_id": "bedroom"},
+            {"entity_id": "light.kitchen", "area_id": "kitchen"},
+        ]
+
+        assert _entity_ids_for_area(areas, devices, entities, "Bedroom") == {
+            "light.bedroom",
+            "sensor.bedroom_temp",
+        }
+
+    def test_entity_ids_for_area_returns_empty_for_unknown_area(self):
+        areas = [{"area_id": "kitchen", "name": "Kitchen"}]
+        assert _entity_ids_for_area(areas, [], [], "bedroom") == set()
 
 
 # ---------------------------------------------------------------------------

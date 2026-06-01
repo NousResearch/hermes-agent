@@ -28,6 +28,7 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +39,20 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
+
+# Discord snowflake IDs are 64-bit integers represented as decimal strings.
+# Valid range: 1–20 digits.  Anything else (empty, contains '/', '?', letters,
+# etc.) is rejected before it reaches a URL path segment.
+_SNOWFLAKE_RE = re.compile(r"^\d{1,20}$")
+
+
+def _validate_snowflake(value: str, param_name: str) -> None:
+    """Raise ``ValueError`` if *value* is not a valid Discord snowflake ID."""
+    if not _SNOWFLAKE_RE.match(str(value)):
+        raise ValueError(
+            f"Invalid Discord {param_name}: {value!r} "
+            f"(expected 1-20 digit numeric string)"
+        )
 
 # Application flag bits (from GET /applications/@me → "flags").
 # Source: https://discord.com/developers/docs/resources/application#application-object-application-flags
@@ -203,6 +218,7 @@ def _list_guilds(token: str, **_kwargs: Any) -> str:
 
 def _server_info(token: str, guild_id: str, **_kwargs: Any) -> str:
     """Get detailed information about a guild."""
+    _validate_snowflake(guild_id, "guild_id")
     g = _discord_request("GET", f"/guilds/{guild_id}", token, params={"with_counts": "true"})
     return json.dumps({
         "id": g["id"],
@@ -221,6 +237,7 @@ def _server_info(token: str, guild_id: str, **_kwargs: Any) -> str:
 
 def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
     """List all channels in a guild, organized by category."""
+    _validate_snowflake(guild_id, "guild_id")
     channels = _discord_request("GET", f"/guilds/{guild_id}/channels", token)
 
     # Organize: categories first, then channels under each
@@ -276,6 +293,7 @@ def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
 
 def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
     """Get detailed info about a specific channel."""
+    _validate_snowflake(channel_id, "channel_id")
     ch = _discord_request("GET", f"/channels/{channel_id}", token)
     return json.dumps({
         "id": ch["id"],
@@ -293,6 +311,7 @@ def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
     """List all roles in a guild."""
+    _validate_snowflake(guild_id, "guild_id")
     roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
     result = []
     for r in sorted(roles, key=lambda r: r.get("position", 0), reverse=True):
@@ -311,6 +330,8 @@ def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
 
 def _member_info(token: str, guild_id: str, user_id: str, **_kwargs: Any) -> str:
     """Get info about a specific guild member."""
+    _validate_snowflake(guild_id, "guild_id")
+    _validate_snowflake(user_id, "user_id")
     m = _discord_request("GET", f"/guilds/{guild_id}/members/{user_id}", token)
     user = m.get("user", {})
     return json.dumps({
@@ -328,6 +349,7 @@ def _member_info(token: str, guild_id: str, user_id: str, **_kwargs: Any) -> str
 
 def _search_members(token: str, guild_id: str, query: str, limit: int = 20, **_kwargs: Any) -> str:
     """Search for guild members by name."""
+    _validate_snowflake(guild_id, "guild_id")
     try:
         limit = int(limit)
     except (TypeError, ValueError):
@@ -354,6 +376,11 @@ def _fetch_messages(
     **_kwargs: Any,
 ) -> str:
     """Fetch recent messages from a channel."""
+    _validate_snowflake(channel_id, "channel_id")
+    if before:
+        _validate_snowflake(before, "before")
+    if after:
+        _validate_snowflake(after, "after")
     try:
         limit = int(limit)
     except (TypeError, ValueError):
@@ -393,6 +420,7 @@ def _fetch_messages(
 
 def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
     """List pinned messages in a channel."""
+    _validate_snowflake(channel_id, "channel_id")
     messages = _discord_request("GET", f"/channels/{channel_id}/pins", token)
     result = []
     for msg in messages:
@@ -408,18 +436,24 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 def _pin_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
     """Pin a message in a channel."""
+    _validate_snowflake(channel_id, "channel_id")
+    _validate_snowflake(message_id, "message_id")
     _discord_request("PUT", f"/channels/{channel_id}/pins/{message_id}", token)
     return json.dumps({"success": True, "message": f"Message {message_id} pinned."})
 
 
 def _unpin_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
     """Unpin a message from a channel."""
+    _validate_snowflake(channel_id, "channel_id")
+    _validate_snowflake(message_id, "message_id")
     _discord_request("DELETE", f"/channels/{channel_id}/pins/{message_id}", token)
     return json.dumps({"success": True, "message": f"Message {message_id} unpinned."})
 
 
 def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
     """Delete a message from a channel or thread."""
+    _validate_snowflake(channel_id, "channel_id")
+    _validate_snowflake(message_id, "message_id")
     _discord_request("DELETE", f"/channels/{channel_id}/messages/{message_id}", token)
     return json.dumps({"success": True, "message": f"Message {message_id} deleted."})
 
@@ -431,6 +465,9 @@ def _create_thread(
     **_kwargs: Any,
 ) -> str:
     """Create a thread in a channel."""
+    _validate_snowflake(channel_id, "channel_id")
+    if message_id:
+        _validate_snowflake(message_id, "message_id")
     if message_id:
         # Create thread from an existing message
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
@@ -456,12 +493,18 @@ def _create_thread(
 
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
+    _validate_snowflake(guild_id, "guild_id")
+    _validate_snowflake(user_id, "user_id")
+    _validate_snowflake(role_id, "role_id")
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
     return json.dumps({"success": True, "message": f"Role {role_id} added to user {user_id}."})
 
 
 def _remove_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Remove a role from a guild member."""
+    _validate_snowflake(guild_id, "guild_id")
+    _validate_snowflake(user_id, "user_id")
+    _validate_snowflake(role_id, "role_id")
     _discord_request("DELETE", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
     return json.dumps({"success": True, "message": f"Role {role_id} removed from user {user_id}."})
 
@@ -899,6 +942,9 @@ def _run_discord_action(
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
         if e.status == 403:
             return json.dumps({"error": _enrich_403(action, e.body)})
+        return json.dumps({"error": str(e)})
+    except ValueError as e:
+        logger.warning("Invalid parameter in %s action '%s': %s", tool_label, action, e)
         return json.dumps({"error": str(e)})
     except Exception as e:
         logger.exception("Unexpected error in %s action '%s'", tool_label, action)

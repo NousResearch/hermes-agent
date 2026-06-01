@@ -678,6 +678,13 @@ def main() -> int:
         help="Allow writing fingerprints inside the target repo",
     )
     parser.add_argument(
+        "--read-only-target",
+        action="store_true",
+        default=False,
+        help="Ensure no cache or artifacts are written inside the target repo "
+             "(forces in_repo_cache=False)",
+    )
+    parser.add_argument(
         "--external-cache-dir",
         default=None,
         help="Directory for external fingerprint cache",
@@ -713,12 +720,17 @@ def main() -> int:
     elif args.record_project_state:
         project_root = target
 
+    # --read-only-target overrides in_repo_cache to ensure no target mutation
+    effective_in_repo_cache = args.in_repo_cache
+    if args.read_only_target:
+        effective_in_repo_cache = False
+
     try:
         manifest = run_ua_pipeline(
             target,
             args.out,
             mode=args.mode,
-            in_repo_cache=args.in_repo_cache,
+            in_repo_cache=effective_in_repo_cache,
             external_cache_dir=args.external_cache_dir,
             prior_manifest=args.prior_manifest,
             project_root=project_root,

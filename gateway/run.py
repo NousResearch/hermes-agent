@@ -9083,9 +9083,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /status above is intentionally pre-gate so users always see
             # session state. /help and /whoami fall under the always-allowed
             # floor inside _check_slash_access unless a channel-specific hard
-            # allowlist caps the command set.
-            if _evt_cmd and _cmd_def_inner is not None:
-                _denied = self._check_slash_access(source, _cmd_def_inner.name)
+            # allowlist caps the command set. Resolve skills/bundles too so
+            # skill slash commands cannot bypass a per-channel allowlist.
+            _access_cmd_inner = self._resolve_slash_access_command_name(_evt_cmd)
+            if _access_cmd_inner:
+                _denied = self._check_slash_access(source, _access_cmd_inner)
                 if _denied is not None:
                     return _denied
 
@@ -9497,9 +9499,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). With channel gating → only that channel's configured
         # slash commands may run. Plain chat is unaffected — only slash
-        # commands gate.
-        if command and canonical and is_gateway_known_command(canonical):
-            _denied = self._check_slash_access(source, canonical)
+        # commands gate. Resolve skill/bundle commands here too, before their
+        # later dispatch rewrites them into normal prompt text.
+        _slash_access_cmd = self._resolve_slash_access_command_name(command)
+        if _slash_access_cmd:
+            _denied = self._check_slash_access(source, _slash_access_cmd)
             if _denied is not None:
                 return _denied
 
@@ -12138,6 +12142,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "\n".join(lines)
 
 
+
+
+    def _resolve_slash_access_command_name(self, command: Optional[str]) -> Optional[str]:
+        """Return the canonical slash-command name that access control should gate.
+
+        Built-in/plugin commands are registered through ``hermes_cli.commands``;
+        skill bundles and skills are resolved later in the dispatch path and
+        rewritten into prompt text. Channel allowlists must see all three kinds
+        before any rewrite/queue path can bypass the slash gate.
+        """
+        if not command:
+            return None
+        command_name = command.strip().lstrip("/")
+        if not command_name:
+            return None
+
+        try:
+            from hermes_cli.commands import (
+                is_gateway_known_command as _is_gateway_known_command,
+                resolve_command as _resolve_command,
+            )
+
+            cmd_def = _resolve_command(command_name)
+            if cmd_def is not None and _is_gateway_known_command(cmd_def.name):
+                return cmd_def.name
+        except Exception as exc:
+            logger.debug("Slash access built-in/plugin resolution failed: %s", exc)
+
+        try:
+            from agent.skill_bundles import resolve_bundle_command_key as _resolve_bundle_key
+
+            bundle_key = _resolve_bundle_key(command_name)
+            if bundle_key is not None:
+                return bundle_key.lstrip("/")
+        except Exception as exc:
+            logger.debug("Slash access bundle resolution failed: %s", exc)
+
+        try:
+            from agent.skill_commands import resolve_skill_command_key as _resolve_skill_key
+
+            skill_key = _resolve_skill_key(command_name)
+            if skill_key is not None:
+                return skill_key.lstrip("/")
+        except Exception as exc:
+            logger.debug("Slash access skill resolution failed: %s", exc)
+
+        return None
 
 
     def _check_slash_access(

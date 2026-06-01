@@ -399,6 +399,104 @@ async def test_channel_allowlist_only_applies_to_matching_channel():
     assert result == "restart-handled"
 
 
+@pytest.mark.asyncio
+async def test_channel_allowlist_blocks_unlisted_skill_command(monkeypatch):
+    from agent import skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {
+            "/deep-research": {
+                "name": "deep-research",
+                "description": "Deep research",
+                "skill_dir": "/tmp/deep-research",
+            },
+            "/ops-skill": {
+                "name": "ops-skill",
+                "description": "Ops skill",
+                "skill_dir": "/tmp/ops-skill",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        skill_commands,
+        "build_skill_invocation_message",
+        lambda *args, **kwargs: "[skill invocation message]",
+    )
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "group:drone-room": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    runner._draining = False
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:drone-room",
+    )
+
+    result = await runner._handle_message(_make_event("/ops-skill rotate keys", source))
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/ops-skill is not enabled in this group/channel" in result
+    runner._handle_message_with_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_allows_listed_skill_command(monkeypatch):
+    from agent import skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {
+            "/deep-research": {
+                "name": "deep-research",
+                "description": "Deep research",
+                "skill_dir": "/tmp/deep-research",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        skill_commands,
+        "build_skill_invocation_message",
+        lambda *args, **kwargs: "[deep-research invocation message]",
+    )
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "group:drone-room": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    runner._draining = False
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:drone-room",
+    )
+    event = _make_event("/deep-research battery suppliers", source)
+
+    result = await runner._handle_message(event)
+
+    assert result == "agent-ran"
+    assert event.text == "[deep-research invocation message]"
+
+
 def test_gateway_channel_command_access_config_bridges_to_platform_extra(monkeypatch, tmp_path):
     """config.yaml supports the issue #37004 gateway.channel_command_access shape."""
     from gateway.config import load_gateway_config
@@ -622,6 +720,53 @@ async def test_running_agent_fastpath_status_always_works():
     result = await runner._handle_message(_make_event("/status", src))
     assert result == "status-handled"
     assert "⛔" not in (result or "")
+
+
+@pytest.mark.asyncio
+async def test_running_agent_fastpath_blocks_unlisted_skill_command(monkeypatch):
+    from agent import skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {
+            "/deep-research": {
+                "name": "deep-research",
+                "description": "Deep research",
+                "skill_dir": "/tmp/deep-research",
+            },
+            "/ops-skill": {
+                "name": "ops-skill",
+                "description": "Ops skill",
+                "skill_dir": "/tmp/ops-skill",
+            },
+        },
+    )
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "group:drone-room": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    src = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:drone-room",
+    )
+    sk = build_session_key(src)
+    runner._running_agents[sk] = MagicMock()
+    runner._running_agents_ts[sk] = 0
+
+    result = await runner._handle_message(_make_event("/ops-skill rotate keys", src))
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/ops-skill is not enabled in this group/channel" in result
 
 
 # ---------------------------------------------------------------------------

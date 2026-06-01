@@ -755,10 +755,22 @@ class Migrator:
         oc_config = self.load_openclaw_config()
         ws = (oc_config.get("agents", {}).get("defaults", {}).get("workspace") or "").strip()
         if ws:
-            ws_path = Path(ws).expanduser().resolve()
-            # Only use it if it exists and is outside the source_root tree
-            # (otherwise the standard relative-path logic already covers it).
-            if ws_path.is_dir():
+            # The configured workspace path may be unreadable by the current
+            # user — common when openclaw.json was written by an earlier root
+            # install (workspace=/root/.openclaw/workspace) and the user is
+            # now migrating as a non-root account.  pathlib's stat-based
+            # methods (resolve / is_dir / exists) raise PermissionError on
+            # EACCES rather than returning False, which previously aborted
+            # the entire migration preview.  Treat any OS error here as
+            # "workspace unusable, skip custom override and fall back to
+            # the standard relative-path logic." See issue #36831.
+            try:
+                ws_path = Path(ws).expanduser().resolve()
+                ws_is_dir = ws_path.is_dir()
+            except OSError:
+                ws_path = None
+                ws_is_dir = False
+            if ws_path is not None and ws_is_dir:
                 try:
                     ws_path.relative_to(self.source_root)
                 except ValueError:

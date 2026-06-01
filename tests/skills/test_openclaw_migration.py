@@ -1107,3 +1107,179 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+# ── Permission-denied resilience (issue #36831) ─────────────────────
+#
+# When openclaw.json was written by an earlier root install, it can point
+# agents.defaults.workspace at a path the current (non-root) user cannot
+# stat — e.g. /root/.openclaw/workspace.  pathlib's stat-based methods
+# (resolve / is_dir / exists) raise PermissionError on EACCES rather
+# than returning False, which previously aborted the entire
+# `hermes claw migrate` preview with:
+#     ✗ Migration preview failed: [Errno 13] Permission denied: '/root/.openclaw/workspace'
+#
+# Treat any OSError while probing the configured workspace as
+# "unusable, fall back to standard relative-path lookup."
+
+def _make_migrator(source_root: Path, target_root: Path):
+    mod = load_module()
+    return mod, mod.Migrator(
+        source_root=source_root,
+        target_root=target_root,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options=set(),
+        preset_name="full",
+        skill_conflict_mode="skip",
+    )
+
+
+def test_migrator_init_tolerates_unreadable_workspace_from_openclaw_config(tmp_path, monkeypatch):
+    """openclaw.json points at an unreadable workspace (EACCES) — must not raise."""
+    source = tmp_path / ".openclaw"
+    source.mkdir()
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": "/root/.openclaw/workspace"}}}),
+        encoding="utf-8",
+    )
+
+    mod = load_module()
+
+    real_resolve = Path.resolve
+
+    def fake_resolve(self, *args, **kwargs):
+        # Only the workspace path is unreadable; everything else resolves normally.
+        if str(self).endswith("/root/.openclaw/workspace"):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+    # Must not raise — previously raised PermissionError aborting `claw migrate`.
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options=set(),
+        preset_name="full",
+        skill_conflict_mode="skip",
+    )
+    # Unreadable workspace must not be adopted as the custom override.
+    assert migrator._custom_workspace is None
+
+
+def test_migrator_init_tolerates_unreadable_workspace_on_is_dir(tmp_path, monkeypatch):
+    """resolve() succeeds, is_dir() raises PermissionError — must not raise."""
+    source = tmp_path / ".openclaw"
+    source.mkdir()
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": "/root/.openclaw/workspace"}}}),
+        encoding="utf-8",
+    )
+
+    mod = load_module()
+
+    real_is_dir = Path.is_dir
+
+    def fake_is_dir(self):
+        if "/root/.openclaw/workspace" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options=set(),
+        preset_name="full",
+        skill_conflict_mode="skip",
+    )
+    assert migrator._custom_workspace is None
+
+
+def test_migrator_init_skips_workspace_when_path_missing(tmp_path):
+    """Workspace path is set but does not exist — must not adopt as custom."""
+    source = tmp_path / ".openclaw"
+    source.mkdir()
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(tmp_path / "does-not-exist")}}}),
+        encoding="utf-8",
+    )
+    _mod, migrator = _make_migrator(source, target)
+    assert migrator._custom_workspace is None
+
+
+def test_migrator_init_adopts_external_workspace_when_readable(tmp_path):
+    """Happy path regression guard — readable external workspace IS adopted."""
+    source = tmp_path / ".openclaw"
+    source.mkdir()
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    external = tmp_path / "clawd-workspace"
+    external.mkdir()
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(external)}}}),
+        encoding="utf-8",
+    )
+    _mod, migrator = _make_migrator(source, target)
+    assert migrator._custom_workspace == external.resolve()
+
+
+def test_migrate_preview_completes_when_workspace_is_unreadable(tmp_path, monkeypatch):
+    """End-to-end: migrate() returns a normal report even when the configured
+    workspace is unreadable — equivalent to the failing user scenario in #36831
+    where `hermes claw migrate` died with 'Migration preview failed'."""
+    source = tmp_path / ".openclaw"
+    source.mkdir()
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": "/root/.openclaw/workspace"}}}),
+        encoding="utf-8",
+    )
+
+    mod = load_module()
+    real_resolve = Path.resolve
+
+    def fake_resolve(self, *args, **kwargs):
+        if str(self).endswith("/root/.openclaw/workspace"):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options=set(),
+        preset_name="full",
+        skill_conflict_mode="skip",
+    )
+    report = migrator.migrate()
+    assert isinstance(report, dict)
+    assert "summary" in report

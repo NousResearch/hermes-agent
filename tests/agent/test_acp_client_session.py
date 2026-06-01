@@ -1,8 +1,13 @@
-"""Tests for agent.transports.acp_client_session — ACP session adapter.
+"""Tests for agent.transports.acp_client_session -- ACP session adapter.
 
 Tests cover session lifecycle (ensure_started, close), turn execution,
 streaming delta projection, should_retire policy on crash/timeout, and
-server-request handling (permission decline, fs/terminal decline).
+server-request handling (permission allow, fs/terminal decline).
+
+Fix-specific tests:
+  Fix 1 -- model pin: set_config_option sent after session/new when model is set.
+  Fix 2 -- thought-chunk leak: agent_thought_chunk NOT in extracted text; agent_message_chunk IS.
+  Fix 3 -- permission response shape: uses {outcome:{outcome:...}} ACP spec form.
 """
 
 from __future__ import annotations
@@ -21,11 +26,12 @@ from agent.transports.acp_client_session import (
     _coerce_user_input,
     _extract_text_from_update,
     _is_tool_iteration,
+    _pick_allow_option,
 )
 
 
 # ---------------------------------------------------------------------------
-# Helpers — mock ACPClient
+# Helpers -- mock ACPClient
 # ---------------------------------------------------------------------------
 
 
@@ -33,6 +39,7 @@ def _make_session(
     *,
     command: str = "fake-acp",
     args=None,
+    model: Optional[str] = None,
     on_delta=None,
     client_mock: Optional[MagicMock] = None,
 ) -> tuple[ACPClientSession, MagicMock]:
@@ -49,6 +56,7 @@ def _make_session(
     session = ACPClientSession(
         command=command,
         args=args,
+        model=model,
         on_delta=on_delta,
         client_factory=lambda **kw: client_mock,
     )
@@ -103,7 +111,7 @@ class TestEnsureStarted:
         assert session._session_id is None
 
     def test_ensure_started_error_sets_should_retire(self):
-        """run_turn() → ensure_started() failure sets should_retire=True."""
+        """run_turn() -> ensure_started() failure sets should_retire=True."""
         session, mock_client = _make_session()
         mock_client.initialize.side_effect = ACPClientError(
             code=-32603, message="initialize failed"
@@ -113,6 +121,394 @@ class TestEnsureStarted:
         assert result.should_retire is True
         assert result.error is not None
         assert "startup" in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Fix 1 -- model pin via session/set_config_option (verify behaviour)
+# ---------------------------------------------------------------------------
+
+def _make_config_response(current_value: str) -> dict:
+    """Build a realistic set_config_option response with the given model currentValue."""
+    return {
+        "configOptions": [
+            {
+                "id": "model",
+                "name": "Model",
+                "type": "select",
+                "category": "model",
+                "currentValue": current_value,
+                "options": [
+                    {"value": "default", "name": "Default (Opus 4.8)"},
+                    {"value": "sonnet",  "name": "Sonnet 4.6"},
+                    {"value": "haiku",   "name": "Haiku 4.5"},
+                ],
+            },
+        ]
+    }
+
+
+class TestModelPin:
+    def test_set_config_option_sent_after_session_new_when_model_set(self):
+        """Fix 1: when model is configured, session/set_config_option is sent
+        after session/new with configId='model' and the resolved model string."""
+        session, mock_client = _make_session(model="haiku")
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-model"},    # session/new
+            _make_config_response("haiku"), # set_config_option -> match
+        ]
+
+        session.ensure_started(cwd="/tmp")
+
+        calls = mock_client.request.call_args_list
+        assert len(calls) == 2
+
+        new_call = calls[0]
+        assert new_call[0][0] == "session/new"
+
+        cfg_call = calls[1]
+        assert cfg_call[0][0] == "session/set_config_option"
+        params = cfg_call[0][1]
+        assert params["sessionId"] == "sess-model"
+        assert params["configId"] == "model"
+        assert params["value"] == "haiku"
+
+    def test_set_config_option_not_sent_when_model_not_set(self):
+        """Fix 1: when no model is configured, set_config_option is NOT sent
+        (existing tests must remain unaffected -- only session/new is called)."""
+        session, mock_client = _make_session()  # no model
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-nomodel"},  # session/new only
+        ]
+
+        session.ensure_started(cwd="/tmp")
+
+        # Only one request call: session/new, no set_config_option
+        assert mock_client.request.call_count == 1
+        assert mock_client.request.call_args[0][0] == "session/new"
+
+    # -- verify: currentValue matches -> silent OK --
+
+    def test_model_pin_verified_match_is_silent(self):
+        """Task B: currentValue == requested -> log info, no exception, session OK."""
+        session, mock_client = _make_session(model="haiku")
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-match"},
+            _make_config_response("haiku"),  # currentValue matches
+        ]
+
+        sid = session.ensure_started(cwd="/tmp")
+        assert sid == "sess-match"
+        assert session._session_id == "sess-match"
+
+    # -- verify: currentValue mismatch (server supported) -> raises, not swallowed --
+
+    def test_model_pin_mismatch_raises_acp_error(self):
+        """Task B: server supported set_config_option but currentValue != requested
+        -> ACPClientError raised (NOT swallowed by the tolerance except)."""
+        session, mock_client = _make_session(model="haiku")
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-mismatch"},
+            _make_config_response("default"),  # currentValue stayed on Opus default
+        ]
+
+        with pytest.raises(ACPClientError) as exc_info:
+            session.ensure_started(cwd="/tmp")
+        err = exc_info.value
+        assert err.code == 1  # positive = config rejection, not transport crash
+        assert "haiku" in str(err)
+        assert "default" in str(err)
+        # Session cleared so retry does not short-circuit idempotency guard
+        assert session._session_id is None
+
+    def test_model_pin_mismatch_does_not_retire_session(self):
+        """Task B: mismatch is a config error, not a session crash.
+        should_retire must be False so we don't loop (respawn -> same mismatch -> loop)."""
+        session, mock_client = _make_session(model="haiku")
+
+        def req_side(method, params=None, timeout=30):
+            if method == "session/new":
+                return {"sessionId": "sess-noretire"}
+            if method == "session/set_config_option":
+                return _make_config_response("default")  # mismatch
+            return {}
+
+        mock_client.request.side_effect = req_side
+
+        result = session.run_turn("hello")
+        assert result.error is not None
+        assert "haiku" in result.error
+        assert result.should_retire is False  # MUST NOT retire -> would loop
+
+    def test_model_pin_mismatch_error_message_names_accepted_aliases(self):
+        """Task B: error message includes the accepted alias list so operator can fix."""
+        session, mock_client = _make_session(model="claude-haiku-4-5-20251001")
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-alias"},
+            _make_config_response("default"),
+        ]
+
+        with pytest.raises(ACPClientError) as exc_info:
+            session.ensure_started(cwd="/tmp")
+        msg = str(exc_info.value)
+        # Should list the accepted values from the options array
+        assert "haiku" in msg
+        assert "sonnet" in msg
+        assert "default" in msg
+
+    # -- verify: request() raises (server lacks method) -> tolerated --
+
+    def test_set_config_option_request_raises_is_tolerated(self):
+        """Task B: if request() raises (server doesn't support set_config_option),
+        session is NOT retired -- ensure_started returns the session_id."""
+        session, mock_client = _make_session(model="haiku")
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-cfg-fail"},
+            ACPClientError(code=-32601, message="Method not found"),  # set_config_option
+        ]
+
+        sid = session.ensure_started(cwd="/tmp")
+        assert sid == "sess-cfg-fail"  # session not aborted
+        assert session._session_id == "sess-cfg-fail"
+
+    def test_set_config_option_timeout_is_tolerated(self):
+        """Task B: TimeoutError from set_config_option is tolerated (not a mismatch)."""
+        session, mock_client = _make_session(model="haiku")
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-timeout"},
+            TimeoutError("set_config_option timed out"),
+        ]
+
+        sid = session.ensure_started(cwd="/tmp")
+        assert sid == "sess-timeout"
+        assert session._session_id == "sess-timeout"
+
+    # -- verify: no model configOption in response -> warn + proceed --
+
+    def test_no_model_config_option_in_response_is_tolerated(self):
+        """Task B: server responds but carries no 'model' configOption
+        (generic ACP server) -- cannot verify, warn + proceed."""
+        session, mock_client = _make_session(model="haiku")
+        mock_client.request.side_effect = [
+            {"sessionId": "sess-generic"},
+            {"configOptions": []},  # no model option
+        ]
+
+        sid = session.ensure_started(cwd="/tmp")
+        assert sid == "sess-generic"
+        assert session._session_id == "sess-generic"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Fix 2 -- thought-chunk leak guard
+# ---------------------------------------------------------------------------
+
+
+class TestThoughtChunkLeak:
+    def test_agent_message_chunk_extracted(self):
+        """Fix 2: agent_message_chunk produces user-facing text (positive case)."""
+        params = {
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "hello"},
+            },
+        }
+        assert _extract_text_from_update(params) == "hello"
+
+    def test_agent_thought_chunk_not_extracted(self):
+        """Fix 2: agent_thought_chunk (internal reasoning) returns empty string --
+        must never leak into the user-facing reply."""
+        params = {
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "I am thinking..."},
+            },
+        }
+        assert _extract_text_from_update(params) == ""
+
+    def test_agent_thought_chunk_not_in_run_turn_output(self):
+        """Fix 2: thought chunks from session/update are NOT included in final_text."""
+        session, mock_client = _make_session()
+
+        def req_side_effect(method, params=None, timeout=30):
+            if method == "session/new":
+                return {"sessionId": "sess-think"}
+            if method == "session/prompt":
+                time.sleep(0.05)
+                return {"stopReason": "end_turn"}
+            return {}
+
+        mock_client.request.side_effect = req_side_effect
+
+        notes = iter([
+            # internal reasoning -- must be excluded
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess-think",
+                    "update": {
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"type": "text", "text": "reasoning step"},
+                    },
+                },
+            },
+            # user-facing reply -- must be included
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sess-think",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "user reply"},
+                    },
+                },
+            },
+            None,
+        ])
+        mock_client.take_notification.side_effect = lambda timeout=0.0: next(notes, None)
+
+        result = session.run_turn("test")
+        assert "user reply" in result.final_text
+        assert "reasoning step" not in result.final_text
+
+    def test_snake_case_thought_chunk_not_extracted(self):
+        """Fix 2: snake_case 'session_update' discriminator variant also blocked."""
+        params = {
+            "sessionId": "s",
+            "update": {
+                "session_update": "agent_thought_chunk",
+                "content": {"type": "text", "text": "hidden thought"},
+            },
+        }
+        assert _extract_text_from_update(params) == ""
+
+    def test_snake_case_message_chunk_extracted(self):
+        """Fix 2: snake_case 'session_update' agent_message_chunk still works."""
+        params = {
+            "sessionId": "s",
+            "update": {
+                "session_update": "agent_message_chunk",
+                "content": {"type": "text", "text": "visible"},
+            },
+        }
+        assert _extract_text_from_update(params) == "visible"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Fix 3 -- permission response shape
+# ---------------------------------------------------------------------------
+
+
+class TestPermissionResponseShape:
+    def test_permission_request_uses_acp_outcome_shape(self):
+        """Fix 3: permission response uses {outcome:{outcome:'selected',optionId:'...'}}
+        NOT the old {granted: false} which is not a valid ACP shape."""
+        session, mock_client = _make_session()
+        mock_client.request.return_value = {"sessionId": "sess-perm"}
+        session.ensure_started()
+
+        req = {
+            "id": 42,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "sess-perm",
+                "toolCall": {"toolName": "bash"},
+                "options": [
+                    {"optionId": "opt-allow", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "opt-deny", "name": "Deny", "kind": "reject_once"},
+                ],
+            },
+        }
+        session._handle_server_request(req)
+
+        mock_client.respond.assert_called_once()
+        args = mock_client.respond.call_args
+        assert args[0][0] == 42
+        payload = args[0][1]
+        # Must use the ACP spec shape, not {granted: ...}
+        assert "outcome" in payload
+        assert "granted" not in payload
+        inner = payload["outcome"]
+        assert inner["outcome"] == "selected"
+        assert inner["optionId"] == "opt-allow"  # prefers allow_once kind
+
+    def test_permission_prefers_allow_once_option(self):
+        """Fix 3: the allow_once-kinded option is preferred over others."""
+        session, mock_client = _make_session()
+        mock_client.request.return_value = {"sessionId": "s"}
+        session.ensure_started()
+
+        req = {
+            "id": 1,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "s",
+                "toolCall": {"toolName": "bash"},
+                "options": [
+                    {"optionId": "deny-id", "name": "Deny", "kind": "reject_once"},
+                    {"optionId": "allow-id", "name": "Allow", "kind": "allow_once"},
+                ],
+            },
+        }
+        session._handle_server_request(req)
+
+        payload = mock_client.respond.call_args[0][1]
+        assert payload["outcome"]["optionId"] == "allow-id"
+
+    def test_permission_falls_back_to_first_option_when_no_allow_once(self):
+        """Fix 3: if no allow_once option, echoes first available optionId."""
+        session, mock_client = _make_session()
+        mock_client.request.return_value = {"sessionId": "s"}
+        session.ensure_started()
+
+        req = {
+            "id": 2,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "s",
+                "toolCall": {"toolName": "bash"},
+                "options": [
+                    {"optionId": "custom-1", "name": "Custom 1", "kind": "allow_always"},
+                ],
+            },
+        }
+        session._handle_server_request(req)
+
+        payload = mock_client.respond.call_args[0][1]
+        assert payload["outcome"]["outcome"] == "selected"
+        assert payload["outcome"]["optionId"] == "custom-1"
+
+    def test_permission_cancelled_when_no_options(self):
+        """Fix 3: malformed request with no options -> cancelled outcome (not wedged)."""
+        session, mock_client = _make_session()
+        mock_client.request.return_value = {"sessionId": "s"}
+        session.ensure_started()
+
+        req = {
+            "id": 3,
+            "method": "session/request_permission",
+            "params": {"sessionId": "s", "toolCall": {"toolName": "bash"}, "options": []},
+        }
+        session._handle_server_request(req)
+
+        payload = mock_client.respond.call_args[0][1]
+        assert payload["outcome"] == {"outcome": "cancelled"}
+
+    def test_pick_allow_option_helper(self):
+        """_pick_allow_option() unit tests."""
+        opts = [
+            {"optionId": "r", "kind": "reject_once"},
+            {"optionId": "a", "kind": "allow_once"},
+        ]
+        assert _pick_allow_option(opts) == "a"
+
+        # no allow_once -> first
+        opts2 = [{"optionId": "x", "kind": "reject_once"}]
+        assert _pick_allow_option(opts2) == "x"
+
+        # empty
+        assert _pick_allow_option([]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +552,7 @@ class TestClose:
 
 
 # ---------------------------------------------------------------------------
-# Tests: run_turn — happy path
+# Tests: run_turn -- happy path
 # ---------------------------------------------------------------------------
 
 
@@ -176,7 +572,7 @@ class TestRunTurn:
         # No streaming notifications
         mock_client.take_notification.side_effect = [
             None,  # polled once, returns None
-            None,  # second poll → triggers req_thread to finish
+            None,  # second poll -> triggers req_thread to finish
         ]
 
         result = session.run_turn("hello world", cwd="/tmp")
@@ -331,7 +727,7 @@ class TestShouldRetire:
         assert result.error is not None
 
     def test_session_prompt_acp_error_sets_should_retire_for_negative_code(self):
-        """ACPClientError with negative code (system error) → should_retire."""
+        """ACPClientError with negative code (system error) -> should_retire."""
         session, mock_client = _make_session()
 
         def req_side_effect(method, params=None, timeout=30):
@@ -368,24 +764,40 @@ class TestShouldRetire:
 
 
 # ---------------------------------------------------------------------------
-# Tests: server request handling
+# Tests: server request handling (fs/terminal decline -- unchanged behaviour)
 # ---------------------------------------------------------------------------
 
 
 class TestServerRequestHandling:
-    def test_permission_request_declined(self):
-        """Permission requests from the server are declined (granted: False)."""
+    def test_permission_request_grants_allow_once(self):
+        """Fix 3: Permission requests use ACP outcome shape and grant allow_once."""
         session, mock_client = _make_session()
         mock_client.request.side_effect = [
             {"sessionId": "sess-perm"},  # session/new
         ]
 
-        # Simulate the internal _handle_server_request call
         session.ensure_started()
-        req = {"id": 42, "method": "session/request_permission", "params": {"permissionId": "exec"}}
+        req = {
+            "id": 42,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "sess-perm",
+                "toolCall": {"toolName": "bash"},
+                "options": [
+                    {"optionId": "allow-once-id", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "deny-id", "name": "Deny", "kind": "reject_once"},
+                ],
+            },
+        }
         session._handle_server_request(req)
 
-        mock_client.respond.assert_called_once_with(42, {"granted": False})
+        # Must use ACP spec outcome shape, not {granted: ...}
+        mock_client.respond.assert_called_once()
+        payload = mock_client.respond.call_args[0][1]
+        assert "outcome" in payload
+        assert "granted" not in payload
+        assert payload["outcome"]["outcome"] == "selected"
+        assert payload["outcome"]["optionId"] == "allow-once-id"
 
     def test_fs_write_declined_with_error(self):
         """fs/write_text_file is declined with respond_error."""
@@ -398,7 +810,7 @@ class TestServerRequestHandling:
 
         mock_client.respond_error.assert_called_once()
         call_args = mock_client.respond_error.call_args
-        # respond_error(rid, code=..., message=...) — rid is positional
+        # respond_error(rid, code=..., message=...) -- rid is positional
         assert call_args[0][0] == 7
         assert call_args[1]["code"] == -32601  # method not supported
 

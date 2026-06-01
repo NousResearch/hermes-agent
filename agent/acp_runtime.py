@@ -40,7 +40,6 @@ def run_acp_client_turn(
     from agent.transports.acp_client_session import ACPClientSession
 
     if not hasattr(agent, "_acp_session") or agent._acp_session is None:
-        cwd = getattr(agent, "session_cwd", None) or os.getcwd()
         command = getattr(agent, "acp_command", None) or "acp-agent"
         args = getattr(agent, "acp_args", None) or []
 
@@ -50,9 +49,16 @@ def run_acp_client_turn(
         # don't have streaming hooked up (cron, batch).
         on_delta = getattr(agent, "_fire_stream_delta", None)
 
+        # model: read from agent.model so the ACP server uses the same model
+        # Hermes is configured for, rather than its own default (Fix 1).
+        # Falls back to None when not set -- ACPClientSession skips the
+        # session/set_config_option call in that case.
+        model = getattr(agent, "model", None) or None
+
         agent._acp_session = ACPClientSession(
             command=command,
             args=list(args),
+            model=model,
             on_delta=on_delta,
         )
 
@@ -60,7 +66,17 @@ def run_acp_client_turn(
     # standard run_conversation() flow before the early return reaches us.
     # Do NOT append again — that would duplicate.
 
-    cwd = getattr(agent, "session_cwd", None) or os.getcwd()
+    # cwd priority: agent.session_cwd > HERMES_ACP_SESSION_CWD env > os.getcwd()
+    # HERMES_ACP_SESSION_CWD lets operators point the ACP session at a per-agent
+    # sandbox directory (containing CLAUDE.md + .claude/settings.local.json) on
+    # the gateway launch env without requiring a new config key in the provider
+    # resolver chain.  Production Janet and janet_test run as separate processes
+    # with distinct HERMES_HOME, so the env var is scoped to the right gateway.
+    cwd = (
+        getattr(agent, "session_cwd", None)
+        or os.environ.get("HERMES_ACP_SESSION_CWD", "").strip()
+        or os.getcwd()
+    )
 
     try:
         turn = agent._acp_session.run_turn(user_input=user_message, cwd=cwd)

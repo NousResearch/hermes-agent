@@ -2,12 +2,12 @@
 
 Owns one ACP session per Hermes session. Drives ``session/new`` + ``session/prompt``,
 consumes streaming ``session/update`` notifications (AgentMessageChunk), handles
-server-initiated requests (fs/*, terminal/*, permission — declined by default in v1),
+server-initiated requests (fs/*, terminal/*, permission — allowed-once by default),
 and returns a TurnResult that acp_runtime.run_acp_client_turn() can splice into
 the ``messages`` list.
 
 Lifecycle:
-    session = ACPClientSession(command="claude-agent-acp")
+    session = ACPClientSession(command="claude-agent-acp", model="claude-haiku-4-5")
     session.ensure_started(cwd="/home/x/proj")      # spawns + initialize + session/new
     result = session.run_turn("hello")               # blocks until session/prompt returns
     # result.final_text          → assistant text returned to caller
@@ -41,6 +41,7 @@ _METHOD_SESSION_PROMPT = "session/prompt"
 _METHOD_SESSION_CLOSE = "session/close"
 _METHOD_SESSION_CANCEL = "session/cancel"
 _METHOD_SESSION_UPDATE = "session/update"
+_METHOD_SESSION_SET_CONFIG = "session/set_config_option"
 
 # Server-initiated (client-side) methods we receive
 _METHOD_FS_READ = "fs/read_text_file"
@@ -52,7 +53,9 @@ _METHOD_TERMINAL_RELEASE = "terminal/release"
 _METHOD_TERMINAL_WAIT = "terminal/wait_for_exit"
 _METHOD_TERMINAL_KILL = "terminal/kill"
 
-# ACP session/update discriminator values for streaming chunks
+# ACP session/update discriminator values for streaming chunks.
+# Only agent_message_chunk carries user-facing text — agent_thought_chunk is
+# the model's internal reasoning and MUST NOT be merged into the reply (Fix 2).
 _UPDATE_AGENT_MESSAGE = "agent_message_chunk"
 _UPDATE_AGENT_THOUGHT = "agent_thought_chunk"
 _UPDATE_TOOL_CALL = "tool_call_update"
@@ -64,7 +67,7 @@ _STDERR_TAIL_LINES = 12
 
 @dataclass
 class TurnResult:
-    """Result of one user→assistant turn through an ACP-compliant agent."""
+    """Result of one user->assistant turn through an ACP-compliant agent."""
 
     final_text: str = ""
     projected_messages: list[dict] = field(default_factory=list)
@@ -82,9 +85,20 @@ def _extract_text_from_update(params: dict) -> str:
     ``session/update`` params carry:
       { "sessionId": "...", "update": { "sessionUpdate": "agent_message_chunk",
                                         "content": { "type": "text", "text": "..." } } }
-    Returns the text string, or "" if not a text chunk.
+
+    Fix 2 -- ONLY extract text from ``agent_message_chunk`` updates. The server
+    also emits ``agent_thought_chunk`` for the model's internal reasoning; those
+    must NOT be included in the user-facing reply. Keying on the discriminator
+    instead of content.type avoids silently leaking future reasoning variants.
     """
     update = params.get("update") or {}
+    # Support both camelCase (sessionUpdate) and snake_case (session_update) keys
+    # to match whatever the server emits -- mirrors _is_tool_iteration's approach.
+    kind = update.get("sessionUpdate") or update.get("session_update") or ""
+    if kind != _UPDATE_AGENT_MESSAGE:
+        # Intentionally skip agent_thought_chunk and anything else that is not
+        # a confirmed user-facing text chunk (YAGNI -- do not whitelist speculatively).
+        return ""
     content = update.get("content") or {}
     if isinstance(content, dict) and content.get("type") == "text":
         return content.get("text") or ""
@@ -101,7 +115,7 @@ def _is_tool_iteration(params: dict) -> bool:
 class ACPClientSession:
     """One ACP session per Hermes session, lifetime owned by AIAgent.
 
-    Not thread-safe — one caller drives it at a time, matching how AIAgent's
+    Not thread-safe -- one caller drives it at a time, matching how AIAgent's
     run_conversation() loop is structured today.
     """
 
@@ -111,6 +125,7 @@ class ACPClientSession:
         command: str,
         args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        model: Optional[str] = None,
         on_delta: Optional[Callable[[str], None]] = None,
         client_factory: Optional[Callable[..., ACPClient]] = None,
     ) -> None:
@@ -119,6 +134,12 @@ class ACPClientSession:
             command: ACP agent binary to spawn (e.g. "claude-agent-acp").
             args: Additional arguments to pass to the command.
             env: Extra environment variables for the subprocess.
+            model: Model identifier to pin on the ACP session after session/new
+                (Fix 1). Sent via ``session/set_config_option`` so the ACP server
+                does not default to its own heavy model (e.g. Opus). Only sent
+                when set; servers that do not support set_config_option are
+                tolerated -- the call is wrapped in a try/except and a warning
+                is logged rather than hard-failing the session.
             on_delta: Optional callback invoked with each text delta during streaming.
                       Bridges to Hermes' ``_fire_stream_delta`` for live output.
             client_factory: Inject a custom ACPClient constructor for testing.
@@ -126,6 +147,7 @@ class ACPClientSession:
         self._command = command
         self._args = list(args or [])
         self._env = env
+        self._model = model
         self._on_delta = on_delta
         self._client_factory = client_factory or ACPClient
 
@@ -137,7 +159,7 @@ class ACPClientSession:
 
     def ensure_started(self, cwd: Optional[str] = None) -> str:
         """Spawn the subprocess, do the initialize handshake, and start a
-        session. Returns the ACP session_id. Idempotent — repeated calls
+        session. Returns the ACP session_id. Idempotent -- repeated calls
         return the same session_id."""
         if self._session_id is not None:
             return self._session_id
@@ -154,7 +176,7 @@ class ACPClientSession:
         result = self._client.request(
             _METHOD_SESSION_NEW,
             # mcpServers is required by the ACP schema (NewSessionRequest); send
-            # an empty list — Hermes handles its own MCP surface, not the agent.
+            # an empty list -- Hermes handles its own MCP surface, not the agent.
             {"cwd": cwd or os.getcwd(), "mcpServers": []},
             timeout=15,
         )
@@ -174,7 +196,114 @@ class ACPClientSession:
             self._command,
             cwd or os.getcwd(),
         )
+
+        # Fix 1 -- Model pin: send session/set_config_option to override the
+        # ACP server's default model (native claude-agent-acp defaults to Opus,
+        # which silently drains quota on every turn). Only sent when a model is
+        # explicitly configured; servers that don't support set_config_option are
+        # tolerated; servers that support it but reject the value raise loud.
+        if self._model:
+            try:
+                self._send_model_config(self._session_id, self._model)
+            except ACPClientError:
+                # Mismatch detected: clear session so ensure_started does not
+                # short-circuit on the next call (idempotency guard at top of
+                # method checks self._session_id is not None).  Re-raise so
+                # run_turn can surface the config error without retiring.
+                self._session_id = None
+                raise
+
         return self._session_id
+
+    def _send_model_config(self, session_id: str, model: str) -> None:
+        """Send session/set_config_option to pin the model on the ACP session, then
+        verify the server honoured the value.
+
+        The native claude-agent-acp server (v0.39) accepts only its own short aliases:
+          "haiku"   → Haiku 4.5   (cheapest)
+          "sonnet"  → Sonnet 4.6
+          "default" → Opus 4.8    (most expensive — the server default)
+        Full API IDs like "claude-haiku-4-5-20251001" are normalised to the alias by
+        the server; "claude-sonnet-4-5" is rejected with -32603.  Configure the model
+        as the alias ("haiku", "sonnet") in Hermes' acp_model config key.
+
+        Verification is REQUIRED because a wrong value silently falls back to the
+        server default (Opus 4.8), burning quota on every turn without any warning.
+
+        Two-layer exception strategy:
+          • transport/protocol failure (request() raises) → TOLERATE: server may
+            not implement set_config_option at all; warn and continue.
+          • server supported but value rejected or silently ignored (request() succeeds
+            but currentValue != requested) → FAIL LOUD: raise ACPClientError so the
+            caller knows the pin didn't take.  Do NOT swallow this — billing impact.
+        """
+        assert self._client is not None
+
+        # Tolerance layer: wraps only the wire call.  Servers that do not implement
+        # set_config_option return a -32601 method-not-found error; we log and return.
+        try:
+            result = self._client.request(
+                _METHOD_SESSION_SET_CONFIG,
+                {
+                    "sessionId": session_id,
+                    "configId": "model",
+                    "value": model,
+                },
+                timeout=5,
+            )
+        except (ACPClientError, TimeoutError, RuntimeError) as exc:
+            # Server does not support set_config_option (e.g. -32601 method-not-found)
+            # or timed out.  Tolerate: not all ACP servers expose config options.
+            logger.warning(
+                "ACP client: session/set_config_option not supported or timed out "
+                "(model=%r, session=%s): %s -- session continues with server default",
+                model,
+                session_id[:8],
+                exc,
+            )
+            return
+
+        # Verification layer: the server responded successfully.  Extract the
+        # "model" configOption's currentValue from the response.  The response
+        # shape is: {"configOptions": [{"id": "model", "currentValue": "haiku", ...}]}
+        config_opts = result.get("configOptions") or []
+        model_opt = next((o for o in config_opts if o.get("id") == "model"), None)
+
+        if model_opt is None:
+            # Server returned a successful response but no "model" configOption.
+            # Generic ACP server -- cannot verify; proceed without confirmation.
+            logger.warning(
+                "ACP client: set_config_option succeeded but response carried no "
+                "'model' configOption -- cannot verify pin (session=%s)",
+                session_id[:8],
+            )
+            return
+
+        current_value = model_opt.get("currentValue")
+        if current_value == model:
+            # Pin confirmed.
+            logger.info(
+                "ACP client: model pinned and verified: %r on session %s",
+                model,
+                session_id[:8],
+            )
+            return
+
+        # BILLING-CRITICAL: server accepted the call but currentValue does not match.
+        # Continuing would silently run every turn on the server's default model
+        # (Opus 4.8 as of claude-agent-acp v0.39), burning expensive quota.
+        # Accepted model aliases for the native server: "haiku", "sonnet", "default".
+        accepted = [o.get("value") for o in model_opt.get("options", [])]
+        raise ACPClientError(
+            code=1,  # positive = config rejection, not a transport crash (see run_turn)
+            message=(
+                f"ACP model pin rejected: requested {model!r} but server "
+                f"currentValue={current_value!r}. "
+                f"Continuing would silently run on {current_value!r} (server default), "
+                f"burning expensive model quota. "
+                f"Set acp_model to one of the accepted aliases: {accepted}."
+            ),
+        )
 
     def close(self) -> None:
         """Send session/close and tear down the subprocess."""
@@ -226,7 +355,15 @@ class ACPClientSession:
         # Ensure session is open (lazy start on first turn)
         try:
             self.ensure_started(cwd=cwd)
-        except (ACPClientError, TimeoutError, RuntimeError) as exc:
+        except ACPClientError as exc:
+            result.error = f"ACP client session startup failed: {exc}"
+            # Positive error code = config rejection (model pin mismatch, not a
+            # session crash).  Do NOT retire: retiring would respawn the session and
+            # hit the same mismatch every turn, creating an infinite retry loop.
+            # The caller must fix the configured model alias and redeploy.
+            result.should_retire = exc.code <= 0
+            return result
+        except (TimeoutError, RuntimeError) as exc:
             result.error = f"ACP client session startup failed: {exc}"
             result.should_retire = True
             return result
@@ -315,7 +452,7 @@ class ACPClientSession:
 
         # Tail-drain: consume notifications that were parsed by the reader
         # thread between the last loop poll and req_thread completing. These
-        # would be silently dropped without this drain — short responses that
+        # would be silently dropped without this drain -- short responses that
         # fit in the first chunks are the most likely to be affected.
         if self._client is not None:
             while True:
@@ -369,9 +506,13 @@ class ACPClientSession:
     def _handle_server_request(self, req: dict) -> None:
         """Handle server-initiated requests from the ACP agent.
 
-        In v1 we decline all server-initiated requests (fs/*, terminal/*,
-        permission) because Hermes controls those surfaces itself. A future
-        iteration could bridge these to Hermes' tools.
+        Permission requests are granted (allow_once) because this transport
+        talks to a trusted local ACP agent process that Hermes itself spawned
+        -- the user already consented to the agent's capabilities by configuring
+        it.  A future policy knob could toggle this per-agent.
+
+        fs/* and terminal/* are declined: Hermes controls those surfaces
+        through its own tool executor.
         """
         if self._client is None:
             return
@@ -379,16 +520,44 @@ class ACPClientSession:
         rid = req.get("id")
 
         if method == _METHOD_PERMISSION:
-            # Decline permission escalation — user controls Hermes' permission
-            # model through Hermes' own config.
-            self._client.respond(rid, {"granted": False})
+            # Fix 3 -- ACP-correct permission response shape.
+            #
+            # The ACP spec (RequestPermissionResponse) requires:
+            #   { "outcome": <RequestPermissionOutcome> }
+            # where RequestPermissionOutcome is one of:
+            #   { "outcome": "cancelled" }
+            #   { "outcome": "selected", "optionId": "<id>" }
+            #
+            # "allow_once" / "reject_once" are PermissionOptionKind hints in the
+            # INCOMING request's options[] array -- NOT valid outcome.outcome values.
+            # The previously sent { "granted": false } is not a valid ACP response
+            # and would wedge any turn that receives a permission request.
+            #
+            # Strategy: this transport talks to a trusted, locally-spawned agent
+            # process; grant by echoing the first allow_once-kinded option.
+            # Fall back to the first available option, then to cancelled if there
+            # are no options (malformed request).
+            params = req.get("params") or {}
+            options = params.get("options") or []
+            chosen_option_id = _pick_allow_option(options)
+            if chosen_option_id is not None:
+                outcome: dict = {"outcome": "selected", "optionId": chosen_option_id}
+            else:
+                # No options in the request (malformed) -- cancel instead of wedging.
+                outcome = {"outcome": "cancelled"}
+            self._client.respond(rid, {"outcome": outcome})
+            logger.debug(
+                "ACP client: permission request -> outcome=%r optionId=%r",
+                outcome["outcome"],
+                outcome.get("optionId"),
+            )
         elif method in {
             _METHOD_FS_READ, _METHOD_FS_WRITE,
             _METHOD_TERMINAL_CREATE, _METHOD_TERMINAL_OUTPUT,
             _METHOD_TERMINAL_RELEASE, _METHOD_TERMINAL_WAIT,
             _METHOD_TERMINAL_KILL,
         }:
-            # Decline fs/terminal proxying — Hermes drives its own tool
+            # Decline fs/terminal proxying -- Hermes drives its own tool
             # executor. ACP agents that need fs/terminal ops should spawn
             # their own processes.
             logger.debug("ACP client: declining server request %r (not proxied in v1)", method)
@@ -419,6 +588,26 @@ class ACPClientSession:
         if not joined.strip():
             return prefix
         return f"{prefix}\nACP agent stderr (last {len(tail)} lines):\n{joined}"
+
+
+def _pick_allow_option(options: list) -> Optional[str]:
+    """Return the optionId to grant from a permission request's options list.
+
+    Prefers the first option whose kind is ``allow_once``; falls back to the
+    first option of any kind. Returns None when the list is empty.
+    """
+    first_any: Optional[str] = None
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+        option_id = opt.get("optionId")
+        if option_id is None:
+            continue
+        if first_any is None:
+            first_any = option_id
+        if opt.get("kind") == "allow_once":
+            return option_id
+    return first_any
 
 
 def _coerce_user_input(user_input: Any) -> str:

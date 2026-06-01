@@ -372,3 +372,88 @@ class TestBackgroundReview:
         )
 
         agent._spawn_background_review.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: cwd resolution — HERMES_ACP_SESSION_CWD env var
+# ---------------------------------------------------------------------------
+
+
+class TestCwdResolution:
+    """run_acp_client_turn must pass the correct cwd to run_turn.
+
+    Priority (highest first):
+      1. agent.session_cwd (explicitly set on the agent)
+      2. HERMES_ACP_SESSION_CWD env var
+      3. os.getcwd() fallback
+
+    This is the mechanism that lets the janet_test gateway route each ACP
+    session into its sandbox directory (where CLAUDE.md and
+    .claude/settings.local.json live) without adding a config key to the
+    provider resolver chain.
+    """
+
+    def _capture_cwd_from_run_turn(self, agent) -> str:
+        """Run one turn and return the cwd that was passed to run_turn."""
+        captured: list[str] = []
+        session_mock = MagicMock()
+
+        def _fake_run_turn(user_input, *, cwd=None, **kwargs):
+            captured.append(cwd or "")
+            return TurnResult(final_text="ok")
+
+        session_mock.run_turn.side_effect = _fake_run_turn
+        _inject_session(agent, session_mock)
+
+        run_acp_client_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[],
+            effective_task_id="t1",
+        )
+        return captured[0] if captured else ""
+
+    def test_session_cwd_attribute_wins_over_env(self, monkeypatch):
+        """agent.session_cwd takes priority over HERMES_ACP_SESSION_CWD."""
+        monkeypatch.setenv("HERMES_ACP_SESSION_CWD", "/env/sandbox")
+        agent = _make_agent(session_cwd="/agent/sandbox")
+
+        cwd = self._capture_cwd_from_run_turn(agent)
+        assert cwd == "/agent/sandbox"
+
+    def test_env_var_used_when_session_cwd_absent(self, monkeypatch):
+        """HERMES_ACP_SESSION_CWD is used when agent has no session_cwd."""
+        monkeypatch.setenv("HERMES_ACP_SESSION_CWD", "/env/sandbox")
+        agent = _make_agent()
+        # Remove session_cwd so it's absent (not just None)
+        del agent.session_cwd
+
+        cwd = self._capture_cwd_from_run_turn(agent)
+        assert cwd == "/env/sandbox"
+
+    def test_env_var_used_when_session_cwd_is_none(self, monkeypatch):
+        """HERMES_ACP_SESSION_CWD is used when agent.session_cwd is None."""
+        monkeypatch.setenv("HERMES_ACP_SESSION_CWD", "/env/sandbox")
+        agent = _make_agent(session_cwd=None)
+
+        cwd = self._capture_cwd_from_run_turn(agent)
+        assert cwd == "/env/sandbox"
+
+    def test_env_var_empty_falls_back_to_getcwd(self, monkeypatch):
+        """Empty HERMES_ACP_SESSION_CWD falls through to os.getcwd()."""
+        monkeypatch.setenv("HERMES_ACP_SESSION_CWD", "")
+        agent = _make_agent(session_cwd=None)
+
+        import os
+        cwd = self._capture_cwd_from_run_turn(agent)
+        assert cwd == os.getcwd()
+
+    def test_no_env_var_falls_back_to_getcwd(self, monkeypatch):
+        """Absent HERMES_ACP_SESSION_CWD falls through to os.getcwd()."""
+        monkeypatch.delenv("HERMES_ACP_SESSION_CWD", raising=False)
+        agent = _make_agent(session_cwd=None)
+
+        import os
+        cwd = self._capture_cwd_from_run_turn(agent)
+        assert cwd == os.getcwd()

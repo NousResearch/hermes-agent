@@ -2368,11 +2368,21 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # Re-check ALL parents after linking — not just the one being added.
+        # If a child was created "ready" (no parents), then multiple parents
+        # are linked one-by-one, the child must stay blocked until *every*
+        # parent is done.  Without the all-parents re-check, a done parent
+        # linked first keeps the child "ready", and a dispatcher tick
+        # between links (race window) can spawn the worker before the
+        # remaining parents are even wired.
+        parents = conn.execute(
+            "SELECT t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (child_id,),
+        ).fetchall()
+        all_parents_done = all(p["status"] in ("done", "archived") for p in parents)
+        if not all_parents_done:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),

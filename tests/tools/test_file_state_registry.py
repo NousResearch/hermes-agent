@@ -283,5 +283,39 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertNotIn("error", w)
 
 
+class TestCapDict(unittest.TestCase):
+    """Regression tests for ``file_state._cap_dict``."""
+
+    def test_cap_dict_trims_to_limit(self):
+        """_cap_dict removes excess entries, keeping newest."""
+        d = {f"k{i}": i for i in range(20)}
+        file_state._cap_dict(d, 5)
+        self.assertEqual(len(d), 5)
+        # Newest keys (inserted last) survive.
+        self.assertIn("k19", d)
+        self.assertIn("k15", d)
+        # Oldest keys are evicted.
+        self.assertNotIn("k0", d)
+        self.assertNotIn("k14", d)
+
+    def test_cap_dict_noop_under_limit(self):
+        """_cap_dict is a no-op when dict is already within limit."""
+        d = {f"k{i}": i for i in range(3)}
+        before = dict(d)
+        file_state._cap_dict(d, 10)
+        self.assertEqual(d, before)
+
+    def test_cap_dict_empty(self):
+        """_cap_dict handles empty dict."""
+        file_state._cap_dict({}, 5)
+
+    def test_cap_dict_exact_limit(self):
+        """_cap_dict is a no-op when dict size equals limit."""
+        d = {f"k{i}": i for i in range(5)}
+        before = dict(d)
+        file_state._cap_dict(d, 5)
+        self.assertEqual(d, before)
+
+
 if __name__ == "__main__":
     unittest.main()

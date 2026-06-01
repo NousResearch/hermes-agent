@@ -8,7 +8,6 @@ from __future__ import annotations
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
-    SlashAccessPolicy,
     policy_for_source,
     policy_from_extra,
 )

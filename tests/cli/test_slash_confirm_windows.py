@@ -1,14 +1,14 @@
-"""Regression tests for issue #30768: /reset and /new freeze on Windows.
+"""Regression tests for issue #30768 and #32383.
 
 ``_prompt_text_input_modal`` uses a queue-based modal that relies on
 prompt_toolkit key bindings receiving keyboard events.  On Windows the
 prompt_toolkit input channel can deadlock when the modal is entered from
 the ``process_loop`` daemon thread.  The fix falls back to the simpler
-``_prompt_text_input`` (stdin-based) prompt on Windows and non-main threads.
+``_prompt_text_input`` (stdin-based) prompt on Windows.
 
 These tests verify:
 1. Windows detection triggers the stdin fallback
-2. Non-main thread detection triggers the stdin fallback
+2. Non-Windows daemon threads still use the modal via the app loop
 3. macOS/Linux main-thread path still uses the modal (no regression)
 4. No-app path still uses the stdin fallback (existing behavior)
 5. Empty choices returns None (existing behavior)
@@ -20,7 +20,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 def _make_cli():
@@ -29,6 +28,7 @@ def _make_cli():
 
     obj = object.__new__(cli_mod.HermesCLI)
     obj._app = MagicMock()
+    obj._app.loop = MagicMock()
     obj._status_bar_visible = True
     obj._last_invalidate = 0.0
     obj._modal_input_snapshot = None
@@ -66,28 +66,47 @@ class TestModalWindowsFallback:
         mock_stdin.assert_called_once_with("Choice [1/2/3]: ")
         assert result == "1"
 
-    def test_non_main_thread_falls_back_to_stdin(self):
-        """Off the main thread, _prompt_text_input_modal should use stdin fallback."""
+    def test_non_main_thread_uses_modal_via_app_loop(self):
+        """Off the main thread on Linux, keep the modal path via app-loop setup."""
         cli = _make_cli()
         result_holder = {}
+        setup_calls = []
+        teardown_calls = []
+
+        def _call_soon_threadsafe(callback):
+            callback()
 
         def run_on_daemon():
-            # Patch platform to "linux" so the Windows check doesn't short-circuit.
             with patch.object(sys, "platform", "linux"), \
-                 patch.object(cli, "_prompt_text_input", return_value="2") as mock_stdin:
+                 patch.object(cli._app.loop, "call_soon_threadsafe", side_effect=_call_soon_threadsafe), \
+                 patch.object(cli, "_prompt_text_input") as mock_stdin, \
+                 patch.object(cli, "_capture_modal_input_snapshot", side_effect=lambda: setup_calls.append("capture")), \
+                 patch.object(cli, "_restore_modal_input_snapshot", side_effect=lambda: teardown_calls.append("restore")):
                 result_holder["result"] = cli._prompt_text_input_modal(
                     title="⚠️  /reset",
                     detail="This starts a fresh session.",
                     choices=_SAMPLE_CHOICES,
+                    timeout=5,
                 )
                 result_holder["stdin_called"] = mock_stdin.called
 
+        def _submit_after_delay():
+            time.sleep(0.2)
+            state = cli._slash_confirm_state
+            if state and "response_queue" in state:
+                state["response_queue"].put("once")
+
+        submitter = threading.Thread(target=_submit_after_delay, daemon=True)
         t = threading.Thread(target=run_on_daemon, daemon=True)
+        submitter.start()
         t.start()
         t.join(timeout=2.0)
+        submitter.join(timeout=2.0)
         assert not t.is_alive(), "daemon thread hung — modal deadlocked"
-        assert result_holder["stdin_called"] is True
-        assert result_holder["result"] == "2"
+        assert result_holder["stdin_called"] is False
+        assert result_holder["result"] == "once"
+        assert setup_calls == ["capture"]
+        assert teardown_calls == ["restore"]
 
     def test_main_thread_non_windows_uses_modal(self):
         """On macOS/Linux main thread, the queue-based modal is still used."""
@@ -182,20 +201,33 @@ class TestModalWindowsFallback:
 
         assert cli._slash_confirm_state is None
 
-    def test_non_main_thread_fallback_does_not_set_modal_state(self):
-        """Verify daemon-thread fallback doesn't leave modal state set."""
+    def test_non_main_thread_modal_clears_state(self):
+        """Verify daemon-thread modal teardown does not leave state behind."""
         cli = _make_cli()
         errors = []
+
+        def _call_soon_threadsafe(callback):
+            callback()
 
         def run_on_daemon():
             try:
                 with patch.object(sys, "platform", "linux"), \
-                     patch.object(cli, "_prompt_text_input", return_value="1"):
+                     patch.object(cli._app.loop, "call_soon_threadsafe", side_effect=_call_soon_threadsafe):
+                    def _submit_after_delay():
+                        time.sleep(0.2)
+                        state = cli._slash_confirm_state
+                        if state and "response_queue" in state:
+                            state["response_queue"].put("cancel")
+
+                    submitter = threading.Thread(target=_submit_after_delay, daemon=True)
+                    submitter.start()
                     cli._prompt_text_input_modal(
                         title="⚠️  /new",
                         detail="This starts a fresh session.",
                         choices=_SAMPLE_CHOICES,
+                        timeout=5,
                     )
+                    submitter.join(timeout=2.0)
                 if cli._slash_confirm_state is not None:
                     errors.append("_slash_confirm_state should be None")
             except Exception as exc:

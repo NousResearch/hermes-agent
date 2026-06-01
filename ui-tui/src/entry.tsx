@@ -11,6 +11,7 @@ import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
+import { recordParentLifecycle } from './lib/parentLog.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -49,9 +50,14 @@ setupGracefulExit({
   onError: (scope, err) => {
     const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
 
+    recordParentLifecycle(`${scope}: ${message.split('\n')[0]?.slice(0, 400) ?? ''}`)
     process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
   },
   onSignal: signal => {
+    // The next line in the crash log is the child's `=== SIGTERM received ===`
+    // (gw.kill forwards SIGTERM regardless of which signal hit us) — this is
+    // what tells SIGHUP (terminal/SSH dropped) apart from a real SIGTERM.
+    recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
     resetTerminalModes()
     process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
   }
@@ -59,6 +65,10 @@ setupGracefulExit({
 
 const stopMemoryMonitor = startMemoryMonitor({
   onCritical: (snap, dump) => {
+    // process.exit(137) closes the child's stdin → the gateway logs a clean
+    // EOF, NOT SIGTERM. Recording it here is the only way a crash report can
+    // attribute a death to Node OOM rather than a signal-driven kill.
+    recordParentLifecycle(`memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`)
     resetTerminalModes()
     process.stderr.write(`hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`)
     process.stderr.write(dumpNotice(snap, dump))

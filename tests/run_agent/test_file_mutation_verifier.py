@@ -258,14 +258,33 @@ class TestRecordFileMutationResult:
             json.dumps({"error": "x"}), is_error=True,
         )
 
-    def test_missing_path_arg_recorded_nowhere(self):
+    def test_missing_path_arg_records_unknown_target(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
             "patch", {"mode": "replace"},  # no path
             json.dumps({"error": "path required"}), is_error=True,
         )
-        # No path → nothing to key on, state stays empty.  The per-turn
-        # state is about file paths, not individual tool-call IDs.
+        state = agent._turn_failed_file_mutations
+        assert "__unknown_target__:patch" in state
+        assert state["__unknown_target__:patch"]["display_path"] == "(unknown target)"
+        assert "path required" in state["__unknown_target__:patch"]["error_preview"]
+
+    def test_success_clears_prior_unknown_target_failure(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace"},
+            json.dumps({"error": "old_string and new_string required"}),
+            is_error=True,
+        )
+        assert "__unknown_target__:patch" in agent._turn_failed_file_mutations
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"},
+            json.dumps({"success": True, "diff": "--- a/tmp/a.md\n+++ b/tmp/a.md\n"}),
+            is_error=False,
+        )
+
         assert agent._turn_failed_file_mutations == {}
 
 
@@ -286,6 +305,31 @@ class TestFormatFooter:
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
+
+    def test_unknown_target_has_readable_label(self):
+        out = AIAgent._format_file_mutation_failure_footer(
+            {
+                "__unknown_target__:patch": {
+                    "tool": "patch",
+                    "display_path": "(unknown target)",
+                    "error_preview": "old_string and new_string required",
+                }
+            },
+        )
+        assert "(unknown target)" in out
+        assert "old_string and new_string required" in out
+
+    def test_apply_footer_is_failure_first(self):
+        footer = AIAgent._format_file_mutation_failure_footer(
+            {"/tmp/config.yaml": {"tool": "patch", "error_preview": "old_string required"}},
+        )
+        out = AIAgent._apply_file_mutation_failure_footer(
+            "✅ Setup complete. Config updated.",
+            footer,
+        )
+        assert out.startswith("⚠️ File-mutation verifier:")
+        assert "Assistant draft before verifier" in out
+        assert out.rfind("Setup complete") > out.find("old_string required")
 
     def test_truncation_at_10_entries(self):
         failed = {

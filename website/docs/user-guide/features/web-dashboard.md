@@ -1,7 +1,7 @@
 ---
 sidebar_position: 15
 title: "Web Dashboard"
-description: "Browser-based dashboard for managing configuration, API keys, sessions, logs, analytics, cron jobs, and skills"
+description: "Browser-based administration panel for managing configuration, API keys, MCP servers, messaging pairing, webhooks, the gateway, memory, credentials, sessions, logs, analytics, cron jobs, and skills"
 ---
 
 # Web Dashboard
@@ -185,6 +185,46 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 - **Toggle** — enable or disable individual skills with a switch. Changes take effect on the next session.
 - **Toolsets** — a separate section shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
 
+### MCP
+
+Manage [MCP](/integrations/mcp) servers without the CLI. The same `mcp_servers`
+block in `config.yaml` that `hermes mcp` reads from.
+
+- **Add** — register an HTTP/SSE server (URL) or a stdio server (command + args), with optional `KEY=VALUE` environment variables for stdio servers
+- **Test** — connect to a server, list its tools, and disconnect — verifies the connection before the agent depends on it
+- **Remove** — delete a server from the config
+- Secret-shaped env values are redacted in the list view
+
+### Webhooks
+
+Manage dynamic [webhook subscriptions](/user-guide/messaging/webhooks). The
+webhook platform must be enabled in messaging settings first; the page shows a
+hint when it isn't.
+
+- **Create** — name, description, event filter, delivery target, optional direct-delivery mode, and an agent prompt. On creation the page surfaces the route URL and the one-time HMAC secret to copy.
+- **List** — each subscription shows its URL, events, and delivery target
+- **Delete** — remove a subscription (hot-reloaded by the gateway, no restart needed)
+
+### Pairing
+
+Approve and revoke messaging users without the CLI — how a remote admin
+onboards Telegram/Discord/etc. users to a paired gateway.
+
+- **Pending requests** — each shows platform, code, user, and age, with an Approve button
+- **Approved users** — each shows platform and user, with a Revoke button
+- **Clear pending** — drop all outstanding pairing codes
+
+### System
+
+A consolidated administration panel for installation-wide operations:
+
+- **Gateway** — start, stop, and restart the messaging gateway, with live status (running/stopped, PID, state)
+- **Memory** — pick the external memory provider (or built-in only), and reset the built-in `MEMORY.md` / `USER.md` stores
+- **Credential pool** — add and remove the rotating API keys the agent round-robins through (per provider). Keys are redacted in the list; the raw value only ever reaches the agent.
+- **Operations** — run `doctor`, a security audit, a backup, restore from a backup archive, or update skills. Each spawns a background action whose live log streams into the page.
+- **Checkpoints** — see the `/rollback` shadow store size and prune it
+- **Shell hooks** — read-only list of configured hooks with their consent-allowlist status
+
 :::warning Security
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
 :::
@@ -299,6 +339,36 @@ Enables or disables a skill. Body: `{"name": "skill-name", "enabled": true}`.
 ### GET /api/tools/toolsets
 
 Returns all toolsets with their label, description, tools list, and active/configured status.
+
+### Admin endpoints
+
+These power the MCP, Webhooks, Pairing, and System pages. All sit behind the
+same auth gate as the rest of `/api/`.
+
+| Method & path | Purpose |
+|---------------|---------|
+| `GET /api/mcp/servers` | List configured MCP servers (env values redacted) |
+| `POST /api/mcp/servers` | Add a server. Body: `{name, url?, command?, args?, env?, auth?}` |
+| `POST /api/mcp/servers/{name}/test` | Connect, list tools, disconnect |
+| `DELETE /api/mcp/servers/{name}` | Remove a server |
+| `GET /api/pairing` | List pending + approved messaging users |
+| `POST /api/pairing/approve` | Approve a code. Body: `{platform, code}` |
+| `POST /api/pairing/revoke` | Revoke a user. Body: `{platform, user_id}` |
+| `POST /api/pairing/clear-pending` | Drop all pending codes |
+| `GET /api/webhooks` | List subscriptions + platform-enabled status |
+| `POST /api/webhooks` | Create a subscription (returns one-time secret) |
+| `DELETE /api/webhooks/{name}` | Remove a subscription |
+| `GET /api/credentials/pool` | List pooled rotation keys (redacted) |
+| `POST /api/credentials/pool` | Add a key. Body: `{provider, api_key, label?}` |
+| `DELETE /api/credentials/pool/{provider}/{index}` | Remove a key (1-based index) |
+| `GET /api/memory` | Active provider + available providers + built-in file sizes |
+| `PUT /api/memory/provider` | Select a provider (empty = built-in only) |
+| `POST /api/memory/reset` | Reset built-in memory. Body: `{target: all\|memory\|user}` |
+| `POST /api/gateway/start` · `/stop` · `/restart` | Gateway lifecycle (backgrounded) |
+| `POST /api/ops/doctor` · `/security-audit` · `/backup` · `/import` | Diagnostics & maintenance (backgrounded; tail via `/api/actions/{name}/status`) |
+| `GET /api/ops/hooks` | Configured shell hooks + allowlist status |
+| `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
+| `POST /api/skills/hub/install` · `/uninstall` · `/update` | Skills hub actions (backgrounded) |
 
 ## OAuth Authentication (gated mode)
 

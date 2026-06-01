@@ -768,7 +768,17 @@ _ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
 # Short ``name`` (from the URL) → absolute log file path.
 _ACTION_LOG_FILES: Dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
+    "gateway-start": "gateway-start.log",
+    "gateway-stop": "gateway-stop.log",
     "hermes-update": "hermes-update.log",
+    "doctor": "action-doctor.log",
+    "security-audit": "action-security-audit.log",
+    "backup": "action-backup.log",
+    "import": "action-import.log",
+    "checkpoints-prune": "action-checkpoints-prune.log",
+    "skills-install": "action-skills-install.log",
+    "skills-uninstall": "action-skills-uninstall.log",
+    "skills-update": "action-skills-update.log",
 }
 
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
@@ -3978,6 +3988,782 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# MCP server endpoints — list / add / remove / test.
+#
+# Wraps the same config data layer the CLI uses (hermes_cli.mcp_config), so
+# servers managed here show up under `hermes mcp list` and vice versa.  Secrets
+# in stdio `env` blocks are redacted on read; the agent picks them up from
+# config.yaml at session start exactly as with CLI-added servers.
+# ---------------------------------------------------------------------------
+
+
+class MCPServerCreate(BaseModel):
+    name: str
+    url: Optional[str] = None
+    command: Optional[str] = None
+    args: List[str] = []
+    # env: KEY=VALUE map for stdio servers (API keys, etc.)
+    env: Dict[str, str] = {}
+    # auth: "oauth" | "header" | None
+    auth: Optional[str] = None
+
+
+def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
+    """Mask secret-shaped MCP env values for read responses."""
+    out: Dict[str, str] = {}
+    for k, v in (env or {}).items():
+        try:
+            out[str(k)] = redact_key(str(v)) if v else ""
+        except Exception:
+            out[str(k)] = "***"
+    return out
+
+
+def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+    return {
+        "name": name,
+        "transport": transport,
+        "url": cfg.get("url"),
+        "command": cfg.get("command"),
+        "args": list(cfg.get("args") or []),
+        "env": _redact_mcp_env(cfg.get("env") or {}),
+        "auth": cfg.get("auth"),
+        "enabled": cfg.get("enabled", True) is not False,
+        # Tool selection: list of enabled tool names, or None = all.
+        "tools": cfg.get("tools"),
+    }
+
+
+@app.get("/api/mcp/servers")
+async def list_mcp_servers():
+    from hermes_cli.mcp_config import _get_mcp_servers
+
+    servers = _get_mcp_servers()
+    return {
+        "servers": [
+            _mcp_server_summary(name, cfg) for name, cfg in sorted(servers.items())
+        ]
+    }
+
+
+@app.post("/api/mcp/servers")
+async def add_mcp_server(body: MCPServerCreate):
+    from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Server name is required")
+    if name in _get_mcp_servers():
+        raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
+    if not body.url and not body.command:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either a URL (HTTP/SSE server) or a command (stdio server)",
+        )
+
+    server_config: Dict[str, Any] = {}
+    if body.url:
+        server_config["url"] = body.url.strip()
+    if body.command:
+        server_config["command"] = body.command.strip()
+        if body.args:
+            server_config["args"] = list(body.args)
+    if body.env:
+        server_config["env"] = dict(body.env)
+    if body.auth:
+        server_config["auth"] = body.auth
+
+    try:
+        _save_mcp_server(name, server_config)
+    except Exception as exc:
+        _log.exception("POST /api/mcp/servers failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return _mcp_server_summary(name, server_config)
+
+
+@app.delete("/api/mcp/servers/{name}")
+async def remove_mcp_server(name: str):
+    from hermes_cli.mcp_config import _remove_mcp_server
+
+    if not _remove_mcp_server(name):
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    return {"ok": True}
+
+
+@app.post("/api/mcp/servers/{name}/test")
+async def test_mcp_server(name: str):
+    """Connect to the server, list its tools, disconnect.  Returns tool list."""
+    from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
+
+    servers = _get_mcp_servers()
+    if name not in servers:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+    try:
+        # Probe blocks on a dedicated MCP event loop — run in a thread so the
+        # FastAPI event loop is never blocked.
+        tools = await asyncio.to_thread(_probe_single_server, name, servers[name])
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "tools": [],
+        }
+    return {
+        "ok": True,
+        "tools": [{"name": t, "description": d} for t, d in tools],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pairing endpoints — approve / revoke / list messaging pairing codes.
+#
+# These are how a remote admin onboards messaging users (Telegram, Discord, …)
+# without shell access.  Wraps gateway.pairing.PairingStore directly.
+# ---------------------------------------------------------------------------
+
+
+class PairingApprove(BaseModel):
+    platform: str
+    code: str
+
+
+class PairingRevoke(BaseModel):
+    platform: str
+    user_id: str
+
+
+def _pairing_store():
+    from gateway.pairing import PairingStore
+
+    return PairingStore()
+
+
+@app.get("/api/pairing")
+async def list_pairing():
+    store = _pairing_store()
+    return {
+        "pending": store.list_pending(),
+        "approved": store.list_approved(),
+    }
+
+
+@app.post("/api/pairing/approve")
+async def approve_pairing(body: PairingApprove):
+    store = _pairing_store()
+    platform = (body.platform or "").lower().strip()
+    code = (body.code or "").upper().strip()
+    if not platform or not code:
+        raise HTTPException(status_code=400, detail="platform and code are required")
+
+    result = store.approve_code(platform, code)
+    if result:
+        return {"ok": True, "user": result}
+    if store._is_locked_out(platform):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Platform '{platform}' is locked out after too many failed approvals.",
+        )
+    raise HTTPException(
+        status_code=404,
+        detail=f"Code '{code}' not found or expired for platform '{platform}'.",
+    )
+
+
+@app.post("/api/pairing/revoke")
+async def revoke_pairing(body: PairingRevoke):
+    store = _pairing_store()
+    platform = (body.platform or "").lower().strip()
+    if not platform or not body.user_id:
+        raise HTTPException(status_code=400, detail="platform and user_id are required")
+    if store.revoke(platform, body.user_id):
+        return {"ok": True}
+    raise HTTPException(
+        status_code=404,
+        detail=f"User {body.user_id} not found in approved list for {platform}.",
+    )
+
+
+@app.post("/api/pairing/clear-pending")
+async def clear_pending_pairing():
+    store = _pairing_store()
+    count = store.clear_pending()
+    return {"ok": True, "cleared": count}
+
+
+# ---------------------------------------------------------------------------
+# Webhook subscription endpoints — list / subscribe / remove.
+#
+# Wraps the same JSON store the CLI uses (hermes_cli.webhook); the webhook
+# adapter hot-reloads it without a gateway restart.  Per-route HMAC secrets
+# are redacted on read and surfaced once on create.
+# ---------------------------------------------------------------------------
+
+
+class WebhookCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    events: List[str] = []
+    prompt: Optional[str] = None
+    skills: List[str] = []
+    deliver: str = "log"
+    deliver_only: bool = False
+    deliver_chat_id: Optional[str] = None
+    # secret: omit to auto-generate
+    secret: Optional[str] = None
+
+
+def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "description": route.get("description", ""),
+        "events": list(route.get("events") or []),
+        "deliver": route.get("deliver", "log"),
+        "deliver_only": bool(route.get("deliver_only")),
+        "prompt": route.get("prompt", ""),
+        "skills": list(route.get("skills") or []),
+        "created_at": route.get("created_at"),
+        "url": f"{base_url}/webhooks/{name}",
+        # Secret is masked on read; full value only returned on create.
+        "secret_set": bool(route.get("secret")),
+    }
+
+
+@app.get("/api/webhooks")
+async def list_webhooks():
+    import hermes_cli.webhook as wh
+
+    base_url = wh._get_webhook_base_url()
+    subs = wh._load_subscriptions()
+    return {
+        "enabled": wh._is_webhook_enabled(),
+        "base_url": base_url,
+        "subscriptions": [
+            _webhook_route_summary(name, route, base_url)
+            for name, route in subs.items()
+        ],
+    }
+
+
+@app.post("/api/webhooks")
+async def create_webhook(body: WebhookCreate):
+    import re as _re
+    import secrets as _secrets
+    import time as _time
+    import hermes_cli.webhook as wh
+
+    if not wh._is_webhook_enabled():
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook platform is not enabled. Enable it in messaging settings first.",
+        )
+
+    name = (body.name or "").strip().lower().replace(" ", "-")
+    if not _re.match(r"^[a-z0-9][a-z0-9_-]*$", name):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid name. Use lowercase alphanumeric with hyphens/underscores.",
+        )
+
+    if body.deliver_only and body.deliver == "log":
+        raise HTTPException(
+            status_code=400,
+            detail="Direct delivery requires a real target (telegram, discord, …), not 'log'.",
+        )
+
+    secret = body.secret or _secrets.token_urlsafe(32)
+    route: Dict[str, Any] = {
+        "description": body.description or f"Dashboard-created subscription: {name}",
+        "events": [e.strip() for e in body.events if e.strip()],
+        "secret": secret,
+        "prompt": body.prompt or "",
+        "skills": [s.strip() for s in body.skills if s.strip()],
+        "deliver": body.deliver or "log",
+        "created_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+    }
+    if body.deliver_only:
+        route["deliver_only"] = True
+    if body.deliver_chat_id:
+        route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
+
+    subs = wh._load_subscriptions()
+    subs[name] = route
+    wh._save_subscriptions(subs)
+
+    base_url = wh._get_webhook_base_url()
+    summary = _webhook_route_summary(name, route, base_url)
+    # Surface the secret exactly once, on create.
+    summary["secret"] = secret
+    return summary
+
+
+@app.delete("/api/webhooks/{name}")
+async def delete_webhook(name: str):
+    import hermes_cli.webhook as wh
+
+    key = (name or "").strip().lower()
+    subs = wh._load_subscriptions()
+    if key not in subs:
+        raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
+    del subs[key]
+    wh._save_subscriptions(subs)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Gateway lifecycle endpoints — start / stop.
+#
+# restart + update already exist above; these complete the lifecycle so a
+# remote admin can bring the gateway up or down without shell access.  Both
+# spawn the real `hermes gateway <verb>` so behaviour matches the CLI exactly.
+# Status is already surfaced by /api/status (gateway_running/state/platforms).
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/gateway/start")
+async def start_gateway():
+    try:
+        proc = _spawn_hermes_action(["gateway", "start"], "gateway-start")
+    except Exception as exc:
+        _log.exception("Failed to spawn gateway start")
+        raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "gateway-start"}
+
+
+@app.post("/api/gateway/stop")
+async def stop_gateway():
+    try:
+        proc = _spawn_hermes_action(["gateway", "stop"], "gateway-stop")
+    except Exception as exc:
+        _log.exception("Failed to spawn gateway stop")
+        raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
+
+
+# ---------------------------------------------------------------------------
+# Credential pool endpoints — list / add / remove rotation keys.
+#
+# The credential pool (auth.json -> credential_pool.<provider>[]) holds the
+# rotating API keys the agent round-robins through.  Secrets are redacted on
+# read; only the agent ever sees the raw values at session start.
+# ---------------------------------------------------------------------------
+
+
+class CredentialPoolAdd(BaseModel):
+    provider: str
+    # api_key for API-key providers; OAuth pooling stays CLI-only (it needs
+    # an interactive browser flow that doesn't belong in a single POST).
+    api_key: str
+    label: Optional[str] = None
+
+
+def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
+    """Redacted, display-safe view of one PooledCredential.
+
+    ``index`` is 1-based to match CredentialPool.remove_index().
+    """
+    token = getattr(entry, "access_token", "") or ""
+    return {
+        "index": index,
+        "id": getattr(entry, "id", None),
+        "label": getattr(entry, "label", None),
+        "auth_type": getattr(entry, "auth_type", None),
+        "source": getattr(entry, "source", None),
+        "priority": getattr(entry, "priority", 0),
+        "last_status": getattr(entry, "last_status", None),
+        "request_count": getattr(entry, "request_count", 0),
+        "token_preview": redact_key(token) if token else "",
+        "has_refresh": bool(getattr(entry, "refresh_token", None)),
+    }
+
+
+@app.get("/api/credentials/pool")
+async def list_credential_pool():
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
+
+    providers = []
+    # read_credential_pool(None) lists every provider that has pooled entries;
+    # load_pool() then gives us the rich PooledCredential objects per provider.
+    raw_pool = read_credential_pool()
+    for provider_id in sorted(raw_pool.keys()):
+        try:
+            pool = load_pool(provider_id)
+        except Exception:
+            _log.exception("load_pool(%s) failed", provider_id)
+            continue
+        entries = pool.entries()
+        if not entries:
+            continue
+        providers.append({
+            "provider": provider_id,
+            "entries": [
+                _pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)
+            ],
+        })
+    return {"providers": providers}
+
+
+@app.post("/api/credentials/pool")
+async def add_credential_pool_entry(body: CredentialPoolAdd):
+    import uuid as _uuid
+    from agent.credential_pool import (
+        load_pool,
+        PooledCredential,
+        AUTH_TYPE_API_KEY,
+        SOURCE_MANUAL,
+    )
+
+    provider = (body.provider or "").strip().lower()
+    api_key = (body.api_key or "").strip()
+    if not provider or not api_key:
+        raise HTTPException(status_code=400, detail="provider and api_key are required")
+
+    try:
+        pool = load_pool(provider)
+        label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
+        entry = PooledCredential(
+            provider=provider,
+            id=_uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=0,
+            source=SOURCE_MANUAL,
+            access_token=api_key,
+        )
+        pool.add_entry(entry)
+    except Exception as exc:
+        _log.exception("POST /api/credentials/pool failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "provider": provider, "count": len(pool.entries())}
+
+
+@app.delete("/api/credentials/pool/{provider}/{index}")
+async def remove_credential_pool_entry(provider: str, index: int):
+    """Remove a pool entry.  ``index`` is 1-based (matches the list response)."""
+    from agent.credential_pool import load_pool
+
+    provider = (provider or "").strip().lower()
+    try:
+        pool = load_pool(provider)
+        removed = pool.remove_index(index)
+    except Exception as exc:
+        _log.exception("DELETE /api/credentials/pool failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if removed is None:
+        raise HTTPException(status_code=404, detail="No pool entry at that index")
+    return {"ok": True, "provider": provider, "count": len(pool.entries())}
+
+
+# ---------------------------------------------------------------------------
+# Memory provider endpoints — status / list providers / select / disable / reset.
+#
+# Selecting a provider only writes config.memory.provider (full interactive
+# provider setup, with its API-key prompts, stays on the CLI via
+# `hermes memory setup`).  The dashboard covers the common admin actions:
+# see which provider is active, switch the built-in store on/off, and wipe
+# built-in memory files.
+# ---------------------------------------------------------------------------
+
+
+class MemoryProviderSelect(BaseModel):
+    # "" or "built-in" disables the external provider (built-in only).
+    provider: str
+
+
+class MemoryReset(BaseModel):
+    # "all" | "memory" | "user"
+    target: str = "all"
+
+
+@app.get("/api/memory")
+async def get_memory_status():
+    from plugins.memory import discover_memory_providers
+
+    cfg = load_config()
+    active = ""
+    mem = cfg.get("memory")
+    if isinstance(mem, dict):
+        active = str(mem.get("provider") or "")
+
+    providers = []
+    try:
+        for name, description, configured in discover_memory_providers():
+            providers.append({
+                "name": name,
+                "description": description,
+                "configured": bool(configured),
+            })
+    except Exception:
+        _log.exception("discover_memory_providers failed")
+
+    # Built-in memory file sizes (so the UI can show what a reset would erase).
+    mem_dir = get_hermes_home() / "memories"
+    files = {}
+    for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
+        path = mem_dir / fname
+        files[key] = path.stat().st_size if path.exists() else 0
+
+    return {
+        "active": active,
+        "providers": providers,
+        "builtin_files": files,
+    }
+
+
+@app.put("/api/memory/provider")
+async def set_memory_provider(body: MemoryProviderSelect):
+    provider = (body.provider or "").strip()
+    if provider.lower() in {"built-in", "builtin", "none"}:
+        provider = ""
+
+    if provider:
+        from plugins.memory import discover_memory_providers
+
+        valid = {name for name, _d, _c in discover_memory_providers()}
+        if provider not in valid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown memory provider '{provider}'. Run `hermes memory setup` to configure a new one.",
+            )
+
+    cfg = load_config()
+    if not isinstance(cfg.get("memory"), dict):
+        cfg["memory"] = {}
+    cfg["memory"]["provider"] = provider
+    save_config(cfg)
+    return {"ok": True, "active": provider}
+
+
+@app.post("/api/memory/reset")
+async def reset_memory(body: MemoryReset):
+    target = (body.target or "all").strip().lower()
+    if target not in {"all", "memory", "user"}:
+        raise HTTPException(status_code=400, detail="target must be all, memory, or user")
+
+    mem_dir = get_hermes_home() / "memories"
+    deleted = []
+    targets = []
+    if target in {"all", "memory"}:
+        targets.append("MEMORY.md")
+    if target in {"all", "user"}:
+        targets.append("USER.md")
+    for fname in targets:
+        path = mem_dir / fname
+        if path.exists():
+            try:
+                path.unlink()
+                deleted.append(fname)
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
+    return {"ok": True, "deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Operations endpoints — doctor / security audit / backup / import /
+# checkpoints / hooks.
+#
+# Diagnostic and maintenance commands.  The long-running / text-output ones
+# (doctor, security audit, backup, import, skills install) are spawned as
+# background actions whose logs the dashboard tails via
+# /api/actions/{name}/status — same pattern as gateway restart and update.
+# The cheap, structured reads (hooks list, checkpoints list) return JSON
+# directly.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/ops/doctor")
+async def run_doctor():
+    try:
+        proc = _spawn_hermes_action(["doctor"], "doctor")
+    except Exception as exc:
+        _log.exception("Failed to spawn doctor")
+        raise HTTPException(status_code=500, detail=f"Failed to run doctor: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "doctor"}
+
+
+@app.post("/api/ops/security-audit")
+async def run_security_audit():
+    try:
+        proc = _spawn_hermes_action(["security", "audit"], "security-audit")
+    except Exception as exc:
+        _log.exception("Failed to spawn security audit")
+        raise HTTPException(status_code=500, detail=f"Failed to run security audit: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "security-audit"}
+
+
+class BackupRequest(BaseModel):
+    # Optional output path; defaults to a timestamped zip in the home dir.
+    output: Optional[str] = None
+
+
+@app.post("/api/ops/backup")
+async def run_backup(body: BackupRequest):
+    args = ["backup"]
+    if body.output:
+        args.append(body.output.strip())
+    try:
+        proc = _spawn_hermes_action(args, "backup")
+    except Exception as exc:
+        _log.exception("Failed to spawn backup")
+        raise HTTPException(status_code=500, detail=f"Failed to run backup: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "backup"}
+
+
+class ImportRequest(BaseModel):
+    archive: str
+
+
+@app.post("/api/ops/import")
+async def run_import(body: ImportRequest):
+    archive = (body.archive or "").strip()
+    if not archive:
+        raise HTTPException(status_code=400, detail="archive path is required")
+    if not os.path.isfile(archive):
+        raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
+    try:
+        proc = _spawn_hermes_action(["import", archive], "import")
+    except Exception as exc:
+        _log.exception("Failed to spawn import")
+        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "import"}
+
+
+@app.get("/api/ops/hooks")
+async def list_hooks():
+    """Read-only list of configured shell hooks from config.yaml + allowlist."""
+    cfg = load_config()
+    hooks_cfg = cfg.get("hooks")
+    out = []
+    if isinstance(hooks_cfg, dict):
+        for event, entries in hooks_cfg.items():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                out.append({
+                    "event": event,
+                    "matcher": entry.get("matcher"),
+                    "command": entry.get("command"),
+                    "timeout": entry.get("timeout"),
+                })
+    # Consent allowlist status (which commands have been approved for run).
+    allowlist: List[str] = []
+    try:
+        allow_path = get_hermes_home() / "shell-hooks-allowlist.json"
+        if allow_path.exists():
+            data = json.loads(allow_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                allowlist = list(data.keys())
+            elif isinstance(data, list):
+                allowlist = [str(x) for x in data]
+    except Exception:
+        _log.exception("Failed to read shell-hooks allowlist")
+    for h in out:
+        h["allowed"] = h.get("command") in allowlist
+    return {"hooks": out, "allowlist": allowlist}
+
+
+@app.get("/api/ops/checkpoints")
+async def list_checkpoints():
+    """List the /rollback shadow store checkpoints (read-only)."""
+    # Checkpoints live under <hermes_home>/checkpoints/.  Surface a count +
+    # total size so the dashboard can show what a prune would reclaim; the
+    # actual prune is a spawned action so confirmation/pruning logic stays
+    # in one place (the CLI).
+    cp_dir = get_hermes_home() / "checkpoints"
+    sessions = []
+    total_bytes = 0
+    if cp_dir.is_dir():
+        for child in sorted(cp_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            size = 0
+            count = 0
+            for f in child.rglob("*"):
+                if f.is_file():
+                    try:
+                        size += f.stat().st_size
+                        count += 1
+                    except OSError:
+                        pass
+            total_bytes += size
+            sessions.append({
+                "session": child.name,
+                "files": count,
+                "bytes": size,
+            })
+    return {"sessions": sessions, "total_bytes": total_bytes}
+
+
+@app.post("/api/ops/checkpoints/prune")
+async def prune_checkpoints():
+    try:
+        proc = _spawn_hermes_action(["checkpoints", "prune"], "checkpoints-prune")
+    except Exception as exc:
+        _log.exception("Failed to spawn checkpoints prune")
+        raise HTTPException(status_code=500, detail=f"Failed to prune checkpoints: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "checkpoints-prune"}
+
+
+# ---------------------------------------------------------------------------
+# Skills hub endpoints — search / install / uninstall / update.
+#
+# Search and install touch the network (GitHub, hub sources) and run the same
+# complex source-router pipeline the CLI uses, so they're spawned as background
+# actions whose logs the dashboard tails.  The already-installed skill list +
+# enable/disable toggle live in the existing /api/skills endpoints.
+# ---------------------------------------------------------------------------
+
+
+class SkillInstallRequest(BaseModel):
+    identifier: str
+
+
+@app.post("/api/skills/hub/install")
+async def install_skill_hub(body: SkillInstallRequest):
+    identifier = (body.identifier or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="identifier is required")
+    try:
+        proc = _spawn_hermes_action(["skills", "install", identifier], "skills-install")
+    except Exception as exc:
+        _log.exception("Failed to spawn skills install")
+        raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "skills-install"}
+
+
+class SkillUninstallRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/skills/hub/uninstall")
+async def uninstall_skill_hub(body: SkillUninstallRequest):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    try:
+        proc = _spawn_hermes_action(["skills", "uninstall", name, "--yes"], "skills-uninstall")
+    except Exception as exc:
+        _log.exception("Failed to spawn skills uninstall")
+        raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "skills-uninstall"}
+
+
+@app.post("/api/skills/hub/update")
+async def update_skills_hub():
+    try:
+        proc = _spawn_hermes_action(["skills", "update"], "skills-update")
+    except Exception as exc:
+        _log.exception("Failed to spawn skills update")
+        raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "skills-update"}
 
 
 # ---------------------------------------------------------------------------

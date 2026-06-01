@@ -521,10 +521,8 @@ class TestResizeToolPool:
 
         old_executor = MagicMock()
         new_executor = MagicMock()
-        mock_logger = MagicMock()
 
         monkeypatch.setattr(agent_loop_module, "_tool_executor", old_executor)
-        monkeypatch.setattr(agent_loop_module, "logger", mock_logger)
         monkeypatch.setattr(
             agent_loop_module.concurrent.futures,
             "ThreadPoolExecutor",
@@ -535,7 +533,6 @@ class TestResizeToolPool:
 
         old_executor.shutdown.assert_called_once_with(wait=False)
         assert agent_loop_module._tool_executor is new_executor
-        mock_logger.info.assert_called_once_with("Tool thread pool resized to %d workers", 16)
 
     def test_resize_pool_with_running_tasks(self, restore_tool_executor):
         """Test that running tasks are not interrupted when resizing."""

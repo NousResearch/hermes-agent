@@ -595,7 +595,11 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> bool:
         if cls._metadata_direct_messages_topic_id(metadata) is not None:
-            return False
+            return bool(
+                metadata
+                and metadata.get("telegram_dm_topic_reply_fallback")
+                and cls._metadata_reply_to_message_id(metadata) is not None
+            )
         if metadata and metadata.get("telegram_dm_topic_created_for_send"):
             return False
         return bool(

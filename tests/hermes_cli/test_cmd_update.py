@@ -39,6 +39,45 @@ def mock_args():
     return SimpleNamespace()
 
 
+class TestCmdUpdatePip:
+    """Regression tests for pip-install update flows."""
+
+    @patch("shutil.which", return_value="/usr/bin/uv")
+    @patch("subprocess.run")
+    def test_update_pip_exports_virtualenv_from_sys_prefix(
+        self, mock_run, _mock_which, mock_args, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(hm.sys, "prefix", "/tmp/hermes-launcher-venv")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        hm._cmd_update_pip(mock_args)
+
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
+        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/tmp/hermes-launcher-venv"
+
+    @patch("shutil.which", return_value="/usr/bin/uv")
+    @patch("subprocess.run")
+    def test_update_pip_does_not_export_virtualenv_for_system_python(
+        self, mock_run, _mock_which, mock_args, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(hm.sys, "prefix", "/usr")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        hm._cmd_update_pip(mock_args)
+
+        assert mock_run.call_count == 1
+        assert "env" not in mock_run.call_args.kwargs
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
@@ -106,6 +145,33 @@ class TestCmdUpdateBranchFallback:
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_on_fork_checks_upstream_when_origin_up_to_date(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """Regression for issue #26172: forks whose local HEAD already matches
+        origin/main must still consult upstream/main before printing
+        "Already up to date!" — otherwise a fork that's caught up to its own
+        origin but behind NousResearch/hermes-agent silently misses updates.
+        """
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(mock_args)
+
+        sync_mock.assert_called_once_with(["git"], PROJECT_ROOT)
+        captured = capsys.readouterr()
+        assert "Already up to date!" in captured.out
+
     @patch("shutil.which")
     @patch("subprocess.run")
     def test_update_refreshes_repo_and_tui_node_dependencies(
@@ -117,7 +183,13 @@ class TestCmdUpdateBranchFallback:
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="1"
         )
-        with patch.object(hm, "_is_termux_env", return_value=False):
+        # The web UI build runs through _run_with_idle_timeout now (issue
+        # #33788) so it no longer appears in subprocess.run's call list.
+        # Mock it so the test doesn't actually shell out to ``tsc``.
+        import subprocess as _subprocess
+        build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
             cmd_update(mock_args)
 
         npm_calls = [
@@ -126,10 +198,11 @@ class TestCmdUpdateBranchFallback:
             if call.args and call.args[0][0] == "/usr/bin/npm"
         ]
 
-        # cmd_update runs npm commands in three locations:
-        #   1. repo root  — slash-command / TUI bridge deps
-        #   2. ui-tui/    — Ink TUI deps
-        #   3. web/       — install + "npm run build" for the web frontend
+        # cmd_update runs npm commands in four locations:
+        #   1. repo root  — slash-command / TUI bridge deps  (subprocess.run)
+        #   2. ui-tui/    — Ink TUI deps                     (subprocess.run)
+        #   3. web/       — npm install                      (subprocess.run)
+        #   4. web/       — npm run build                    (_run_with_idle_timeout)
         #
         # Repo-root and ui-tui installs intentionally omit `--silent` and run
         # without `capture_output` so optional postinstall scripts (e.g.
@@ -143,15 +216,25 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
+        # Repo root additionally passes --workspaces=false so npm does not
+        # recursively install every apps/* workspace (desktop, shared).
+        repo_flags = [*update_flags, "--workspaces=false"]
         assert npm_calls[:2] == [
-            (update_flags, PROJECT_ROOT),
+            (repo_flags, PROJECT_ROOT),
             (update_flags, PROJECT_ROOT / "ui-tui"),
         ]
         if len(npm_calls) > 2:
+            # Only the web/ install is left in subprocess.run; the build moved
+            # to _run_with_idle_timeout to make Vite progress visible (#33788).
             assert npm_calls[2:] == [
                 (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
-                (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
             ]
+
+        # The web UI build itself went through the streaming helper.
+        mock_idle.assert_called_once()
+        idle_args, idle_kwargs = mock_idle.call_args
+        assert idle_args[0] == ["/usr/bin/npm", "run", "build"]
+        assert idle_kwargs["cwd"] == PROJECT_ROOT / "web"
 
         # Regression for #18840: repo root + ui-tui installs must stream
         # output (capture_output=False) so postinstall progress is visible
@@ -199,6 +282,83 @@ class TestCmdUpdateBranchFallback:
             captured = capsys.readouterr()
             assert "applying safe config migrations" in captured.out
             assert "API keys require manual entry" in captured.out
+
+
+class TestCmdUpdateMigrationPrompt:
+    """The config-migration prompt names what changed and skips the prompt
+    entirely when only the config format version moved.
+
+    Regression guard for the contentless-prompt report (ScottFive / Tt2021):
+    previously the prompt printed only counts ("1 new config option") and
+    asked "configure them now?" even for pure version bumps, where saying
+    yes looked like a no-op.
+    """
+
+    def test_version_bump_only_applies_silently_without_prompt(
+        self, mock_args, capsys
+    ):
+        """Only the version moved → apply non-interactively, never prompt."""
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch("builtins.input") as mock_input, patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=[]
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=[]
+        ), patch(
+            "hermes_cli.config.check_config_version", return_value=(5, 24)
+        ), patch(
+            "hermes_cli.config.migrate_config",
+            return_value={"env_added": [], "config_added": [], "warnings": []},
+        ) as mock_migrate:
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+            mock_input.assert_not_called()
+            mock_migrate.assert_called_once_with(interactive=False, quiet=True)
+            out = capsys.readouterr().out
+            assert "Updating config format (v5 → v24)" in out
+            assert "no new settings to configure" in out
+            # The misleading question must NOT appear for a pure version bump.
+            assert "configure them now" not in out.lower()
+
+    def test_new_options_are_listed_by_name_before_prompt(
+        self, mock_args, capsys
+    ):
+        """New env/config keys are printed by name so the user can decide."""
+        env_items = [
+            {"name": "FOO_API_KEY", "description": "Foo service API key"},
+        ]
+        cfg_items = [
+            {"key": "display.new_widget", "description": "New config option: display.new_widget"},
+        ]
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch("builtins.input", return_value="n"), patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=env_items
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=cfg_items
+        ), patch(
+            "hermes_cli.config.check_config_version", return_value=(1, 24)
+        ), patch(
+            "hermes_cli.config.migrate_config",
+            return_value={"env_added": [], "config_added": [], "warnings": []},
+        ), patch("hermes_cli.main.sys") as mock_sys:
+            mock_sys.stdin.isatty.return_value = True
+            mock_sys.stdout.isatty.return_value = True
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+            out = capsys.readouterr().out
+            # Names, not just counts.
+            assert "FOO_API_KEY" in out
+            assert "Foo service API key" in out
+            assert "display.new_widget" in out
 
 
 class TestCmdUpdateProfileSkillSync:

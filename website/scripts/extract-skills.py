@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract skill metadata into website/src/data/skills.json for the Skills Hub page.
+"""Extract skill metadata into website/static/api/skills.json for the Skills Hub page.
 
 Two data sources:
 
@@ -32,8 +32,12 @@ LOCAL_SKILL_DIRS = [
 ]
 UNIFIED_INDEX_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
-OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills.json")
-META_OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills-meta.json")
+# Output to static/api/ so the file is CDN-served at /api/skills.json
+# rather than bundled into the page's JS chunk. At 50k+ skills the
+# bundled payload was ~26 MB; lazy-fetch keeps the initial page load
+# fast and shrinks the JS chunk back to a few hundred KB.
+OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
+META_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-meta.json")
 
 CATEGORY_LABELS = {
     "apple": "Apple",
@@ -91,6 +95,7 @@ GITHUB_TAP_LABELS = {
     "openai/skills": "OpenAI",
     "anthropics/skills": "Anthropic",
     "huggingface/skills": "HuggingFace",
+    "NVIDIA/skills": "NVIDIA",
     "VoltAgent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "MiniMax-AI/cli": "MiniMax",
@@ -338,6 +343,15 @@ def extract_unified_index_skills():
         category = _guess_category(tags)
         extra = entry.get("extra", {}) or {}
 
+        # A skills.sh.json grouping sidecar (if the tap ships one) gives us a
+        # real, human-readable category — prefer it over the tag heuristic.
+        # extra["category"] holds the grouping title, e.g. "Inference AI".
+        sidecar_category = extra.get("category") if isinstance(extra, dict) else None
+        category_label_override = ""
+        if isinstance(sidecar_category, str) and sidecar_category.strip():
+            category_label_override = sidecar_category.strip()
+            category = category_label_override.lower().replace(" ", "-")
+
         # Author hint from extras when available (skills.sh has installs;
         # clawhub doesn't expose author).
         author = ""
@@ -353,7 +367,8 @@ def extract_unified_index_skills():
             "description": description,
             "overview": "",
             "category": category,
-            "categoryLabel": "",  # filled in _consolidate_small_categories
+            "categoryLabel": category_label_override,  # set from sidecar, else filled in _consolidate_small_categories
+            "fixedCategory": bool(category_label_override),  # sidecar categories are exempt from small-cat collapse
             "source": source_label,
             "tags": tags,
             "platforms": [],
@@ -486,10 +501,17 @@ def _consolidate_small_categories(skills: list) -> list:
             s["category"] = "other"
             s["categoryLabel"] = "Other"
 
-    counts = Counter(s["category"] for s in skills)
+    # Skills with a sidecar-declared category (skills.sh.json grouping) keep
+    # their category even if it's the only skill in it — the tap explicitly
+    # chose that label, so it's not a heuristic guess to collapse away.
+    counts = Counter(
+        s["category"] for s in skills if not s.get("fixedCategory")
+    )
     small_cats = {cat for cat, n in counts.items() if n < MIN_CATEGORY_SIZE}
 
     for s in skills:
+        if s.get("fixedCategory"):
+            continue
         if s["category"] in small_cats:
             s["category"] = "other"
             s["categoryLabel"] = "Other"
@@ -531,7 +553,9 @@ def main():
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
     with open(OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(all_skills, f, indent=2)
+        # Minified — file is served over the wire, not read by humans.
+        # At 50k+ skills the indented version was ~30% larger.
+        json.dump(all_skills, f, separators=(",", ":"), ensure_ascii=False)
 
     # Sidecar meta file so the page can render a "Last refreshed" badge
     # without changing the shape of skills.json.
@@ -547,7 +571,7 @@ def main():
     if index_meta:
         meta.update(index_meta)
     with open(META_OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+        json.dump(meta, f, separators=(",", ":"), ensure_ascii=False)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")
     print(f"  {len(local)} local ({sum(1 for s in local if s['source'] == 'built-in')} built-in, "

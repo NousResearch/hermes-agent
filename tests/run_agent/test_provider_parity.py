@@ -4,12 +4,12 @@ and handles responses properly for all supported providers.
 Ensures changes to one provider path don't silently break another.
 """
 
+import base64
 import json
-import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
@@ -35,6 +35,17 @@ def _tool_defs(*names):
         }
         for n in names
     ]
+
+
+def _fake_invoke_jwt() -> str:
+    def _part(payload):
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return (
+        f"{_part({'alg': 'none', 'typ': 'JWT'})}."
+        f"{_part({'scope': 'inference:invoke', 'exp': 4102444800})}.sig"
+    )
 
 
 class _FakeOpenAI:
@@ -927,7 +938,11 @@ class TestAuxiliaryClientProviderPriority:
     def test_nous_when_no_openrouter(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         from agent.auxiliary_client import get_text_auxiliary_client
-        with patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "nous-tok"}), \
+        nous_auth = {
+            "access_token": _fake_invoke_jwt(),
+            "scope": "inference:invoke",
+        }
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=nous_auth), \
              patch("agent.auxiliary_client.OpenAI") as mock, \
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
             client, model = get_text_auxiliary_client()

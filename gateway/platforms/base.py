@@ -472,6 +472,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return False
 
 
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -483,7 +484,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -826,9 +827,17 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
 _HERMES_HOME = get_hermes_home()
+_HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 MEDIA_DELIVERY_TRUST_RECENT_ENV = "HERMES_MEDIA_TRUST_RECENT_FILES"
 MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
+# Strict mode toggles the original allowlist+recency path-validation behavior.
+# Off by default — symmetric with inbound (we accept any document type the
+# user uploads), and with the denylist still blocking obvious credential /
+# system paths. Operators running public-facing gateways where prompt
+# injection from one user could exfiltrate the host's secrets to that same
+# user should set this to true.
+MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
@@ -840,6 +849,13 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",
     _HERMES_HOME / "browser_screenshots",
+    # Canonical cache layout — listed alongside the legacy *_cache dirs so
+    # generated artifacts deliver on installs that have both (#31733).
+    _HERMES_HOME / "cache" / "images",
+    _HERMES_HOME / "cache" / "audio",
+    _HERMES_HOME / "cache" / "videos",
+    _HERMES_HOME / "cache" / "documents",
+    _HERMES_HOME / "cache" / "screenshots",
 )
 
 # Default recency window for trusting freshly-produced files (seconds).
@@ -918,17 +934,35 @@ def _media_delivery_recency_seconds() -> float:
     return float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
 
 
+def _media_delivery_strict_mode() -> bool:
+    """Return True when path validation should require allowlist/recency match.
+
+    Off by default. In non-strict mode, ``validate_media_delivery_path``
+    accepts any existing regular file that isn't under the credential /
+    system-path denylist — restoring the pre-#29523 behavior for the
+    single-user case. Strict mode preserves the original
+    allowlist+recency-window logic for operators running public-facing
+    gateways where prompt injection from one user shouldn't be able to
+    exfiltrate the host's secrets to that same user.
+    """
+    raw = os.environ.get(MEDIA_DELIVERY_STRICT_ENV, "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     denied = [Path(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES]
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The Hermes home itself contains credentials (auth.json, .env) — only the
-    # cache subdirectories under it are explicitly allowlisted above.
-    denied.append(_HERMES_HOME / ".env")
-    denied.append(_HERMES_HOME / "auth.json")
-    denied.append(_HERMES_HOME / "credentials")
+    # The active Hermes profile and shared Hermes root both contain control
+    # files and credentials. Only cache subdirectories under them are
+    # explicitly allowlisted above.
+    for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
+        denied.append(hermes_root / ".env")
+        denied.append(hermes_root / "auth.json")
+        denied.append(hermes_root / "credentials")
+        denied.append(hermes_root / "config.yaml")
     return denied
 
 
@@ -972,10 +1006,22 @@ def _path_is_within(path: Path, root: Path) -> bool:
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
-    MEDIA tags and bare local paths in model output are untrusted text. Only
-    existing regular files under Hermes-managed media caches, or roots the
-    operator explicitly allowlists, may be uploaded as native attachments.
-    Symlinks are resolved before the containment check.
+    Default mode (single-user / private gateway): accept any existing regular
+    file that isn't under the credential / system-path denylist
+    (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
+    This matches the symmetry of inbound delivery — Telegram/Discord/Slack
+    will hand the agent any file the user uploads, and the agent can hand
+    back any file that isn't a credential.
+
+    Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
+    ``HERMES_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
+    Hermes-managed cache, under an operator-allowlisted root
+    (``HERMES_MEDIA_ALLOW_DIRS``), or be freshly produced inside the
+    configured recency window. Suitable for public-facing bots where
+    prompt injection from one user shouldn't be able to exfiltrate the
+    host's secrets to that same user.
+
+    Symlinks are resolved before any containment / denylist check.
     """
     if not path:
         return None
@@ -987,7 +1033,11 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not candidate:
         return None
 
-    expanded = Path(os.path.expanduser(candidate))
+    try:
+        expanded = Path(os.path.expanduser(candidate))
+    except (OSError, RuntimeError, ValueError):
+        # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
+        return None
     if not expanded.is_absolute():
         return None
 
@@ -999,6 +1049,8 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not resolved.is_file():
         return None
 
+    # Cache / operator allowlist is always honored — these are unconditionally
+    # trusted regardless of mode.
     for root in _media_delivery_allowed_roots():
         try:
             resolved_root = root.expanduser().resolve(strict=False)
@@ -1007,9 +1059,18 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         if _path_is_within(resolved, resolved_root):
             return str(resolved)
 
-    # Outside the cache/operator allowlist: fall back to recency-based trust
-    # for files the agent has just produced (e.g. ``pandoc -o /tmp/report.pdf``
-    # or ``write_file("/home/user/report.pdf", ...)``). System paths and
+    # Non-strict mode (default): accept anything not on the denylist.
+    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
+    # ~/.hermes/auth.json, etc. — so the obvious prompt-injection sites
+    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``) remain rejected.
+    if not _media_delivery_strict_mode():
+        if _path_under_denied_prefix(resolved):
+            return None
+        return str(resolved)
+
+    # Strict mode: fall back to recency-based trust for freshly-produced
+    # files (e.g. ``pandoc -o /tmp/report.pdf`` or
+    # ``write_file("/home/user/report.pdf", ...)``). System paths and
     # credential locations remain blocked even when "recent" — see
     # ``_MEDIA_DELIVERY_DENIED_PREFIXES`` for the denylist.
     window = _media_delivery_recency_seconds()
@@ -1018,6 +1079,17 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
             return str(resolved)
 
     return None
+
+
+# Neutralise control chars and the Unicode line separators (NEL, LS, PS) that
+# str.splitlines() / log aggregators treat as breaks, so a model-emitted path
+# can't forge a second log line. Truncated to keep records bounded.
+_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _log_safe_path(path: str) -> str:
+    """Return a single-line, length-bounded path for log output."""
+    return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
 SUPPORTED_DOCUMENT_TYPES = {
@@ -1061,6 +1133,77 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+
+# ---------------------------------------------------------------------------
+# Media-delivery extension allowlist — SINGLE SOURCE OF TRUTH
+#
+# Both extractors that turn response text into native attachments derive their
+# extension set from this tuple:
+#   * ``extract_media()``       — explicit ``MEDIA:<path>`` tags
+#   * ``extract_local_files()`` — bare absolute/home paths the agent mentions
+#
+# Historically these two carried independently-maintained extension lists.
+# ``extract_media`` had a narrow list (no .md/.json/.yaml/.xml/.html/...) while
+# ``extract_local_files`` had a broad one. Combined with the unconditional
+# ``MEDIA:\\s*\\S+`` cleanup at the dispatch sites, that mismatch created a
+# silent black hole: a ``MEDIA:/report.md`` tag failed the narrow extract_media
+# match, got stripped from the body by the loose cleanup regex, and was then
+# invisible to extract_local_files — the file was never delivered (issue
+# #34517). Keeping one list eliminates the drift; building the cleanup regexes
+# from the same set means a tag is only stripped when its extension is one we
+# can actually deliver, so an unknown-extension path survives in the body
+# instead of vanishing.
+#
+# Covers images (inline), video (inline where supported), audio (voice/audio),
+# documents/spreadsheets/presentations (send_document), archives, and rendered
+# web output. The dispatch partition (image vs video vs document) lives in
+# ``gateway/run.py``.
+# ---------------------------------------------------------------------------
+
+MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
+    # Images (embed inline)
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
+    # Video (embed inline where supported)
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    # Audio (delivered as voice/audio where supported)
+    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
+    # Documents (uploaded as file attachments)
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    # Spreadsheets / data
+    ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+    # Presentations
+    ".pptx", ".ppt", ".odp", ".key",
+    # Archives
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".apk", ".ipa",
+    # Web / rendered output
+    ".html", ".htm",
+)
+
+# Regex alternation fragment of bare extensions (no leading dot), e.g.
+# ``png|jpe?g|...``. ``jpe?g`` collapses jpg/jpeg into one branch. Sorted
+# longest-first so the alternation never matches a shorter ext as a prefix of
+# a longer one (e.g. ``.tar`` before ``.tar.gz`` components).
+_MEDIA_EXT_ALTERNATION = "|".join(
+    sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True)
+)
+
+# Anchored ``MEDIA:<path>`` cleanup pattern. Unlike the old loose
+# ``MEDIA:\\s*\\S+``, this only strips a tag whose path ends in a known
+# deliverable extension (optionally quoted/backticked). A ``MEDIA:`` tag with
+# an unknown extension is left in the text so it can still be picked up by the
+# bare-path detector (extract_local_files) downstream rather than silently
+# deleted. Shared by the non-streaming dispatch path and the streaming
+# consumer so both behave identically.
+# Path anchors: ``~/`` (Unix home-relative), ``/`` (Unix absolute),
+# ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
+MEDIA_TAG_CLEANUP_RE = re.compile(
+    r'''[`"']?MEDIA:\s*'''
+    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
+    r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
+    re.IGNORECASE,
+)
 
 
 def get_document_cache_dir() -> Path:
@@ -1516,6 +1659,10 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Optional hook (e.g. Telegram DM topic recovery) that rewrites
+        # ``event.source.thread_id`` before session keying. Returns the
+        # corrected thread_id or None to leave the source untouched.
+        self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1582,6 +1729,29 @@ class BasePlatformAdapter(ABC):
         Python ``len`` (e.g. Telegram counts UTF-16 code units).
         """
         return len
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Whether this adapter gates inbound access before dispatch.
+
+        Some adapters (WeCom, Weixin, Yuanbao, QQBot) implement a documented
+        config-driven access surface — ``dm_policy`` / ``group_policy`` /
+        ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
+        enforce it at intake: a message is dropped inside the adapter and never
+        reaches the gateway unless it already passed that policy.
+
+        The gateway's env-based allowlist check runs *after* the adapter, so for
+        these platforms a message arriving at ``_is_user_authorized`` has, by
+        definition, already been authorized by the adapter. Without this flag the
+        gateway would then deny it again (no env allowlist → default deny),
+        silently breaking ``dm_policy: open`` and config-only allowlists.
+
+        Adapters that own their access policy override this to return ``True``.
+        The gateway treats that as "already authorized at intake" and skips the
+        env-allowlist default-deny. Adapters that delegate access control to the
+        gateway leave it ``False`` (the default).
+        """
+        return False
 
     def supports_draft_streaming(
         self,
@@ -1770,6 +1940,40 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_topic_recovery_fn(
+        self,
+        fn: Optional[Callable[[Any], Optional[str]]],
+    ) -> None:
+        """Install a thread_id-recovery hook (Telegram DM topic mode).
+
+        The hook is called with ``event.source`` before session keying;
+        a non-None return value replaces ``source.thread_id``. Pass
+        ``None`` to clear the hook.
+        """
+        # Guard against subclasses that initialize via ``object.__new__`` in
+        # tests and never run ``BasePlatformAdapter.__init__``.
+        self._topic_recovery_fn = fn  # type: ignore[attr-defined]
+
+    def _apply_topic_recovery(self, event: MessageEvent) -> None:
+        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
+        recover = getattr(self, "_topic_recovery_fn", None)
+        if recover is None:
+            return
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+        try:
+            recovered = recover(source)
+        except Exception:
+            logger.debug("topic recovery hook failed", exc_info=True)
+            return
+        if recovered is None or str(recovered) == str(source.thread_id or ""):
+            return
+        try:
+            event.source = dataclasses.replace(source, thread_id=str(recovered))
+        except Exception:
+            logger.debug("topic recovery rewrite failed", exc_info=True)
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
@@ -2354,11 +2558,12 @@ class BasePlatformAdapter(ABC):
         """Drop unsafe MEDIA paths and normalize accepted paths."""
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
-            safe_path = validate_media_delivery_path(str(media_path))
+            raw = str(media_path)
+            safe_path = validate_media_delivery_path(raw)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+                logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
         return safe_media
 
     @staticmethod
@@ -2366,11 +2571,12 @@ class BasePlatformAdapter(ABC):
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths: List[str] = []
         for file_path in file_paths or []:
-            safe_path = validate_media_delivery_path(str(file_path))
+            raw = str(file_path)
+            safe_path = validate_media_delivery_path(raw)
             if safe_path:
                 safe_paths.append(safe_path)
             else:
-                logger.warning("Skipping unsafe local file path outside allowed roots")
+                logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
     @staticmethod
@@ -2411,17 +2617,22 @@ class BasePlatformAdapter(ABC):
         cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
-        )
+        # and quoted/backticked paths for LLM-formatted outputs. The extension
+        # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
+        # MEDIA_TAG_CLEANUP_RE) so it can never drift from extract_local_files.
+        media_pattern = MEDIA_TAG_CLEANUP_RE
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+                try:
+                    media.append((os.path.expanduser(path), has_voice_tag))
+                except (OSError, RuntimeError, ValueError):
+                    # Skip a crafted ~\x00 path rather than aborting extraction
+                    # and dropping every other attachment in the response.
+                    continue
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -2455,31 +2666,15 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = (
-            # Images (embed inline)
-            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.svg',
-            # Video (embed inline where supported)
-            '.mp4', '.mov', '.avi', '.mkv', '.webm',
-            # Audio (delivered as voice/audio where supported)
-            '.mp3', '.wav', '.ogg', '.m4a', '.flac',
-            # Documents (uploaded as file attachments)
-            '.pdf', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md',
-            # Spreadsheets / data
-            '.xlsx', '.xls', '.ods', '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml',
-            # Presentations
-            '.pptx', '.ppt', '.odp', '.key',
-            # Archives
-            '.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar',
-            # Web / rendered output
-            '.html', '.htm',
-        )
+        _LOCAL_MEDIA_EXTS = MEDIA_DELIVERY_EXTS
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
         #             and relative paths (./foo.png)
-        # (?:~/|/)    anchors to absolute or home-relative paths
+        # (?:~/|/)    anchors to absolute or home-relative Unix paths
+        # (?:[A-Za-z]:[/\\]) anchors to Windows drive-letter paths (#34632)
         path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
+            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
             re.IGNORECASE,
         )
 
@@ -3287,7 +3482,12 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
-        
+
+        # Rewrite ``event.source.thread_id`` via the installed recovery hook
+        # (Telegram DM topic mode) so the session key, guard checks, and
+        # downstream delivery all agree on the same lane.
+        self._apply_topic_recovery(event)
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
@@ -3540,6 +3740,7 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
             # request that their reply message auto-delete after a TTL (used
@@ -3588,16 +3789,25 @@ class BasePlatformAdapter(ABC):
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = text_content.replace("[[as_document]]", "").strip()
-                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                # Strip only MEDIA: tags whose path has a deliverable extension
+                # (shared MEDIA_TAG_CLEANUP_RE). A MEDIA: tag with an unknown
+                # extension is intentionally left in the body so extract_local_files
+                # below can still pick up the bare path — otherwise the file would
+                # be silently dropped (issue #34517).
+                text_content = MEDIA_TAG_CLEANUP_RE.sub("", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
-                # Auto-detect bare local file paths for native media delivery
-                # (helps small models that don't use MEDIA: syntax)
-                local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files)
-                if local_files:
-                    logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+                local_files = []
+                if not is_ephemeral_response:
+                    # Auto-detect bare local file paths for native media delivery
+                    # (helps small models that don't use MEDIA: syntax). Skip
+                    # system/command notices so config paths stay visible text
+                    # instead of becoming native uploads.
+                    local_files, text_content = self.extract_local_files(text_content)
+                    local_files = self.filter_local_delivery_paths(local_files)
+                    if local_files:
+                        logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has

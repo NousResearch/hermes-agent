@@ -5,7 +5,6 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -74,7 +73,6 @@ class TestHandleUpdateCommand:
             pass
 
         # Simpler approach — mock at method level using a wrapper
-        from gateway.run import GatewayRunner
         runner = _make_runner()
 
         with patch("gateway.run._hermes_home", tmp_path):
@@ -212,6 +210,7 @@ class TestHandleUpdateCommand:
         data = json.loads(pending_path.read_text())
         assert data["platform"] == "telegram"
         assert data["chat_id"] == "99999"
+        assert data["chat_type"] == "dm"
         assert "timestamp" in data
         assert not (hermes_home / ".update_exit_code").exists()
 
@@ -471,6 +470,7 @@ class TestSendUpdateNotification:
         pending = {
             "platform": "telegram",
             "chat_id": "67890",
+            "chat_type": "dm",
             "thread_id": "777",
             "user_id": "12345",
         }
@@ -484,7 +484,11 @@ class TestSendUpdateNotification:
         with patch("gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
 
-        assert mock_adapter.send.call_args.kwargs["metadata"] == {"thread_id": "777"}
+        assert mock_adapter.send.call_args.kwargs["metadata"] == {
+            "thread_id": "777",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "777",
+        }
 
     @pytest.mark.asyncio
     async def test_strips_ansi_codes(self, tmp_path):

@@ -17,8 +17,6 @@ import logging
 import re
 import sys
 import time
-import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -258,15 +256,6 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     policy handles cleanup.
     """
     _record_pending(urls, delay_seconds=delay_seconds)
-
-
-def _delete_hint(url: str) -> str:
-    """Return a one-liner delete command for the given paste URL."""
-    paste_id = _extract_paste_id(url)
-    if paste_id:
-        return f"hermes debug delete {url}"
-    # dpaste.com — no API delete, expires on its own.
-    return "(auto-expires per dpaste.com policy)"
 
 
 def _upload_paste_rs(content: str) -> str:

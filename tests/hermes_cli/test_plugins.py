@@ -1,7 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
 import logging
-import os
 import sys
 import types
 from pathlib import Path
@@ -13,17 +12,13 @@ import yaml
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
-    LoadedPlugin,
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
     resolve_plugin_command_result,
-    discover_plugins,
-    invoke_hook,
 )
 
 
@@ -1309,7 +1304,6 @@ class TestPluginCommandResultResolution:
         monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
         monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
 
-        import pytest
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sys
 import webbrowser
-from typing import Optional
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config
@@ -21,19 +20,6 @@ from hermes_cli.config import load_config
 DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"
 DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway"
-
-
-def _nous_portal_base_url() -> str:
-    """Resolve the Portal base URL from auth state or default."""
-    try:
-        from hermes_cli.auth import get_nous_auth_status
-        status = get_nous_auth_status() or {}
-        url = status.get("portal_base_url")
-        if isinstance(url, str) and url.strip():
-            return url.rstrip("/")
-    except Exception:
-        pass
-    return DEFAULT_PORTAL_URL
 
 
 def _cmd_status(args) -> int:

@@ -13,9 +13,7 @@ These tests assert both gates now pass a bot message through when
 DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
 """
 
-import os
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 

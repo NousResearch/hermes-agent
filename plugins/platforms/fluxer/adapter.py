@@ -910,7 +910,7 @@ class FluxerAdapter(BasePlatformAdapter):
     async def pin_message(self, chat_id: str, message_id: str) -> bool:
         """Pin a Fluxer message when the server supports message pins."""
         try:
-            await self._request("PUT", f"/channels/{_quote_id(chat_id)}/messages/pins/{_quote_id(message_id)}")
+            await self._request("PUT", f"/channels/{_quote_id(chat_id)}/pins/{_quote_id(message_id)}")
             return True
         except Exception as exc:
             logger.debug("Fluxer pin failed for message %s: %s", message_id, exc)
@@ -919,7 +919,7 @@ class FluxerAdapter(BasePlatformAdapter):
     async def unpin_message(self, chat_id: str, message_id: str) -> bool:
         """Unpin a Fluxer message when the server supports message pins."""
         try:
-            await self._request("DELETE", f"/channels/{_quote_id(chat_id)}/messages/pins/{_quote_id(message_id)}")
+            await self._request("DELETE", f"/channels/{_quote_id(chat_id)}/pins/{_quote_id(message_id)}")
             return True
         except Exception as exc:
             logger.debug("Fluxer unpin failed for message %s: %s", message_id, exc)

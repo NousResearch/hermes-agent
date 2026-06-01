@@ -367,7 +367,6 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     from tools.path_security import validate_within_dir
 
     scripts_dir = get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
     containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
     if containment_error:
         return (

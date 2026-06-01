@@ -396,6 +396,17 @@ class TestScriptPathContainment:
 class TestCronjobToolScriptValidation:
     """Test API-boundary validation of cron script paths in cronjob_tools."""
 
+    def test_validate_relative_script_does_not_create_scripts_dir(self, tmp_path, monkeypatch):
+        """Validation must not mutate HERMES_HOME before a create/update succeeds."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from tools.cronjob_tools import _validate_cron_script_path
+
+        assert _validate_cron_script_path("monitor.py") is None
+        assert not (hermes_home / "scripts").exists()
+
     def test_create_with_absolute_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob

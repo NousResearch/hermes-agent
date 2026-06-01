@@ -3,6 +3,7 @@ name: Deploy to Contabo
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:

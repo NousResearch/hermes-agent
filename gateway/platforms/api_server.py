@@ -4119,6 +4119,15 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Aliases under /api/cron/jobs/* to match the web UI Schedules client.
+            self._app.router.add_get("/api/cron/jobs", self._handle_list_jobs)
+            self._app.router.add_post("/api/cron/jobs", self._handle_create_job)
+            self._app.router.add_get("/api/cron/jobs/{job_id}", self._handle_get_job)
+            self._app.router.add_patch("/api/cron/jobs/{job_id}", self._handle_update_job)
+            self._app.router.add_delete("/api/cron/jobs/{job_id}", self._handle_delete_job)
+            self._app.router.add_post("/api/cron/jobs/{job_id}/pause", self._handle_pause_job)
+            self._app.router.add_post("/api/cron/jobs/{job_id}/resume", self._handle_resume_job)
+            self._app.router.add_post("/api/cron/jobs/{job_id}/trigger", self._handle_run_job)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)

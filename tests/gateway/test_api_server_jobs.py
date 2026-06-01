@@ -10,6 +10,7 @@ Covers:
 - Cron module unavailability (501 when _CRON_AVAILABLE is False)
 """
 
+import inspect
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -693,3 +694,78 @@ class TestCronUnavailable:
             with patch(f"{_MOD}._CRON_AVAILABLE", False):
                 resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/run")
                 assert resp.status == 501
+
+
+# ---------------------------------------------------------------------------
+# 19. test_cron_jobs_route_aliases — issue #36149
+# ---------------------------------------------------------------------------
+
+class TestCronJobsRouteAliases:
+    """The web UI Schedules client calls /api/cron/jobs/* (with /trigger).
+
+    The backend originally only exposed /api/jobs/* (with /run). Register
+    aliases on the same handlers so the UI works without breaking legacy
+    callers. See gateway issue #36149.
+    """
+
+    EXPECTED_ALIASES = [
+        ('add_get',    '"/api/cron/jobs"',                       '_handle_list_jobs'),
+        ('add_post',   '"/api/cron/jobs"',                       '_handle_create_job'),
+        ('add_get',    '"/api/cron/jobs/{job_id}"',              '_handle_get_job'),
+        ('add_patch',  '"/api/cron/jobs/{job_id}"',              '_handle_update_job'),
+        ('add_delete', '"/api/cron/jobs/{job_id}"',              '_handle_delete_job'),
+        ('add_post',   '"/api/cron/jobs/{job_id}/pause"',        '_handle_pause_job'),
+        ('add_post',   '"/api/cron/jobs/{job_id}/resume"',       '_handle_resume_job'),
+        ('add_post',   '"/api/cron/jobs/{job_id}/trigger"',      '_handle_run_job'),
+    ]
+
+    def test_cron_aliases_registered_in_connect(self):
+        """connect() registers /api/cron/jobs/* aliases on the same handlers."""
+        source = inspect.getsource(APIServerAdapter.connect)
+        for method, path, handler in self.EXPECTED_ALIASES:
+            needle = f'self._app.router.{method}({path}, self.{handler})'
+            assert needle in source, f"Missing alias registration: {needle}"
+
+    def test_legacy_jobs_routes_still_registered(self):
+        """Legacy /api/jobs/* routes must remain registered (no breaking change)."""
+        source = inspect.getsource(APIServerAdapter.connect)
+        legacy = [
+            'self._app.router.add_get("/api/jobs", self._handle_list_jobs)',
+            'self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)',
+        ]
+        for needle in legacy:
+            assert needle in source, f"Legacy route removed: {needle}"
+
+    @pytest.mark.asyncio
+    async def test_cron_alias_list_jobs_routes_to_handler(self, adapter):
+        """Live check: GET /api/cron/jobs hits _handle_list_jobs."""
+        app = web.Application(middlewares=[cors_middleware])
+        app["api_server_adapter"] = adapter
+        app.router.add_get("/api/cron/jobs", adapter._handle_list_jobs)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_list", return_value=[SAMPLE_JOB]
+            ):
+                resp = await cli.get("/api/cron/jobs")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["jobs"] == [SAMPLE_JOB]
+
+    @pytest.mark.asyncio
+    async def test_cron_alias_trigger_routes_to_run_handler(self, adapter):
+        """Live check: POST /api/cron/jobs/{id}/trigger hits _handle_run_job."""
+        app = web.Application(middlewares=[cors_middleware])
+        app["api_server_adapter"] = adapter
+        app.router.add_post(
+            "/api/cron/jobs/{job_id}/trigger", adapter._handle_run_job
+        )
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ):
+                resp = await cli.post(
+                    f"/api/cron/jobs/{VALID_JOB_ID}/trigger"
+                )
+                assert resp.status == 200
+                mock_trigger.assert_called_once_with(VALID_JOB_ID)

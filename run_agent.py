@@ -4501,6 +4501,7 @@ class AIAgent:
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
+            profile=function_args.get("profile"),
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),

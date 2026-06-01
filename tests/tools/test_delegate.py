@@ -67,6 +67,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
+        self.assertIn("profile", props)
         self.assertIn("toolsets", props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
@@ -140,6 +141,53 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+
+class TestChildProfileIdentityPrompt(unittest.TestCase):
+    def test_profile_appends_identity_to_child_prompt(self):
+        parent = _make_mock_parent(depth=0)
+        with (
+            patch("tools.delegate_tool._build_profile_identity_prompt", return_value="GLOBAL-SOUL\n\nPROFILE-SOUL"),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Do work",
+                context="ctx",
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                profile="engineer",
+            )
+
+        prompt = MockAgent.call_args.kwargs.get("ephemeral_system_prompt", "")
+        self.assertIn("GLOBAL-SOUL", prompt)
+        self.assertIn("PROFILE-SOUL", prompt)
+        self.assertIn("YOUR TASK:\nDo work", prompt)
+
+    def test_omitted_profile_preserves_original_child_prompt_shape(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Do work",
+                context="ctx",
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        prompt = MockAgent.call_args.kwargs.get("ephemeral_system_prompt", "")
+        self.assertTrue(
+            prompt.startswith("You are a focused subagent working on a specific delegated task.")
+        )
+        self.assertNotIn("GLOBAL-SOUL", prompt)
 
 
 class TestStripBlockedTools(unittest.TestCase):

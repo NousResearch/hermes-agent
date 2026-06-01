@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
@@ -31,6 +32,8 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from hermes_cli.profiles import get_profile_dir, normalize_profile_name
+from hermes_constants import get_default_hermes_root
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -642,6 +645,41 @@ def _build_child_system_prompt(
     return "\n".join(parts)
 
 
+def _build_profile_identity_prompt(profile: str) -> str:
+    """Build delegated identity text from global SOUL + profile contract SOUL."""
+
+    normalized_profile = normalize_profile_name(profile)
+    root_home = get_default_hermes_root()
+    global_soul_path = root_home / "SOUL.md"
+
+    if not global_soul_path.exists():
+        raise ValueError(f"Global SOUL.md not found: {global_soul_path}")
+
+    global_soul = global_soul_path.read_text(encoding="utf-8").strip()
+    if not global_soul:
+        raise ValueError(f"Global SOUL.md is empty: {global_soul_path}")
+
+    if normalized_profile == "default":
+        return global_soul
+
+    profile_dir = get_profile_dir(normalized_profile)
+    profile_soul_path = Path(profile_dir) / "SOUL.md"
+    if not profile_soul_path.exists():
+        raise ValueError(
+            f"Profile SOUL.md not found for profile '{normalized_profile}': "
+            f"{profile_soul_path}"
+        )
+
+    profile_soul = profile_soul_path.read_text(encoding="utf-8").strip()
+    if not profile_soul:
+        raise ValueError(
+            f"Profile SOUL.md is empty for profile '{normalized_profile}': "
+            f"{profile_soul_path}"
+        )
+
+    return f"{global_soul}\n\n{profile_soul}"
+
+
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts.
 
@@ -888,6 +926,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    profile: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -968,7 +1007,7 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(
+    task_prompt = _build_child_system_prompt(
         goal,
         context,
         workspace_path=workspace_hint,
@@ -976,6 +1015,11 @@ def _build_child_agent(
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
     )
+    if profile:
+        identity_prompt = _build_profile_identity_prompt(profile)
+        child_prompt = f"{identity_prompt}\n\n{task_prompt}"
+    else:
+        child_prompt = task_prompt
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -1924,6 +1968,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2058,29 +2103,33 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
-            child = _build_child_agent(
-                task_index=i,
-                goal=t["goal"],
-                context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
-                role=effective_role,
-            )
+            try:
+                child = _build_child_agent(
+                    task_index=i,
+                    goal=t["goal"],
+                    context=t.get("context"),
+                    toolsets=t.get("toolsets") or toolsets,
+                    model=creds["model"],
+                    max_iterations=effective_max_iter,
+                    task_count=n_tasks,
+                    parent_agent=parent_agent,
+                    override_provider=creds["provider"],
+                    override_base_url=creds["base_url"],
+                    override_api_key=creds["api_key"],
+                    override_api_mode=creds["api_mode"],
+                    override_acp_command=t.get("acp_command")
+                    or acp_command
+                    or creds.get("command"),
+                    override_acp_args=(
+                        task_acp_args
+                        if task_acp_args is not None
+                        else (acp_args if acp_args is not None else creds.get("args"))
+                    ),
+                    role=effective_role,
+                    profile=profile,
+                )
+            except ValueError as exc:
+                return tool_error(str(exc))
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
@@ -2691,6 +2740,14 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Optional Hermes profile name for delegated child identity. "
+                    "When set, child prompt prepends global root SOUL.md plus "
+                    "that profile's SOUL.md contract (profile=default uses root SOUL.md)."
+                ),
+            },
             "toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -2787,6 +2844,7 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
+        profile=args.get("profile"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),

@@ -74,6 +74,7 @@ from agent.process_bootstrap import (
     _SafeWriter,  # noqa: F401  # re-exported for tests that `from run_agent import _SafeWriter`
     _get_proxy_for_base_url,
 )
+from agent.hitl_harness import HITLHarness, HITLHarnessConfig
 from agent.iteration_budget import IterationBudget
 
 
@@ -381,6 +382,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        hitl_config: Optional[Dict[str, Any]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -451,12 +453,24 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            hitl_config=hitl_config,
         )
 
-    def _get_session_db_for_recall(self):
-        """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
 
-        Most frontends pass ``session_db`` into ``AIAgent`` explicitly, but recall
+        # === HITL Harness Integration (Phase 1/2) ===
+        self.hitl_harness = None
+        if hitl_config and isinstance(hitl_config, dict) and hitl_config.get("enabled", False):
+            try:
+                cfg = HITLHarnessConfig.from_agent_config({"hitl": hitl_config})
+                self.hitl_harness = HITLHarness(self, cfg)
+                logger.info("HITL harness initialized (dual scoring + deepeval + iterations.jsonl enabled)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize HITL harness: {e}")
+                self.hitl_harness = None
+
+    def _get_session_db_for_recall(self):
+
+        """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
         is important enough that a missing constructor argument should degrade by
         opening the default state DB instead of making the advertised
         ``session_search`` tool unusable.

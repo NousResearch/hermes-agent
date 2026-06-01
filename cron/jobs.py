@@ -546,6 +546,7 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    mode: Optional[str] = None,  # Phase 3: converge | continuous | supervised
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -684,6 +685,7 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
+        "mode": mode,  # Phase 3: converge | continuous | supervised
     }
 
     jobs = load_jobs()

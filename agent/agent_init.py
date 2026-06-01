@@ -200,6 +200,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    hitl_config: Optional[Dict[str, Any]] = None,
 ):
     """
     Initialize the AI Agent.
@@ -1470,7 +1471,7 @@ def init_agent(
     agent.compression_enabled = compression_enabled
 
     # Reject models whose context window is below the minimum required
-    # for reliable tool-calling workflows (64K tokens).
+    # for reliable tool-calling workflows (25K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
@@ -1652,6 +1653,27 @@ def init_agent(
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 
+    # ── HITL Agent Harness ──
+    # Initialize the 5-component harness (fitness wizard, state locking,
+    # multi-agent verification, layered observability, graduated autonomy).
+    # Phase 1/2: Supports explicit hitl_config parameter + auto-load from config.
+    agent.hitl_harness = None
+    if hitl_config is None:
+        try:
+            from hermes_cli.config import load_config
+            hitl_config = load_config().get("hitl", {"enabled": False})
+        except Exception:
+            hitl_config = {"enabled": False}
+
+    if isinstance(hitl_config, dict) and hitl_config.get("enabled", False):
+        try:
+            from agent.hitl_harness import HITLHarness, HITLHarnessConfig
+            _hitl_cfg = HITLHarnessConfig.from_agent_config({"hitl": hitl_config})
+            agent.hitl_harness = HITLHarness(agent, config=_hitl_cfg)
+            logger.info("HITL harness initialized (dual scoring + deepeval + iterations.jsonl enabled)")
+        except Exception as _hitl_err:
+            logger.warning(f"Failed to initialize HITL harness: {_hitl_err}")
+            agent.hitl_harness = None
 
 
 __all__ = ["init_agent"]

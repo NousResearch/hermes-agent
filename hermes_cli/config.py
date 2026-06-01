@@ -2150,8 +2150,27 @@ DEFAULT_CONFIG = {
     "paste_collapse_char_threshold": 2000,
 
 
+    # Human-in-the-Loop (HITL) Agent Harness
+    # Implements the 5-component reference architecture:
+    # Fitness Function Wizard, State Locking, Multi-Agent Verification,
+    # Layered Observability, and Graduated Autonomy Gate.
+    "hitl": {
+        "enabled": True,
+        "autonomy_level": 1,
+        "state_locking": True,
+        "multi_agent_verification": True,
+        "observability_layer": 1,
+        "fitness_wizard": True,
+        "iterations_log_path": "~/.hermes/iterations.jsonl",
+        "max_iterations_without_improvement": 5,
+        "confidence_threshold_high": 0.80,
+        "confidence_threshold_low": 0.40,
+        "dual_scoring": True,
+        "include_deepeval": True,
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 25,
+    "_config_version": 26,
 }
 
 # =============================================================================

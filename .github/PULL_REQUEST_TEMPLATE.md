@@ -36,6 +36,37 @@ Fixes #
 2. 
 3. 
 
+## Risk, Complexity, Review, and CI Classification
+
+- Risk class: R0/R1/R2/R3/R4/R5
+- Complexity class: C0/C1/C2/C3/C4/C5
+- Impacted surfaces:
+- RuntimePayloadContract present: yes/no
+- Blocker exemption, if any:
+- Secondary review required: yes/no
+- Adversarial review required: yes/no
+- Opposite-provider adversarial required: yes/no
+- Human/protected review required: yes/no
+- Founder review required: yes/no
+- Required CI lanes:
+- Skipped CI lanes and rationale:
+- Token class: S/M/L/XL
+- Expected state change:
+- Stop condition:
+
+## RuntimePayloadContract
+
+<!-- Required for runtime/protected surfaces. Non-runtime lanes may leave this blank when a valid blocker exemption applies. -->
+
+- user_or_operator_visible_outcome:
+- runtime_surface_touched:
+- product_or_platform_capability_advanced:
+- why_this_is_not_only_docs_or_scaffolding:
+- tests_that_prove_runtime_behavior:
+- acceptance_gate:
+- rollback:
+- protected_non_claims:
+
 ## Checklist
 
 <!-- Complete these before requesting review. -->

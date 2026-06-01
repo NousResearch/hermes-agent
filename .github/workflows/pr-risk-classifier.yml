@@ -1,0 +1,66 @@
+name: PR Risk Classifier
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  classify:
+    name: Classify PR risk, reviews, and CI lanes
+    runs-on: ubuntu-latest
+    outputs:
+      risk_class: ${{ steps.read.outputs.risk_class }}
+      complexity_class: ${{ steps.read.outputs.complexity_class }}
+      token_class: ${{ steps.read.outputs.token_class }}
+      allowed_to_mark_ready: ${{ steps.read.outputs.allowed_to_mark_ready }}
+      required_ci_lanes: ${{ steps.read.outputs.required_ci_lanes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Write PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" > pr-body.md
+
+      - name: Classify
+        id: classify
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python scripts/ci_risk_classifier.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --pr-body pr-body.md \
+            --output-dir .
+
+      - name: Read outputs
+        id: read
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          data = json.loads(Path('ci-classification.json').read_text(encoding='utf-8'))
+          for key in ('risk_class', 'complexity_class', 'token_class', 'allowed_to_mark_ready'):
+              print(f"{key}={str(data[key]).lower() if isinstance(data[key], bool) else data[key]}")
+          print('required_ci_lanes=' + ','.join(data['required_ci_lanes']))
+          PY
+
+      - name: Upload classification artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ci-classification
+          path: |
+            ci-classification.json
+            ci-classification.md
+          if-no-files-found: error

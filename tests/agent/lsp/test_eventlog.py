@@ -126,7 +126,10 @@ def test_no_server_configured_warns_once(caplog_lsp):
 def test_timeout_warns_every_call(caplog_lsp):
     for _ in range(3):
         eventlog.log_timeout("pyright", "/x.py")
-    warns = [r for r in caplog_lsp.records if r.levelno == logging.WARNING]
+    warns = [
+        r for r in caplog_lsp.records
+        if r.levelno == logging.WARNING and r.name == "hermes.lint.lsp"
+    ]
     assert len(warns) == 3
 
 

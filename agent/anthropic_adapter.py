@@ -813,6 +813,15 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         return None
 
     try:
+        home_is_patched = Path.home() != Path(os.path.expanduser("~"))
+        run_is_mocked = getattr(subprocess.run, "__module__", "") == "unittest.mock"
+        if home_is_patched and not run_is_mocked:
+            logger.debug("Keychain: skipping real host keychain while Path.home() is patched")
+            return None
+    except Exception:
+        return None
+
+    try:
         # Read the "Claude Code-credentials" generic password entry
         result = subprocess.run(
             ["security", "find-generic-password",
@@ -831,12 +840,14 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         return None
 
     raw = result.stdout.strip()
+    if not isinstance(raw, (str, bytes, bytearray)):
+        return None
     if not raw:
         return None
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -868,7 +879,11 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
+    # Try macOS Keychain first (covers Claude Code >=2.1.114).  In normal
+    # runtime this preserves Claude Code's newest credential source.  Tests and
+    # isolated runs often monkeypatch Path.home() to a temp directory; in that
+    # case _read_claude_code_credentials_from_keychain() skips the real host
+    # Keychain unless subprocess.run is explicitly mocked by the test.
     kc_creds = _read_claude_code_credentials_from_keychain()
     if kc_creds:
         return kc_creds
@@ -1111,11 +1126,12 @@ def resolve_anthropic_token() -> Optional[str]:
 
     Returns the token string or None.
     """
-    creds = read_claude_code_credentials()
+    creds: Optional[Dict[str, Any]] = None
 
     # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
+        creds = read_claude_code_credentials()
         preferred = _prefer_refreshable_claude_code_token(token, creds)
         if preferred:
             return preferred
@@ -1124,12 +1140,14 @@ def resolve_anthropic_token() -> Optional[str]:
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
+        creds = read_claude_code_credentials()
         preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
         if preferred:
             return preferred
         return cc_token
 
-    # 3. Claude Code credential file
+    # 3. Claude Code credential file / Keychain
+    creds = read_claude_code_credentials()
     resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
     if resolved_claude_token:
         return resolved_claude_token

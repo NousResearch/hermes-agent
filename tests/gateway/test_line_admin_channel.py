@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _line = load_plugin_adapter("line")
@@ -10,6 +14,12 @@ LineAdapter = _line.LineAdapter
 check_requirements = _line.check_requirements
 check_requirements_admin = getattr(_line, "check_requirements_admin", lambda: "missing")
 register = _line.register
+verify_line_signature = _line.verify_line_signature
+
+
+def _line_signature(body: bytes, secret: str) -> str:
+    digest = hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode()
 
 
 def test_customer_defaults_remain_unchanged_without_admin_env(monkeypatch):
@@ -103,3 +113,43 @@ def test_admin_requirements_gate_needs_token_and_secret(monkeypatch):
 
     monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
     assert check_requirements_admin() is True
+
+
+def test_hmac_signatures_are_isolated_by_channel_secret(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    body = b'{"events": []}'
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "customer-token")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "customer-secret")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_SECRET", "admin-secret")
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        customer = LineAdapter(PlatformConfig(enabled=True))
+        admin = LineAdapter(
+            PlatformConfig(enabled=True),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    customer_sig = _line_signature(body, "customer-secret")
+    admin_sig = _line_signature(body, "admin-secret")
+
+    assert verify_line_signature(body, customer_sig, customer.channel_secret)
+    assert not verify_line_signature(body, admin_sig, customer.channel_secret)
+    assert verify_line_signature(body, admin_sig, admin.channel_secret)
+    assert not verify_line_signature(body, customer_sig, admin.channel_secret)

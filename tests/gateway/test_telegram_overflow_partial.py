@@ -134,7 +134,7 @@ async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
 
     adapter.send.assert_awaited_once()
     assert adapter.send.await_args.kwargs["content"] == "world"
-    assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "77"}
+    assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "77", "notify": True}
     adapter.delete_message.assert_not_awaited()
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True

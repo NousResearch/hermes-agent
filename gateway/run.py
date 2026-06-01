@@ -413,6 +413,57 @@ def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_mess
     return None
 
 
+def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
+    """Return True when display.platforms.<platform> explicitly sets setting."""
+    display = user_config.get("display") if isinstance(user_config, dict) else None
+    if not isinstance(display, dict):
+        return False
+    platforms = display.get("platforms")
+    if not isinstance(platforms, dict):
+        return False
+    platform_cfg = platforms.get(platform_key)
+    return isinstance(platform_cfg, dict) and setting in platform_cfg
+
+
+def _resolve_gateway_display_bool(
+    user_config: dict,
+    platform_key: str,
+    setting: str,
+    *,
+    default: bool = False,
+    platform: Any = None,
+    require_platform_override_for: set[Any] | None = None,
+) -> bool:
+    """Resolve a boolean display setting with optional platform-only opt-in.
+
+    Some display features expose assistant scratch text rather than deliberate
+    user-facing output.  For high-noise threaded chat surfaces such as
+    Mattermost, a global opt-in is too broad: they must be enabled with an
+    explicit display.platforms.<platform>.<setting> override.
+    """
+    current_platform = _gateway_platform_value(platform or platform_key)
+    platform_only = {
+        _gateway_platform_value(candidate)
+        for candidate in (require_platform_override_for or set())
+    }
+    if (
+        current_platform in platform_only
+        and not _has_platform_display_override(user_config, platform_key, setting)
+    ):
+        return False
+
+    from gateway.display_config import resolve_display_setting
+
+    value = resolve_display_setting(user_config, platform_key, setting, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "on"}
+    if value is None:
+        return bool(default)
+    return bool(value)
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -8989,17 +9040,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source, session_entry, reason="agent-result-compression",
                 )
 
-            # Prepend reasoning/thinking if display is enabled (per-platform)
+            # Prepend reasoning/thinking if display is enabled (per-platform).
+            # Mattermost requires explicit per-platform opt-in because this is
+            # scratch text, not ordinary final-answer content.
             try:
-                from gateway.display_config import resolve_display_setting as _rds
-                _show_reasoning_effective = _rds(
+                _show_reasoning_effective = _resolve_gateway_display_bool(
                     _load_gateway_config(),
                     _platform_config_key(source.platform),
                     "show_reasoning",
-                    getattr(self, "_show_reasoning", False),
+                    default=bool(getattr(self, "_show_reasoning", False)),
+                    platform=source.platform,
+                    require_platform_override_for={Platform.MATTERMOST},
                 )
             except Exception:
-                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+                _show_reasoning_effective = (
+                    False
+                    if source.platform == Platform.MATTERMOST
+                    else getattr(self, "_show_reasoning", False)
+                )
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -13635,18 +13693,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and bool(
-                resolve_display_setting(
-                    user_config,
-                    platform_key,
-                    "interim_assistant_messages",
-                    True,
-                )
+            and _resolve_gateway_display_bool(
+                user_config,
+                platform_key,
+                "interim_assistant_messages",
+                default=True,
+                platform=source.platform,
+                require_platform_override_for={Platform.MATTERMOST},
             )
         )
-        
+        # thinking_progress is independent — if enabled, we need the progress
+        # queue even when tool_progress is off (thinking relay uses same infra).
+        # Mattermost requires a per-platform opt-in: global scratch-text display
+        # is too easy to leak into busy public threads.
+        _thinking_enabled = _resolve_gateway_display_bool(
+            user_config,
+            platform_key,
+            "thinking_progress",
+            default=False,
+            platform=source.platform,
+            require_platform_override_for={Platform.MATTERMOST},
+        )
+        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+
+
         # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if tool_progress_enabled else None
+        progress_queue = queue.Queue() if needs_progress_queue else None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -13752,6 +13824,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
                 return
 
+            # "_thinking" is assistant scratch text between tool calls.  It
+            # is never ordinary tool progress: only relay it when the platform
+            # explicitly opted into thinking_progress.  Handle both legacy
+            # callback shapes: ("_thinking", text) and
+            # ("reasoning.available", "_thinking", text, ...).
+            if event_type == "_thinking" or tool_name == "_thinking":
+                if not _thinking_enabled:
+                    return
+                thinking_text = preview if tool_name == "_thinking" else tool_name
+                msg = f"💬 {thinking_text}" if thinking_text else None
+                if msg:
+                    progress_queue.put(msg)
+                return
+
+            # If tool_progress is off, only _thinking passes through (above).
+            # Regular tool calls are suppressed.
+            if not tool_progress_enabled:
+                return
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
@@ -14783,6 +14873,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             agent.clarify_callback = _clarify_callback_sync
 
+            # Show assistant thinking between tool calls — independent of
+            # tool_progress mode. Mattermost needs an explicit per-platform
+            # opt-in so global scratch-text display does not leak into threads.
+            agent.thinking_progress = _thinking_enabled
             # Store agent reference for interrupt support
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging

@@ -3090,7 +3090,19 @@ def generate_launchd_plist() -> str:
         <key>SuccessfulExit</key>
         <false/>
     </dict>
-    
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>16384</integer>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     
@@ -3114,12 +3126,19 @@ def launchd_plist_is_current() -> bool:
     ) == _normalize_launchd_plist_for_comparison(expected)
 
 
-def refresh_launchd_plist_if_needed() -> bool:
+def refresh_launchd_plist_if_needed(restart: bool = True) -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
     ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
     bootstrap to make launchd re-read the updated plist immediately.
+
+    ``restart=False`` is for callers running *inside* the supervised gateway
+    process (``run_gateway``): a ``bootout`` there would SIGTERM this very process
+    mid-startup, and if it died before the ``bootstrap`` line ran the job would be
+    left unloaded. So we mirror systemd's ``daemon-reload`` semantics — refresh the
+    on-disk definition and let the next restart (reboot, ``hermes update``, manual
+    ``hermes gateway restart``) apply it — instead of self-terminating.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
@@ -3127,6 +3146,9 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
+    if not restart:
+        print("↻ Updated gateway launchd plist on disk; new limits apply on next restart")
+        return True
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(
         ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
@@ -3502,6 +3524,17 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     if supports_systemd_services():
         try:
             refresh_systemd_unit_if_needed(system=False)
+        except Exception:
+            pass  # best-effort; don't block gateway startup
+    elif is_macos():
+        # Same rationale for launchd: an exit-75/`/restart` respawn skips
+        # `hermes gateway restart`, so without this the fd-limit bump (and any
+        # future plist change) wouldn't reach existing installs until a manual
+        # restart or `hermes update`. restart=False: we are the supervised
+        # process — refresh the plist on disk (systemd-parity) but don't
+        # bootout/bootstrap ourselves mid-startup.
+        try:
+            refresh_launchd_plist_if_needed(restart=False)
         except Exception:
             pass  # best-effort; don't block gateway startup
 

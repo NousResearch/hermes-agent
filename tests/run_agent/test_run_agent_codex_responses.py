@@ -174,6 +174,25 @@ class _FakeResponsesStream:
         return self._final_response
 
 
+class _FakeResponsesStreamRaisesDuringIteration:
+    def __init__(self, events, error):
+        self._events = list(events)
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        yield from self._events
+        raise self._error
+
+    def get_final_response(self):
+        raise AssertionError("get_final_response should not be reached")
+
+
 class _FakeCreateStream:
     def __init__(self, events):
         self._events = list(events)
@@ -443,6 +462,29 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert response.output[0].content[0].text == "create fallback ok"
+
+
+def test_run_codex_stream_recovers_when_completed_response_output_is_null(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStreamRaisesDuringIteration(
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="null-output ok"),
+            ],
+            TypeError("'NoneType' object is not iterable"),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "completed"
+    assert response.output[0].content[0].text == "null-output ok"
 
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):

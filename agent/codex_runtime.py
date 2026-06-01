@@ -281,6 +281,44 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            # chatgpt.com/backend-api/codex can emit a terminal response whose
+            # `output` field is null. The OpenAI SDK's stream parser crashes
+            # while parsing that event before stream.get_final_response() is
+            # reachable, even though text deltas/output items may already have
+            # streamed. Recover from the data we collected in the event loop.
+            if "'NoneType' object is not iterable" in str(exc):
+                if collected_output_items:
+                    logger.warning(
+                        "Codex Responses stream parser saw output=null; "
+                        "recovering %d collected output item(s). %s",
+                        len(collected_output_items),
+                        agent._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        status="completed",
+                        output=list(collected_output_items),
+                        usage=None,
+                    )
+                if agent._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    logger.warning(
+                        "Codex Responses stream parser saw output=null; "
+                        "recovering %d streamed text chars. %s",
+                        len(assembled),
+                        agent._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        status="completed",
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        usage=None,
+                    )
+            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text

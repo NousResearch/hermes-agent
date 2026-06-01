@@ -83,6 +83,15 @@ def test_build_command_includes_model_provider_toolsets():
     ]
 
 
+def test_materialize_case_marker_replaces_marker_with_nonce():
+    case = canary.CanaryCase(name="unit", marker="OK", prompt="reply exactly OK")
+
+    materialized = canary.materialize_case_marker(case, "run-1 case")
+
+    assert materialized.marker == "OK_run_1_case"
+    assert materialized.prompt == "reply exactly OK_run_1_case"
+
+
 def test_run_case_uses_runner_and_sanitizes_prompt_from_logged_command(tmp_path):
     case = canary.CanaryCase(name="unit", marker="OK", prompt="private prompt")
 
@@ -110,11 +119,37 @@ def test_run_case_uses_runner_and_sanitizes_prompt_from_logged_command(tmp_path)
     assert record["stdout"] == "OK\n"
 
 
+def test_run_case_uses_nonce_marker(tmp_path):
+    case = canary.CanaryCase(name="unit", marker="OK", prompt="reply OK")
+
+    def runner(cmd, cwd, timeout_s):
+        assert cmd[-1] == "reply OK_cycle_1"
+        return canary.CommandResult(returncode=0, stdout="OK_cycle_1\n", stderr="", elapsed_s=0.25)
+
+    record = canary.run_case(
+        case,
+        cwd=tmp_path,
+        hermes_bin="hermes",
+        model="dflash",
+        provider="taro",
+        toolsets="terminal,file",
+        timeout_s=5.0,
+        strict_marker=True,
+        marker_nonce="cycle-1",
+        runner=runner,
+    )
+
+    assert record["ok"] is True
+    assert record["marker"] == "OK_cycle_1"
+    assert record["marker_base"] == "OK"
+
+
 def test_run_subprocess_timeout_requests_thread_dump(tmp_path):
     code = (
         "import faulthandler, signal, sys, time; "
         "faulthandler.enable(file=sys.stderr, all_threads=True); "
-        "faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True, chain=False); "
+        "sig=getattr(signal, 'SIGUSR1', None); "
+        "sig is not None and faulthandler.register(sig, file=sys.stderr, all_threads=True, chain=False); "
         "time.sleep(30)"
     )
 

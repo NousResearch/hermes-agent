@@ -3290,6 +3290,15 @@ class HermesCLI:
         self._voice_recorder = None
         self._voice_recording = False
         self._voice_processing = False
+
+        # Ultracode session mode (à la Claude Code's /effort ultracode): combines
+        # xhigh reasoning effort with a standing instruction to decompose
+        # substantive multi-step tasks and fan them out across parallel
+        # subagents via delegate_task. Persists for the session; cleared on /new.
+        # _ultracode_saved_reasoning holds the pre-toggle reasoning_config so OFF
+        # can restore the user's prior effort level exactly.
+        self._ultracode_mode = False
+        self._ultracode_saved_reasoning = None
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
@@ -6464,10 +6473,27 @@ class HermesCLI:
         self._resumed = False
         _sync_process_session_id(self.session_id)
 
+        # Ultracode is a session-scoped mode (mirrors Claude Code's /effort
+        # ultracode): a fresh session resets it to the pre-ultracode reasoning
+        # level. Without this, /new would silently leave reasoning pinned at
+        # xhigh with the standing directive still injecting. Mirrors /ultracode off.
+        _ultracode_reset = getattr(self, "_ultracode_mode", False)
+        if _ultracode_reset:
+            self.reasoning_config = self._ultracode_saved_reasoning
+            self._ultracode_saved_reasoning = None
+            self._ultracode_mode = False
+
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reset_session_state()
+            if _ultracode_reset:
+                # Sync the reused agent's live reasoning_config with the restored
+                # session level (new_session reuses the agent, doesn't re-init).
+                try:
+                    setattr(self.agent, "reasoning_config", self.reasoning_config)
+                except Exception:
+                    pass
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
@@ -8637,6 +8663,8 @@ class HermesCLI:
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
+        elif canonical == "ultracode":
+            self._handle_ultracode_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
@@ -9863,6 +9891,83 @@ class HermesCLI:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    # Standing instruction injected each turn while ultracode mode is on. Kept
+    # API-call-local (prepended to the message sent to the model, never written
+    # to conversation history) — same pattern as the voice-mode prefix.
+    _ULTRACODE_DIRECTIVE = (
+        "[Ultracode mode is ON. For any substantive, multi-step task this turn, "
+        "decompose it and fan the independent parts out across parallel subagents "
+        "via delegate_task (batch mode) instead of doing everything inline. Reserve "
+        "inline work for trivial or inherently-sequential steps. Reason at maximum "
+        "effort before acting. Routine one-step requests need no delegation.]"
+    )
+
+    def _handle_ultracode_command(self, cmd: str):
+        """Handle /ultracode — toggle the ultracode session mode.
+
+        Ultracode (à la Claude Code's ``/effort ultracode``) is a session mode
+        that combines ``xhigh`` reasoning effort with a standing instruction to
+        decompose substantive tasks and fan them out across parallel subagents.
+        It is session-scoped (NOT saved to config) and resets on /new.
+
+        Usage:
+            /ultracode            Toggle on/off
+            /ultracode on         Enable
+            /ultracode off        Disable
+            /ultracode status     Show current state
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        def _current_level() -> str:
+            rc = self.reasoning_config
+            if rc is None:
+                return "medium (default)"
+            if rc.get("enabled") is False:
+                return "none (disabled)"
+            return rc.get("effort", "medium")
+
+        if arg == "status":
+            state = "on ✓" if self._ultracode_mode else "off"
+            _cprint(f"  {_ACCENT}Ultracode mode: {state}{_RST}")
+            _cprint(f"  {_DIM}Reasoning effort: {_current_level()}{_RST}")
+            if not self._ultracode_mode:
+                _cprint(f"  {_DIM}Usage: /ultracode [on|off|status]{_RST}")
+            return
+
+        # Resolve the desired target state.
+        if arg in {"on", "off"}:
+            want_on = arg == "on"
+        elif arg == "":
+            want_on = not self._ultracode_mode  # bare toggle
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /ultracode [on|off|status]{_RST}")
+            return
+
+        if want_on == self._ultracode_mode:
+            _cprint(f"  {_DIM}Ultracode already {'on' if want_on else 'off'}.{_RST}")
+            return
+
+        if want_on:
+            # Snapshot the user's current effort so OFF can restore it exactly,
+            # then force xhigh for the session. Session-only — not saved to config.
+            self._ultracode_saved_reasoning = self.reasoning_config
+            self.reasoning_config = {"enabled": True, "effort": "xhigh"}
+            self._ultracode_mode = True
+            self.agent = None  # Force agent re-init with new reasoning config
+            _cprint(f"  {_ACCENT}✓ Ultracode mode: ON{_RST}")
+            _cprint(f"  {_DIM}  Reasoning → xhigh; substantive tasks auto-decompose to parallel subagents.{_RST}")
+            _cprint(f"  {_DIM}  Session-only — resets on /new. Turn off with /ultracode off.{_RST}")
+        else:
+            # Restore the pre-ultracode effort level.
+            self.reasoning_config = self._ultracode_saved_reasoning
+            self._ultracode_saved_reasoning = None
+            self._ultracode_mode = False
+            self.agent = None  # Force agent re-init with restored reasoning config
+            _cprint(f"  {_ACCENT}✓ Ultracode mode: OFF{_RST}")
+            _cprint(f"  {_DIM}  Reasoning restored to: {_current_level()}{_RST}")
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.
@@ -11882,8 +11987,41 @@ class HermesCLI:
             from run_agent import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
+        # Inline reasoning-boost keyword (à la Claude Code's "ultrathink").
+        # If the user dropped a keyword like "ultrathink" / "think harder" into
+        # the message, strip it from the text and stage a one-shot effort bump
+        # for THIS turn only. API-call-local like the voice prefix above — the
+        # cleaned text is what we persist to history, and the boost is never
+        # written to config. Only bumps up; never downgrades the session level.
+        _reasoning_boost_cfg = None
+        _reasoning_boost_label = None
+        if isinstance(message, str):
+            from hermes_constants import (
+                extract_reasoning_keyword,
+                reasoning_effort_rank,
+            )
+            _cleaned, _kw_effort = extract_reasoning_keyword(message)
+            if _kw_effort:
+                message = _cleaned
+                rc = self.reasoning_config
+                if rc is not None and rc.get("enabled") is False:
+                    # Reasoning currently disabled — any keyword re-enables it.
+                    _cur_rank = -1
+                else:
+                    _cur_effort = (rc or {}).get("effort", "medium")
+                    _cur_rank = reasoning_effort_rank(_cur_effort)
+                if reasoning_effort_rank(_kw_effort) > _cur_rank:
+                    _reasoning_boost_cfg = {"enabled": True, "effort": _kw_effort}
+                    _reasoning_boost_label = _kw_effort
+
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
+
+        if _reasoning_boost_label:
+            _cprint(
+                f"  {_DIM}🧠 reasoning boosted to '{_reasoning_boost_label}' "
+                f"for this turn{_RST}"
+            )
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
@@ -12000,6 +12138,18 @@ class HermesCLI:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
+                # Ultracode standing directive — API-call-local, like the voice
+                # prefix. Prepended so the model sees it every turn while the
+                # session mode is on, but never written to history/transcript
+                # (persist_user_message below stores the clean message), so it
+                # can't accumulate across turns. Text turns only; image/multimodal
+                # turns still get the xhigh reasoning bump, just not this string.
+                _ultracode_active = (
+                    getattr(self, "_ultracode_mode", False)
+                    and isinstance(message, str)
+                )
+                if _ultracode_active:
+                    agent_message = self._ULTRACODE_DIRECTIVE + "\n\n" + agent_message
                 # Prepend pending model switch note so the model knows about the switch
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
@@ -12012,13 +12162,32 @@ class HermesCLI:
                 if _srn:
                     agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
+                # One-shot reasoning boost for this turn (see chat() above).
+                # Bind the saved config before the try so the finally restore can
+                # never see it unbound. The request builders read
+                # agent.reasoning_config fresh on every API call, so mutating the
+                # live attribute and restoring it here keeps the bump scoped to
+                # this turn — the session default (self.reasoning_config) and
+                # config are untouched. getattr/setattr because reasoning_config
+                # is set dynamically in agent_init (not a declared attribute).
+                _saved_reasoning_cfg = getattr(self.agent, "reasoning_config", None)
                 try:
+                    if _reasoning_boost_cfg is not None:
+                        setattr(
+                            self.agent, "reasoning_config", _reasoning_boost_cfg
+                        )
                     result = self.agent.run_conversation(
                         user_message=agent_message,
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        # Persist the CLEAN message (no synthetic prefixes) when
+                        # either the voice prefix or the ultracode directive was
+                        # prepended, so the API-only text never lands in the
+                        # transcript or accumulates across turns/resumes.
+                        persist_user_message=(
+                            message if (_voice_prefix or _ultracode_active) else None
+                        ),
                     )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
@@ -12032,6 +12201,19 @@ class HermesCLI:
                         "error": _summary,
                     }
                 finally:
+                    # Restore the session reasoning config if this turn applied a
+                    # one-shot keyword boost, so the bump never leaks to the next
+                    # turn. Defensive try/except — a restore failure must never
+                    # mask the turn result.
+                    if _reasoning_boost_cfg is not None:
+                        try:
+                            setattr(
+                                self.agent,
+                                "reasoning_config",
+                                _saved_reasoning_cfg,
+                            )
+                        except Exception:
+                            pass
                     # Clear thread-local callbacks so a reused thread doesn't
                     # hold stale references to a disposed CLI instance.
                     try:
@@ -12832,6 +13014,14 @@ class HermesCLI:
         self._voice_recorder = None     # AudioRecorder instance (lazy init)
         self._voice_recording = False   # Whether currently recording
         self._voice_processing = False  # Whether STT is in progress
+
+        # Ultracode session mode — preserve across run() re-init if already on
+        # (e.g. /ultracode set before the interactive TUI loop starts). Only
+        # initialize to defaults when the attribute doesn't exist yet, so an
+        # active session mode isn't silently dropped when run() re-runs init.
+        if not hasattr(self, "_ultracode_mode"):
+            self._ultracode_mode = False
+            self._ultracode_saved_reasoning = None
         self._voice_continuous = False  # Whether to auto-restart after agent responds
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)

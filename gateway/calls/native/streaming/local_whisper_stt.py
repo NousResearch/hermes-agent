@@ -13,6 +13,7 @@ package stays importable without the extra. numpy is imported lazily inside
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from importlib.util import find_spec
 from typing import TYPE_CHECKING
@@ -81,7 +82,11 @@ class LocalWhisperSTT:
         import numpy as np
 
         audio = np.frombuffer(bytes(self._buffer), np.int16).astype(np.float32) / 32768.0
-        text = self._transcribe(audio)
+        # faster-whisper transcription is synchronous and CPU-bound (ctranslate2).
+        # finalize() is awaited inline on the session's call task at the turn
+        # endpoint, so running it directly would stall inbound-frame handling and
+        # barge-in reflexes for the whole transcription. Offload to a worker thread.
+        text = await asyncio.to_thread(self._transcribe, audio)
         event = TranscriptEvent(
             call_id=self._call_id,
             kind=TranscriptKind.FINAL,

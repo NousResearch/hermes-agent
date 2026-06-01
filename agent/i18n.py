@@ -249,37 +249,53 @@ def get_language() -> str:
     return DEFAULT_LANGUAGE
 
 
-def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
+def t(key: str, default: str | None = None, *, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted key to the active language.
 
     Parameters
     ----------
     key
         Dotted path into the catalog, e.g. ``"approval.choose_long"``.
+    default
+        Inline English fallback string.  Used when the key is missing from
+        BOTH the target-language catalog and the English catalog.  This lets
+        call sites carry the canonical English text next to the key, so a
+        missing/incomplete catalog degrades to readable English instead of a
+        bare ``some.dotted.key`` path.  Passed positionally::
+
+            t("gateway.shutdown.restarting", "restarting")
+
     lang
-        Explicit language override.  Takes precedence over env + config.
+        Explicit language override (keyword-only).  Takes precedence over
+        env + config.  ``t("approval.choose_long", lang="zh")``.
     **format_kwargs
         ``str.format`` substitution arguments (``t("gateway.drain", count=3)``
         expects a catalog entry with a ``{count}`` placeholder).
 
     Returns
     -------
-    The translated string, or the English fallback if the key is missing in
-    the target language, or the bare key if English is also missing.
+    The translated string, or the English catalog fallback if the key is
+    missing in the target language, or the inline ``default`` if both
+    catalogs miss, or the bare key as a last resort.
     """
     target = _normalize_lang(lang) if lang else get_language()
     catalog = _load_catalog(target)
     value = catalog.get(key)
 
     if value is None and target != DEFAULT_LANGUAGE:
-        # Fall through to English rather than showing a key path to the user.
+        # Fall through to English catalog rather than showing a key path.
         value = _load_catalog(DEFAULT_LANGUAGE).get(key)
 
     if value is None:
-        # Last-ditch: return the key itself.  A broken catalog should not
-        # crash anything; it just looks ugly until someone fixes it.
-        logger.debug("i18n miss: key=%r lang=%r", key, target)
-        value = key
+        # Catalog miss in both languages: prefer the caller-supplied inline
+        # English default so the user sees real text, not a dotted key.
+        if default is not None:
+            value = default
+        else:
+            # Last-ditch: return the key itself.  A broken catalog should not
+            # crash anything; it just looks ugly until someone fixes it.
+            logger.debug("i18n miss: key=%r lang=%r", key, target)
+            value = key
 
     if format_kwargs:
         try:

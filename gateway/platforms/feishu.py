@@ -2590,6 +2590,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if approval_id is None:
             logger.debug("[Feishu] Card action missing approval_id, ignoring")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        # Try int conversion since JSON may serialize int as str
+        try:
+            approval_id = int(approval_id)
+        except (ValueError, TypeError):
+            pass
         state = self._approval_state.get(approval_id)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)

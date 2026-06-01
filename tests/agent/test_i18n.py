@@ -142,9 +142,33 @@ def test_t_formats_placeholders():
 
 
 def test_t_missing_key_returns_key():
-    """A missing key returns its own path -- ugly but never crashes."""
+    """A missing key with no inline default returns its own path -- ugly but never crashes."""
     result = i18n.t("nonexistent.key.path", lang="en")
     assert result == "nonexistent.key.path"
+
+
+def test_t_missing_key_uses_inline_default():
+    """A missing key with an inline English default returns the default, not the key path."""
+    result = i18n.t("nonexistent.key.path", "Inline English Default", lang="en")
+    assert result == "Inline English Default"
+
+
+def test_t_inline_default_ignored_when_catalog_has_key():
+    """The inline default is a fallback only -- a real catalog entry always wins."""
+    # approval.denied exists in both en and zh catalogs. The inline default
+    # must never appear when the key resolves; assert against the catalog
+    # value itself rather than hardcoding translations (which users customize).
+    en_val = i18n.t("approval.denied", lang="en")
+    zh_val = i18n.t("approval.denied", lang="zh")
+    assert i18n.t("approval.denied", "SHOULD NOT APPEAR", lang="en") == en_val
+    assert i18n.t("approval.denied", "SHOULD NOT APPEAR", lang="zh") == zh_val
+    assert "SHOULD NOT APPEAR" not in i18n.t("approval.denied", "SHOULD NOT APPEAR", lang="zh")
+
+
+def test_t_inline_default_with_format_kwargs():
+    """Inline default still honors {placeholder} substitution on catalog miss."""
+    result = i18n.t("nonexistent.format.key", "Hello {name}", lang="en", name="World")
+    assert result == "Hello World"
 
 
 def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatch):

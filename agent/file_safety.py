@@ -140,6 +140,16 @@ def is_write_denied(path: str) -> bool:
                 return True
         except Exception:
             pass
+        # hooks/: gateway Python hooks — writing here lets an agent install a
+        # persistent handler that runs with full Python privileges outside the
+        # approval sandbox on every gateway startup. Same threat model as
+        # pairing/ and mcp-tokens/.
+        try:
+            hooks_real = os.path.realpath(os.path.join(base_real, "hooks"))
+            if resolved == hooks_real or resolved.startswith(hooks_real + os.sep):
+                return True
+        except Exception:
+            pass
 
     safe_root = get_safe_write_root()
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):

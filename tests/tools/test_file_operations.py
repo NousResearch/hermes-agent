@@ -166,6 +166,29 @@ class TestIsWriteDenied:
         assert _is_write_denied(str(root / "pairing" / "telegram-approved.json")) is True
         assert _is_write_denied(str(root / "pairing")) is True
 
+    def test_hooks_dir_denied(self, tmp_path, monkeypatch):
+        """Regression: hooks/ must be write-denied under both profile and root.
+
+        gateway/hooks.py loads and exec_modules every handler.py found under
+        ~/.hermes/hooks/*/handler.py on gateway startup. Without this block, a
+        prompt-injected write_file can install a persistent Python handler that
+        runs with full privileges outside the approval sandbox — the same threat
+        class that motivated protecting pairing/ and mcp-tokens/.
+        """
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        # Active profile hook files
+        assert _is_write_denied(str(profile / "hooks" / "evil" / "handler.py")) is True
+        assert _is_write_denied(str(profile / "hooks" / "evil" / "HOOK.yaml")) is True
+        # The hooks directory itself
+        assert _is_write_denied(str(profile / "hooks")) is True
+        # Root hooks entries (profile mode)
+        assert _is_write_denied(str(root / "hooks" / "evil" / "handler.py")) is True
+        assert _is_write_denied(str(root / "hooks")) is True
+
 
 
 # =========================================================================

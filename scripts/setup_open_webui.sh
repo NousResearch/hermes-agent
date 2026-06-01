@@ -182,16 +182,17 @@ write_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-API_KEY=\$(python3 - <<'PY'
-from pathlib import Path
-p = Path.home()/'.hermes'/'.env'
-for raw in p.read_text().splitlines():
-    line = raw.strip()
-    if line.startswith('API_SERVER_KEY='):
-        print(line.split('=', 1)[1])
-        break
-PY
-)
+ENV_FILE="\${HERMES_ENV_FILE:-\$HOME/.hermes/.env}"
+API_KEY=""
+if [[ -f "\$ENV_FILE" ]]; then
+  while IFS= read -r raw; do
+    line="\${raw#"\${raw%%[![:space:]]*}"}"
+    if [[ "\$line" == API_SERVER_KEY=* ]]; then
+      API_KEY="\${line#API_SERVER_KEY=}"
+      break
+    fi
+  done < "\$ENV_FILE"
+fi
 export DATA_DIR=${quoted_data_dir}
 export WEBUI_NAME=${quoted_name}
 export ENABLE_SIGNUP=${OPEN_WEBUI_ENABLE_SIGNUP}

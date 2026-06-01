@@ -114,10 +114,12 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
 def _normalize_channel_command_access(value: Any) -> Dict[str, Any]:
     """Normalize per-channel slash-command access config.
 
-    The public config shape is a mapping of channel/group ids to either a
+    The public config shape is a mapping of channel/group selectors to either a
     dict (``allowed_slash_commands`` plus optional ``deny_message``) or a bare
-    list/string of commands.  Stringify ids so numeric Telegram/Discord ids
-    survive YAML parsing and match ``SessionSource.chat_id`` comparisons.
+    list/string of commands. Selectors may be opaque channel ids or
+    human-readable chat/group names (for example ``DroneProject``). Stringify
+    selectors so numeric Telegram/Discord ids survive YAML parsing and match
+    ``SessionSource`` comparisons.
     """
     if not isinstance(value, dict):
         return {}

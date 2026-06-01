@@ -35,6 +35,7 @@ def _make_source(
     user_id: str = "user1",
     chat_type: str = "dm",
     chat_id: str = "c1",
+    chat_name: str | None = None,
     chat_id_alt: str | None = None,
     thread_id: str | None = None,
 ) -> SessionSource:
@@ -42,6 +43,7 @@ def _make_source(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
+        chat_name=chat_name,
         user_name=f"name-{user_id}",
         chat_type=chat_type,
         chat_id_alt=chat_id_alt,
@@ -374,6 +376,43 @@ async def test_channel_allowlist_matches_signal_raw_group_id_alt():
 
 
 @pytest.mark.asyncio
+async def test_channel_allowlist_matches_signal_group_name():
+    """Signal group allowlists should support human-readable group names.
+
+    A config key like ``DroneProject`` must match the incoming Signal
+    ``groupName`` surfaced as ``SessionSource.chat_name`` so operators do not
+    have to paste opaque Signal group ids into config.yaml.
+    """
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "group_allow_admin_from": ["admin-user"],
+            "channel_command_access": {
+                "DroneProject": {
+                    "allowed_slash_commands": ["status"],
+                }
+            },
+        },
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="admin-user",
+        chat_type="group",
+        chat_id="group:opaque-signal-group-id",
+        chat_name="DroneProject",
+        chat_id_alt="opaque-signal-group-id",
+    )
+
+    result = await runner._handle_message(_make_event("/restart", source))
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/restart is not enabled in this group/channel" in result
+    assert result != "restart-handled"
+
+
+@pytest.mark.asyncio
 async def test_channel_allowlist_only_applies_to_matching_channel():
     runner = _make_runner(
         platform=Platform.SIGNAL,
@@ -498,7 +537,7 @@ async def test_channel_allowlist_allows_listed_skill_command(monkeypatch):
 
 
 def test_gateway_channel_command_access_config_bridges_to_platform_extra(monkeypatch, tmp_path):
-    """config.yaml supports the issue #37004 gateway.channel_command_access shape."""
+    """config.yaml supports human-readable group names with YAML command lists."""
     from gateway.config import load_gateway_config
 
     hermes_home = tmp_path / ".hermes"
@@ -509,10 +548,9 @@ def test_gateway_channel_command_access_config_bridges_to_platform_extra(monkeyp
         "gateway:\n"
         "  channel_command_access:\n"
         "    signal:\n"
-        "      \"group:restricted-signal-group\":\n"
+        "      DroneProject:\n"
         "        allowed_slash_commands:\n"
-        "          - help\n"
-        "          - status\n"
+        "          - deep-research\n"
         "        deny_message: This command is not enabled in this group.\n",
         encoding="utf-8",
     )
@@ -524,8 +562,8 @@ def test_gateway_channel_command_access_config_bridges_to_platform_extra(monkeyp
 
     signal_extra = config.platforms[Platform.SIGNAL].extra
     assert signal_extra["channel_command_access"] == {
-        "group:restricted-signal-group": {
-            "allowed_slash_commands": ["help", "status"],
+        "DroneProject": {
+            "allowed_slash_commands": ["deep-research"],
             "deny_message": "This command is not enabled in this group.",
         }
     }

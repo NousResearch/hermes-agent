@@ -59,8 +59,9 @@ class ChannelCommandAccessRule:
 
     When present, this rule caps the command surface before the broader
     admin/user split is considered: only commands named here may continue to
-    the normal slash-command handlers. Operators configure these by channel id
-    in ``PlatformConfig.extra["channel_command_access"]``.
+    the normal slash-command handlers. Operators configure these by channel
+    selector (opaque id or human-readable chat/group name) in
+    ``PlatformConfig.extra["channel_command_access"]``.
     """
 
     channel_id: str
@@ -166,12 +167,14 @@ def _coerce_command_list(raw: Any) -> FrozenSet[str]:
 
 
 def _source_channel_ids(source: Any) -> tuple[str, ...]:
-    """Return candidate channel ids for per-channel slash allowlists.
+    """Return candidate channel selectors for per-channel slash allowlists.
 
     Adapters expose platform-native ids differently. Signal group messages,
     for example, use ``chat_id='group:<id>'`` for gateway routing and also
-    expose the raw signal-cli group id in ``chat_id_alt``. Try both so
-    operators can paste the platform-native id directly into config.yaml.
+    expose the raw signal-cli group id in ``chat_id_alt``. Human-readable
+    group/channel names are exposed as ``chat_name``. Try the stable ids first
+    and then the display name so operators can choose readable selectors like
+    ``DroneProject`` in config.yaml without breaking existing id-based config.
     """
     if source is None:
         return ()
@@ -187,6 +190,7 @@ def _source_channel_ids(source: Any) -> tuple[str, ...]:
 
     chat_id = getattr(source, "chat_id", None)
     chat_id_alt = getattr(source, "chat_id_alt", None)
+    chat_name = getattr(source, "chat_name", None)
     thread_id = getattr(source, "thread_id", None)
 
     if chat_id and thread_id:
@@ -195,11 +199,15 @@ def _source_channel_ids(source: Any) -> tuple[str, ...]:
     if chat_id_alt and thread_id:
         _add(f"{chat_id_alt}:{thread_id}")
         _add(f"{chat_id_alt}#{thread_id}")
+    if chat_name and thread_id:
+        _add(f"{chat_name}:{thread_id}")
+        _add(f"{chat_name}#{thread_id}")
 
     _add(chat_id)
     if isinstance(chat_id, str) and chat_id.startswith("group:"):
         _add(chat_id[6:])
     _add(chat_id_alt)
+    _add(chat_name)
 
     return tuple(candidates)
 

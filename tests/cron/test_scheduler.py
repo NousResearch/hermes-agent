@@ -2113,6 +2113,39 @@ class TestRunJobConfigEnvVarExpansion:
         # Unresolved refs are kept verbatim — _expand_env_vars contract
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
 
+    def test_load_hermes_dotenv_refreshes_before_config_expansion(self, tmp_path, monkeypatch):
+        """Cron reloads Hermes env sources before expanding config.yaml references."""
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
+        monkeypatch.delenv("_HERMES_TEST_CRON_MODEL", raising=False)
+
+        job = {"id": "refresh-job", "name": "refresh test", "prompt": "hi"}
+        fake_db = MagicMock()
+        load_calls = []
+
+        def fake_load_hermes_dotenv(*, hermes_home=None, project_env=None):
+            load_calls.append((str(hermes_home), None if project_env is None else str(project_env)))
+            os.environ["_HERMES_TEST_CRON_MODEL"] = "gpt-4o-mini-cron-test"
+            return [tmp_path / ".env"]
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache") as mock_reset, \
+             patch("hermes_cli.env_loader.load_hermes_dotenv", side_effect=fake_load_hermes_dotenv), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        mock_reset.assert_called_once_with()
+        assert load_calls == [(str(tmp_path), None)]
+        assert mock_agent_cls.call_args.kwargs["model"] == "gpt-4o-mini-cron-test"
+
 
 class TestRunJobModelResolution:
     """Verify defensive model resolution for jobs stored with ``model: null``.

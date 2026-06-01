@@ -180,6 +180,7 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
 
     # reset_secret_source_cache() forces a fresh pull on the next call.
     env_loader.reset_secret_source_cache()
+    assert env_loader.get_secret_source("ANTHROPIC_API_KEY") is None
     env_loader._apply_external_secret_sources(tmp_path)
     assert call_count["n"] == 2
 

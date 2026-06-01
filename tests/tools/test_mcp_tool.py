@@ -6,6 +6,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 import asyncio
 import concurrent.futures
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -114,6 +115,37 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert "filesystem" in result
             assert result["filesystem"]["command"] == "npx"
+
+    def test_load_hermes_dotenv_runs_before_config_expansion(self, monkeypatch):
+        """MCP config expansion should see env values loaded from Hermes first."""
+        monkeypatch.delenv("TEST_MCP_TOKEN", raising=False)
+        call_order = []
+
+        def fake_load_hermes_dotenv(*, hermes_home=None, project_env=None):
+            call_order.append("dotenv")
+            monkeypatch.setenv("TEST_MCP_TOKEN", "bws-secret")
+            return []
+
+        def fake_load_config():
+            call_order.append("config")
+            assert os.environ.get("TEST_MCP_TOKEN") == "bws-secret"
+            return {
+                "mcp_servers": {
+                    "remote": {
+                        "headers": {
+                            "Authorization": "Bearer ${TEST_MCP_TOKEN}",
+                        },
+                    }
+                }
+            }
+
+        with patch("hermes_cli.env_loader.load_hermes_dotenv", side_effect=fake_load_hermes_dotenv), \
+             patch("hermes_cli.config.load_config", side_effect=fake_load_config):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+
+        assert call_order == ["dotenv", "config"]
+        assert result["remote"]["headers"]["Authorization"] == "Bearer bws-secret"
 
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""

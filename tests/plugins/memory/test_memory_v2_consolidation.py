@@ -317,6 +317,29 @@ def test_consolidation_rejects_project_update_without_source_refs(tmp_path):
     assert store.list_candidates()[0].gate_decision == GateDecision.REJECTED
 
 
+def test_provider_project_updates_land_in_project_card_and_prefetch_renders_fields(tmp_path):
+    from plugins.memory.memory_v2 import MemoryV2Provider
+
+    provider = MemoryV2Provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    provider.sync_turn(
+        "Remember that Project Memory v2 next action: improve project-card continuity recall.",
+        "Queued.",
+        session_id="session-1",
+    )
+
+    report = provider.handle_tool_call("memory_v2_consolidate", {})
+    card = provider.store.read_project_card("Memory v2")
+    packet = provider.prefetch("Where did we leave Memory v2?", session_id="session-1")
+
+    assert '"promoted": 1' in report
+    assert provider.store.list_memory_items(memory_type="project_state") == []
+    assert card is not None
+    assert card.next_actions == ["improve project-card continuity recall."]
+    assert "next_actions" in packet
+    assert "improve project-card continuity recall" in packet
+
+
 def test_provider_consolidation_tool_reports_counts_and_updates_status(tmp_path):
     from plugins.memory.memory_v2 import MemoryV2Provider
 

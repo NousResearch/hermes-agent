@@ -40,6 +40,15 @@ def test_write_gate_classifies_project_update_as_project_update_candidate():
     assert decision.should_create_candidate is True
 
 
+def test_write_gate_routes_labeled_project_updates_to_project_card_destination():
+    decision = classify("Remember that Project Memory v2 next action: improve project-card continuity recall.")
+
+    assert decision.outcome == WriteGateOutcome.PROJECT_UPDATE
+    assert decision.memory_type == "project_state"
+    assert decision.proposed_destination == "semantic/projects/memory-v2.yaml"
+    assert "next_action" in decision.reason
+
+
 def test_write_gate_classifies_environment_conflict_as_review_candidate():
     decision = classify("Remember that Hermes is running on macOS, not WSL.")
 

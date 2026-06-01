@@ -157,14 +157,19 @@ class RuleBasedWriteGate:
             )
 
         if self._contains(lowered, self._PROJECT_TERMS):
+            project_destination = self._project_destination_for_claim(claim)
+            update_kind = self._project_update_kind_for_claim(claim)
+            reason = "Explicit project-state update; queue for project memory review."
+            if update_kind:
+                reason = f"project_update: {update_kind}"
             return WriteGateDecision(
                 outcome=WriteGateOutcome.PROJECT_UPDATE,
                 claim=claim,
                 memory_type="project_state",
-                proposed_destination="semantic/items",
+                proposed_destination=project_destination,
                 importance=0.8,
                 confidence=0.8,
-                reason="Explicit project-state update; queue for project memory review.",
+                reason=reason,
                 should_create_candidate=True,
                 requires_review=True,
             )
@@ -196,6 +201,33 @@ class RuleBasedWriteGate:
     @staticmethod
     def _looks_like_conflict(text: str) -> bool:
         return " not " in text or "instead of" in text or "no longer" in text or "supersede" in text
+
+    @staticmethod
+    def _project_destination_for_claim(claim: str) -> str:
+        match = re.search(
+            r"^\s*project\s+(.+?)\s+(?:current\s+state|decision|open\s+question|next\s+action|status|goal|why\s+it\s+matters)\s*:",
+            claim,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return "semantic/items"
+        slug = re.sub(r"[^a-z0-9]+", "-", match.group(1).lower()).strip("-")
+        return f"semantic/projects/{slug or 'project'}.yaml"
+
+    @staticmethod
+    def _project_update_kind_for_claim(claim: str) -> str:
+        lowered = claim.lower()
+        if re.search(r"\bopen\s+question\s*:", lowered):
+            return "open_question"
+        if re.search(r"\bnext\s+action\s*:", lowered):
+            return "next_action"
+        if re.search(r"\bwhy\s+it\s+matters\s*:", lowered):
+            return "why_it_matters"
+        for kind in ("current_state", "decision", "status", "goal"):
+            label = kind.replace("_", r"\s+")
+            if re.search(rf"\b{label}\s*:", lowered):
+                return kind
+        return ""
 
     def _memory_type_for_claim(self, lowered_claim: str) -> str:
         if self._contains(lowered_claim, self._ENVIRONMENT_TERMS):

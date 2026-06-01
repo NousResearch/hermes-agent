@@ -273,6 +273,15 @@ class MemoryV2Index:
             "\n".join(card.next_actions),
             "\n".join(card.related_entities),
         ]
+        structured_value = {
+            "goal": card.goal,
+            "why_it_matters": card.why_it_matters,
+            "current_state": card.current_state,
+            "decisions": list(card.decisions),
+            "open_questions": list(card.open_questions),
+            "next_actions": list(card.next_actions),
+            "related_entities": list(card.related_entities),
+        }
         self.index_record(
             id=card.id,
             type="project_state",
@@ -280,6 +289,7 @@ class MemoryV2Index:
             body="\n".join(part for part in body_parts if part),
             summary=card.current_state or card.goal,
             status=cast(ProjectStatus, card.status).value,
+            value=json.dumps(structured_value, ensure_ascii=False, sort_keys=True),
             source_refs=card.source_refs,
             tags=["project", card.id],
             file_path=str(file_path) if file_path else "",

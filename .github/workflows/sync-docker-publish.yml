@@ -5,9 +5,13 @@ on:
     branches:
       - main
       - develop
-
     tags:
       - 'v*'
+
+  schedule:
+    - cron: '30 0 * * *' # Todos los días a las 00:30 UTC
+
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,9 +28,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Necesario para construir imágenes arm64
-      # desde runners amd64 de GitHub Free
+      # Necesario para construir imágenes arm64 desde runners amd64
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -35,76 +40,191 @@ jobs:
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
-
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute Docker tags
-        id: vars
-
+      # ---------------------------------------------------------
+      # Publica imágenes de rama:
+      # - main    -> IMAGE:main + IMAGE:sha-xxxxxxx
+      # - develop -> IMAGE:develop + IMAGE:sha-xxxxxxx
+      # ---------------------------------------------------------
+      - name: Publish branch image
+        if: startsWith(github.ref, 'refs/heads/')
         shell: bash
-
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          SHA_SHORT="$(git rev-parse --short HEAD)"
 
-            VERSION_TAG="${GITHUB_REF#refs/tags/}"
+          case "${BRANCH_NAME}" in
+            main|develop)
+              echo "Publicando imagen ${BRANCH_NAME} para commit ${GITHUB_SHA}"
+              ;;
+            *)
+              echo "Rama no publicable: ${BRANCH_NAME}"
+              exit 0
+              ;;
+          esac
 
-            echo "docker_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
-            echo "publish_latest=true" >> "$GITHUB_OUTPUT"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --file Dockerfile \
+            --tag "${IMAGE_NAME}:${BRANCH_NAME}" \
+            --tag "${IMAGE_NAME}:sha-${SHA_SHORT}" \
+            --label "org.opencontainers.image.title=hermes-agent" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --push \
+            .
 
-          elif [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+      # ---------------------------------------------------------
+      # Publica tags:
+      # - Crea imágenes de tags nuevos v*
+      # - Actualiza imágenes de tags v* si el tag Git cambió de commit
+      # - Ignora tags que ya estén correctamente publicados
+      # - Actualiza latest al último tag v* según sort -V
+      #
+      # Se ejecuta en:
+      # - push de tag v*
+      # - schedule
+      # - workflow_dispatch
+      #
+      # No se ejecuta en push normal a main/develop para evitar revisar
+      # todos los tags en cada commit de rama.
+      # ---------------------------------------------------------
+      - name: Publish missing or updated version tags
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
 
-            echo "docker_tag=develop" >> "$GITHUB_OUTPUT"
-            echo "publish_latest=false" >> "$GITHUB_OUTPUT"
+          git fetch --tags --force
 
-          else
+          image_exists() {
+            local ref="$1"
+            docker buildx imagetools inspect "${ref}" >/dev/null 2>&1
+          }
 
-            echo "docker_tag=main" >> "$GITHUB_OUTPUT"
-            echo "publish_latest=false" >> "$GITHUB_OUTPUT"
+          image_digest() {
+            local ref="$1"
+            docker buildx imagetools inspect "${ref}" \
+              | awk '/^Digest:/ {print $2; exit}'
+          }
 
+          build_image_for_tag() {
+            local tag="$1"
+            local commit="$2"
+            local sha_short="$3"
+
+            echo "Construyendo imagen para tag ${tag}, commit ${commit}"
+
+            git checkout --force "${commit}"
+
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --file Dockerfile \
+              --tag "${IMAGE_NAME}:${tag}" \
+              --tag "${IMAGE_NAME}:sha-${sha_short}" \
+              --label "org.opencontainers.image.title=hermes-agent" \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --label "org.opencontainers.image.version=${tag}" \
+              --label "org.opencontainers.image.revision=${commit}" \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              --push \
+              .
+          }
+
+          publish_tag_from_existing_sha_image() {
+            local tag="$1"
+            local sha_short="$2"
+
+            echo "Actualizando ${IMAGE_NAME}:${tag} desde ${IMAGE_NAME}:sha-${sha_short}"
+
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:${tag}" \
+              "${IMAGE_NAME}:sha-${sha_short}"
+          }
+
+          publish_latest_from_tag() {
+            local tag="$1"
+
+            echo "Actualizando ${IMAGE_NAME}:latest desde ${IMAGE_NAME}:${tag}"
+
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:latest" \
+              "${IMAGE_NAME}:${tag}"
+          }
+
+          mapfile -t TAGS < <(git tag -l 'v*' | sort -V)
+
+          if [ "${#TAGS[@]}" -eq 0 ]; then
+            echo "No hay tags v* que publicar."
+            exit 0
           fi
 
-          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          LATEST_TAG="${TAGS[-1]}"
 
-      - name: Build and push multiarch image
-        uses: docker/build-push-action@v6
+          echo "Tags detectados:"
+          printf '%s\n' "${TAGS[@]}"
+          echo "Latest tag calculado: ${LATEST_TAG}"
 
-        with:
-          context: .
-          file: Dockerfile
+          for TAG in "${TAGS[@]}"; do
+            COMMIT="$(git rev-list -n 1 "${TAG}")"
+            SHA_SHORT="$(git rev-parse --short "${COMMIT}")"
 
-          push: true
+            TAG_REF="${IMAGE_NAME}:${TAG}"
+            SHA_REF="${IMAGE_NAME}:sha-${SHA_SHORT}"
 
-          # Compatible con GitHub Free
-          platforms: linux/amd64,linux/arm64
+            echo "------------------------------------------------------------"
+            echo "Evaluando tag ${TAG}"
+            echo "Commit: ${COMMIT}"
+            echo "Imagen tag: ${TAG_REF}"
+            echo "Imagen sha: ${SHA_REF}"
 
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.docker_tag }}
-            ${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}
+            TAG_EXISTS=false
+            SHA_EXISTS=false
 
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            if image_exists "${TAG_REF}"; then
+              TAG_EXISTS=true
+            fi
 
-          labels: |
-            org.opencontainers.image.title=hermes-agent
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            if image_exists "${SHA_REF}"; then
+              SHA_EXISTS=true
+            fi
 
-      - name: Publish latest tag
-        if: steps.vars.outputs.publish_latest == 'true'
+            if [ "${TAG_EXISTS}" = false ] && [ "${SHA_EXISTS}" = false ]; then
+              echo "No existe ni ${TAG_REF} ni ${SHA_REF}. Se construye imagen."
+              build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"
 
-        shell: bash
+            elif [ "${TAG_EXISTS}" = false ] && [ "${SHA_EXISTS}" = true ]; then
+              echo "Existe ${SHA_REF}, pero falta ${TAG_REF}. Se crea el tag Docker sin reconstruir."
+              publish_tag_from_existing_sha_image "${TAG}" "${SHA_SHORT}"
 
-        run: |
-          set -euo pipefail
+            elif [ "${TAG_EXISTS}" = true ] && [ "${SHA_EXISTS}" = false ]; then
+              echo "Existe ${TAG_REF}, pero falta ${SHA_REF}. El tag Git puede haber cambiado. Se reconstruye."
+              build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"
 
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:latest" \
-            "${IMAGE_NAME}:${VERSION_TAG}"
+            else
+              TAG_DIGEST="$(image_digest "${TAG_REF}")"
+              SHA_DIGEST="$(image_digest "${SHA_REF}")"
 
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          VERSION_TAG: ${{ steps.vars.outputs.docker_tag }}
+              if [ "${TAG_DIGEST}" = "${SHA_DIGEST}" ]; then
+                echo "El tag ${TAG} ya está correctamente publicado. Se ignora."
+              else
+                echo "El tag ${TAG} existe, pero apunta a un manifest distinto."
+                echo "Digest tag: ${TAG_DIGEST}"
+                echo "Digest sha: ${SHA_DIGEST}"
+                echo "Se actualiza ${TAG_REF} para apuntar al commit actual del tag Git."
+                publish_tag_from_existing_sha_image "${TAG}" "${SHA_SHORT}"
+              fi
+            fi
+
+            if [ "${TAG}" = "${LATEST_TAG}" ]; then
+              publish_latest_from_tag "${TAG}"
+            fi
+          done

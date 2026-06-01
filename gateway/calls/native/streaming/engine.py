@@ -9,11 +9,17 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from gateway.calls.native.streaming.pipecat_runtime import pipecat_available
+
 logger = logging.getLogger(__name__)
 
 TURN_BASED = "turn_based"
 STREAMING = "streaming"
 _VALID = {TURN_BASED, STREAMING}
+
+
+class StreamingExtraNotInstalled(RuntimeError):
+    """Raised when engine=streaming but the simplex-streaming extra is absent."""
 
 
 def select_call_engine(config: Any) -> str:
@@ -61,14 +67,22 @@ def build_native_pipeline(
         A pipeline object produced by the chosen factory.
 
     Raises:
-        PipecatIntegrationDeferred: When engine='streaming' (deferred follow-on
-            slice).
+        StreamingExtraNotInstalled: When engine='streaming' but the optional
+            simplex-streaming (Pipecat) extra is not installed.
+        PipecatIntegrationDeferred: When engine='streaming' and the extra is
+            present (the real process_pcm16 aiortc bridge lands in a later slice).
     """
-    from gateway.calls.native.streaming.pipecat_transport import build_pipeline
-
     engine = select_call_engine(config)
     logger.debug("native call engine selected: %s", engine)
     if engine == STREAMING:
-        return build_pipeline(config=config)
+        if not pipecat_available():
+            raise StreamingExtraNotInstalled(
+                "calls.native.engine='streaming' requires the optional Pipecat "
+                "dependency. Install it with: pip install 'hermes-agent[simplex-streaming]'"
+            )
+        # Pipecat present; the real process_pcm16 aiortc bridge lands in Slice 6.
+        from gateway.calls.native.streaming.pipecat_transport import build_pipeline
+
+        return build_pipeline(config=config)  # raises PipecatIntegrationDeferred
     # Default: turn_based — delegate to the existing factory, unchanged.
     return turn_based_factory()

@@ -53,13 +53,31 @@ def test_engine_build_pipeline_turn_based_delegates():
     assert result is sentinel
 
 
-def test_engine_build_pipeline_streaming_raises_deferred():
-    """Selecting streaming today raises PipecatIntegrationDeferred."""
-    from gateway.calls.native.streaming.engine import build_native_pipeline
+def _streaming_cfg():
+    return {"calls": {"native": {"engine": "streaming"}}}
+
+
+def test_streaming_missing_extra_raises_clear_error(monkeypatch):
+    from gateway.calls.native.streaming import engine as eng
+
+    monkeypatch.setattr(eng, "pipecat_available", lambda: False)
+    with pytest.raises(eng.StreamingExtraNotInstalled) as ei:
+        eng.build_native_pipeline(_streaming_cfg(), turn_based_factory=lambda: object())
+    assert "simplex-streaming" in str(ei.value)
+
+
+def test_streaming_present_defers_until_transport(monkeypatch):
+    from gateway.calls.native.streaming import engine as eng
     from gateway.calls.native.streaming.pipecat_transport import PipecatIntegrationDeferred
 
+    monkeypatch.setattr(eng, "pipecat_available", lambda: True)
     with pytest.raises(PipecatIntegrationDeferred):
-        build_native_pipeline(
-            {"calls": {"native": {"engine": "streaming"}}},
-            turn_based_factory=lambda: None,
-        )
+        eng.build_native_pipeline(_streaming_cfg(), turn_based_factory=lambda: object())
+
+
+def test_turn_based_default_returns_factory_product():
+    from gateway.calls.native.streaming import engine as eng
+
+    sentinel = object()
+    result = eng.build_native_pipeline({}, turn_based_factory=lambda: sentinel)
+    assert result is sentinel

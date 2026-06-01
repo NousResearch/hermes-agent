@@ -522,6 +522,18 @@ class TestListSessions:
         assert "pid" in entry
         assert "output_preview" in entry
 
+    def test_list_codex_process_uses_context_safe_preview(self, registry):
+        raw = "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80
+        s = _make_session(command="codex-yuna exec --full-auto 'review'", output=raw)
+        registry._running[s.id] = s
+
+        entry = registry.list_sessions()[0]
+
+        assert entry["context_safe_summary"] is True
+        assert entry["raw_log_available_via_process_log"] is True
+        assert "Codex output suppressed for context safety" in entry["output_preview"]
+        assert "SECRET_SOURCE_LINE" not in entry["output_preview"]
+
 
 # =========================================================================
 # Active process queries
@@ -1293,7 +1305,8 @@ class TestWaitTimeoutMetadata:
 
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
-        assert result["output"] == "done\n"
+        assert "Codex output suppressed for context safety" in result["output"]
+        assert "raw_log_available_via_process_log=True" in result["output"]
         assert "process_still_running" not in result
         assert not s.last_wait_timeout_at
 
@@ -1368,6 +1381,42 @@ def test_format_completion_event():
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
     assert "Output tail only (not full output):\ndone]" in result
+
+
+def test_format_codex_completion_event_uses_context_safe_summary():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_codex",
+        "command": "codex-yuna exec --full-auto 'review'",
+        "exit_code": 0,
+        "output": "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80,
+        "stdout_chars": 9999,
+        "stdout_lines": 240,
+        "diff_flood_detected": True,
+    }
+
+    result = format_process_notification(evt)
+
+    assert "Context-safe Codex summary:" in result
+    assert "Codex output suppressed for context safety" in result
+    assert "stdout_chars=9999" in result
+    assert "raw_log_available_via_process_log=True" in result
+    assert "SECRET_SOURCE_LINE" not in result
+
+
+def test_poll_codex_process_returns_summary_but_log_keeps_raw(registry):
+    raw = "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80
+    s = _make_session(command="codex-yuna exec --full-auto 'implement'", output=raw)
+    registry._running[s.id] = s
+
+    poll = registry.poll(s.id)
+    log = registry.read_log(s.id, limit=20)
+
+    assert poll["context_safe_summary"] is True
+    assert poll["raw_log_available_via_process_log"] is True
+    assert "Codex output suppressed for context safety" in poll["output_preview"]
+    assert "SECRET_SOURCE_LINE" not in poll["output_preview"]
+    assert "SECRET_SOURCE_LINE" in log["output"]
 
 
 def test_format_completion_event_after_kill_request_is_not_plain_completed():

@@ -435,6 +435,8 @@ class ProcessRegistry:
         data = {
             "output_total_chars": total_chars,
             "output_total_lines": total_lines,
+            "stdout_chars": total_chars,
+            "stdout_lines": total_lines,
             "output_buffer_chars": buffer_chars,
             "buffer_truncated": session.buffer_truncated,
             "output_dropped_chars": session.output_dropped_chars,
@@ -447,6 +449,75 @@ class ProcessRegistry:
         if session.diff_flood_first_seen_at:
             data["diff_flood_recommended_next_action"] = ProcessRegistry._diff_flood_recommendation()
         return data
+
+    @staticmethod
+    def _is_codex_event(evt: dict) -> bool:
+        return bool(
+            evt.get("codex_process")
+            or ProcessRegistry._is_codex_command(str(evt.get("command") or ""))
+        )
+
+    @staticmethod
+    def _codex_context_safe_summary_from_metadata(evt: dict) -> str:
+        """Return a bounded summary for automatic Codex stdout injection paths.
+
+        The raw rolling buffer remains available via process(action='log'); this
+        helper is only for context-feeding paths such as poll/wait/completion
+        notifications and gateway synthetic messages.
+        """
+        sid = evt.get("session_id") or "unknown"
+        status = evt.get("status") or evt.get("type") or "unknown"
+        exit_code = evt.get("exit_code", "?")
+        stdout_chars = evt.get("stdout_chars", evt.get("output_total_chars", "?"))
+        stdout_lines = evt.get("stdout_lines", evt.get("output_total_lines", "?"))
+        buffer_truncated = bool(evt.get("buffer_truncated", False))
+        diff_flood = bool(evt.get("diff_flood_detected", False))
+        trusted = evt.get("trusted_completion")
+        parts = [
+            "Codex output suppressed for context safety.",
+            f"session_id={sid}",
+            f"status={status}",
+            f"exit_code={exit_code}",
+            f"stdout_chars={stdout_chars}",
+            f"stdout_lines={stdout_lines}",
+            f"buffer_truncated={buffer_truncated}",
+            f"diff_flood_detected={diff_flood}",
+        ]
+        if trusted is not None:
+            parts.append(f"trusted_completion={bool(trusted)}")
+        if evt.get("last_wait_timeout_kind"):
+            parts.append(f"last_wait_timeout_kind={evt.get('last_wait_timeout_kind')}")
+        if evt.get("raw_log_available_via_process_log") is not False:
+            parts.append("raw_log_available_via_process_log=True")
+        if diff_flood:
+            parts.append(ProcessRegistry._diff_flood_recommendation())
+        return "\n".join(parts)
+
+    @staticmethod
+    def _codex_context_safe_result(
+        session: ProcessSession,
+        *,
+        status: str,
+        exit_code: Optional[int] = None,
+    ) -> dict:
+        metadata = ProcessRegistry._output_metadata(session)
+        evt = {
+            "type": status,
+            "session_id": session.id,
+            "status": status,
+            "command": session.command,
+            "exit_code": exit_code if exit_code is not None else session.exit_code,
+            "codex_process": True,
+            "context_safe_summary": True,
+            "raw_log_available_via_process_log": True,
+        }
+        evt.update(metadata)
+        evt.update(ProcessRegistry._process_state_metadata(session))
+        summary = ProcessRegistry._codex_context_safe_summary_from_metadata(evt)
+        evt["output"] = summary
+        evt["output_preview"] = summary
+        evt["returned_chars"] = len(summary)
+        return evt
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
@@ -1188,6 +1259,12 @@ class ProcessRegistry:
             }
             event.update(self._process_state_metadata(session))
             event.update(self._output_metadata(session, output_tail))
+            if self._is_codex_command(session.command):
+                event["codex_process"] = True
+                event["context_safe_summary"] = True
+                event["raw_log_available_via_process_log"] = True
+                event["output"] = self._codex_context_safe_summary_from_metadata(event)
+                event["returned_chars"] = len(event["output"])
             self.completion_queue.put(event)
 
     # ----- Query Methods -----
@@ -1304,19 +1381,32 @@ class ProcessRegistry:
         # Guards against orphaned-pipe reader hangs (issue #17327).
         self._reconcile_local_exit(session)
 
-        with session._lock:
-            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
-            output_metadata = self._output_metadata(session, output_preview)
+        status = "exited" if session.exited else "running"
+        if self._is_codex_command(session.command):
+            result = self._codex_context_safe_result(
+                session,
+                status=status,
+                exit_code=session.exit_code if session.exited else None,
+            )
+            result.update({
+                "command": session.command,
+                "pid": session.pid,
+                "uptime_seconds": int(time.time() - session.started_at),
+            })
+        else:
+            with session._lock:
+                output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+                output_metadata = self._output_metadata(session, output_preview)
 
-        result = {
-            "session_id": session.id,
-            "command": session.command,
-            "status": "exited" if session.exited else "running",
-            "pid": session.pid,
-            "uptime_seconds": int(time.time() - session.started_at),
-            "output_preview": output_preview,
-        }
-        result.update(output_metadata)
+            result = {
+                "session_id": session.id,
+                "command": session.command,
+                "status": status,
+                "pid": session.pid,
+                "uptime_seconds": int(time.time() - session.started_at),
+                "output_preview": output_preview,
+            }
+            result.update(output_metadata)
         if session.exited:
             result["exit_code"] = session.exit_code
             result.update(self._process_state_metadata(session))
@@ -1416,14 +1506,21 @@ class ProcessRegistry:
                 with session._lock:
                     output = strip_ansi(session.output_buffer[-2000:])
                     output_metadata = self._output_metadata(session, output)
-                result = {
-                    "status": "exited",
-                    "exit_code": session.exit_code,
-                    "output": output,
-                }
+                if self._is_codex_command(session.command):
+                    result = self._codex_context_safe_result(
+                        session,
+                        status="exited",
+                        exit_code=session.exit_code,
+                    )
+                else:
+                    result = {
+                        "status": "exited",
+                        "exit_code": session.exit_code,
+                        "output": output,
+                    }
+                    result.update(output_metadata)
+                    result.update(self._process_state_metadata(session))
                 result.update(timeout_metadata)
-                result.update(output_metadata)
-                result.update(self._process_state_metadata(session))
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
@@ -1432,13 +1529,21 @@ class ProcessRegistry:
                 with session._lock:
                     output = strip_ansi(session.output_buffer[-1000:])
                     output_metadata = self._output_metadata(session, output)
-                result = {
-                    "status": "interrupted",
-                    "output": output,
-                    "note": "User sent a new message -- wait interrupted",
-                }
+                if self._is_codex_command(session.command):
+                    result = self._codex_context_safe_result(
+                        session,
+                        status="interrupted",
+                        exit_code=session.exit_code,
+                    )
+                    result["note"] = "User sent a new message -- wait interrupted"
+                else:
+                    result = {
+                        "status": "interrupted",
+                        "output": output,
+                        "note": "User sent a new message -- wait interrupted",
+                    }
+                    result.update(output_metadata)
                 result.update(timeout_metadata)
-                result.update(output_metadata)
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
@@ -1452,14 +1557,21 @@ class ProcessRegistry:
             with session._lock:
                 output = strip_ansi(session.output_buffer[-2000:])
                 output_metadata = self._output_metadata(session, output)
-            result = {
-                "status": "exited",
-                "exit_code": session.exit_code,
-                "output": output,
-            }
+            if self._is_codex_command(session.command):
+                result = self._codex_context_safe_result(
+                    session,
+                    status="exited",
+                    exit_code=session.exit_code,
+                )
+            else:
+                result = {
+                    "status": "exited",
+                    "exit_code": session.exit_code,
+                    "output": output,
+                }
+                result.update(output_metadata)
+                result.update(self._process_state_metadata(session))
             result.update(timeout_metadata)
-            result.update(output_metadata)
-            result.update(self._process_state_metadata(session))
             if timeout_note:
                 result["timeout_note"] = timeout_note
             return result
@@ -1467,17 +1579,30 @@ class ProcessRegistry:
         with session._lock:
             output = strip_ansi(session.output_buffer[-1000:])
             output_metadata = self._output_metadata(session, output)
-        result = {
-            "status": "timeout",
-            "output": output,
-        }
+        if self._is_codex_command(session.command):
+            result = self._codex_context_safe_result(
+                session,
+                status="timeout",
+                exit_code=session.exit_code,
+            )
+        else:
+            result = {
+                "status": "timeout",
+                "output": output,
+            }
+            result.update(output_metadata)
         result.update(timeout_metadata)
         with session._lock:
             session.last_wait_timeout_at = time.time()
             session.last_wait_timeout_seconds = int(effective_timeout)
         result.update(self._wait_timeout_metadata(session))
-        result.update(output_metadata)
         result.update(self._process_state_metadata(session))
+        if self._is_codex_command(session.command):
+            result["context_safe_summary"] = True
+            result["raw_log_available_via_process_log"] = True
+            result["output"] = self._codex_context_safe_summary_from_metadata(result)
+            result["output_preview"] = result["output"]
+            result["returned_chars"] = len(result["output"])
         if timeout_note:
             result["timeout_note"] = timeout_note
         else:
@@ -1683,6 +1808,18 @@ class ProcessRegistry:
             with s._lock:
                 output_preview = s.output_buffer[-200:] if s.output_buffer else ""
                 output_metadata = self._output_metadata(s, output_preview)
+            if self._is_codex_command(s.command):
+                safe_entry = self._codex_context_safe_result(
+                    s,
+                    status="exited" if s.exited else "running",
+                    exit_code=s.exit_code if s.exited else None,
+                )
+                output_preview = safe_entry["output_preview"]
+                output_metadata.update({
+                    "context_safe_summary": True,
+                    "raw_log_available_via_process_log": True,
+                    "returned_chars": len(output_preview),
+                })
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],
@@ -1941,10 +2078,18 @@ def format_process_notification(evt: dict) -> "str | None":
     _trusted = evt.get("trusted_completion", True)
     _output_label = "Output tail only (not full output):"
     _notes = []
-    if evt.get("buffer_truncated"):
-        _notes.append("rolling buffer was truncated")
-    if evt.get("diff_flood_detected"):
-        _notes.append(ProcessRegistry._diff_flood_recommendation())
+    if ProcessRegistry._is_codex_event(evt):
+        safe_evt = dict(evt)
+        safe_evt.setdefault("codex_process", True)
+        safe_evt.setdefault("context_safe_summary", True)
+        safe_evt.setdefault("raw_log_available_via_process_log", True)
+        _out = ProcessRegistry._codex_context_safe_summary_from_metadata(safe_evt)
+        _output_label = "Context-safe Codex summary:"
+    else:
+        if evt.get("buffer_truncated"):
+            _notes.append("rolling buffer was truncated")
+        if evt.get("diff_flood_detected"):
+            _notes.append(ProcessRegistry._diff_flood_recommendation())
     _note_text = f"\nNote: {'; '.join(_notes)}" if _notes else ""
     if evt.get("kill_requested") or evt.get("kill_attempted") or _trusted is False:
         _method = evt.get("termination_method") or "unknown"

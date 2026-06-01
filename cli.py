@@ -5559,7 +5559,7 @@ class HermesCLI:
             # Also undo the last conversation turn so the agent's context
             # matches the restored filesystem state
             if self.conversation_history:
-                self.undo_last()
+                self.undo_last(prefill=False)
                 print("  Chat turn undone to match restored file state.")
         else:
             print(f"  ❌ {result['error']}")
@@ -7103,37 +7103,156 @@ class HermesCLI:
         print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
         return last_message
     
-    def undo_last(self):
-        """Remove the last user/assistant exchange from conversation history.
-        
-        Walks backwards and removes all messages from the last user message
-        onward (including assistant responses, tool calls, etc.).
+    def undo_last(self, n: int = 1, prefill: bool = True):
+        """Back up N user turns: truncate history, soft-delete on disk, prefill.
+
+        Walks backwards N user messages and discards everything from the
+        Nth-from-last user message onward (its assistant response, tool
+        calls, etc.). ``n`` defaults to 1 (the last exchange); ``/undo 3``
+        backs up three user turns. If ``n`` exceeds the number of user
+        turns, it backs up to the oldest one.
+
+        Beyond the in-memory ``conversation_history`` slice, this also:
+          • soft-deletes the truncated rows in SessionDB (``active=0``) so
+            they're hidden from re-prompts and search but kept for audit;
+          • notifies memory providers via ``on_session_switch(rewound=True)``;
+          • mirrors /branch's agent surgery (system-prompt invalidation +
+            flush-index reset);
+          • when ``prefill`` is set and an input buffer is available,
+            pre-fills the composer with the backed-up message text so it
+            can be edited and resubmitted.
+
+        ``prefill=False`` is used by callers that drive the undo
+        programmatically (e.g. checkpoint rollback) and don't want to
+        touch the user's input buffer.
         """
         if not self.conversation_history:
             print("(._.) No messages to undo.")
             return
-        
-        # Walk backwards to find the last user message
-        last_user_idx = None
+
+        if n < 1:
+            n = 1
+
+        # Walk backwards collecting the indices of the last N user messages.
+        user_indices = []
         for i in range(len(self.conversation_history) - 1, -1, -1):
             if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx is None:
+                user_indices.append(i)
+                if len(user_indices) >= n:
+                    break
+
+        if not user_indices:
             print("(._.) No user message found to undo.")
             return
-        
-        # Count how many messages we're removing
-        removed_count = len(self.conversation_history) - last_user_idx
-        removed_msg = self.conversation_history[last_user_idx].get("content", "")
-        
-        # Truncate history to before the last user message
-        self.conversation_history = self.conversation_history[:last_user_idx]
-        
-        print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
+
+        # The oldest of the collected user messages is our truncation point.
+        cut_idx = user_indices[-1]
+        turns_undone = len(user_indices)
+
+        removed_count = len(self.conversation_history) - cut_idx
+        removed_msg = self.conversation_history[cut_idx].get("content", "")
+        removed_text = self._undo_content_to_text(removed_msg)
+
+        # Truncate the in-memory history to before that user message.
+        self.conversation_history = self.conversation_history[:cut_idx]
+
+        # Soft-delete the truncated rows on disk so re-prompts and search
+        # see the clean transcript while the rows survive for audit.
+        rewound_rows = 0
+        if self._session_db is not None and self.session_id:
+            try:
+                recents = self._session_db.list_recent_user_messages(
+                    self.session_id, limit=max(turns_undone, 10)
+                )
+                if recents:
+                    target_idx = min(turns_undone - 1, len(recents) - 1)
+                    target_id = recents[target_idx]["id"]
+                    result = self._session_db.rewind_to_message(
+                        self.session_id, target_id
+                    )
+                    rewound_rows = result.get("rewound_count", 0)
+                    # Prefer the DB's decoded target text for the prefill —
+                    # it's the canonical persisted copy.
+                    db_text = self._undo_content_to_text(
+                        (result.get("target_message") or {}).get("content")
+                    )
+                    if db_text:
+                        removed_text = db_text
+            except ValueError as e:
+                # Non-user target / cross-session — keep the in-memory undo
+                # but skip the soft-delete; surface a debug-level note.
+                logger.debug("undo: soft-delete skipped: %s", e)
+            except Exception as e:
+                logger.debug("undo: soft-delete failed: %s", e)
+
+        # Agent surgery: invalidate the system-prompt cache and reset the
+        # flush index so the next turn re-flushes from the truncated head.
+        if self.agent is not None:
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                try:
+                    self.agent._invalidate_system_prompt()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                try:
+                    self.agent._last_flushed_db_idx = len(self.conversation_history)
+                except Exception:
+                    pass
+            # Notify memory providers — same hook /branch fires, with the
+            # rewound flag so per-turn document caches invalidate (#6672, #21910).
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None and self.session_id:
+                    _mm.on_session_switch(
+                        self.session_id,
+                        parent_session_id="",
+                        reset=False,
+                        rewound=True,
+                    )
+            except Exception:
+                pass
+
+        turn_word = "turn" if turns_undone == 1 else "turns"
+        msg_count = rewound_rows or removed_count
+        print(
+            f"(^_^)b Undid {turns_undone} {turn_word} ({msg_count} message(s)). "
+            f"Backed up to: \"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}\""
+        )
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
+
+        # Pre-fill the composer with the backed-up message so the user can
+        # edit and resubmit (Claude-Code-style). Editable, not auto-sent.
+        if prefill and removed_text:
+            self._prefill_input_buffer(removed_text)
+
+    @staticmethod
+    def _undo_content_to_text(content) -> str:
+        """Flatten message content (str or content-part list) to plain text."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            return "\n".join(t for t in parts if t)
+        return ""
+
+    def _prefill_input_buffer(self, text: str) -> None:
+        """Place ``text`` in the active prompt_toolkit buffer, editable."""
+        app = getattr(self, "_app", None)
+        if app is None:
+            return
+        try:
+            buf = app.current_buffer
+            buf.text = text
+            if hasattr(buf, "cursor_position"):
+                buf.cursor_position = len(text)
+            app.invalidate()
+        except Exception as e:
+            logger.debug("undo: prefill buffer failed: %s", e)
     
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
@@ -8599,13 +8718,29 @@ class HermesCLI:
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
+            # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
+            _undo_n = 1
+            _undo_parts = cmd_original.split()
+            if len(_undo_parts) > 1:
+                try:
+                    _undo_n = int(_undo_parts[1])
+                except ValueError:
+                    print(f"(._.) Invalid count {_undo_parts[1]!r} — use /undo or /undo N.")
+                    return
+                if _undo_n < 1:
+                    _undo_n = 1
+            _undo_desc = (
+                "This removes the last user/assistant exchange from history."
+                if _undo_n == 1
+                else f"This removes the last {_undo_n} user turns from history."
+            )
             if self._confirm_destructive_slash(
                 "undo",
-                "This removes the last user/assistant exchange from history.",
+                _undo_desc,
                 cmd_original=cmd_original,
             ) is None:
                 return
-            self.undo_last()
+            self.undo_last(_undo_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":

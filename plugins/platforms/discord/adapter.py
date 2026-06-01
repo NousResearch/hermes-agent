@@ -4185,6 +4185,25 @@ class DiscordAdapter(BasePlatformAdapter):
             if len(body) > max_desc:
                 body = body[: max_desc - 3] + "..."
 
+            # Defensive visibility fallback: Discord web/mobile has regressed on
+            # rendering embeds next to component buttons in some clients. Put the
+            # critical clarify prompt/draft in normal message content too so the
+            # user never has to approve a hidden embed-only prompt.
+            visible_content = (
+                f"❓ Hermes needs your input\n\n{body}"
+                if body else "❓ Hermes needs your input"
+            )
+            if len(visible_content) > 2000:
+                suffix = (
+                    "\n\n[Visible fallback truncated by Discord's 2000-character limit. "
+                    "Do not approve unless the full prompt/draft is visible elsewhere.]"
+                )
+                visible_content = (
+                    visible_content[: 2000 - len(suffix) - 3].rstrip()
+                    + "..."
+                    + suffix
+                )
+
             embed = discord.Embed(
                 title="❓ Hermes needs your input",
                 description=body,
@@ -4218,9 +4237,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 view = None
 
-            msg = await channel.send(embed=embed, view=view) if view else await channel.send(embed=embed)
             if view:
+                msg = await channel.send(content=visible_content, embed=embed, view=view)
                 view._message = msg  # store for on_timeout expiration editing
+            else:
+                msg = await channel.send(content=visible_content, embed=embed)
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, e)

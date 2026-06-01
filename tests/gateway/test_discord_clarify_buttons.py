@@ -297,7 +297,7 @@ class TestDiscordSendClarify:
         _clear_clarify_state()
 
     @pytest.mark.asyncio
-    async def test_multi_choice_attaches_view(self):
+    async def test_multi_choice_attaches_view_and_visible_content_fallback(self):
         adapter = _make_adapter(allowed_users={"42"})
         channel = MagicMock()
         sent_msg = MagicMock()
@@ -307,17 +307,22 @@ class TestDiscordSendClarify:
 
         result = await adapter.send_clarify(
             chat_id="9001",
-            question="Pick a color",
-            choices=["red", "green", "blue"],
+            question="Review this draft before posting:\n\nThis is exactly the draft text Carlton must see.",
+            choices=["post", "revise", "do not post"],
             clarify_id="cidM",
             session_key="sk-M",
         )
 
         assert result.success is True
         assert result.message_id == "123456"
-        # Verify channel.send was called with embed + view kwargs
+        # Verify channel.send was called with visible content fallback + embed + view kwargs.
+        # Discord has regressed on rendering embeds with components; the prompt/draft
+        # must remain readable in normal message content even when the embed is hidden.
         channel.send.assert_called_once()
         kwargs = channel.send.call_args.kwargs
+        assert "content" in kwargs
+        assert "Review this draft before posting" in kwargs["content"]
+        assert "This is exactly the draft text Carlton must see." in kwargs["content"]
         assert "embed" in kwargs
         assert "view" in kwargs
         assert isinstance(kwargs["view"], ClarifyChoiceView)

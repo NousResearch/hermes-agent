@@ -103,6 +103,8 @@ simplex-native-calls = [
 # the [all] policy — large transitive footprint). Real STT/TTS/VAD land in
 # later slices behind the existing streaming ports.
 simplex-streaming = ["pipecat-ai==1.3.0"]
+# Local streaming STT for SimpleX voice (opt-in; heavy: ctranslate2+onnxruntime).
+simplex-streaming-local-stt = ["faster-whisper==1.2.1"]
 pty = [
   "ptyprocess==0.7.0; sys_platform != 'win32'",
   "pywinpty==2.0.15; sys_platform == 'win32'",

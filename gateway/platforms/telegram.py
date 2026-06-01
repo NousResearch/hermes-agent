@@ -16,7 +16,7 @@ import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
@@ -3126,7 +3126,7 @@ class TelegramAdapter(BasePlatformAdapter):
             group_id = data[4:]
             try:
                 from hermes_cli.models import PROVIDER_GROUPS
-                _label, member_slugs = PROVIDER_GROUPS.get(group_id, ("", []))
+                _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
             except Exception:
                 _label, member_slugs = "", []
 

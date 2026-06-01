@@ -73,7 +73,17 @@ RUN set -eu; \
     tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz; \
     tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz; \
     tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz; \
-    rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256
+    rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256; \
+    # #34192: backward-compat shim for orchestration templates that still\
+    # reference the legacy /usr/bin/tini entrypoint (e.g. Hostinger's\
+    # 'Hermes WebUI' catalog). The image has moved to s6-overlay /init\
+    # as PID 1 (see ENTRYPOINT below + the migration comment at the top\
+    # of this file), but external wrappers pinned to /usr/bin/tini will\
+    # crash with 'tini: No such file or directory' on startup. The shim\
+    # symlinks /usr/bin/tini -> /init so legacy wrappers exec the right\
+    # PID-1 reaper without behavior change for users on the current\
+    # ENTRYPOINT. Safe to drop once the affected catalogs are updated.\
+    ln -sf /init /usr/bin/tini
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes

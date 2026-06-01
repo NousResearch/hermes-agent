@@ -19,6 +19,26 @@ const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
 
+type RuntimeWebSocketCtor = typeof globalThis.WebSocket
+
+const resolveRuntimeWebSocket = (): RuntimeWebSocketCtor | undefined => {
+  if (typeof globalThis.WebSocket !== 'undefined') {
+    return globalThis.WebSocket
+  }
+
+  if (process.env.HERMES_TUI_DISABLE_UNDICI_WEBSOCKET === '1') {
+    return undefined
+  }
+
+  try {
+    const undici = require('undici') as { WebSocket?: RuntimeWebSocketCtor }
+
+    return undici.WebSocket
+  } catch {
+    return undefined
+  }
+}
+
 const truncateLine = (line: string) =>
   line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
 
@@ -266,14 +286,16 @@ export class GatewayClient extends EventEmitter {
       return
     }
 
-    if (typeof WebSocket === 'undefined') {
+    const WebSocketCtor = resolveRuntimeWebSocket()
+
+    if (!WebSocketCtor) {
       this.pushLog(`[sidecar] WebSocket unavailable; skipping mirror to ${redactUrl(this.sidecarUrl)}`)
 
       return
     }
 
     try {
-      const ws = new WebSocket(this.sidecarUrl)
+      const ws = new WebSocketCtor(this.sidecarUrl)
 
       this.sidecarWs = ws
       ws.addEventListener('close', () => {
@@ -406,7 +428,9 @@ export class GatewayClient extends EventEmitter {
     const safeAttachUrl = redactUrl(attachUrl)
     this.startReadyTimer('websocket', safeAttachUrl)
 
-    if (typeof WebSocket === 'undefined') {
+    const WebSocketCtor = resolveRuntimeWebSocket()
+
+    if (!WebSocketCtor) {
       const line = `[startup] WebSocket API unavailable; cannot attach to ${safeAttachUrl}`
 
       this.pushLog(line)
@@ -417,7 +441,7 @@ export class GatewayClient extends EventEmitter {
     }
 
     try {
-      const ws = new WebSocket(attachUrl)
+      const ws = new WebSocketCtor(attachUrl)
       let settled = false
 
       this.ws = ws

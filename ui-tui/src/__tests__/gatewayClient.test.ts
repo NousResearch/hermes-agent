@@ -97,10 +97,13 @@ describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
   let originalGatewayUrl: string | undefined
   let originalSidecarUrl: string | undefined
+  let originalDisableUndiciWebSocket: string | undefined
 
   beforeEach(() => {
     originalGatewayUrl = process.env.HERMES_TUI_GATEWAY_URL
     originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
+    originalDisableUndiciWebSocket = process.env.HERMES_TUI_DISABLE_UNDICI_WEBSOCKET
+    delete process.env.HERMES_TUI_DISABLE_UNDICI_WEBSOCKET
     FakeWebSocket.reset()
     ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
   })
@@ -116,6 +119,12 @@ describe('GatewayClient websocket attach mode', () => {
       delete process.env.HERMES_TUI_SIDECAR_URL
     } else {
       process.env.HERMES_TUI_SIDECAR_URL = originalSidecarUrl
+    }
+
+    if (originalDisableUndiciWebSocket === undefined) {
+      delete process.env.HERMES_TUI_DISABLE_UNDICI_WEBSOCKET
+    } else {
+      process.env.HERMES_TUI_DISABLE_UNDICI_WEBSOCKET = originalDisableUndiciWebSocket
     }
 
     FakeWebSocket.reset()
@@ -271,6 +280,7 @@ describe('GatewayClient websocket attach mode', () => {
 
   it('redacts query string secrets in attach failure logs and events', () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
+    process.env.HERMES_TUI_DISABLE_UNDICI_WEBSOCKET = '1'
     delete (globalThis as { WebSocket?: unknown }).WebSocket
 
     const gw = new GatewayClient()
@@ -301,7 +311,7 @@ describe('GatewayClient websocket attach mode', () => {
     const secretUrl = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
 
     process.env.HERMES_TUI_GATEWAY_URL = secretUrl
-    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket extends FakeWebSocket {
+    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket {
       constructor(url: string) {
         throw new TypeError(`Invalid URL: ${url}`)
       }
@@ -328,11 +338,11 @@ describe('GatewayClient websocket attach mode', () => {
     process.env.HERMES_TUI_SIDECAR_URL = sidecarUrl
     ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingSidecarWebSocket extends FakeWebSocket {
       constructor(url: string) {
+        super(url)
+
         if (url.includes('/api/pub')) {
           throw new TypeError(`Invalid URL: ${url}`)
         }
-
-        super(url)
       }
     } as unknown as typeof WebSocket
 
@@ -363,6 +373,7 @@ describe('GatewayClient websocket attach mode', () => {
     expect(() => new URL(fixture)).toThrow()
 
     process.env.HERMES_TUI_GATEWAY_URL = fixture
+    process.env.HERMES_TUI_DISABLE_UNDICI_WEBSOCKET = '1'
     delete (globalThis as { WebSocket?: unknown }).WebSocket
 
     const gw = new GatewayClient()

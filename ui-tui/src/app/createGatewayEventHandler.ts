@@ -190,10 +190,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     agentsNudgedThisTurn = false
   }
 
-  // Kick off the config fetch eagerly at handler creation so the flag is
-  // resolved well before the first delegation of any real session (which
-  // only happens after gateway.ready + a user turn).
-  ensureAgentsNudgeConfig()
+  // Do not fetch the nudge config while creating the handler. This factory is
+  // called from React render via useMemo; a synchronous gateway failure can
+  // call sys() -> appendMessage() -> setHistoryItems() during render and
+  // trigger React #301. maybeNudgeAgents() fetches the flag lazily before the
+  // first delegation event, which is early enough for the feature.
 
   const refreshDelegationStatus = (force = false) => {
     const now = Date.now()

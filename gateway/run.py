@@ -6151,6 +6151,7 @@ class GatewayRunner:
                     platform.value, attempt,
                 )
 
+                adapter = None  # ensure adapter is always bound for exception-path cleanup
                 try:
                     adapter = self._create_adapter(platform, platform_config)
                     if not adapter:

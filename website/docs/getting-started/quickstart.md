@@ -10,7 +10,7 @@ This guide gets you from zero to a working Hermes setup that survives real use. 
 
 ## Prefer to watch?
 
-**Onchain AI Garage** put together a Masterclass walkthrough of installation, setup, and basic commands — a good companion to this page if you'd rather follow along on video. For more, see the full [Hermes Agent Tutorials & Use Cases](https://www.youtube.com/channel/UCqB1bhMwGsW-yefBxYwFCCg) playlist.
+**Onchain AI Garage** put together a Masterclass walkthrough of installation, setup, and basic commands — a good companion to this page if you'd rather follow along on video. For more, see the full [Hermes Agent Tutorials & Use Cases](https://www.youtube.com/playlist?list=PLmpUb_PWAkDxewld5ZYyKifuHxgIbiq2d) playlist.
 
 <div style={{position: 'relative', paddingBottom: '56.25%', height: 0, overflow: 'hidden', maxWidth: '100%', marginBottom: '1.5rem'}}>
   <iframe
@@ -63,6 +63,10 @@ PyPI releases track tagged versions (major/minor releases), not every commit on 
 # Linux / macOS / WSL2 / Android (Termux)
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
+
+Prefer native installers for desktop use?
+
+- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
 
 :::tip Android / Termux
 If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.

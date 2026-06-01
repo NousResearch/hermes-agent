@@ -70,7 +70,7 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 ### Cross-platform parity
 
-[Native Windows](/user-guide/windows-native) is still early beta, and per-tool API key setup is its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
+[Native Windows](/user-guide/windows-native) makes per-tool API key setup its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
 ## A note on Hermes 4
 
@@ -188,7 +188,7 @@ hermes tools
 # → TTS              → "Nous Subscription"
 ```
 
-The Tool Gateway is opt-in per tool, not all-or-nothing. See the [Tool Gateway docs](/user-guide/features/tool-gateway) for the full per-tool configuration matrix.
+The Tool Gateway is opt-in per tool, not all-or-nothing. The managed backends show up in `hermes tools` whether or not you're logged into Nous Portal — if you pick "Nous Subscription" before authenticating, Hermes runs the Portal login inline (it won't change your inference provider or touch your other tools). See the [Tool Gateway docs](/user-guide/features/tool-gateway) for the full per-tool configuration matrix.
 
 ### Subscription management
 

@@ -2,6 +2,7 @@
 
 import os
 import json
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -88,6 +89,35 @@ class TestRedactKey:
         assert "not set" in result.lower() or result == "***" or "\x1b" in result
 
 
+class TestSessionTokenInjection:
+    """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
+    /api + /api/ws calls with it. The backend must adopt that token, else every
+    desktop request 401s ("gateway is offline"). A main-merge once silently
+    dropped this read — this guards the contract, not a literal value.
+    """
+
+    def test_honors_injected_token(self, monkeypatch):
+        import importlib
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
+        try:
+            importlib.reload(ws)
+            assert ws._SESSION_TOKEN == "desktop-seeded-token"
+        finally:
+            monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+            importlib.reload(ws)
+
+    def test_falls_back_to_random_token(self, monkeypatch):
+        import importlib
+        import hermes_cli.web_server as ws
+
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        importlib.reload(ws)
+
+        assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
+
+
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------
@@ -120,6 +150,263 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+
+    def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
+        """Session rows without persisted cwd must not inherit TERMINAL_CWD.
+
+        /api/sessions should reflect per-session DB state, not process/global
+        cwd settings, so workspace grouping stays stable and deterministic.
+        """
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("TERMINAL_CWD", "/tmp/global-default")
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="session-no-cwd", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+
+        rows = resp.json()["sessions"]
+        row = next(s for s in rows if s["id"] == "session-no-cwd")
+        assert row["cwd"] is None
+
+    def test_get_sessions_forwards_min_messages(self, monkeypatch):
+        """The ?min_messages= filter must reach SessionDB.
+
+        The desktop session picker calls /api/sessions?...&min_messages=N to
+        hide empty sessions. The param was silently dropped from the handler
+        in a merge once (SessionDB still supported it); guard the wiring.
+        """
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, limit, offset, min_message_count=0):
+                captured["list"] = min_message_count
+                return []
+
+            def session_count(self, min_message_count=0):
+                captured["count"] = min_message_count
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0&min_messages=3")
+        assert resp.status_code == 200
+        assert captured["list"] == 3
+        assert captured["count"] == 3
+
+    def test_rename_session_updates_title(self):
+        """PATCH /api/sessions/{id} renames a session (regression: the route
+        was missing entirely, so the desktop rename dialog got a 405)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="rename-me", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/rename-me", json={"title": "My Chat"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": "My Chat"}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("rename-me") == "My Chat"
+        finally:
+            db.close()
+
+    def test_rename_session_clears_title_when_empty(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="clear-me", source="cli")
+            db.set_session_title("clear-me", "Has A Title")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/clear-me", json={"title": ""})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": ""}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("clear-me") is None
+        finally:
+            db.close()
+
+    def test_rename_session_not_found(self):
+        resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
+        assert resp.status_code == 404
+
+    def test_audio_transcription_endpoint(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        captured = {}
+
+        def fake_transcribe_audio(path):
+            captured["path"] = path
+            return {
+                "success": True,
+                "transcript": "hello from voice mode",
+                "provider": "test",
+            }
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "transcript": "hello from voice mode",
+            "provider": "test",
+        }
+        assert captured["path"].endswith(".webm")
+        assert not Path(captured["path"]).exists()
+
+    def test_audio_transcription_rejects_invalid_base64(self):
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,not base64",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "base64" in resp.json()["detail"]
+
+    def test_desktop_audio_routes_registered(self):
+        """All three desktop voice endpoints must exist.
+
+        The renderer (apps/desktop) calls /api/audio/transcribe, /speak, and
+        /elevenlabs/voices. /speak + /voices were silently dropped in a merge
+        once; this guards the contract so a future merge can't lose them
+        without failing CI.
+        """
+        from hermes_cli.web_server import app
+
+        paths = {getattr(r, "path", None) for r in app.routes}
+        assert "/api/audio/transcribe" in paths
+        assert "/api/audio/speak" in paths
+        assert "/api/audio/elevenlabs/voices" in paths
+
+    def test_elevenlabs_voices_unavailable_without_key(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_env", lambda: {})
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        resp = self.client.get("/api/audio/elevenlabs/voices")
+        assert resp.status_code == 200
+        assert resp.json() == {"available": False, "voices": []}
+
+    def test_speak_text_returns_base64_data_url(self, monkeypatch, tmp_path):
+        import tools.tts_tool as tts_tool
+
+        audio_file = tmp_path / "speech.mp3"
+        audio_file.write_bytes(b"ID3fake-audio-bytes")
+
+        def fake_tts(text):
+            return json.dumps({
+                "success": True,
+                "file_path": str(audio_file),
+                "provider": "test",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post("/api/audio/speak", json={"text": "hello there"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["mime_type"] == "audio/mpeg"
+        assert body["data_url"].startswith("data:audio/mpeg;base64,")
+        assert body["provider"] == "test"
+        # The handler streams the bytes back and removes the temp file.
+        assert not audio_file.exists()
+
+    def test_speak_text_requires_nonempty_text(self):
+        resp = self.client.post("/api/audio/speak", json={"text": "   "})
+        assert resp.status_code == 400
+
+    def test_update_hermes_returns_docker_guidance_without_spawning(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        spawned = False
+
+        def fail_spawn(*_args, **_kwargs):
+            nonlocal spawned
+            spawned = True
+            raise AssertionError("docker update guard should not spawn hermes update")
+
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["name"] == "hermes-update"
+        assert data["pid"] is None
+        assert data["error"] == "docker_update_unsupported"
+        assert "docker pull nousresearch/hermes-agent:latest" in data["message"]
+        assert spawned is False
+
+        status = self.client.get("/api/actions/hermes-update/status")
+        assert status.status_code == 200
+        status_data = status.json()
+        assert status_data["running"] is False
+        assert status_data["exit_code"] == 1
+        assert status_data["pid"] is None
+        assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
+
+    def test_update_hermes_spawns_on_non_docker_install(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class Proc:
+            pid = 12345
+
+            def poll(self):
+                return None
+
+        calls = []
+
+        def fake_spawn(subcommand, name):
+            calls.append((subcommand, name))
+            return Proc()
+
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "pid": 12345, "name": "hermes-update"}
+        assert calls == [(["update"], "hermes-update")]
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -297,6 +584,82 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 200
 
+    def test_get_messaging_platforms(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["platforms"]
+        telegram = next(platform for platform in platforms if platform["id"] == "telegram")
+        assert telegram["name"] == "Telegram"
+        assert telegram["enabled"] is False
+        assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
+
+    def test_messaging_catalog_covers_gateway_platforms(self):
+        """Catalog is derived from the Platform enum, so every built-in shows up."""
+        from gateway.config import Platform
+
+        resp = self.client.get("/api/messaging/platforms")
+        platforms = {entry["id"] for entry in resp.json()["platforms"]}
+
+        for member in Platform.__members__.values():
+            if member.value == "local":
+                continue
+            assert member.value in platforms, f"Missing gateway platform {member.value} from /api/messaging/platforms"
+
+    def test_messaging_catalog_includes_plugin_platforms(self, monkeypatch):
+        """Plugin-registered adapters appear in the catalog without per-platform code."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        entry = PlatformEntry(
+            name="ircfake",
+            label="IRC (test)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            required_env=["IRC_SERVER"],
+            install_hint="Connect to IRC.",
+            source="plugin",
+        )
+        platform_registry.register(entry)
+        try:
+            resp = self.client.get("/api/messaging/platforms")
+            ids = {row["id"]: row for row in resp.json()["platforms"]}
+            assert "ircfake" in ids
+            assert ids["ircfake"]["name"] == "IRC (test)"
+            assert any(field["key"] == "IRC_SERVER" and field["required"] for field in ids["ircfake"]["env_vars"])
+        finally:
+            platform_registry.unregister("ircfake")
+
+    def test_update_messaging_platform_saves_env_and_enablement(self):
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={
+                "enabled": False,
+                "env": {"TELEGRAM_BOT_TOKEN": "1234567890abcdef"},
+            },
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["TELEGRAM_BOT_TOKEN"] == "1234567890abcdef"
+        assert load_config()["platforms"]["telegram"]["enabled"] is False
+
+        status = self.client.get("/api/messaging/platforms").json()["platforms"]
+        telegram = next(platform for platform in status if platform["id"] == "telegram")
+        assert telegram["enabled"] is False
+
+    def test_messaging_platform_test_reports_missing_required_setup(self):
+        resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
+        assert resp.status_code == 200
+
+        resp = self.client.post("/api/messaging/platforms/discord/test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["state"] == "not_configured"
+        assert "DISCORD_BOT_TOKEN" in data["message"]
+
     def test_session_token_endpoint_removed(self):
         """GET /api/auth/session-token should no longer exist (token injected via HTML)."""
         resp = self.client.get("/api/auth/session-token")
@@ -346,6 +709,133 @@ class TestWebServerEndpoints:
         assert resp.status_code in {200, 404}
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
+
+    def test_set_model_main_nous_applies_gateway_defaults(self, monkeypatch):
+        """Switching the main provider to Nous calls apply_nous_managed_defaults
+        (mirroring the CLI's post-model-selection Tool Gateway routing) and
+        surfaces the routed tools in the response."""
+        import hermes_cli.nous_subscription as ns
+
+        called = {}
+
+        def fake_apply(config, *, enabled_toolsets=None, force_fresh=False):
+            called["enabled"] = set(enabled_toolsets or ())
+            called["force_fresh"] = force_fresh
+            # Simulate routing the unconfigured web tool through the gateway.
+            web = config.setdefault("web", {})
+            web["backend"] = "firecrawl"
+            return {"web"}
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", fake_apply)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "nous"
+        assert data["gateway_tools"] == ["web"]
+        assert called["force_fresh"] is True
+
+    def test_set_model_main_non_nous_skips_gateway_defaults(self, monkeypatch):
+        """Non-Nous providers must NOT trigger Tool Gateway auto-routing."""
+        import hermes_cli.nous_subscription as ns
+
+        def boom(*args, **kwargs):  # pragma: no cover - must not be called
+            raise AssertionError("apply_nous_managed_defaults called for non-nous provider")
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", boom)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data.get("gateway_tools", []) == []
+
+    def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
+        """A Portal/gateway hiccup must never prevent saving the model."""
+        import hermes_cli.nous_subscription as ns
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("portal unreachable")
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", boom)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data.get("gateway_tools", []) == []
+
+    def test_recommended_default_nous_honors_free_tier(self, monkeypatch):
+        """For a free-tier Nous user, the recommended default must be a free
+        model (mirroring `hermes model`), not the first curated paid entry."""
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["paid/expensive", "free/cheap"])
+        monkeypatch.setattr(
+            models_mod, "get_pricing_for_provider",
+            lambda provider: {"paid/expensive": {"input": "1"}, "free/cheap": {"input": "0"}},
+        )
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: True)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_free_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        # Free partition keeps only the free model selectable.
+        monkeypatch.setattr(
+            models_mod, "partition_nous_models_by_tier",
+            lambda ids, pricing, free_tier: (["free/cheap"], ["paid/expensive"]),
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "nous"
+        assert data["model"] == "free/cheap"
+        assert data["free_tier"] is True
+
+    def test_recommended_default_nous_paid_uses_curated_default(self, monkeypatch):
+        """A paid Nous user gets the first curated/paid-augmented model."""
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["top/model", "other/model"])
+        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "nous"
+        assert data["model"] == "top/model"
+        assert data["free_tier"] is False
+
+    def test_recommended_default_handles_failure_gracefully(self, monkeypatch):
+        """Endpoint never 500s — returns empty model on internal error."""
+        import hermes_cli.models as models_mod
+
+        def boom():
+            raise RuntimeError("portal down")
+
+        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", boom)
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == ""
+        assert data["free_tier"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -926,6 +1416,93 @@ class TestNewEndpoints:
                 "tools": ["memory_read"],
             },
         ]
+
+    def test_toggle_toolset_enable_disable(self):
+        """PUT /api/tools/toolsets/{name} round-trips through config and the list view."""
+        # Enable a toolset that is off-by-default so the state change is observable.
+        resp = self.client.put("/api/tools/toolsets/x_search", json={"enabled": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["name"] == "x_search"
+        assert body["enabled"] is True
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["x_search"]["enabled"] is True
+
+        # Disable it again.
+        resp = self.client.put("/api/tools/toolsets/x_search", json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is False
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["x_search"]["enabled"] is False
+
+    def test_toggle_toolset_unknown_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/not_a_real_toolset", json={"enabled": True}
+        )
+        assert resp.status_code == 400
+
+    def test_get_toolset_config_returns_provider_matrix(self):
+        """GET .../config returns provider rows with structured env_vars."""
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "tts"
+        assert data["has_category"] is True
+        assert isinstance(data["providers"], list)
+        assert data["providers"], "tts always has at least the built-in providers"
+        for prov in data["providers"]:
+            assert "name" in prov
+            assert "env_vars" in prov
+            assert isinstance(prov["env_vars"], list)
+            for ev in prov["env_vars"]:
+                assert "key" in ev
+                assert "is_set" in ev
+
+    def test_get_toolset_config_no_category_toolset(self):
+        """A toolset without a TOOL_CATEGORIES entry returns has_category False."""
+        resp = self.client.get("/api/tools/toolsets/todo/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "todo"
+        assert data["has_category"] is False
+        assert data["providers"] == []
+
+    def test_get_toolset_config_unknown_returns_400(self):
+        resp = self.client.get("/api/tools/toolsets/not_a_real_toolset/config")
+        assert resp.status_code == 400
+
+    def test_select_toolset_provider_persists_backend(self):
+        """PUT .../provider writes the backend selection to config."""
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["name"] == "web"
+        assert body["provider"] == "Firecrawl Self-Hosted"
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["web"]["backend"] == "firecrawl"
+
+    def test_select_toolset_provider_unknown_provider_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "No Such Provider"},
+        )
+        assert resp.status_code == 400
+
+    def test_select_toolset_provider_unknown_toolset_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/not_a_real_toolset/provider",
+            json={"provider": "whatever"},
+        )
+        assert resp.status_code == 400
 
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")
@@ -2373,6 +2950,26 @@ class TestPtyWebSocket:
         assert exc.value.code == 4400
 
 
+def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
+    import hermes_cli.main as cli_main
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(
+        cli_main,
+        "_make_tui_argv",
+        lambda *_args, **_kwargs: (["node", "fake-tui.js"], Path("/tmp")),
+    )
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+
+    _argv, _cwd, env = ws._resolve_chat_argv()
+
+    assert env is not None
+    gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
+    assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
+    assert "token=" in gateway_url
+
+
 class TestDashboardPluginStaticAssetAllowlist:
     """``/dashboard-plugins/<name>/<path>`` is unauthenticated by design —
     the SPA loads plugin JS via ``<script src>`` and CSS via
@@ -2445,4 +3042,82 @@ class TestDashboardPluginStaticAssetAllowlist:
         # 403 traversal-blocked OR 404 (depending on URL decode order)
         # — never 200.
         assert resp.status_code in (403, 404)
+
+
+def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
+    """Build a drop-in for httpx.Client whose .get() returns a canned status
+    (or raises a transport error). Patched in for the credential-validate probe
+    so tests never touch the network."""
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+        @property
+        def is_success(self):
+            return 200 <= self.status_code < 300
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            if raise_exc:
+                raise RuntimeError("connection refused")
+            return _Resp(status)
+
+    return _Client
+
+
+class TestValidateProviderCredential:
+    """Live-probe credential validation (/api/providers/validate)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _post(self, key, value):
+        return self.client.post("/api/providers/validate", json={"key": key, "value": value})
+
+    def test_rejected_key_blocks(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=401))
+        data = self._post("OPENROUTER_API_KEY", "sk-bogus").json()
+        assert data["ok"] is False and data["reachable"] is True
+
+    def test_valid_key_passes(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        data = self._post("OPENAI_API_KEY", "sk-real").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_rate_limited_counts_as_valid(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=429))
+        data = self._post("XAI_API_KEY", "xai-real").json()
+        assert data["ok"] is True
+
+    def test_network_error_is_unreachable_not_blocking(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        data = self._post("OPENROUTER_API_KEY", "sk-real").json()
+        assert data["ok"] is False and data["reachable"] is False
+
+    def test_unknown_provider_is_not_validated(self):
+        # No probe for this key → don't block (ok True, reachable False).
+        data = self._post("SOME_OTHER_API_KEY", "whatever-value").json()
+        assert data["ok"] is True and data["reachable"] is False
+
+    def test_empty_value_rejected(self):
+        data = self._post("OPENAI_API_KEY", "   ").json()
+        assert data["ok"] is False
 

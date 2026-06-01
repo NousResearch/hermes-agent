@@ -295,6 +295,60 @@ async def test_send_reports_retryable_error_on_request_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_message_tool_routes_fluxer_media_to_standalone_even_with_live_runner(monkeypatch):
+    from gateway.config import Platform, PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from tools.send_message_tool import _send_via_adapter
+
+    platform = Platform("fluxer")
+    pconfig = PlatformConfig(
+        enabled=True,
+        extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+    )
+    live_adapter = AsyncMock()
+    live_adapter.send = AsyncMock(return_value=type("Result", (), {"success": True, "message_id": "live", "error": None})())
+    runner = type("Runner", (), {"adapters": {platform: live_adapter}})()
+    standalone = AsyncMock(return_value={"success": True, "message_id": "standalone"})
+
+    original = platform_registry.get("fluxer")
+    platform_registry.register(
+        PlatformEntry(
+            name="fluxer",
+            label="Fluxer",
+            adapter_factory=lambda cfg: FluxerAdapter(cfg),
+            check_fn=lambda: True,
+            standalone_sender_fn=standalone,
+            max_message_length=4000,
+        )
+    )
+    try:
+        with patch("gateway.run._gateway_runner_ref", return_value=runner):
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                "chan-1",
+                "",
+                media_files=[("/tmp/reply.ogg", True)],
+            )
+    finally:
+        if original is not None:
+            platform_registry.register(original)
+        else:
+            platform_registry.unregister("fluxer")
+
+    assert result == {"success": True, "message_id": "standalone"}
+    live_adapter.send.assert_not_awaited()
+    standalone.assert_awaited_once_with(
+        pconfig,
+        "chan-1",
+        "",
+        thread_id=None,
+        media_files=[("/tmp/reply.ogg", True)],
+        force_document=False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_message_create_dispatches_normalized_event(monkeypatch):
     from gateway.config import PlatformConfig
 

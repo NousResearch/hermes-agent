@@ -184,6 +184,25 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     return False
 
 
+def _discover_gateway_plugins_for_startup() -> None:
+    """Force-load plugin adapters before gateway platform creation.
+
+    Gateway config loading can trigger plugin discovery before bundled
+    platform plugins have registered, leaving the global plugin manager in a
+    discovered-but-incomplete state. A non-forced startup discovery then becomes
+    a no-op and platforms such as Discord remain absent from
+    ``platform_registry``. Force a rescan at gateway startup so enabled
+    platforms can always create their bundled/plugin adapters.
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins(force=True)
+    except Exception:
+        logger.warning(
+            "plugin discovery failed at gateway startup", exc_info=True,
+        )
+
+
 def _gateway_loop_exception_handler(
     loop: "asyncio.AbstractEventLoop", context: Dict[str, Any]
 ) -> None:
@@ -4635,13 +4654,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # gateway lazily imports run_agent inside per-request handlers,
         # so the discover_plugins() side-effect in model_tools.py is NOT
         # guaranteed to have run by the time we reach this point.
-        try:
-            from hermes_cli.plugins import discover_plugins
-            discover_plugins()
-        except Exception:
-            logger.warning(
-                "plugin discovery failed at gateway startup", exc_info=True,
-            )
+        _discover_gateway_plugins_for_startup()
 
         # Register declarative shell hooks from cli-config.yaml.  Gateway
         # has no TTY, so consent has to come from one of the three opt-in
@@ -5985,6 +5998,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ── Plugin-registered platforms (checked first) ───────────────────
         try:
             from gateway.platform_registry import platform_registry
+            if not platform_registry.is_registered(platform.value):
+                _discover_gateway_plugins_for_startup()
             if platform_registry.is_registered(platform.value):
                 adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is not None:

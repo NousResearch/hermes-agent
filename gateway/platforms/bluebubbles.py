@@ -9,6 +9,7 @@ downloading from PR #4588 (YuhangLin).
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -197,6 +198,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # aiohttp access logs write that request target to agent.log.
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
+        # Refuse to expose an unauthenticated webhook on a non-loopback bind.
+        # Without a password the auth check accepts any request, so binding to
+        # a reachable interface (e.g. 0.0.0.0) would be an open inbound funnel.
+        if self.webhook_host not in {"127.0.0.1", "localhost", "::1"} and not self.password:
+            raise RuntimeError(
+                "Refusing to start the BlueBubbles webhook on non-loopback host "
+                f"{self.webhook_host!r} without BLUEBUBBLES_PASSWORD set — this "
+                "would expose an unauthenticated webhook. Set a password or bind "
+                "to 127.0.0.1."
+            )
         site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
         await site.start()
         self._mark_connected()
@@ -796,7 +807,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or request.headers.get("x-guid")
             or request.headers.get("x-bluebubbles-guid")
         )
-        if token != self.password:
+        # Reject empty tokens explicitly: the `or`-chain above returns "" when
+        # any auth source is supplied with an empty value, and self.password
+        # defaults to "" when BLUEBUBBLES_PASSWORD is unset, so a bare
+        # `token != self.password` would let "" == "" authenticate. Use a
+        # constant-time comparison and require both sides to be non-empty.
+        if (
+            not token
+            or not self.password
+            or not hmac.compare_digest(str(token), str(self.password))
+        ):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             raw = await request.read()

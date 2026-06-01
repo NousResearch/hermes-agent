@@ -121,8 +121,8 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
             }
 
             if (d.type === 'prefill') {
-              // /rewind returns prefill: drop the chosen text into the
-              // composer so the user can edit and resubmit, instead of
+              // /undo returns prefill: drop the backed-up message text into
+              // the composer so the user can edit and resubmit, instead of
               // submitting it immediately like 'send'.
               if (d.notice?.trim()) {
                 sys(d.notice)

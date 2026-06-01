@@ -1,13 +1,14 @@
-"""Tests for /rewind handling in tui_gateway.
+"""Tests for /undo handling in tui_gateway.
 
-The TUI routes ``/rewind`` through ``command.dispatch`` (it's in
+The TUI routes ``/undo`` through ``command.dispatch`` (it's in
 ``_PENDING_INPUT_COMMANDS`` because the CLI handler queues input the
 slash-worker subprocess can't read). The server handles it directly,
 mutates SessionDB to soft-delete rows, refreshes the in-memory session
 history, fires the memory-provider hook with ``rewound=True``, and
 returns ``{"type": "prefill", "message": <text>, "notice": ...}`` so
 the Ink client drops the message into the composer for editing.
-See issue #21910.
+
+``/undo N`` backs up N user turns at once (default 1). See issue #21910.
 """
 
 from __future__ import annotations
@@ -57,8 +58,8 @@ def db(hermes_home):
 @pytest.fixture()
 def session_with_history(server, db):
     """Build a session with 3 user turns + assistant replies persisted in DB."""
-    sid = "sid-rewind"
-    session_key = "tui-rewind-1"
+    sid = "sid-undo"
+    session_key = "tui-undo-1"
     db.create_session(session_key, source="tui")
     for i in range(1, 4):
         db.append_message(session_key, "user", f"question {i}")
@@ -87,20 +88,20 @@ def _call(server, method, **params):
     return server._methods[method](1, params)
 
 
-def test_rewind_returns_prefill_with_target_text(server, session_with_history):
+def test_undo_returns_prefill_with_target_text(server, session_with_history):
     sid, session_key, s, agent = session_with_history
-    resp = _call(server, "command.dispatch", session_id=sid, name="rewind", arg="")
+    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     result = resp["result"]
     assert result["type"] == "prefill"
-    # v1 auto-picks the most recent user turn — "question 3"
+    # Default /undo backs up one user turn — "question 3"
     assert result["message"] == "question 3"
-    assert "Rewound" in result["notice"]
+    assert "Undid" in result["notice"]
 
 
-def test_rewind_truncates_in_memory_history(server, session_with_history, db):
+def test_undo_truncates_in_memory_history(server, session_with_history, db):
     sid, session_key, s, agent = session_with_history
-    _call(server, "command.dispatch", session_id=sid, name="rewind", arg="")
-    # After rewinding to "question 3", active history should be 4 rows:
+    _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
+    # After undoing to "question 3", active history should be 4 rows:
     # user q1, asst a1, user q2, asst a2
     assert len(s["history"]) == 4
     roles = [m["role"] for m in s["history"]]
@@ -109,14 +110,42 @@ def test_rewind_truncates_in_memory_history(server, session_with_history, db):
     assert s["history_version"] == 1
 
 
-def test_rewind_soft_deletes_rows_in_db(server, session_with_history, db):
+def test_undo_n_backs_up_multiple_turns(server, session_with_history, db):
+    """/undo 2 backs up two user turns to "question 2"."""
+    sid, session_key, s, agent = session_with_history
+    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="2")
+    result = resp["result"]
+    assert result["type"] == "prefill"
+    assert result["message"] == "question 2"
+    assert "2 turns" in result["notice"]
+    # Active history truncated to user q1 + asst a1
+    assert len(s["history"]) == 2
+    assert [m["role"] for m in s["history"]] == ["user", "assistant"]
+
+
+def test_undo_n_clamps_to_oldest_turn(server, session_with_history, db):
+    """/undo with N larger than the number of user turns backs up to the oldest."""
+    sid, session_key, s, agent = session_with_history
+    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="99")
+    result = resp["result"]
+    assert result["message"] == "question 1"
+    assert len(s["history"]) == 0
+
+
+def test_undo_rejects_invalid_count(server, session_with_history):
+    sid, _, _, _ = session_with_history
+    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="abc")
+    assert "error" in resp
+    assert "invalid count" in resp["error"]["message"].lower()
+
+
+def test_undo_soft_deletes_rows_in_db(server, session_with_history, db):
     sid, session_key, _, _ = session_with_history
-    _call(server, "command.dispatch", session_id=sid, name="rewind", arg="")
+    _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     # All rows still present
     all_rows = db.get_messages(session_key, include_inactive=True)
     assert len(all_rows) == 6
-    # 2 inactive (the "question 3" row + its trailing siblings — here just
-    # "question 3" + "answer 3", since target was the q3 user row).
+    # 2 inactive (the "question 3" row + its trailing "answer 3").
     active = [r for r in all_rows if r["active"] == 1]
     assert len(active) == 4
     # rewind_count bumped
@@ -124,9 +153,9 @@ def test_rewind_soft_deletes_rows_in_db(server, session_with_history, db):
     assert sess["rewind_count"] == 1
 
 
-def test_rewind_notifies_memory_provider(server, session_with_history):
+def test_undo_notifies_memory_provider(server, session_with_history):
     sid, session_key, _, agent = session_with_history
-    _call(server, "command.dispatch", session_id=sid, name="rewind", arg="")
+    _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     agent._memory_manager.on_session_switch.assert_called_once()
     args, kwargs = agent._memory_manager.on_session_switch.call_args
     assert args[0] == session_key
@@ -134,21 +163,21 @@ def test_rewind_notifies_memory_provider(server, session_with_history):
     assert kwargs["reset"] is False
 
 
-def test_rewind_refuses_when_session_busy(server, session_with_history):
+def test_undo_refuses_when_session_busy(server, session_with_history):
     sid, _, s, _ = session_with_history
     s["running"] = True
-    resp = _call(server, "command.dispatch", session_id=sid, name="rewind", arg="")
+    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     assert "error" in resp
     assert "busy" in resp["error"]["message"].lower()
 
 
-def test_rewind_errors_when_no_active_session(server):
-    resp = _call(server, "command.dispatch", session_id="no-such-sid", name="rewind", arg="")
+def test_undo_errors_when_no_active_session(server):
+    resp = _call(server, "command.dispatch", session_id="no-such-sid", name="undo", arg="")
     assert "error" in resp
     assert "no active session" in resp["error"]["message"].lower()
 
 
-def test_rewind_in_pending_input_commands(server):
-    """Registry sanity: /rewind must be in _PENDING_INPUT_COMMANDS so
+def test_undo_in_pending_input_commands(server):
+    """Registry sanity: /undo must be in _PENDING_INPUT_COMMANDS so
     slash.exec rejects it and the TUI falls through to command.dispatch."""
-    assert "rewind" in server._PENDING_INPUT_COMMANDS
+    assert "undo" in server._PENDING_INPUT_COMMANDS

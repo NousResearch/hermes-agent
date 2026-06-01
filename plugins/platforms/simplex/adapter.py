@@ -501,21 +501,24 @@ class SimplexAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a text message to a contact or group."""
-        corr_id = self._make_corr_id()
+        """Send a text message to a contact or group.
 
+        Long content is split into ``MAX_MESSAGE_LENGTH``-sized chunks via the
+        base :meth:`truncate_message` helper and sent in order; short content
+        is delivered as a single message.
+        """
         if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {content}"
+            prefix = f"#[{chat_id[6:]}] "
         else:
-            cmd_str = f"@[{chat_id}] {content}"
+            prefix = f"@[{chat_id}] "
 
-        payload = {
-            "corrId": corr_id,
-            "cmd": cmd_str,
-        }
+        for chunk in self.truncate_message(content, MAX_MESSAGE_LENGTH):
+            payload = {
+                "corrId": self._make_corr_id(),
+                "cmd": f"{prefix}{chunk}",
+            }
+            await self._send_ws(payload)
 
-        await self._send_ws(payload)
         return SendResult(success=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -640,19 +643,20 @@ async def _standalone_send(
 
     try:
         if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {message}"
+            prefix = f"#[{chat_id[6:]}] "
         else:
-            cmd_str = f"@[{chat_id}] {message}"
+            prefix = f"@[{chat_id}] "
 
-        payload = {
-            "corrId": f"hermes-snd-{int(time.time() * 1000)}",
-            "cmd": cmd_str,
-        }
+        chunks = BasePlatformAdapter.truncate_message(message, MAX_MESSAGE_LENGTH)
 
         async with _wsclient.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
-            await ws.send(json.dumps(payload))
-            # Give the daemon a moment to process the command before closing.
+            for i, chunk in enumerate(chunks):
+                payload = {
+                    "corrId": f"hermes-snd-{int(time.time() * 1000)}-{i}",
+                    "cmd": f"{prefix}{chunk}",
+                }
+                await ws.send(json.dumps(payload))
+            # Give the daemon a moment to process the command(s) before closing.
             await asyncio.sleep(0.5)
 
         return {"success": True, "platform": "simplex", "chat_id": chat_id}

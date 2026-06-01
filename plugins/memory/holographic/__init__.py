@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -112,6 +113,22 @@ def _load_plugin_config() -> dict:
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
 
+def _resolve_profile_db_path(db_path: str, hermes_home: str) -> str:
+    """Resolve holographic store paths in a profile-safe way.
+
+    Historically some profile configs used ``~/.hermes/memory_store.db``.
+    ``Path.expanduser()`` resolves that against process HOME, which can point at
+    the default/root Hermes home even when HERMES_HOME is a profile directory.
+    Treat the Hermes-root shorthand as the active profile's HERMES_HOME instead;
+    leave other ``~/...`` paths alone because those may be explicit user paths.
+    """
+    normalized = db_path.strip()
+    if normalized == "~/.hermes":
+        return hermes_home
+    if normalized.startswith("~/.hermes/"):
+        return str(Path(hermes_home) / normalized.removeprefix("~/.hermes/"))
+    return normalized
+
 class HolographicMemoryProvider(MemoryProvider):
     """Holographic memory with structured facts, entity resolution, and HRR retrieval."""
 
@@ -153,6 +170,7 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
+            {"key": "min_hrr_score", "description": "Minimum probe/reason score before returning HRR-only matches", "default": "0.35"},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -166,9 +184,11 @@ class HolographicMemoryProvider(MemoryProvider):
         if isinstance(db_path, str):
             db_path = db_path.replace("$HERMES_HOME", _hermes_home)
             db_path = db_path.replace("${HERMES_HOME}", _hermes_home)
+            db_path = _resolve_profile_db_path(db_path, _hermes_home)
         default_trust = float(self._config.get("default_trust", 0.5))
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
+        min_hrr_score = float(self._config.get("min_hrr_score", 0.35))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
 
         self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
@@ -177,6 +197,7 @@ class HolographicMemoryProvider(MemoryProvider):
             temporal_decay_half_life=temporal_decay,
             hrr_weight=hrr_weight,
             hrr_dim=hrr_dim,
+            min_hrr_score=min_hrr_score,
         )
         self._session_id = session_id
 

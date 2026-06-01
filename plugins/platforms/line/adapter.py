@@ -763,9 +763,11 @@ class LineAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         if not self.channel_access_token or not self.channel_secret:
+            access_token_env = _line_env_name(self.env_prefix, "ACCESS_TOKEN")
+            secret_env = _line_env_name(self.env_prefix, "SECRET")
             self._set_fatal_error(
                 "config_missing",
-                "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET must be set",
+                f"{access_token_env} and {secret_env} must be set",
                 retryable=False,
             )
             return False

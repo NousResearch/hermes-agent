@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -119,6 +120,51 @@ def test_admin_requirements_gate_needs_token_and_secret(monkeypatch):
 
     monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
     assert check_requirements_admin() is True
+
+
+@pytest.mark.asyncio
+async def test_missing_credentials_error_uses_adapter_env_names(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    for name in (
+        "LINE_CHANNEL_ACCESS_TOKEN",
+        "LINE_CHANNEL_SECRET",
+        "LINE_ADMIN_CHANNEL_ACCESS_TOKEN",
+        "LINE_ADMIN_CHANNEL_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        customer = LineAdapter(PlatformConfig(enabled=True))
+        admin = LineAdapter(
+            PlatformConfig(enabled=True),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    assert await customer.connect() is False
+    assert customer.fatal_error_message == (
+        "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET must be set"
+    )
+
+    assert await admin.connect() is False
+    assert admin.fatal_error_message == (
+        "LINE_ADMIN_CHANNEL_ACCESS_TOKEN and LINE_ADMIN_CHANNEL_SECRET must be set"
+    )
 
 
 def test_hmac_signatures_are_isolated_by_channel_secret(monkeypatch):

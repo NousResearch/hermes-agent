@@ -1126,6 +1126,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        if self._config is not None and not self._config.save_messages:
+            return
         if not self._manager or not self._session_key:
             return
 

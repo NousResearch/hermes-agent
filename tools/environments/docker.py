@@ -814,9 +814,9 @@ class DockerEnvironment(BaseEnvironment):
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)
-            if value is None:
+            if not value:
                 value = hermes_env.get(key)
-            if value is not None:
+            if value:
                 exec_env[key] = value
 
         args = []

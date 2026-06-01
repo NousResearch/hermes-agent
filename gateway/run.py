@@ -298,6 +298,11 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    try:
+        from agent.memory_manager import sanitize_context as _sanitize_gateway_context
+        redacted = _sanitize_gateway_context(redacted).strip()
+    except Exception:
+        pass
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
@@ -9559,7 +9564,9 @@ class GatewayRunner:
             except Exception:
                 pass
 
-        # Resolve runtime credentials for probing
+        # Resolve runtime credentials for probing. Do this before custom-provider
+        # context lookup so provider-only configs (model.provider=custom:name,
+        # no top-level model.base_url) can still match by resolved base_url.
         try:
             runtime = _resolve_runtime_agent_kwargs()
             provider = provider or runtime.get("provider")
@@ -9567,6 +9574,20 @@ class GatewayRunner:
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        if config_context_length is None and base_url:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                cp_ctx = get_custom_provider_context_length(
+                    model,
+                    base_url,
+                    custom_providers=custom_provs,
+                    config=data,
+                )
+                if cp_ctx is not None:
+                    config_context_length = cp_ctx
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,
@@ -10018,6 +10039,9 @@ class GatewayRunner:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+        session_info = self._format_session_info()
+        if session_info:
+            lines.extend(["", session_info])
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),

@@ -87,6 +87,37 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "1.0M" in info
 
+    def test_custom_provider_model_context_length_uses_resolved_base_url(self, runner, tmp_path):
+        config = """
+model:
+  default: gpt-5.5
+  provider: custom:cliproxy.yu8.lat
+custom_providers:
+  - name: cliproxy.yu8.lat
+    base_url: https://cliproxy.yu8.lat/v1
+    api_key: dummy
+    model: gpt-5.4
+    models:
+      gpt-5.4:
+        context_length: 1050000
+      gpt-5.5:
+        context_length: 1050000
+"""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config,
+            "gpt-5.5",
+            {
+                "provider": "custom:cliproxy.yu8.lat",
+                "base_url": "https://cliproxy.yu8.lat/v1",
+                "api_key": "dummy",
+            },
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.1M" in info
+        assert "config" in info
+
     def test_missing_config(self, runner, tmp_path):
         """No config.yaml should not crash."""
         p1, p2, p3 = _patch_info(tmp_path, None,  # don't create config

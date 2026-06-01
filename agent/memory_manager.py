@@ -45,18 +45,98 @@ _INTERNAL_CONTEXT_RE = re.compile(
     r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
     re.IGNORECASE,
 )
+_REVERSED_CONTEXT_RE = re.compile(
+    r'</\s*memory-context\s*>[\s\S]*?<\s*memory-context\s*>',
+    re.IGNORECASE,
+)
+_ORPHAN_CLOSE_CONTEXT_RE = re.compile(
+    r'</\s*memory-context\s*>[\s\S]*',
+    re.IGNORECASE,
+)
+# Greedy fallback: unclosed <memory-context> → strip everything after open tag
+_UNCLOSED_CONTEXT_RE = re.compile(
+    r'<\s*memory-context\s*>[\s\S]*',
+    re.IGNORECASE,
+)
 _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
+)
+_RESTART_RECOVERY_NOTE_RE = re.compile(
+    r'\[System note:\s*Your previous turn(?: in this session)? was interrupted.*?\]\s*',
+    re.IGNORECASE | re.DOTALL,
+)
+# Detect echoed system-prompt memory blocks (no <memory-context> tags).
+_ECHOED_MEMORY_HEADER_RE = re.compile(
+    r'^[═]{20,}\s*\n'
+    r'MEMORY \(your personal notes\).*\n'
+    r'[═]{20,}\s*\n'
+    r'[\s\S]*?'
+    r'(?=\n[═]{20,}\s*\n[^\n]*USER PROFILE|'
+    r'\n[═]{20,}\s*\n[^\n]*MEMORY \(|'
+    r'\n\n[A-Z][a-z]+[\s:—]|'
+    r'\Z)',
+    re.MULTILINE,
+)
+_ECHOED_USER_PROFILE_RE = re.compile(
+    r'^[═]{20,}\s*\n'
+    r'USER PROFILE \(who the user is\).*\n'
+    r'[═]{20,}\s*\n'
+    r'[\s\S]*?'
+    r'(?=\n[═]{20,}\s*\n[^\n]*(?:USER PROFILE|MEMORY)|'
+    r'\n\n[A-Z][a-z]+[\s:—]|'
+    r'\Z)',
+    re.MULTILINE,
+)
+_ECHOED_HINDSIGHT_RE = re.compile(
+    r'\[Hindsight Sidecar Recall[^\]]*\]\n[\s\S]*?'
+    r'(?=\n\[(?:Provider Recall|Hindsight|Persona|Atoms|Scenario)\]|\Z)',
+    re.MULTILINE,
+)
+_ECHOED_PROVIDER_RECALL_RE = re.compile(
+    r'\[Provider Recall\]\n[\s\S]*?'
+    r'(?=\n\[(?:Hindsight|Persona|Atoms|Scenario)\]|\Z)',
+    re.MULTILINE,
+)
+_ECHOED_LAYERS_RE = re.compile(
+    r'\[(?:Persona|Atoms|Scenario)\]\n[\s\S]*?'
+    r'(?=\n\[(?:Persona|Atoms|Scenario|Provider Recall|Hindsight)\]|\Z)',
+    re.MULTILINE,
 )
 
 
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
+    _orig = text
+    # 1. Balanced <memory-context>...</memory-context> blocks
     text = _INTERNAL_CONTEXT_RE.sub('', text)
+    # 1b. Reversed/orphan close→open spans are malformed but still unsafe.
+    text = _REVERSED_CONTEXT_RE.sub('', text)
+    # 1c. Orphan close tags are malformed but unsafe; fail closed by dropping
+    #     the rest of the output rather than exposing possible context payload.
+    text = _ORPHAN_CLOSE_CONTEXT_RE.sub('', text)
+    # 2. System notes
     text = _INTERNAL_NOTE_RE.sub('', text)
+    text = _RESTART_RECOVERY_NOTE_RE.sub('', text)
+    # 3. Unclosed <memory-context> — greedy: strip everything after open tag.
+    #    This MUST run before generic fence-tag removal; otherwise the opener
+    #    would be deleted first and the payload after it would leak.
+    text = _UNCLOSED_CONTEXT_RE.sub('', text)
+    # 4. Orphan fence tags (for example stray closing tags) are stripped as
+    #    inert markup after all payload-bearing spans have been removed.
     text = _FENCE_TAG_RE.sub('', text)
-    return text
+    # 5. Echoed system-prompt memory content (no tags, just raw content)
+    text = _ECHOED_MEMORY_HEADER_RE.sub('', text)
+    text = _ECHOED_USER_PROFILE_RE.sub('', text)
+    text = _ECHOED_HINDSIGHT_RE.sub('', text)
+    text = _ECHOED_PROVIDER_RECALL_RE.sub('', text)
+    text = _ECHOED_LAYERS_RE.sub('', text)
+    # 6. Collapse excessive blank lines left by removals
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    result = text.strip()
+    if len(_orig) != len(result):
+        logger.warning("sanitize_context: %d -> %d chars (stripped %d)", len(_orig), len(result), len(_orig) - len(result))
+    return result
 
 
 class StreamingContextScrubber:
@@ -87,14 +167,17 @@ class StreamingContextScrubber:
 
     _OPEN_TAG = "<memory-context>"
     _CLOSE_TAG = "</memory-context>"
+    _TAG_NAME = "memory-context"
 
     def __init__(self) -> None:
         self._in_span: bool = False
+        self._drop_until_reset: bool = False
         self._buf: str = ""
         self._at_block_boundary: bool = True
 
     def reset(self) -> None:
         self._in_span = False
+        self._drop_until_reset = False
         self._buf = ""
         self._at_block_boundary = True
 
@@ -107,29 +190,40 @@ class StreamingContextScrubber:
         """
         if not text:
             return ""
+        if self._drop_until_reset:
+            return ""
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
 
         while buf:
             if self._in_span:
-                idx = buf.lower().find(self._CLOSE_TAG)
-                if idx == -1:
+                close_match = self._find_tag(buf, closing=True)
+                if close_match is None:
                     # Hold back a potential partial close tag; drop the rest
-                    held = self._max_partial_suffix(buf, self._CLOSE_TAG)
+                    held = self._max_possible_tag_suffix(buf)
                     self._buf = buf[-held:] if held else ""
                     return "".join(out)
                 # Found close — skip span content + tag, continue
-                buf = buf[idx + len(self._CLOSE_TAG):]
+                _, end = close_match
+                buf = buf[end:]
                 self._in_span = False
             else:
-                idx = self._find_boundary_open_tag(buf)
-                if idx == -1:
+                open_match = self._find_tag(buf, closing=False)
+                close_match = self._find_tag(buf, closing=True)
+                if close_match is not None and (
+                    open_match is None or close_match[0] < open_match[0]
+                ):
+                    start, end = close_match
+                    if start > 0:
+                        self._append_visible(out, buf[:start])
+                    self._buf = ""
+                    self._in_span = False
+                    self._drop_until_reset = True
+                    return "".join(out)
+                if open_match is None:
                     # No open tag — hold back a potential partial open tag
-                    held = (
-                        self._max_pending_open_suffix(buf)
-                        or self._max_partial_suffix(buf, self._OPEN_TAG)
-                    )
+                    held = self._max_possible_tag_suffix(buf)
                     if held:
                         self._append_visible(out, buf[:-held])
                         self._buf = buf[-held:]
@@ -137,9 +231,10 @@ class StreamingContextScrubber:
                         self._append_visible(out, buf)
                     return "".join(out)
                 # Emit text before the tag, enter span
-                if idx > 0:
-                    self._append_visible(out, buf[:idx])
-                buf = buf[idx + len(self._OPEN_TAG):]
+                start, end = open_match
+                if start > 0:
+                    self._append_visible(out, buf[:start])
+                buf = buf[end:]
                 self._in_span = True
 
         return "".join(out)
@@ -152,6 +247,9 @@ class StreamingContextScrubber:
         truncated answer).  Otherwise the held-back partial-tag tail is
         emitted verbatim (it turned out not to be a real tag).
         """
+        if self._drop_until_reset:
+            self._buf = ""
+            return ""
         if self._in_span:
             self._buf = ""
             self._in_span = False
@@ -160,55 +258,83 @@ class StreamingContextScrubber:
         self._buf = ""
         return tail
 
-    @staticmethod
-    def _max_partial_suffix(buf: str, tag: str) -> int:
-        """Return the length of the longest buf-suffix that is a tag-prefix.
+    def _find_tag(self, buf: str, *, closing: bool) -> tuple[int, int] | None:
+        """Find a complete memory-context tag using sanitizer-compatible grammar.
 
-        Case-insensitive.  Returns 0 if no suffix could start the tag.
+        Matches ``<\\s*memory-context\\s*>`` and
+        ``</\\s*memory-context\\s*>`` case-insensitively.  If a partial tag is
+        present at the end of ``buf`` it returns ``None`` so the caller can
+        hold the tail for the next chunk.
         """
-        tag_lower = tag.lower()
-        buf_lower = buf.lower()
-        max_check = min(len(buf_lower), len(tag_lower) - 1)
-        for i in range(max_check, 0, -1):
-            if tag_lower.startswith(buf_lower[-i:]):
-                return i
-        return 0
-
-    def _find_boundary_open_tag(self, buf: str) -> int:
-        """Find an opening fence only when it starts a block-like span."""
-        buf_lower = buf.lower()
+        lower = buf.lower()
+        tag_len = len(self._TAG_NAME)
         search_start = 0
         while True:
-            idx = buf_lower.find(self._OPEN_TAG, search_start)
+            idx = lower.find("<", search_start)
             if idx == -1:
-                return -1
-            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
-                return idx
+                return None
+            pos = idx + 1
+            if pos >= len(buf):
+                return None
+            if closing:
+                if lower[pos] != "/":
+                    search_start = idx + 1
+                    continue
+                pos += 1
+                if pos >= len(buf):
+                    return None
+            else:
+                if lower[pos] == "/":
+                    search_start = idx + 1
+                    continue
+            while pos < len(buf) and buf[pos].isspace():
+                pos += 1
+            if pos + tag_len > len(buf):
+                return None
+            if lower[pos:pos + tag_len] != self._TAG_NAME:
+                search_start = idx + 1
+                continue
+            pos += tag_len
+            while pos < len(buf) and buf[pos].isspace():
+                pos += 1
+            if pos >= len(buf):
+                return None
+            if buf[pos] == ">":
+                return idx, pos + 1
             search_start = idx + 1
 
-    def _max_pending_open_suffix(self, buf: str) -> int:
-        """Hold a complete boundary tag until the following char confirms it."""
-        if not buf.lower().endswith(self._OPEN_TAG):
-            return 0
-        idx = len(buf) - len(self._OPEN_TAG)
-        if not self._is_block_boundary(buf, idx):
-            return 0
-        return len(self._OPEN_TAG)
+    def _max_possible_tag_suffix(self, buf: str) -> int:
+        """Hold a tail that could become a whitespace-tolerant fence tag.
 
-    def _has_block_opener_suffix(self, buf: str, idx: int) -> bool:
-        after_idx = idx + len(self._OPEN_TAG)
-        if after_idx >= len(buf):
+        Whitespace inside the final sanitizer's tag regex is unbounded, so a
+        small fixed suffix cap is unsafe: ``<`` followed by a long whitespace
+        run can be split across chunks and must not be emitted before the tag
+        name arrives.  Scan every suffix; the strings are tiny streaming
+        deltas, and privacy beats micro-optimizing this path.
+        """
+        for size in range(len(buf), 0, -1):
+            tail = buf[-size:]
+            if self._could_be_tag_prefix(tail):
+                return size
+        return 0
+
+    def _could_be_tag_prefix(self, text: str) -> bool:
+        lower = text.lower()
+        if not lower.startswith("<"):
             return False
-        return buf[after_idx] in "\r\n"
-
-    def _is_block_boundary(self, buf: str, idx: int) -> bool:
-        if idx == 0:
-            return self._at_block_boundary
-        preceding = buf[:idx]
-        last_newline = preceding.rfind("\n")
-        if last_newline == -1:
-            return self._at_block_boundary and preceding.strip() == ""
-        return preceding[last_newline + 1:].strip() == ""
+        pos = 1
+        if pos < len(lower) and lower[pos] == "/":
+            pos += 1
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        typed = lower[pos:]
+        # If the tag name is complete, only whitespace or the final '>' may
+        # follow.  If incomplete, it must be a prefix of memory-context.
+        if len(typed) <= len(self._TAG_NAME):
+            return self._TAG_NAME.startswith(typed)
+        return typed.startswith(self._TAG_NAME) and all(
+            ch.isspace() or ch == ">" for ch in text[pos + len(self._TAG_NAME):]
+        )
 
     def _append_visible(self, out: list[str], text: str) -> None:
         if not text:

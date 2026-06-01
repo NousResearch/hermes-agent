@@ -29,6 +29,36 @@ def test_schtasks_fallback_does_not_hide_unknown_errors():
     assert gateway_windows._should_fall_back(1, "ERROR: The system cannot find the file specified.") is False
 
 
+def test_exec_schtasks_decodes_localized_bytes_without_utf8_crash(monkeypatch):
+    """Localized schtasks output may be CP949/ANSI bytes while Hermes runs UTF-8 mode."""
+
+    class Proc:
+        returncode = 0
+        # Korean CP949 bytes that are invalid as UTF-8.
+        stdout = "작업 상태: 실행 중".encode("cp949")
+        stderr = b"\xbf"
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        assert kwargs["capture_output"] is True
+        assert "text" not in kwargs
+        return Proc()
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda do_setlocale=False: "cp949")
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: "C:/Windows/System32/schtasks.exe")
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, stdout, stderr = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
+
+    assert code == 0
+    assert "작업 상태" in stdout
+    assert isinstance(stderr, str)
+    assert calls[0][0] == ["C:/Windows/System32/schtasks.exe", "/Query", "/TN", "Hermes_Gateway"]
+
+
 def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
     """Avoid uv's venv pythonw launcher because it respawns console python.exe."""
 

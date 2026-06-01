@@ -29,6 +29,7 @@ Design notes
 from __future__ import annotations
 
 import ctypes
+import locale
 import os
 import re
 import shlex
@@ -97,6 +98,36 @@ def _quote_schtasks_arg(value: str) -> str:
 # schtasks.exe wrapper
 # ---------------------------------------------------------------------------
 
+def _decode_schtasks_output(data: bytes | str | None) -> str:
+    """Decode localized schtasks.exe output without crashing.
+
+    ``schtasks.exe`` emits localized Windows text using the process ANSI/OEM
+    code page on many systems.  Hermes may run with UTF-8-mode enabled, so
+    ``subprocess.run(..., text=True)`` can raise ``UnicodeDecodeError`` in its
+    reader thread before we get a CompletedProcess.  Capture bytes and decode
+    explicitly instead; if every likely codec fails, preserve diagnostics with
+    replacement characters rather than crashing gateway status/start/stop.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    encodings = ["mbcs", locale.getpreferredencoding(False), "utf-8"]
+    seen: set[str] = set()
+    for encoding in encodings:
+        if not encoding:
+            continue
+        key = encoding.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
     """Run ``schtasks.exe`` with a hard timeout. Return (code, stdout, stderr).
 
@@ -111,14 +142,17 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
         proc = subprocess.run(
             [schtasks, *args],
             capture_output=True,
-            text=True,
             timeout=_SCHTASKS_TIMEOUT_S,
             # CREATE_NO_WINDOW avoids a flashing console window when the CLI
             # is itself hosted in a TUI. See tools/browser_tool.py for the
             # same pattern and the windows-subprocess-sigint-storm.md ref.
             creationflags=0x08000000,  # CREATE_NO_WINDOW
         )
-        return (proc.returncode, proc.stdout or "", proc.stderr or "")
+        return (
+            proc.returncode,
+            _decode_schtasks_output(proc.stdout),
+            _decode_schtasks_output(proc.stderr),
+        )
     except subprocess.TimeoutExpired:
         return (124, "", f"schtasks timed out after {_SCHTASKS_TIMEOUT_S}s")
     except OSError as e:

@@ -3958,18 +3958,28 @@ class GatewayRunner:
                 _CREATE_NEW_PROCESS_GROUP = 0x00000200
                 _DETACHED_PROCESS = 0x00000008
                 _CREATE_NO_WINDOW = 0x08000000
+                env = os.environ.copy()
+                # The live gateway sets _HERMES_GATEWAY=1 so CLI lifecycle
+                # commands invoked *inside* an agent cannot kill their own host.
+                # This helper intentionally runs after the old gateway exits,
+                # so it must not inherit that self-targeting guard marker.
+                env.pop('_HERMES_GATEWAY', None)
                 subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=env,
                     creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW,
                 )
                 """
             ).strip()
+            restart_env = os.environ.copy()
+            restart_env.pop("_HERMES_GATEWAY", None)
             subprocess.Popen(
                 [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=restart_env,
                 **windows_detach_popen_kwargs(),
             )
             return

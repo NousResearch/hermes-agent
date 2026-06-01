@@ -182,6 +182,7 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     runner, _adapter = make_restart_runner()
     popen_calls = []
 
+    monkeypatch.setattr(gateway_run, "sys", __import__("types").SimpleNamespace(platform="linux", executable="python"))
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
@@ -202,6 +203,36 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_restart_does_not_inherit_gateway_guard(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "sys", __import__("types").SimpleNamespace(platform="win32", executable="python.exe"))
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
+    import hermes_cli._subprocess_compat as compat
+
+    monkeypatch.setattr(compat, "windows_detach_popen_kwargs", lambda: {})
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:3] == [gateway_run.sys.executable, "-c", cmd[2]]
+    assert cmd[-2:] == ["gateway", "restart"]
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+    assert "env.pop('_HERMES_GATEWAY', None)" in cmd[2]
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

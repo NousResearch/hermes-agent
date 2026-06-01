@@ -57,22 +57,32 @@ def _streaming_cfg():
     return {"calls": {"native": {"engine": "streaming"}}}
 
 
-def test_streaming_missing_extra_raises_clear_error(monkeypatch):
+def test_streaming_without_aiortc_raises_clear_error(monkeypatch):
+    """Slice 6: STREAMING now depends on aiortc (not pipecat). Absent → clear raise."""
     from gateway.calls.native.streaming import engine as eng
 
-    monkeypatch.setattr(eng, "pipecat_available", lambda: False)
+    monkeypatch.setattr(eng, "_aiortc_available", lambda: False)
     with pytest.raises(eng.StreamingExtraNotInstalled) as ei:
         eng.build_native_pipeline(_streaming_cfg(), turn_based_factory=lambda: object())
-    assert "simplex-streaming" in str(ei.value)
+    msg = str(ei.value)
+    assert "aiortc" in msg
+    assert "simplex-native-calls" in msg
 
 
-def test_streaming_present_defers_until_transport(monkeypatch):
+def test_streaming_with_aiortc_unavailable_via_monkeypatch_constructs(monkeypatch):
+    """With aiortc 'available' (monkeypatched), the STREAMING branch un-defers and
+    constructs a StreamingPipeline using the fake cognitive ports (no pipecat,
+    no real aiortc import — the core is pure asyncio)."""
     from gateway.calls.native.streaming import engine as eng
-    from gateway.calls.native.streaming.pipecat_transport import PipecatIntegrationDeferred
+    from gateway.calls.native.streaming.aiortc_transport import StreamingPipeline
 
-    monkeypatch.setattr(eng, "pipecat_available", lambda: True)
-    with pytest.raises(PipecatIntegrationDeferred):
-        eng.build_native_pipeline(_streaming_cfg(), turn_based_factory=lambda: object())
+    monkeypatch.setattr(eng, "_aiortc_available", lambda: True)
+    pipe = eng.build_native_pipeline(
+        _streaming_cfg(), turn_based_factory=lambda: object(), cognitive="fake"
+    )
+    assert isinstance(pipe, StreamingPipeline)
+    assert pipe.is_streaming is True
+    assert hasattr(pipe, "process_pcm16")
 
 
 def test_turn_based_default_returns_factory_product():

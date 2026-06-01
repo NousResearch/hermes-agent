@@ -595,7 +595,7 @@ class TestSecurityScanGate:
         from tools.skill_manager_tool import _security_scan_skill
 
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False), \
-             patch("tools.skill_manager_tool.scan_skill") as mock_scan:
+             patch("tools.skill_manager_tool.scan_skill_with_external_scanner") as mock_scan:
             result = _security_scan_skill(tmp_path)
 
         assert result is None
@@ -616,7 +616,7 @@ class TestSecurityScanGate:
             summary="ok",
         )
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
-             patch("tools.skill_manager_tool.scan_skill", return_value=fake_result) as mock_scan:
+             patch("tools.skill_manager_tool.scan_skill_with_external_scanner", return_value=fake_result) as mock_scan:
             result = _security_scan_skill(tmp_path)
 
         assert result is None
@@ -640,7 +640,7 @@ class TestSecurityScanGate:
             summary="dangerous",
         )
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
-             patch("tools.skill_manager_tool.scan_skill", return_value=fake_result):
+             patch("tools.skill_manager_tool.scan_skill_with_external_scanner", return_value=fake_result):
             result = _security_scan_skill(tmp_path)
 
         assert result is not None

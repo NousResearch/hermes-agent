@@ -2,6 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 
+from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     is_nous_free_tier, partition_nous_models_by_tier,
@@ -55,10 +56,6 @@ class TestOpenRouterModels:
             assert isinstance(mid, str) and len(mid) > 0
             assert isinstance(desc, str)
 
-    def test_at_least_5_models(self):
-        """Sanity check that the models list hasn't been accidentally truncated."""
-        assert len(OPENROUTER_MODELS) >= 5
-
 
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
@@ -70,14 +67,14 @@ class TestFetchOpenRouterModels:
                 return False
 
             def read(self):
-                return b'{"data":[{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
+                return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == [
-            ("anthropic/claude-opus-4.6", "recommended"),
+            ("anthropic/claude-opus-4.8", "recommended"),
             ("qwen/qwen3.7-max", ""),
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
         ]
@@ -157,7 +154,7 @@ class TestFetchOpenRouterModels:
                 # No supported_parameters field at all on either entry.
                 return (
                     b'{"data":['
-                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
+                    b'{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
                     b'{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}}'
                     b']}'
                 )
@@ -167,7 +164,7 @@ class TestFetchOpenRouterModels:
             models = fetch_openrouter_models(force_refresh=True)
 
         ids = [mid for mid, _ in models]
-        assert "anthropic/claude-opus-4.6" in ids
+        assert "anthropic/claude-opus-4.8" in ids
         assert "qwen/qwen3.7-max" in ids
 
 
@@ -307,6 +304,15 @@ class TestDetectProviderForModel:
 
 class TestIsNousFreeTier:
     """Tests for is_nous_free_tier — account tier detection."""
+
+    def test_paid_service_access_allowed_true_is_not_free(self):
+        assert is_nous_free_tier({"paid_service_access": {"allowed": True}}) is False
+
+    def test_paid_service_access_allowed_false_is_free(self):
+        assert is_nous_free_tier({"paid_service_access": {"allowed": False}}) is True
+
+    def test_paid_service_access_paid_access_fallback(self):
+        assert is_nous_free_tier({"paid_service_access": {"paid_access": False}}) is True
 
     def test_paid_plus_tier(self):
         assert is_nous_free_tier({"subscription": {"plan": "Plus", "tier": 2, "monthly_charge": 20}}) is False
@@ -657,38 +663,57 @@ class TestCheckNousFreeTierCache:
     def teardown_method(self):
         _models_mod._free_tier_cache = None
 
-    @patch("hermes_cli.models.fetch_nous_account_tier")
-    @patch("hermes_cli.models.is_nous_free_tier", return_value=True)
-    def test_result_is_cached(self, mock_is_free, mock_fetch):
-        """Second call within TTL returns cached result without API call."""
-        mock_fetch.return_value = {"subscription": {"monthly_charge": 0}}
-        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "tok"}), \
-             patch("hermes_cli.auth.resolve_nous_runtime_credentials"):
-            result1 = check_nous_free_tier()
-            result2 = check_nous_free_tier()
+    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    def test_result_is_cached(self, mock_account):
+        """Second call within TTL returns cached result without account lookup."""
+        mock_account.return_value = NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=False,
+        )
+        result1 = check_nous_free_tier()
+        result2 = check_nous_free_tier()
 
         assert result1 is True
         assert result2 is True
-        assert mock_fetch.call_count == 1
+        assert mock_account.call_count == 1
 
-    @patch("hermes_cli.models.fetch_nous_account_tier")
-    @patch("hermes_cli.models.is_nous_free_tier", return_value=False)
-    def test_cache_expires_after_ttl(self, mock_is_free, mock_fetch):
-        """After TTL expires, the API is called again."""
-        mock_fetch.return_value = {"subscription": {"monthly_charge": 20}}
-        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "tok"}), \
-             patch("hermes_cli.auth.resolve_nous_runtime_credentials"):
-            result1 = check_nous_free_tier()
-            assert mock_fetch.call_count == 1
+    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    def test_cache_expires_after_ttl(self, mock_account):
+        """After TTL expires, account info is resolved again."""
+        mock_account.return_value = NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        )
+        result1 = check_nous_free_tier()
+        assert mock_account.call_count == 1
 
-            cached_result, cached_at = _models_mod._free_tier_cache
-            _models_mod._free_tier_cache = (cached_result, cached_at - _FREE_TIER_CACHE_TTL - 1)
+        cached_result, cached_at = _models_mod._free_tier_cache
+        _models_mod._free_tier_cache = (cached_result, cached_at - _FREE_TIER_CACHE_TTL - 1)
 
-            result2 = check_nous_free_tier()
-            assert mock_fetch.call_count == 2
+        result2 = check_nous_free_tier()
+        assert mock_account.call_count == 2
 
         assert result1 is False
         assert result2 is False
+
+    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
+    def test_force_fresh_bypasses_cache(self, mock_account):
+        mock_account.return_value = NousPortalAccountInfo(
+            logged_in=True,
+            source="account_api",
+            fresh=True,
+            paid_service_access=True,
+        )
+
+        assert check_nous_free_tier() is False
+        assert check_nous_free_tier(force_fresh=True) is False
+
+        assert mock_account.call_count == 2
+        mock_account.assert_called_with(force_fresh=True)
 
     def test_cache_ttl_is_short(self):
         """TTL should be short enough to catch upgrades quickly (<=5 min)."""

@@ -15,6 +15,7 @@ const buildUiState = (): UiState => ({
   detailsModeCommandOverride: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
+  liveSessionCount: 0,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,
   pasteCollapseLines: 5,

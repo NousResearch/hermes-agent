@@ -1,7 +1,5 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
-import skills from "../../data/skills.json";
-import meta from "../../data/skills-meta.json";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -21,9 +19,14 @@ interface Skill {
   docsPath?: string;
   identifier?: string;
   installCmd?: string;
+  /** Lowercase pre-joined haystack used by the search filter.
+   *  Built once at load time so per-keystroke filtering is a single
+   *  `.includes()` per skill instead of array-join + toLowerCase on
+   *  every render. Skipped on the wire — added in the loader. */
+  _search?: string;
 }
 
-const allSkills: Skill[] = skills as Skill[];
+const allSkills: Skill[] = [];
 
 interface IndexMeta {
   extractedAt?: string;
@@ -32,7 +35,7 @@ interface IndexMeta {
   externalSource?: string;
   bySource?: Record<string, number>;
 }
-const indexMeta: IndexMeta = meta as IndexMeta;
+const indexMeta: IndexMeta = {};
 
 function formatRelativeTime(iso?: string): string | null {
   if (!iso) return null;
@@ -160,6 +163,13 @@ const SOURCE_CONFIG: Record<
     border: "rgba(251, 191, 36, 0.2)",
     icon: "\u{1F917}",
   },
+  NVIDIA: {
+    label: "NVIDIA",
+    color: "#76b900",
+    bg: "rgba(118, 185, 0, 0.08)",
+    border: "rgba(118, 185, 0, 0.25)",
+    icon: "\u{25B6}",
+  },
   VoltAgent: {
     label: "VoltAgent",
     color: "#facc15",
@@ -204,6 +214,7 @@ const SOURCE_ORDER = [
   "Anthropic",
   "OpenAI",
   "HuggingFace",
+  "NVIDIA",
   "skills.sh",
   "ClawHub",
   "browse.sh",
@@ -398,8 +409,43 @@ function StatCard({ value, label, color }: { value: number; label: string; color
 
 const PAGE_SIZE = 60;
 
+// Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
+// `static/api/` ends up at `/docs/api/`. Hardcoding here is fine because the
+// same `baseUrl` is enforced repo-wide; if it ever changes, this is the only
+// place that needs to follow.
+const SKILLS_URL = "/docs/api/skills.json";
+const META_URL = "/docs/api/skills-meta.json";
+
+function buildSearchHaystack(s: Skill): string {
+  // Pre-compute the lowercase blob the search filter scans. Done once at
+  // load time instead of per-keystroke per-skill. With 50k+ skills the
+  // per-keystroke variant was unusably slow.
+  return [
+    s.name,
+    s.description,
+    s.overview,
+    s.categoryLabel,
+    s.author,
+    ...(s.tags || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 export default function SkillsDashboard() {
+  // Lazy-loaded data. Was bundled into the JS chunk (~22 MB at 50k skills,
+  // which made the initial page load unusable on mobile). Now fetched on
+  // mount from the same CDN that serves the docs.
+  const [data, setData] = useState<{ skills: Skill[]; meta: IndexMeta } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const [search, setSearch] = useState("");
+  // Debounced copy of `search` — used by the filter. Without the debounce,
+  // typing into the search box ran .filter() over the whole catalog on
+  // every keystroke, which on a 50k-item list felt like the page had
+  // hung. 150ms gives a snappy feel without lagging behind the user.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
@@ -407,6 +453,42 @@ export default function SkillsDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [sk, mt] = await Promise.all([
+          fetch(SKILLS_URL).then((r) => {
+            if (!r.ok) throw new Error(`skills.json HTTP ${r.status}`);
+            return r.json();
+          }),
+          fetch(META_URL).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+        ]);
+        if (cancelled) return;
+        const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
+        // Stamp the precomputed search haystack onto each row.
+        for (const s of skillsArr) s._search = buildSearchHaystack(s);
+        setData({ skills: skillsArr, meta: mt || {} });
+      } catch (err) {
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Debounce the search input — 150ms feels instant while preventing the
+  // filter from running on every individual keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 150);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const allSkillsLocal: Skill[] = data?.skills ?? [];
+  const indexMetaLocal: IndexMeta = data?.meta ?? indexMeta;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -424,15 +506,15 @@ export default function SkillsDashboard() {
   }, []);
 
   const sources = useMemo(() => {
-    const set = new Set(allSkills.map((s) => s.source));
+    const set = new Set(allSkillsLocal.map((s) => s.source));
     return SOURCE_ORDER.filter((s) => s === "all" || set.has(s));
-  }, []);
+  }, [allSkillsLocal]);
 
   const categoryEntries = useMemo(() => {
     const pool =
       sourceFilter === "all"
-        ? allSkills
-        : allSkills.filter((s) => s.source === sourceFilter);
+        ? allSkillsLocal
+        : allSkillsLocal.filter((s) => s.source === sourceFilter);
     const map = new Map<string, { label: string; count: number }>();
     for (const s of pool) {
       const key = s.category || "uncategorized";
@@ -449,27 +531,25 @@ export default function SkillsDashboard() {
     return Array.from(map.entries())
       .sort((a, b) => b[1].count - a[1].count)
       .map(([key, { label, count }]) => ({ key, label, count }));
-  }, [sourceFilter]);
+  }, [sourceFilter, allSkillsLocal]);
 
   const filtered = useMemo(() => {
-    const q = search.toLowerCase().trim();
-    return allSkills.filter((s) => {
+    const q = debouncedSearch.toLowerCase().trim();
+    return allSkillsLocal.filter((s) => {
       if (sourceFilter !== "all" && s.source !== sourceFilter) return false;
       if (categoryFilter !== "all" && s.category !== categoryFilter) return false;
       if (q) {
-        const haystack = [s.name, s.description, s.overview, s.categoryLabel, s.author, ...(s.tags || [])]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(q);
+        // _search is pre-built in the load effect — single .includes() per row.
+        return (s._search || "").includes(q);
       }
       return true;
     });
-  }, [search, sourceFilter, categoryFilter]);
+  }, [debouncedSearch, sourceFilter, categoryFilter, allSkillsLocal]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
     setExpandedCard(null);
-  }, [search, sourceFilter, categoryFilter]);
+  }, [debouncedSearch, sourceFilter, categoryFilter]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -512,15 +592,22 @@ export default function SkillsDashboard() {
             <h1 className={styles.heroTitle}>Skills Hub</h1>
             <p className={styles.heroSub}>
               Discover, search, and install from{" "}
-              <strong className={styles.heroAccent}>{allSkills.length}</strong> skills
-              across {sources.length - 1} registries
+              <strong className={styles.heroAccent}>
+                {data ? allSkillsLocal.length.toLocaleString() : "…"}
+              </strong>{" "}
+              skills across {sources.length - 1} registries
+              {loadError && (
+                <span style={{ color: "#f87171", marginLeft: 8 }}>
+                  · failed to load catalog ({loadError})
+                </span>
+              )}
             </p>
-            {(indexMeta?.indexGeneratedAt || indexMeta?.extractedAt) && (
+            {(indexMetaLocal?.indexGeneratedAt || indexMetaLocal?.extractedAt) && (
               <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
                 Catalog refreshed{" "}
-                <span title={indexMeta.indexGeneratedAt || indexMeta.extractedAt}>
+                <span title={indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt}>
                   {formatRelativeTime(
-                    indexMeta.indexGeneratedAt || indexMeta.extractedAt,
+                    indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt,
                   ) || "recently"}
                 </span>
                 {" "}· auto-rebuilt twice daily
@@ -529,18 +616,18 @@ export default function SkillsDashboard() {
 
             <div className={styles.statsRow}>
               <StatCard
-                value={allSkills.filter((s) => s.source === "built-in").length}
+                value={allSkillsLocal.filter((s) => s.source === "built-in").length}
                 label="Built-in"
                 color="#4ade80"
               />
               <StatCard
-                value={allSkills.filter((s) => s.source === "optional").length}
+                value={allSkillsLocal.filter((s) => s.source === "optional").length}
                 label="Optional"
                 color="#fbbf24"
               />
               <StatCard
                 value={
-                  allSkills.filter(
+                  allSkillsLocal.filter(
                     (s) => s.source !== "built-in" && s.source !== "optional"
                   ).length
                 }
@@ -548,7 +635,7 @@ export default function SkillsDashboard() {
                 color="#60a5fa"
               />
               <StatCard
-                value={new Set(allSkills.map((s) => s.category)).size}
+                value={new Set(allSkillsLocal.map((s) => s.category)).size}
                 label="Categories"
                 color="#a78bfa"
               />
@@ -592,8 +679,8 @@ export default function SkillsDashboard() {
               const conf = SOURCE_CONFIG[src];
               const count =
                 src === "all"
-                  ? allSkills.length
-                  : allSkills.filter((s) => s.source === src).length;
+                  ? allSkillsLocal.length
+                  : allSkillsLocal.filter((s) => s.source === src).length;
               return (
                 <button
                   key={src}

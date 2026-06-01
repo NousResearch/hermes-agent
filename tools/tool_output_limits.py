@@ -40,6 +40,10 @@ DEFAULT_MAX_BYTES = 50_000       # terminal_tool.MAX_OUTPUT_CHARS
 DEFAULT_MAX_LINES = 2000         # file_operations.MAX_LINES
 DEFAULT_MAX_LINE_LENGTH = 2000   # file_operations.MAX_LINE_LENGTH
 
+# Module-level cache — populated on first call.
+# Avoids repeated config file I/O on every tool call.
+_cached_limits: dict | None = None
+
 
 def _coerce_positive_int(value: Any, default: int) -> int:
     """Return ``value`` as a positive int, or ``default`` on any issue."""
@@ -58,7 +62,14 @@ def get_tool_output_limits() -> Dict[str, int]:
     Keys: ``max_bytes``, ``max_lines``, ``max_line_length``. Missing or
     invalid entries fall through to the ``DEFAULT_*`` constants. This
     function NEVER raises.
+
+    Result is cached for the process lifetime to avoid repeated disk I/O
+    on every tool call. Call ``_reset_tool_output_limits_cache()`` in
+    tests that need a fresh read after config changes.
     """
+    global _cached_limits
+    if _cached_limits is not None:
+        return _cached_limits
     try:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
@@ -68,13 +79,20 @@ def get_tool_output_limits() -> Dict[str, int]:
     except Exception:
         section = {}
 
-    return {
+    _cached_limits = {
         "max_bytes": _coerce_positive_int(section.get("max_bytes"), DEFAULT_MAX_BYTES),
         "max_lines": _coerce_positive_int(section.get("max_lines"), DEFAULT_MAX_LINES),
         "max_line_length": _coerce_positive_int(
             section.get("max_line_length"), DEFAULT_MAX_LINE_LENGTH
         ),
     }
+    return _cached_limits
+
+
+def _reset_tool_output_limits_cache() -> None:
+    """Reset the cached limits — for tests or after config hot-reload."""
+    global _cached_limits
+    _cached_limits = None
 
 
 def get_max_bytes() -> int:

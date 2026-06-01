@@ -378,7 +378,7 @@ class TestGatewayRuntimeStatus:
             "updated_at": "2025-01-01T00:00:00Z",
         }))
 
-        monkeypatch.setattr(status.sys, "argv", ["/new/path/hermes", "gateway", "run", "--replace"])
+        monkeypatch.setattr(status, "_get_live_process_argv", lambda pid: ["/new/path/hermes", "gateway", "run", "--replace"])
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
 
         status.write_runtime_status(gateway_state="running")
@@ -387,6 +387,21 @@ class TestGatewayRuntimeStatus:
         assert payload["argv"] == ["/new/path/hermes", "gateway", "run", "--replace"]
         assert payload["github_username"] == "Huntas-Claw"
         assert payload["platforms"]["discord"]["state"] == "connected"
+
+    def test_build_pid_record_prefers_live_process_argv(self, monkeypatch):
+        monkeypatch.setattr(status.os, "getpid", lambda: 4321)
+        monkeypatch.setattr(status, "_get_live_process_argv", lambda pid: ["/venv/bin/python3", "-m", "hermes_cli.main", "gateway", "run", "--replace"])
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 987654)
+        monkeypatch.setattr(status.sys, "argv", ["/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"])
+
+        payload = status._build_pid_record()
+
+        assert payload == {
+            "pid": 4321,
+            "kind": "hermes-gateway",
+            "argv": ["/venv/bin/python3", "-m", "hermes_cli.main", "gateway", "run", "--replace"],
+            "start_time": 987654,
+        }
 
 
 class TestTerminatePid:

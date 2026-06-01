@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -200,12 +201,40 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     return any(pattern in cmdline for pattern in patterns)
 
 
+def _get_live_process_argv(pid: int) -> list[str]:
+    """Return the live process argv when available, falling back to sys.argv."""
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    try:
+        raw = cmdline_path.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        raw = b""
+    if raw:
+        parts = [part.decode("utf-8", errors="ignore") for part in raw.split(b"\x00") if part]
+        if parts:
+            return parts
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "args="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return shlex.split(result.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+
+    return list(sys.argv)
+
+
 def _build_pid_record() -> dict:
+    pid = os.getpid()
     return {
-        "pid": os.getpid(),
+        "pid": pid,
         "kind": _GATEWAY_KIND,
-        "argv": list(sys.argv),
-        "start_time": _get_process_start_time(os.getpid()),
+        "argv": _get_live_process_argv(pid),
+        "start_time": _get_process_start_time(pid),
     }
 
 

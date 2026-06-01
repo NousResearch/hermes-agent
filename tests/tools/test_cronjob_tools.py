@@ -704,3 +704,71 @@ class TestValidateCronBaseUrl:
 
     def test_base_url_without_provider_rejected(self):
         assert self._v(None, "https://x.example/v1") is not None
+
+
+# =========================================================================
+# Recent delivered output (pull side of cron session-awareness)
+# =========================================================================
+
+class TestReadRecentOutputs:
+    """_extract_delivered_content / _read_recent_outputs / action='output'."""
+
+    def _write(self, root, job_id, fname, body):
+        from pathlib import Path
+        d = Path(root) / job_id
+        d.mkdir(parents=True, exist_ok=True)
+        (d / fname).write_text(body, encoding="utf-8")
+
+    def test_extract_agent_mode_response(self):
+        from tools.cronjob_tools import _extract_delivered_content
+        doc = (
+            "# Cron Job: foo\n\n**Job ID:** abc\n**Run Time:** 2026-06-01 09:00:00\n"
+            "**Schedule:** 0 9 * * *\n\n## Prompt\n\nsome prompt with --- inside\n\n"
+            "## Response\n\nGood morning, readiness is 88.\n"
+        )
+        assert _extract_delivered_content(doc) == "Good morning, readiness is 88."
+
+    def test_extract_no_agent_after_hr(self):
+        from tools.cronjob_tools import _extract_delivered_content
+        doc = (
+            "# Cron Job: bar\n\n**Job ID:** def\n**Run Time:** 2026-06-01 16:00:00\n"
+            "**Mode:** no_agent (script)\n\n---\n\nPR Watch found 3 issues.\n"
+        )
+        assert _extract_delivered_content(doc) == "PR Watch found 3 issues."
+
+    def test_read_recent_orders_newest_first_and_parses(self, tmp_path):
+        from tools.cronjob_tools import _read_recent_outputs
+        self._write(tmp_path, "j1", "2026-06-01_08-00-00.md",
+                    "# Cron Job: A\n\n**Job ID:** j1\n**Run Time:** 2026-06-01 08:00:00\n\n---\n\nold\n")
+        self._write(tmp_path, "j2", "2026-06-01_09-00-00.md",
+                    "# Cron Job: B\n\n**Job ID:** j2\n**Run Time:** 2026-06-01 09:00:00\n\n## Response\n\nnew\n")
+        import os, time
+        # ensure deterministic mtime ordering (j2 newer)
+        os.utime(tmp_path / "j1" / "2026-06-01_08-00-00.md", (time.time() - 100,) * 2)
+        os.utime(tmp_path / "j2" / "2026-06-01_09-00-00.md", (time.time(),) * 2)
+        got = _read_recent_outputs(output_root=tmp_path, limit=5)
+        assert [o["name"] for o in got] == ["B", "A"]
+        assert got[0]["content"] == "new"
+        assert got[0]["job_id"] == "j2"
+        assert got[1]["content"] == "old"
+
+    def test_read_recent_scopes_to_job_id(self, tmp_path):
+        from tools.cronjob_tools import _read_recent_outputs
+        self._write(tmp_path, "j1", "a.md",
+                    "# Cron Job: A\n\n**Job ID:** j1\n**Run Time:** t\n\n---\n\naaa\n")
+        self._write(tmp_path, "j2", "b.md",
+                    "# Cron Job: B\n\n**Job ID:** j2\n**Run Time:** t\n\n---\n\nbbb\n")
+        got = _read_recent_outputs(job_id="j1", output_root=tmp_path, limit=5)
+        assert len(got) == 1 and got[0]["name"] == "A"
+
+    def test_read_recent_respects_limit(self, tmp_path):
+        from tools.cronjob_tools import _read_recent_outputs
+        for i in range(4):
+            self._write(tmp_path, "j1", f"{i}.md",
+                        f"# Cron Job: A\n\n**Job ID:** j1\n**Run Time:** t\n\n---\n\nn{i}\n")
+        got = _read_recent_outputs(job_id="j1", output_root=tmp_path, limit=2)
+        assert len(got) == 2
+
+    def test_read_recent_missing_root_is_empty(self, tmp_path):
+        from tools.cronjob_tools import _read_recent_outputs
+        assert _read_recent_outputs(output_root=tmp_path / "nope", limit=5) == []

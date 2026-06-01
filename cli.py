@@ -266,6 +266,8 @@ def _parse_service_tier_config(raw: str) -> str | None:
         return None
     if value in {"fast", "priority", "on"}:
         return "priority"
+    if value == "flex":
+        return "flex"
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
@@ -4482,7 +4484,7 @@ class HermesCLI:
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(route["model"], tier=service_tier)
         except Exception:
             overrides = None
         route["request_overrides"] = overrides

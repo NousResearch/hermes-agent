@@ -676,6 +676,7 @@ class GeminiCloudCodeClient:
         stop: Any = None,
         extra_body: Optional[Dict[str, Any]] = None,
         timeout: Any = None,
+        service_tier: Optional[str] = None,
         **_: Any,
     ) -> Any:
         access_token = google_oauth.get_valid_access_token()
@@ -694,6 +695,7 @@ class GeminiCloudCodeClient:
             top_p=top_p,
             stop=stop,
             thinking_config=thinking_config,
+            service_tier=service_tier,
         )
         wrapped = wrap_code_assist_request(
             project_id=ctx.project_id,

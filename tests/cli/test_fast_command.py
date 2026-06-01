@@ -178,8 +178,9 @@ class TestPriorityProcessingModels(unittest.TestCase):
         assert model_supports_fast_mode("gpt-5.3-codex") is False
         assert model_supports_fast_mode("gpt-5.2-codex") is False
         assert model_supports_fast_mode("gpt-5-codex") is False
-        # Non-OpenAI, non-Anthropic models
-        assert model_supports_fast_mode("gemini-3-pro-preview") is False
+        # Google Gemini models DO support service tiers
+        assert model_supports_fast_mode("gemini-3-pro-preview") is True
+        # Non-OpenAI, non-Anthropic, non-Google models
         assert model_supports_fast_mode("kimi-k2-thinking") is False
         assert model_supports_fast_mode("deepseek-chat") is False
         assert model_supports_fast_mode("") is False
@@ -198,7 +199,7 @@ class TestPriorityProcessingModels(unittest.TestCase):
         from hermes_cli.models import resolve_fast_mode_overrides
 
         assert resolve_fast_mode_overrides("gpt-5.3-codex") is None
-        assert resolve_fast_mode_overrides("gemini-3-pro-preview") is None
+        assert resolve_fast_mode_overrides("gemini-3-pro-preview") == {"service_tier": "priority"}
         assert resolve_fast_mode_overrides("kimi-k2-thinking") is None
 
 
@@ -376,12 +377,21 @@ class TestAnthropicFastMode(unittest.TestCase):
         )
         assert cli_mod.HermesCLI._fast_command_available(stub) is False
 
-    def test_fast_command_hidden_for_non_claude_non_openai(self):
-        """Non-Claude, non-OpenAI models should not expose /fast."""
+    def test_fast_command_available_for_gemini(self):
+        """Google Gemini models support service tiers — /fast should be exposed."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             provider="gemini", requested_provider="gemini",
             model="gemini-3-pro-preview", agent=None,
+        )
+        assert cli_mod.HermesCLI._fast_command_available(stub) is True
+
+    def test_fast_command_hidden_for_unsupported_providers(self):
+        """Non-OpenAI, non-Anthropic, non-Google models should not expose /fast."""
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            provider="deepseek", requested_provider="deepseek",
+            model="deepseek-chat", agent=None,
         )
         assert cli_mod.HermesCLI._fast_command_available(stub) is False
 
@@ -470,6 +480,73 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         )
         assert "speed" not in kwargs
         assert kwargs.get("extra_body", {}).get("speed") == "fast"
+
+
+class TestFlexTier(unittest.TestCase):
+    """Tests for service_tier=flex support."""
+
+    def test_parse_service_tier_flex(self):
+        cli_mod = _import_cli()
+        assert cli_mod._parse_service_tier_config("flex") == "flex"
+
+    def test_parse_service_tier_priority(self):
+        cli_mod = _import_cli()
+        assert cli_mod._parse_service_tier_config("priority") == "priority"
+        assert cli_mod._parse_service_tier_config("fast") == "priority"
+
+    def test_parse_service_tier_off(self):
+        cli_mod = _import_cli()
+        assert cli_mod._parse_service_tier_config("normal") is None
+        assert cli_mod._parse_service_tier_config("") is None
+
+    def test_resolve_flex_for_openai(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("gpt-4.1", tier="flex")
+        assert result == {"service_tier": "flex"}
+
+    def test_resolve_flex_for_gemini(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("gemini-3.5-flash", tier="flex")
+        assert result == {"service_tier": "flex"}
+
+    def test_resolve_flex_for_openrouter_openai(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("openrouter/openai/gpt-4.1", tier="flex")
+        assert result == {"service_tier": "flex"}
+
+    def test_resolve_flex_for_openrouter_gemini(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("openrouter/google/gemini-3.5-flash", tier="flex")
+        assert result == {"service_tier": "flex"}
+
+    def test_flex_not_applied_to_anthropic(self):
+        """Anthropic has no flex tier — should return None, not speed:fast."""
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("claude-opus-4-6", tier="flex") is None
+
+    def test_flex_not_applied_to_unsupported(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("deepseek-chat", tier="flex") is None
+
+    def test_priority_still_works_for_anthropic(self):
+        """Anthropic priority (speed:fast) should still work with explicit tier=priority."""
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("claude-opus-4-6", tier="priority")
+        assert result == {"speed": "fast"}
+
+    def test_default_tier_is_priority(self):
+        """Backward compat — omitting tier defaults to priority."""
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("gpt-4.1")
+        assert result == {"service_tier": "priority"}
 
 
 class TestConfigDefault(unittest.TestCase):

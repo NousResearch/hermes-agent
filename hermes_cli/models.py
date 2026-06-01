@@ -1959,6 +1959,12 @@ _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model is an OpenAI flagship eligible for Priority Processing."""
     raw = _strip_vendor_prefix(str(model_id or ""))
+    # After stripping one vendor prefix (e.g. 'openrouter/'), the model may
+    # still carry an 'openai/' sub-prefix (e.g. 'openai/gpt-4.1' from a path
+    # like 'openrouter/openai/gpt-4.1'). Strip that second level only when it
+    # is explicitly 'openai/' to avoid over-matching Anthropic/other providers.
+    if raw.startswith("openai/"):
+        raw = raw[len("openai/"):]
     base = raw.split(":")[0]
     if not base:
         return False
@@ -1967,6 +1973,29 @@ def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     if "codex" in base:
         return False
     return any(base.startswith(prefix) for prefix in _OPENAI_FAST_MODE_PREFIXES)
+
+
+# Models that support Google service tiers (service_tier="flex"/"priority").
+# See https://openrouter.ai/docs/guides/features/service-tiers
+#
+# Google Vertex AI and Google AI Studio both support flex (cheaper, higher
+# latency) and priority tiers for Gemini models. On OpenRouter, both
+# providers use the "google/" model prefix. Gemma/Lyria models are excluded
+# since service tiers only apply to Gemini.
+_GOOGLE_SERVICE_TIER_PREFIXES: tuple[str, ...] = (
+    "gemini-",
+)
+
+
+def _is_google_service_tier_model(model_id: Optional[str]) -> bool:
+    """Return True if the model is a Google Gemini model eligible for service tiers."""
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    if raw.startswith("google/"):
+        raw = raw[len("google/"):]
+    base = raw.split(":")[0]
+    if not base:
+        return False
+    return any(base.startswith(prefix) for prefix in _GOOGLE_SERVICE_TIER_PREFIXES)
 
 
 # Models that support Anthropic Fast Mode (speed="fast").
@@ -1988,7 +2017,11 @@ def _strip_vendor_prefix(model_id: str) -> str:
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
-    return _is_anthropic_fast_model(model_id) or _is_openai_fast_model(model_id)
+    return (
+        _is_anthropic_fast_model(model_id)
+        or _is_openai_fast_model(model_id)
+        or _is_google_service_tier_model(model_id)
+    )
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
@@ -2008,22 +2041,32 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return "opus-4-6" in base or "opus-4.6" in base
 
 
-def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
-    """Return request_overrides for fast/priority mode, or None if unsupported.
+def resolve_fast_mode_overrides(
+    model_id: Optional[str],
+    tier: str = "priority",
+) -> dict[str, Any] | None:
+    """Return request_overrides for the given service tier, or None if unsupported.
+
+    *tier* is the raw tier value from config — ``"priority"`` (faster, more
+    expensive) or ``"flex"`` (slower, ~50% cheaper on OpenAI and Google).
 
     Returns provider-appropriate overrides:
-    - OpenAI models: ``{"service_tier": "priority"}`` (Priority Processing)
-    - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
+    - OpenAI models: ``{"service_tier": tier}`` (Priority Processing / Flex)
+    - Google Gemini models: ``{"service_tier": tier}`` (Vertex/AI Studio)
+    - Anthropic models: ``{"speed": "fast"}`` only when *tier* is
+      ``"priority"`` — Anthropic has no flex equivalent
 
     The overrides are injected into the API request kwargs by
     ``_build_api_kwargs`` in run_agent.py — each API path handles its own
-    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
+    keys (service_tier for OpenAI/Codex/Google, speed for Anthropic Messages).
     """
     if not model_supports_fast_mode(model_id):
         return None
     if _is_anthropic_fast_model(model_id):
+        if tier != "priority":
+            return None
         return {"speed": "fast"}
-    return {"service_tier": "priority"}
+    return {"service_tier": tier}
 
 
 def _resolve_copilot_catalog_api_key() -> str:

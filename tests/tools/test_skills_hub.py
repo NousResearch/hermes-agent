@@ -2201,3 +2201,54 @@ class TestInstallPathSafety:
 
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
+
+
+def test_parallel_search_sources_does_not_hang_on_stalled_source():
+    """Regression: parallel_search_sources must not block indefinitely when a
+    source stalls past the overall_timeout (issue #37008)."""
+    import time
+    from tools.skills_hub import parallel_search_sources, SkillSource, SkillMeta
+
+    class _StalledSource(SkillSource):
+        def source_id(self):
+            return "stalled"
+
+        def search(self, query, limit=50):
+            # Simulate a source that never returns (e.g. hung HTTP connection)
+            time.sleep(300)
+            return []
+
+        def fetch(self, identifier):
+            return None, None
+
+        def inspect(self, identifier):
+            return None
+
+    class _FastSource(SkillSource):
+        def source_id(self):
+            return "fast"
+
+        def search(self, query, limit=50):
+            return [SkillMeta(
+                identifier="fast/skill", name="skill",
+                description="ok", source="fast", trust_level="community",
+            )]
+
+        def fetch(self, identifier):
+            return None, None
+
+        def inspect(self, identifier):
+            return None
+
+    start = time.monotonic()
+    results, counts, timed_out = parallel_search_sources(
+        [_StalledSource(), _FastSource()],
+        query="test",
+        overall_timeout=1.0,
+    )
+    elapsed = time.monotonic() - start
+
+    # Must return within ~2s (1s timeout + small overhead), not 300s
+    assert elapsed < 5.0, f"parallel_search_sources hung for {elapsed:.1f}s"
+    assert "stalled" in timed_out
+    assert counts.get("fast") == 1

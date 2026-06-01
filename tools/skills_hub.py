@@ -3692,32 +3692,38 @@ def parallel_search_sources(
     if not active:
         return all_results, source_counts, timed_out_ids
 
-    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-        futures = {}
-        for src in active:
-            lim = per_source_limits.get(src.source_id(), 50)
-            fut = pool.submit(_search_one_source, src, query, lim)
-            futures[fut] = src.source_id()
+    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    futures = {}
+    for src in active:
+        lim = per_source_limits.get(src.source_id(), 50)
+        fut = pool.submit(_search_one_source, src, query, lim)
+        futures[fut] = src.source_id()
 
-        try:
-            for fut in as_completed(futures, timeout=overall_timeout):
-                try:
-                    sid, results = fut.result(timeout=0)
-                    source_counts[sid] = len(results)
-                    all_results.extend(results)
-                    if on_source_done:
-                        on_source_done(sid, len(results))
-                except Exception:
-                    pass
-        except TimeoutError:
-            timed_out_ids = [
-                futures[f] for f in futures if not f.done()
-            ]
-            if timed_out_ids:
-                logger.debug(
-                    "Skills browse timed out waiting for: %s",
-                    ", ".join(timed_out_ids),
-                )
+    try:
+        for fut in as_completed(futures, timeout=overall_timeout):
+            try:
+                sid, results = fut.result(timeout=0)
+                source_counts[sid] = len(results)
+                all_results.extend(results)
+                if on_source_done:
+                    on_source_done(sid, len(results))
+            except Exception:
+                pass
+    except TimeoutError:
+        timed_out_ids = [
+            futures[f] for f in futures if not f.done()
+        ]
+        if timed_out_ids:
+            logger.debug(
+                "Skills browse timed out waiting for: %s",
+                ", ".join(timed_out_ids),
+            )
+    finally:
+        # Use wait=False + cancel_futures=True so we never block on threads
+        # stuck in slow/stalled source requests (fixes #37008).
+        # Without this, the ThreadPoolExecutor context manager's __exit__
+        # calls shutdown(wait=True), which joins all threads indefinitely.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_results, source_counts, timed_out_ids
 

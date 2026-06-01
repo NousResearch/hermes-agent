@@ -196,3 +196,31 @@ async def test_build_raises_clear_error_without_pipecat(monkeypatch):
     with pytest.raises(RuntimeError, match="simplex-streaming"):
         build_local_turn_detector(M16)
 
+
+# ---- Scenario 6: real-onnx contract ------------------------------------------
+
+
+@pytest.mark.skipif(
+    not pipecat_available(), reason="simplex-streaming extra not installed"
+)
+async def test_real_onnx_contract_emits_started_stopped_endpoint():
+    w = wave.open(str(FIX), "rb")
+    pcm = w.readframes(w.getnframes())
+    w.close()
+    pcm += b"\x00" * (16000 * 2)  # 1s trailing silence to trigger endpoint
+
+    det = build_local_turn_detector(M16, call_id="real")
+    kinds: list[TurnEventKind] = []
+    seq = 0
+    for off in range(0, len(pcm) - 640, 640):
+        evs = await det.observe(frame(seq, seq * 20, pcm=pcm[off : off + 640]))
+        kinds.extend(e.kind for e in evs)
+        seq += 1
+
+    assert TurnEventKind.USER_SPEECH_STARTED in kinds
+    assert TurnEventKind.USER_SPEECH_STOPPED in kinds
+    assert TurnEventKind.ENDPOINT_DETECTED in kinds
+    i_start = kinds.index(TurnEventKind.USER_SPEECH_STARTED)
+    i_stop = kinds.index(TurnEventKind.USER_SPEECH_STOPPED)
+    i_end = kinds.index(TurnEventKind.ENDPOINT_DETECTED)
+    assert i_start < i_stop < i_end

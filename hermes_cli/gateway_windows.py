@@ -347,6 +347,92 @@ def _build_startup_launcher(script_path: Path) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _build_vbs_launcher(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    profile_arg: str,
+) -> str:
+    """Build a VBS launcher that starts the gateway without any console window.
+
+    ``wscript.exe`` is a GUI-subsystem executable built into every Windows
+    install since Windows 98, so it never creates a Console Window Host
+    (conhost.exe).  This is the standard Windows approach for launching
+    background daemons without a visible terminal window — the default
+    ``.cmd`` wrapper that ``schtasks`` runs through ``cmd.exe`` would
+    otherwise flash a blank console window at every login.
+
+    The launcher:
+      - sets ``CurrentDirectory`` so ``hermes_cli`` resolves profiles
+      - exports ``HERMES_HOME``, ``PYTHONIOENCODING``, ``VIRTUAL_ENV``,
+        and ``HERMES_GATEWAY_DETACHED`` into the child process environment
+      - invokes ``pythonw.exe -m hermes_cli.main [--profile X] gateway run``
+        with ``0`` (SW_HIDE) and async (``False`` wait)
+
+    Returns CRLF-terminated VBS content.
+    """
+    venv_dir = str(Path(python_path).resolve().parent.parent)
+    pythonw_path = _derive_venv_pythonw(python_path)
+    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    if profile_arg:
+        prog_args.extend(profile_arg.split())
+    prog_args.extend(["gateway", "run"])
+    # subprocess.list2cmdline produces correct Windows command-line quoting.
+    # VBS doubles any embedded ``"`` by replacing each ``"`` with ``""``.
+    cmd_line = subprocess.list2cmdline(prog_args).replace('"', '""')
+
+    def _vbs_quote(s: str) -> str:
+        return s.replace('"', '""')
+
+    lines = [
+        f"' {_TASK_DESCRIPTION}",
+        'Set WshShell = CreateObject("WScript.Shell")',
+        f'WshShell.CurrentDirectory = "{_vbs_quote(working_dir)}"',
+        'Set env = WshShell.Environment("PROCESS")',
+        f'env("HERMES_HOME") = "{_vbs_quote(hermes_home)}"',
+        'env("PYTHONIOENCODING") = "utf-8"',
+        'env("HERMES_GATEWAY_DETACHED") = "1"',
+        f'env("VIRTUAL_ENV") = "{_vbs_quote(venv_dir)}"',
+        f'WshShell.Run "{cmd_line}", 0, False',
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _write_vbs_launcher() -> Path:
+    """Generate and write the VBS launcher alongside the .cmd wrapper.
+
+    The VBS file lives next to the ``gateway.cmd`` script under
+    ``<HERMES_HOME>/gateway-service/`` and is used by the Scheduled Task
+    action (``wscript.exe //B //Nologo <vbs_path>``) so the gateway starts
+    without flashing a console window.
+
+    Returns the absolute Path to the written .vbs file.
+    """
+    _assert_windows()
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.gateway import (
+        PROJECT_ROOT,
+        _profile_arg,
+        get_python_path,
+    )
+
+    python_path = get_python_path()
+    working_dir = str(PROJECT_ROOT)
+    hermes_home = str(Path(get_hermes_home()).resolve())
+    profile_arg = _profile_arg(hermes_home)
+
+    content = _build_vbs_launcher(python_path, working_dir, hermes_home, profile_arg)
+
+    # .vbs lives alongside the .cmd file under gateway-service/<task_name>.vbs
+    script_dir = Path(get_hermes_home()) / "gateway-service"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    vbs_path = script_dir / f"{_sanitize_filename(get_task_name())}.vbs"
+    tmp = vbs_path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8", newline="")
+    tmp.replace(vbs_path)
+    return vbs_path
+
+
 def _write_task_script() -> Path:
     """Generate and write the gateway.cmd wrapper. Return its absolute path."""
     _assert_windows()
@@ -386,15 +472,18 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
-def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
+def _install_scheduled_task(task_name: str, tr_command: str) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
+
+    ``tr_command`` is the full /TR value for schtasks, already quoted
+    appropriately for the schtasks parser
+    (e.g. ``wscript.exe //B //Nologo <vbs_path>``).
 
     Always recreate instead of ``/Change``. Older Hermes builds and failed
     experiments may have left repeat/restart settings on the task; ``/Change``
     preserves those stale triggers and can make the gateway relaunch every
     minute. Delete+create gives us a clean ONLOGON task every install.
     """
-    quoted_script = _quote_schtasks_arg(str(script_path))
 
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
     delete_detail = (delete_err or delete_out or "").strip()
@@ -414,7 +503,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         "/TN",
         task_name,
         "/TR",
-        quoted_script,
+        tr_command,
     ]
     user = _resolve_task_user()
     variants = []
@@ -718,6 +807,10 @@ def install(
 
     task_name = get_task_name()
     script_path = _write_task_script()
+    vbs_path = _write_vbs_launcher()
+    tr_command = _quote_schtasks_arg(
+        subprocess.list2cmdline(["wscript.exe", "//B", "//Nologo", str(vbs_path)])
+    )
 
     # On machines where the current user's scheduled-task ACL is locked down,
     # schtasks /Create or /Change can sit for the timeout before returning
@@ -742,7 +835,7 @@ def install(
         _install_startup_fallback(script_path, start_now, "administrator approval was not used")
         return
 
-    ok, detail = _install_scheduled_task(task_name, script_path)
+    ok, detail = _install_scheduled_task(task_name, tr_command)
     if ok:
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
@@ -881,7 +974,8 @@ def uninstall() -> None:
         else:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
-    for path, label in [(startup_entry, "Windows login item"), (script_path, "Task script")]:
+    vbs_path = script_path.with_suffix(".vbs")
+    for path, label in [(startup_entry, "Windows login item"), (script_path, "Task script"), (vbs_path, "VBS launcher")]:
         try:
             path.unlink()
             print(f"✓ Removed {label}: {path}")

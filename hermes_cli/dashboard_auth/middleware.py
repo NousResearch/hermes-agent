@@ -150,6 +150,16 @@ def _safe_next_target(request: Request) -> str:
         for p in ("/login", "/auth/", "/api/auth/")
     ):
         return ""
+    # Reject ALL ``/api/*`` paths. The 401-envelope code path fires for
+    # any unauthenticated SPA fetch (e.g. ``GET /api/analytics/models``
+    # from ModelsPage), and the SPA's global 401 handler full-page
+    # navigates to ``login_url``. After the OAuth round trip the user
+    # would land on the API URL and see raw JSON instead of the
+    # dashboard. SPA routes survive (they don't start with ``/api/``);
+    # the SPA's own ``sessionStorage["hermes.lastLocation"]`` fallback
+    # in ``web/src/lib/api.ts`` covers the deep-link case.
+    if path == "/api" or path.startswith("/api/"):
+        return ""
     # Preserve query string if present (e.g. /sessions?page=2).
     query = request.url.query
     target = f"{path}?{query}" if query else path

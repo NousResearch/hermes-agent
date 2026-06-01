@@ -2677,12 +2677,22 @@ class BasePlatformAdapter(ABC):
                     # and dropping every other attachment in the response.
                     continue
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
+        # Remove the delivered MEDIA tags from the user-visible text. Mask
+        # ``cleaned`` (same length, so offsets line up with it), find the real
+        # tag spans there, and delete those spans from the *unmasked* ``cleaned``.
+        # This strips real tags while leaving JSON-embedded MEDIA: text intact —
+        # it is stored data, not a directive, and must read back verbatim
+        # (#34375). Masking ``cleaned`` (not ``content``) keeps offsets valid
+        # after the [[audio_as_voice]] / [[as_document]] directives are removed.
         if media:
-            # Mask JSON-embedded tags before sub so they stay intact in the
-            # user-visible text (they are stored data, not directives).
-            cleaned = media_pattern.sub('', BasePlatformAdapter._mask_json_string_media(cleaned))
-            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+            masked_cleaned = BasePlatformAdapter._mask_json_string_media(cleaned)
+            spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
+            if spans:
+                chars = list(cleaned)
+                for start, end in sorted(spans, reverse=True):
+                    del chars[start:end]
+                cleaned = "".join(chars)
+                cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
 

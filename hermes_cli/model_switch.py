@@ -2142,37 +2142,115 @@ def list_authenticated_providers(
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
+        # Group ``providers:`` entries by (api_url, key_env, api_mode) so that
+        # multiple keyed providers pointing at the same endpoint with the
+        # same credential and wire-protocol collapse into one picker row.
+        # Mirrors section-4's grouping for ``custom_providers:`` lists.
+        # Concrete case: a Palantir Foundry Anthropic-proxy with two
+        # configured models (claude-4.6 + claude-4.7) — both share the same
+        # api/key_env/api_mode and used to produce two near-duplicate rows
+        # labelled "Palantir Claude 4.6 Opus" and "Palantir Claude 4.7 Opus";
+        # now they appear as a single "Palantir Claude" row with both models
+        # in the dropdown. Same-host entries with different ``key_env`` or
+        # ``api_mode`` (e.g. an OpenAI-compat gpt-5.4 alongside the Anthropic
+        # claude-4.7 on the same Palantir host) keep distinct rows since
+        # the wire protocol differs.
+        from collections import OrderedDict as _OD3
+
+        ep_groups: "_OD3[tuple, dict]" = _OD3()
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
-            # Skip if this slug was already emitted (e.g. canonical provider
-            # with the same name) or will be picked up by section 4.
             if ep_name.lower() in seen_slugs:
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
-            # ``base_url`` is Hermes's canonical write key (matches
-            # custom_providers and _save_custom_provider); ``api`` / ``url``
-            # remain as fallbacks for hand-edited / legacy configs.
             api_url = (
                 ep_cfg.get("base_url", "")
                 or ep_cfg.get("api", "")
                 or ep_cfg.get("url", "")
                 or ""
             )
+            key_env = str(ep_cfg.get("key_env", "") or "").strip()
+            inline_api_key = str(ep_cfg.get("api_key", "") or "").strip()
+            api_mode = str(
+                ep_cfg.get("api_mode")
+                or ep_cfg.get("transport")
+                or ""
+            ).strip().lower()
+            credential_identity = (
+                inline_api_key
+                if inline_api_key
+                else (f"env:{key_env}" if key_env else "")
+            )
+            api_url_norm = str(api_url).strip().rstrip("/").lower()
+            # Per-provider extra_headers participate in the group identity
+            # (same invariant as section 4): two entries sharing
+            # (api_url, credential, api_mode) but declaring different headers
+            # are distinct endpoints (e.g. different tenants behind one proxy
+            # URL, routed by header) and must keep distinct picker rows.
+            entry_extra_headers = _extra_headers_from_config(ep_cfg)
+            headers_identity = tuple(sorted(entry_extra_headers.items()))
+            group_key = (api_url_norm, credential_identity, api_mode, headers_identity)
+
             # ``default_model`` is the legacy key; ``model`` matches what
             # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
-
-            # Build models list from both default_model and full models array
-            models_list = []
-            if default_model:
-                models_list.append(default_model)
-            # Also include the full models list from config.
+            # Build models list from both default_model and full models array.
             # Hermes writes ``models:`` as a dict keyed by model id, but older
-            # or hand-edited configs may use strings or ``[{id: ...}]`` rows.
+            # or hand-edited configs may use strings or ``[{id: ...}]`` rows —
+            # _declared_model_ids() owns that contract.
+            entry_models: list = []
+            if default_model:
+                entry_models.append(default_model)
             for model_id in _declared_model_ids(ep_cfg.get("models", [])):
-                if model_id not in models_list:
-                    models_list.append(model_id)
+                if model_id not in entry_models:
+                    entry_models.append(model_id)
+
+            if group_key not in ep_groups:
+                # Strip per-model suffix so "Palantir Claude 4.7 Opus" becomes
+                # "Palantir Claude". Em dash and " - " are the separators
+                # Hermes's own writer uses (mirrors section-4 grouping).
+                grp_display = display_name
+                for sep in ("—", " - "):
+                    if sep in grp_display:
+                        grp_display = grp_display.split(sep)[0].strip()
+                        break
+                # Drop trailing numeric/version tokens that distinguish per-model
+                # entries ("Palantir Claude 4.7 Opus" → "Palantir Claude").
+                # Keeps the row label short; the model dropdown carries the
+                # per-version detail. Heuristic: split at the first token whose
+                # stripped form contains a digit; keep the prefix only if it
+                # is at least 2 words (avoids over-trimming single-word names).
+                _toks = grp_display.split()
+                _cut_at = None
+                for _i, _t in enumerate(_toks):
+                    _tl = _t.strip(".,()")
+                    if _tl and any(c.isdigit() for c in _tl):
+                        _cut_at = _i
+                        break
+                if _cut_at is not None and _cut_at >= 2:
+                    grp_display = " ".join(_toks[:_cut_at]).strip()
+                grp_slug = ep_name  # primary slug is the first ep_name encountered
+                ep_groups[group_key] = {
+                    "slug": grp_slug,
+                    "name": grp_display or display_name,
+                    "api_url": api_url,
+                    "models": [],
+                    "ep_cfg": ep_cfg,  # used below for discover_models / api_key
+                    "raw_names": [],
+                }
+            # Aggregate models across all members of the group (preserve order).
+            for _m in entry_models:
+                if _m and _m not in ep_groups[group_key]["models"]:
+                    ep_groups[group_key]["models"].append(_m)
+            ep_groups[group_key]["raw_names"].append(display_name)
+
+        for grp in ep_groups.values():
+            ep_cfg = grp["ep_cfg"]
+            ep_name = grp["slug"]
+            display_name = grp["name"]
+            api_url = grp["api_url"]
+            models_list = list(grp["models"])
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -2240,9 +2318,22 @@ def list_authenticated_providers(
             })
             seen_slugs.add(ep_name.lower())
             seen_slugs.add(custom_provider_slug(display_name).lower())
+            # Record (display_name, api_url) for each raw entry that joined
+            # this group so section-4's _section3_emitted_pairs dedup can
+            # match per-model custom_providers rows ("Palantir Claude 4.7 Opus")
+            # even though we collapsed the group label to "Palantir Claude".
+            _url_norm_for_pair = str(api_url).strip().rstrip("/").lower()
+            for _raw_name in grp.get("raw_names") or [display_name]:
+                _pair = (
+                    str(_raw_name).strip().lower(),
+                    _url_norm_for_pair,
+                )
+                if _pair[0] and _pair[1]:
+                    _section3_emitted_pairs.add(_pair)
+                    seen_slugs.add(custom_provider_slug(_raw_name).lower())
             _pair = (
                 str(display_name).strip().lower(),
-                str(api_url).strip().rstrip("/").lower(),
+                _url_norm_for_pair,
             )
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)

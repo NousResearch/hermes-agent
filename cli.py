@@ -119,6 +119,52 @@ def format_duration_compact(*args, **kwargs):
     return f"{days:.1f}d"
 
 
+# Cached reverse map of config.yaml ``model_aliases:`` so the TUI can show
+# friendly names instead of full Palantir RIDs / long catalog IDs. Built
+# lazily on first call; cache is process-lifetime (config is read once at
+# session start, so further invalidation is unnecessary).
+_REVERSE_ALIAS_CACHE: dict[str, str] | None = None
+
+
+def _reverse_alias_for_display(model_name: str) -> str:
+    """Return the shortest configured alias for ``model_name``, or ``model_name``.
+
+    Looks up both ``model_aliases:`` (dict-based, full DirectAlias entries)
+    and ``model.aliases:`` (string-based, set via ``hermes config set``)
+    from config.yaml. Multiple aliases pointing at the same model — the
+    shortest wins, so ``opus47`` beats ``palantir-claude47``.
+    """
+    global _REVERSE_ALIAS_CACHE
+    if not model_name:
+        return model_name
+    if _REVERSE_ALIAS_CACHE is None:
+        rmap: dict[str, str] = {}
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            ma = cfg.get("model_aliases")
+            if isinstance(ma, dict):
+                for alias, entry in ma.items():
+                    if isinstance(entry, dict):
+                        m = str(entry.get("model", "") or "").strip()
+                        if m and (m not in rmap or len(alias) < len(rmap[m])):
+                            rmap[m] = alias
+            mdl = cfg.get("model", {}) or {}
+            if isinstance(mdl, dict):
+                simple = mdl.get("aliases")
+                if isinstance(simple, dict):
+                    for alias, val in simple.items():
+                        if isinstance(val, str) and val.strip():
+                            v = val.strip()
+                            m = v.split("/", 1)[1] if "/" in v else v
+                            if m and (m not in rmap or len(alias) < len(rmap[m])):
+                                rmap[m] = alias
+        except Exception:
+            pass
+        _REVERSE_ALIAS_CACHE = rmap
+    return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
+
+
 def format_token_count_compact(*args, **kwargs):
     value = int(args[0] if args else kwargs.get("value", 0))
     abs_value = abs(value)
@@ -4580,7 +4626,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
-        model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        # Friendly display: prefer reverse-alias from config.yaml ``model_aliases:``
+        # before slash/length truncation. This turns long Palantir RIDs like
+        # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
+        # into the user's chosen short name (e.g. ``opus-4.7``) in the status bar.
+        model_short = _reverse_alias_for_display(model_name)
+        if model_short == model_name:
+            model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+            # Strip Palantir RID prefixes that survived the slash split:
+            # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
+            # → ``claude-4-7-opus``. The double-dot is Palantir's RID separator.
+            if model_short.startswith("ri.") and ".." in model_short:
+                _tail = model_short.split("..", 1)[1]
+                # Drop the leading namespace token (``language-model.``).
+                if "." in _tail:
+                    _tail = _tail.split(".", 1)[1]
+                if _tail:
+                    model_short = _tail
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:

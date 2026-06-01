@@ -4507,6 +4507,52 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    elif pconfig.auth_type == "gcp_sdk":
+        # Google Vertex AI — standard OpenAI-compatible endpoint with OAuth2
+        # token authentication. Much simpler than Bedrock: no custom SDK or
+        # message translation. We just build an OpenAI client pointed at the
+        # Vertex endpoint with a fresh OAuth2 token.
+        try:
+            from agent.vertex_adapter import (
+                _resolve_vertex_token,
+                get_vertex_base_url,
+                has_vertex_credentials,
+            )
+        except ImportError:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "google-auth not installed")
+            return None, None
+
+        if not has_vertex_credentials():
+            logger.debug("resolve_provider_client: vertex requested but "
+                         "no GCP credentials found")
+            return None, None
+
+        base_url = get_vertex_base_url()
+        if not base_url:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "could not determine project ID")
+            return None, None
+
+        token = _resolve_vertex_token()
+        if not token:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "could not obtain OAuth2 token")
+            return None, None
+
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=token, base_url=base_url)
+        except Exception as exc:
+            logger.warning("resolve_provider_client: cannot create Vertex "
+                           "client: %s", exc)
+            return None, None
+        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":

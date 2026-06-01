@@ -427,6 +427,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="gcp_sdk",
+        inference_base_url="",  # Computed from project_id + region at runtime
+        api_key_env_vars=(),   # OAuth2 token — not a static API key
+        base_url_env_var="VERTEX_BASE_URL",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",
@@ -1580,6 +1588,7 @@ def resolve_provider(
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
         "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
+        "vertex-ai": "vertex", "google-vertex": "vertex", "gcp-vertex": "vertex", "google-vertex-ai": "vertex",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
@@ -1725,6 +1734,15 @@ def resolve_provider(
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed — skip Bedrock auto-detection
+
+    # Google Vertex AI — detect via service account JSON or explicit project ID.
+    # Mirrors Bedrock auto-detection: no API key needed, credential chain handles auth.
+    try:
+        from agent.vertex_adapter import has_vertex_credentials
+        if has_vertex_credentials():
+            return "vertex"
+    except ImportError:
+        pass  # google-auth not installed — skip Vertex auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -6245,6 +6263,13 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
             return {"logged_in": has_aws_credentials(), "provider": target}
         except ImportError:
             return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
+    # GCP SDK providers (Vertex AI) — check via service account / project ID
+    if pconfig and pconfig.auth_type == "gcp_sdk":
+        try:
+            from agent.vertex_adapter import has_vertex_credentials
+            return {"logged_in": has_vertex_credentials(), "provider": target}
+        except ImportError:
+            return {"logged_in": False, "provider": target, "error": "google-auth not installed"}
     return {"logged_in": False}
 
 

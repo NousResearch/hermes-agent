@@ -1895,6 +1895,63 @@ def resolve_runtime_provider(
             runtime["guardrail_config"] = guardrail_config
         return runtime
 
+    # Google Vertex AI (GCP SDK) — service account or gcloud ADC auth
+    if provider == "vertex":
+        from agent.vertex_adapter import (
+            _resolve_vertex_token,
+            get_vertex_base_url,
+            resolve_vertex_region,
+            resolve_vertex_auth_source,
+            has_vertex_credentials,
+        )
+        is_explicit = requested_provider in {
+            "vertex", "vertex-ai", "google-vertex", "gcp-vertex", "google-vertex-ai",
+        }
+        if not is_explicit and not has_vertex_credentials():
+            raise AuthError(
+                "No GCP credentials found for Vertex AI. Configure one of:\n"
+                "  - GOOGLE_APPLICATION_CREDENTIALS (service account JSON)\n"
+                "  - VERTEX_CREDENTIALS_PATH (explicit path to SA JSON)\n"
+                "  - gcloud auth application-default login\n"
+                "Or set VERTEX_PROJECT_ID + run 'gcloud auth application-default login'.",
+                code="no_gcp_credentials",
+            )
+        # Read vertex-specific config from config.yaml
+        _vertex_cfg = load_config().get("vertex", {})
+        region = resolve_vertex_region()
+        _cfg_region = (_vertex_cfg.get("region") or "").strip()
+        if _cfg_region:
+            region = _cfg_region
+        base_url = get_vertex_base_url(region=region)
+        if not base_url:
+            raise AuthError(
+                "Could not determine Vertex AI project ID. "
+                "Set VERTEX_PROJECT_ID in ~/.hermes/.env, or ensure your "
+                "service account JSON contains a project_id.",
+                code="no_vertex_project_id",
+            )
+        auth_source = resolve_vertex_auth_source() or "gcp-sdk"
+        # Token is resolved at runtime via _resolve_vertex_token() which has
+        # 55-min token caching. The transport layer calls this on each API
+        # request so the token is always fresh.
+        api_key = _resolve_vertex_token()
+        if not api_key:
+            raise AuthError(
+                "Failed to obtain OAuth2 token for Vertex AI. "
+                "Check that your service account JSON is valid and "
+                "the Vertex AI API is enabled on your GCP project.",
+                code="vertex_token_failed",
+            )
+        return {
+            "provider": "vertex",
+            "api_mode": "chat_completions",
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": auth_source,
+            "region": region,
+            "requested_provider": requested_provider,
+        }
+
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":

@@ -5496,6 +5496,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "plan",
         "goal",
+        "undo",
     }
 )
 
@@ -5879,6 +5880,107 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
+        )
+
+    if name == "undo":
+        # /undo [N]: back up N user turns (default 1), soft-delete the
+        # truncated rows on disk, and prefill the composer with the text
+        # of the user message we backed up to so it can be edited and
+        # resubmitted. N=1 is the Claude-Code-style single-step undo;
+        # /undo 3 backs up three user turns at once. See issue #21910.
+        if not session:
+            return _err(rid, 4001, "no active session to undo")
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /undo"
+            )
+        db = _get_db()
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        session_key = session.get("session_key", "")
+        if not session_key:
+            return _err(rid, 4001, "no session key for undo")
+        # Parse the optional count argument (e.g. "/undo 3" → 3).
+        n = 1
+        arg_str = (arg or "").strip()
+        if arg_str:
+            try:
+                n = int(arg_str.split()[0])
+            except (ValueError, IndexError):
+                return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
+        if n < 1:
+            n = 1
+        try:
+            recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
+        except Exception as e:
+            return _err(rid, 5008, f"undo: failed to load history: {e}")
+        if not recents:
+            return _err(rid, 4018, "no user messages to undo")
+        # recents[0] is the most-recent user turn; pick the Nth-from-last.
+        # If N exceeds the number of user turns, back up to the oldest.
+        target_idx = min(n - 1, len(recents) - 1)
+        target_id = recents[target_idx]["id"]
+        try:
+            result = db.rewind_to_message(session_key, target_id)
+        except ValueError as e:
+            return _err(rid, 4004, f"undo: {e}")
+        except Exception as e:
+            return _err(rid, 5008, f"undo: {e}")
+        # Reload the active-only transcript into the in-memory session
+        # history so subsequent turns see the truncated view.
+        try:
+            active = db.get_messages_as_conversation(session_key)
+        except Exception:
+            active = []
+        with session["history_lock"]:
+            session["history"] = list(active)
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        # Notify memory providers — same hook /branch fires, plus the
+        # rewound flag so providers caching per-turn document state
+        # know to invalidate. See #6672 + #21910.
+        agent = session.get("agent")
+        if agent is not None:
+            mm = getattr(agent, "_memory_manager", None)
+            if mm is not None:
+                try:
+                    mm.on_session_switch(
+                        session_key,
+                        parent_session_id="",
+                        reset=False,
+                        rewound=True,
+                    )
+                except Exception:
+                    pass
+            if hasattr(agent, "_invalidate_system_prompt"):
+                try:
+                    agent._invalidate_system_prompt()
+                except Exception:
+                    pass
+            if hasattr(agent, "_last_flushed_db_idx"):
+                try:
+                    agent._last_flushed_db_idx = len(active)
+                except Exception:
+                    pass
+        target_msg = result.get("target_message") or {}
+        target_text = target_msg.get("content") or ""
+        if isinstance(target_text, list):
+            parts = [
+                p.get("text", "") for p in target_text
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            target_text = "\n".join(t for t in parts if t)
+        if not isinstance(target_text, str):
+            target_text = ""
+        rewound_count = result.get("rewound_count", 0)
+        turns_undone = target_idx + 1
+        turn_word = "turn" if turns_undone == 1 else "turns"
+        notice = (
+            f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). "
+            "Edit and resubmit, or send a new message."
+        )
+        return _ok(
+            rid,
+            {"type": "prefill", "message": target_text, "notice": notice},
         )
 
     if name in {"snapshot", "snap"}:

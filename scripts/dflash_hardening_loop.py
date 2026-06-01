@@ -25,6 +25,7 @@ from dflash_stability_canary import (
     DEFAULT_PROVIDER,
     DEFAULT_TOOLSETS,
     iter_cases,
+    marker_suffix,
     record_path,
     run_case,
     write_record,
@@ -188,6 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 toolsets=args.toolsets,
                 timeout_s=args.timeout,
                 strict_marker=strict_marker,
+                marker_nonce=marker_suffix(log_path.stem, f"c{cycle}", case.name),
             )
             record["cycle"] = cycle
             write_record(log_path, record)

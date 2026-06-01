@@ -150,6 +150,24 @@ def build_command(
     return cmd
 
 
+def marker_suffix(*parts: object) -> str:
+    raw = "_".join(str(part) for part in parts if str(part or "").strip())
+    return re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+
+
+def materialize_case_marker(case: CanaryCase, suffix: str = "") -> CanaryCase:
+    suffix = marker_suffix(suffix)
+    if not suffix:
+        return case
+
+    marker = f"{case.marker}_{suffix}"
+    return CanaryCase(
+        name=case.name,
+        marker=marker,
+        prompt=case.prompt.replace(case.marker, marker),
+    )
+
+
 def run_subprocess(cmd: Sequence[str], *, cwd: Path, timeout_s: float) -> CommandResult:
     started = time.monotonic()
 
@@ -259,16 +277,18 @@ def run_case(
     toolsets: str,
     timeout_s: float,
     strict_marker: bool,
+    marker_nonce: str = "",
     runner: Callable[[Sequence[str], Path, float], CommandResult] | None = None,
 ) -> dict:
-    cmd = build_command(hermes_bin, case, model=model, provider=provider, toolsets=toolsets)
+    active_case = materialize_case_marker(case, marker_nonce)
+    cmd = build_command(hermes_bin, active_case, model=model, provider=provider, toolsets=toolsets)
 
     if runner is None:
         result = run_subprocess(cmd, cwd=cwd, timeout_s=timeout_s)
     else:
         result = runner(cmd, cwd, timeout_s)
 
-    failure = classify_result(result, case.marker, strict_marker=strict_marker)
+    failure = classify_result(result, active_case.marker, strict_marker=strict_marker)
 
     return {
         "case": case.name,
@@ -276,7 +296,8 @@ def run_case(
         "cwd": str(cwd),
         "elapsed_s": round(result.elapsed_s, 3),
         "failure": failure,
-        "marker": case.marker,
+        "marker": active_case.marker,
+        "marker_base": case.marker,
         "ok": failure is None,
         "returncode": result.returncode,
         "stderr": truncate(result.stderr),
@@ -319,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     log_path = record_path(args.log_dir)
     strict_marker = not args.allow_extra_output
+    run_stamp = log_path.stem
 
     if args.dry_run:
         plan = {
@@ -347,6 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 toolsets=args.toolsets,
                 timeout_s=args.timeout,
                 strict_marker=strict_marker,
+                marker_nonce=marker_suffix(run_stamp, f"r{round_index + 1}", case.name),
             )
             record["round"] = round_index + 1
             write_record(log_path, record)

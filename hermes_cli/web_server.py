@@ -7052,10 +7052,19 @@ def start_server(
         )
 
         if _has_display:
+            from hermes_constants import is_wsl
             def _open():
                 try:
                     time.sleep(1.0)
-                    webbrowser.open(f"http://{host}:{port}")
+                    if is_wsl():
+                        import subprocess
+                        subprocess.Popen(
+                            ["explorer.exe", f"http://{host}:{port}"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    else:
+                        webbrowser.open(f"http://{host}:{port}")
                 except Exception:
                     pass
 

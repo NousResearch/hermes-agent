@@ -16,7 +16,8 @@ set -euo pipefail
 #   OPEN_WEBUI_PORT=8080
 #   OPEN_WEBUI_HOST=127.0.0.1
 #   OPEN_WEBUI_NAME='Johnny Hermes'
-#   OPEN_WEBUI_ENABLE_SIGNUP=true
+#   OPEN_WEBUI_ENABLE_SIGNUP=false
+#   OPEN_WEBUI_ALLOW_LAN_SIGNUP_RACE=false
 #   OPEN_WEBUI_ENABLE_SERVICE=auto   # auto|true|false
 #   OPEN_WEBUI_VENV=~/.local/open-webui-venv
 #   OPEN_WEBUI_DATA_DIR=~/.local/share/open-webui/data
@@ -27,7 +28,8 @@ set -euo pipefail
 OPEN_WEBUI_PORT="${OPEN_WEBUI_PORT:-8080}"
 OPEN_WEBUI_HOST="${OPEN_WEBUI_HOST:-127.0.0.1}"
 OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-Hermes Agent WebUI}"
-OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-true}"
+OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-false}"
+OPEN_WEBUI_ALLOW_LAN_SIGNUP_RACE="${OPEN_WEBUI_ALLOW_LAN_SIGNUP_RACE:-false}"
 OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
 OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
@@ -42,6 +44,39 @@ LOG_DIR="$HOME/.hermes/logs"
 
 log() {
   printf '[open-webui-bootstrap] %s\n' "$*"
+}
+
+bool_true() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+is_loopback_host() {
+  case "$1" in
+    localhost|127.*|::1|"[::1]"|0:0:0:0:0:0:0:1)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+guard_open_webui_signup() {
+  if bool_true "$OPEN_WEBUI_ENABLE_SIGNUP" \
+      && ! is_loopback_host "$OPEN_WEBUI_HOST" \
+      && ! bool_true "$OPEN_WEBUI_ALLOW_LAN_SIGNUP_RACE"; then
+    cat >&2 <<'EOF'
+Refusing to enable Open WebUI signup on a non-loopback bind.
+
+With ENABLE_SIGNUP=true, the first client to reach the UI can claim the admin
+account. Bind to 127.0.0.1, keep OPEN_WEBUI_ENABLE_SIGNUP=false, or set
+OPEN_WEBUI_ALLOW_LAN_SIGNUP_RACE=true after you have accepted that risk.
+EOF
+    exit 1
+  fi
 }
 
 require_cmd() {
@@ -170,13 +205,14 @@ install_open_webui() {
 write_launcher() {
   mkdir -p "$(dirname "$LAUNCHER_PATH")" "$OPEN_WEBUI_DATA_DIR" "$LOG_DIR"
 
-  local quoted_data_dir quoted_name quoted_base_url quoted_host quoted_port quoted_venv
+  local quoted_data_dir quoted_name quoted_base_url quoted_host quoted_port quoted_venv quoted_signup
   quoted_data_dir="$(shell_quote "$OPEN_WEBUI_DATA_DIR")"
   quoted_name="$(shell_quote "$OPEN_WEBUI_NAME")"
   quoted_base_url="$(shell_quote "$HERMES_API_BASE_URL")"
   quoted_host="$(shell_quote "$OPEN_WEBUI_HOST")"
   quoted_port="$(shell_quote "$OPEN_WEBUI_PORT")"
   quoted_venv="$(shell_quote "$OPEN_WEBUI_VENV")"
+  quoted_signup="$(shell_quote "$OPEN_WEBUI_ENABLE_SIGNUP")"
 
   cat > "$LAUNCHER_PATH" <<EOF
 #!/usr/bin/env bash
@@ -194,7 +230,7 @@ PY
 )
 export DATA_DIR=${quoted_data_dir}
 export WEBUI_NAME=${quoted_name}
-export ENABLE_SIGNUP=${OPEN_WEBUI_ENABLE_SIGNUP}
+export ENABLE_SIGNUP=${quoted_signup}
 export ENABLE_PUBLIC_ACTIVE_USERS_COUNT=False
 export ENABLE_VERSION_UPDATE_CHECK=False
 export OPENAI_API_BASE_URL=${quoted_base_url}
@@ -290,6 +326,7 @@ main() {
   require_cmd hermes
   require_cmd curl
   require_cmd python3
+  guard_open_webui_signup
 
   install_macos_dependencies
 

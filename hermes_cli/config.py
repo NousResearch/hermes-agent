@@ -212,7 +212,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_RECOVERY_KEY",
     # Langfuse observability plugin — optional tuning keys + standard SDK vars.
     # Activation is via plugins.enabled (opt-in through `hermes plugins enable
-    # observability/langfuse`); credentials gate the plugin at runtime.
+    # observability/langfuse` or `hermes tools → Langfuse`); credentials gate
+    # the plugin at runtime.
     "HERMES_LANGFUSE_ENV",
     "HERMES_LANGFUSE_RELEASE",
     "HERMES_LANGFUSE_SAMPLE_RATE",
@@ -538,6 +539,65 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
+def _resolve_hermes_uid_gid() -> tuple[Optional[int], Optional[int]]:
+    """Read the HERMES_UID / HERMES_GID env vars set by Docker deployments.
+
+    Docker containers running Hermes commonly set these to map the in-container
+    user to a host user so volume-mounted state files end up with the right
+    ownership. The entrypoint chowns the top-level HERMES_HOME once, but
+    subdirectories created at runtime by ``ensure_hermes_home()`` (especially
+    for profile namespaces under ``profiles/<name>/``) need the same chown
+    or they land as ``root:root`` and block subsequent uid-mapped workers
+    with ``PermissionError [Errno 13]``. See #34107.
+
+    Returns ``(uid, gid)`` parsed from the env vars, or ``(None, None)``
+    when either is missing/invalid. Returns ``(None, None)`` on Windows
+    too (where chown is a no-op anyway).
+    """
+    if sys.platform == "win32":
+        return None, None
+    uid_str = os.environ.get("HERMES_UID", "").strip()
+    gid_str = os.environ.get("HERMES_GID", "").strip()
+    try:
+        uid = int(uid_str) if uid_str else None
+    except ValueError:
+        uid = None
+    try:
+        gid = int(gid_str) if gid_str else None
+    except ValueError:
+        gid = None
+    return uid, gid
+
+
+def _chown_to_hermes_uid(path) -> None:
+    """Chown ``path`` to ``HERMES_UID:HERMES_GID`` if those env vars are set.
+
+    No-op when:
+      - Either env var is unset/invalid
+      - The current process isn't root (chown will EPERM — silently ignored)
+      - On Windows (chown semantics don't apply)
+
+    Used by :func:`_secure_dir` to keep ownership consistent across all
+    directories created by :func:`ensure_hermes_home` on Docker deployments.
+    See #34107.
+    """
+    uid, gid = _resolve_hermes_uid_gid()
+    if uid is None and gid is None:
+        return
+    try:
+        # os.chown with -1 means "don't change" for that field.
+        os.chown(
+            path,
+            uid if uid is not None else -1,
+            gid if gid is not None else -1,
+        )
+    except (OSError, AttributeError, NotImplementedError):
+        # OSError covers EPERM (not running as root) and ENOENT (race),
+        # both of which are non-fatal — the dir is still created and
+        # the entrypoint's startup chown -R will fix it on next restart.
+        pass
+
+
 def _secure_dir(path):
     """Set directory to owner-only access (0700 by default). No-op on Windows.
 
@@ -550,6 +610,11 @@ def _secure_dir(path):
     caddy, etc.) needs to traverse HERMES_HOME to reach a served subdirectory.
     The execute-only bit on a directory permits cd-through without exposing
     directory listings.
+
+    Also applies ``HERMES_UID``/``HERMES_GID``-based ownership when those env
+    vars are set (#34107 — Docker deployments need this so profile subdirs
+    created at runtime by kanban workers don't land as root:root and block
+    subsequent uid-mapped workers).
     """
     if is_managed():
         return
@@ -562,6 +627,7 @@ def _secure_dir(path):
         os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
+    _chown_to_hermes_uid(path)
 
 
 def _is_container() -> bool:
@@ -1201,7 +1267,7 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
-        "personality": "kawaii",
+        "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the
         # historical hardcoded values; expose them as config so power users can
@@ -1407,7 +1473,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -1417,6 +1483,12 @@ DEFAULT_CONFIG = {
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+        },
+        "elevenlabs": {
+            "model_id": "scribe_v2",  # scribe_v2, scribe_v1
+            "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
+            "tag_audio_events": False,
+            "diarize": False,
         },
     },
 
@@ -1881,15 +1953,6 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
-        # Periodic process memory usage logging (gateway only). Emits a
-        # grep-friendly "[MEMORY] rss=...MB ..." line at the configured
-        # interval so slow leaks in the long-lived gateway are visible
-        # in agent.log / gateway.log as a time series. Ported from
-        # cline/cline#10343.
-        "memory_monitor": {
-            "enabled": True,         # Flip to false to silence the periodic line
-            "interval_seconds": 300, # Default: every 5 minutes
-        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
@@ -2736,9 +2799,10 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "ELEVENLABS_API_KEY": {
-        "description": "ElevenLabs API key for premium text-to-speech voices",
+        "description": "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
+        "tools": ["elevenlabs_tts", "voice_transcription"],
         "password": True,
         "category": "tool",
     },
@@ -5459,7 +5523,7 @@ def show_config():
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
-    print(f"  Personality:  {display.get('personality', 'kawaii')}")
+    print(f"  Personality:  {display.get('personality') or 'none'}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}

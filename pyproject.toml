@@ -64,6 +64,10 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  "fastapi>=0.104.0,<1",
+  "uvicorn[standard]>=0.24.0,<1",
+  "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
+  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -104,8 +108,10 @@ voice = [
   "numpy==2.4.3",
 ]
 pty = [
-  "ptyprocess==0.7.0; sys_platform != 'win32'",
-  "pywinpty==2.0.15; sys_platform == 'win32'",
+  # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
+  # in the main `dependencies` list (with the same platform markers), so
+  # any existing `pip install hermes-agent[pty]` invocations resolve cleanly
+  # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.0.1"]
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's

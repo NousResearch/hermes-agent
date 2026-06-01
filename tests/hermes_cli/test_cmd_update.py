@@ -216,8 +216,11 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
+        # Repo root additionally passes --workspaces=false so npm does not
+        # recursively install every apps/* workspace (desktop, shared).
+        repo_flags = [*update_flags, "--workspaces=false"]
         assert npm_calls[:2] == [
-            (update_flags, PROJECT_ROOT),
+            (repo_flags, PROJECT_ROOT),
             (update_flags, PROJECT_ROOT / "ui-tui"),
         ]
         if len(npm_calls) > 2:

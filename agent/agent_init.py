@@ -286,14 +286,6 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
-    # MiniMax serves its own models through an Anthropic-compatible endpoint.
-    # Default to the /anthropic base URL so prompt caching works out of the box.
-    if not agent.base_url and agent.provider in ("minimax", "minimax-cn"):
-        agent.base_url = (
-            "https://api.minimax.io/anthropic"
-            if agent.provider == "minimax"
-            else "https://api.minimaxi.com/anthropic"
-        )
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:

@@ -2,8 +2,6 @@
 
 from unittest.mock import patch
 
-from run_agent import AIAgent
-
 
 class TestMinimaxContextLengths:
     """Verify context length entries match official docs (204,800 for all models).
@@ -366,98 +364,3 @@ class TestMinimaxSwitchModelCredentialGuard:
             # The key passed to build_anthropic_client should be the MiniMax key
             build_args = mock_build.call_args
             assert build_args[0][0] == "mm-key-123"
-
-
-class TestMinimaxAgentInitDefaults:
-    """Verify AIAgent.__init__ defaults MiniMax to anthropic_messages + correct base_url."""
-
-    def test_minimax_defaults_to_anthropic_messages_and_global_url(self):
-        with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
-        ):
-            agent = AIAgent(
-                api_key="minimax-key-1234",
-                provider="minimax",
-                model="MiniMax-M2.7",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        assert agent.api_mode == "anthropic_messages"
-        assert agent.base_url == "https://api.minimax.io/anthropic"
-        assert agent.provider == "minimax"
-
-    def test_minimax_cn_defaults_to_anthropic_messages_and_china_url(self):
-        with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
-        ):
-            agent = AIAgent(
-                api_key="minimax-cn-key-5678",
-                provider="minimax-cn",
-                model="MiniMax-M2.7",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        assert agent.api_mode == "anthropic_messages"
-        assert agent.base_url == "https://api.minimaxi.com/anthropic"
-        assert agent.provider == "minimax-cn"
-
-    def test_minimax_explicit_base_url_not_overwritten(self):
-        with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
-        ):
-            agent = AIAgent(
-                api_key="minimax-key-1234",
-                provider="minimax",
-                base_url="https://custom.minimax.example.com/anthropic",
-                model="MiniMax-M2.7",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        assert agent.api_mode == "anthropic_messages"
-        assert agent.base_url == "https://custom.minimax.example.com/anthropic"
-
-    def test_minimax_explicit_api_mode_chat_completions_allowed(self):
-        with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
-        ):
-            agent = AIAgent(
-                api_key="minimax-key-1234",
-                provider="minimax",
-                api_mode="chat_completions",
-                base_url="https://api.minimax.io/v1",
-                model="MiniMax-M2.7",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        assert agent.api_mode == "chat_completions"
-        # explicit base_url should be preserved
-        assert agent.base_url == "https://api.minimax.io/v1"
-
-    def test_minimax_prompt_caching_enabled_by_default(self):
-        with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
-        ):
-            agent = AIAgent(
-                api_key="minimax-key-1234",
-                provider="minimax",
-                model="MiniMax-M2.7",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        assert agent._use_prompt_caching is True
-        assert agent._use_native_cache_layout is True

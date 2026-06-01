@@ -958,7 +958,14 @@ def switch_model(
                         override = True
                         break
         if override:
-            validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
+            # Model is explicitly listed in the user's provider config (e.g. an
+            # ollama cloud model that /v1/models doesn't advertise). The
+            # ``recognized=False`` flag is preserved so callers can still tell
+            # the model isn't in the live API listing, but the stale
+            # "not found in this provider's model listing" warning is cleared
+            # — the user has already declared the model is valid by listing
+            # it, and surfacing the rejection message here is misleading.
+            validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
         else:
             msg = validation.get("message", "Invalid model")
             return ModelSwitchResult(

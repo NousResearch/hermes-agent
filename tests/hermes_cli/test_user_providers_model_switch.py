@@ -946,6 +946,38 @@ def test_user_provider_override_accepts_listed_private_models(
     assert result.error_message == ""
 
 
+def test_user_provider_override_clears_stale_warning_message():
+    """Regression: the user_providers override must not surface the validator's
+    stale ``not found in this provider's model listing`` message.
+
+    The validator returns ``accepted=False`` when the live ``/v1/models``
+    endpoint doesn't list the model — which is normal for ollama cloud
+    models, proxied endpoints, and any provider that hides aliased/private
+    models from its public listing. The override path rescues the switch by
+    checking the user's ``providers:`` config; the warning that prompted the
+    rejection must NOT propagate into the success result, because surfacing
+    a `⚠ not found` after a successful switch is contradictory and noisy.
+
+    The fix at ``model_switch.py`` line ~960 sets ``message=None`` on the
+    override branch so the CLI's ``⚠`` printer sees an empty warning list.
+    """
+    result = _run_user_provider_override_case(
+        slug="ollama-launch",
+        name="Ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        models=["minimax-m3:cloud", "deepseek-v4-flash:cloud"],
+        raw_input="minimax-m3:cloud",
+    )
+
+    assert result.success is True
+    assert result.new_model == "minimax-m3:cloud"
+    assert result.error_message == ""
+    # The override cleared the stale warning — no "not found" message should
+    # leak through to the user.
+    assert result.warning_message == ""
+    assert "not found" not in result.warning_message.lower()
+
+
 @pytest.mark.parametrize(
     ("slug", "name", "base_url", "models", "raw_input"),
     [

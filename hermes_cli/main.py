@@ -4575,6 +4575,7 @@ def _model_flow_named_custom(config, provider_info):
                 menu_items,
                 selected=default_idx,
                 cancel_returns=-1,
+                searchable=True,
             )
             print()
             if idx < 0 or idx >= len(models):

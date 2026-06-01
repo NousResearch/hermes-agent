@@ -34,7 +34,7 @@ Hermes handles the rest: it sends the provider's `cache_control` markers automat
 |------------------|--------------------|-------|
 | **Anthropic Claude** — native API, or via OpenRouter / Nous Portal | Yes | Default path; no extra config |
 | **Qwen / Alibaba** — on OpenCode / DashScope | Yes | |
-| **DeepSeek** — `deepseek-v3.2`, `deepseek-v4-flash` via OpenRouter | Yes | Requires [#20945](https://github.com/NousResearch/hermes-agent/pull/20945) — see below |
+| **DeepSeek** — `deepseek-v3.2`, `deepseek-v4-flash` via OpenRouter | Yes | Requires [#36984](https://github.com/NousResearch/hermes-agent/pull/36984) — see below |
 | **Other providers** (Llama, Mistral, etc.) | No effect | Provider-side caching only |
 | **Cerebras** | No effect | Automatic server-side KV caching, independent of this config |
 
@@ -50,7 +50,7 @@ This message only appears for Claude and Qwen paths. Cerebras and DeepSeek don't
 
 `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v3.2` accept `cache_control` markers on OpenRouter and return real cache hits when they are present. Without them, the full prompt is re-billed on every turn.
 
-This requires the models to be in `_OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS` in `agent/agent_runtime_helpers.py`. [PR #20945](https://github.com/NousResearch/hermes-agent/pull/20945) (open, pending merge) adds these models. Once merged, `cache_ttl` controls DeepSeek caching the same way it does Claude.
+This requires the models to be in `_OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS` in `agent/agent_runtime_helpers.py`. [PR #36984](https://github.com/NousResearch/hermes-agent/pull/36984) (open, pending merge) adds `deepseek-v4-flash` and `deepseek-v4-flash-20260423`, building on [#20945](https://github.com/NousResearch/hermes-agent/pull/20945) which covers `deepseek-v3.2` and the Qwen family. Once either is merged, `cache_ttl` controls DeepSeek caching the same way it does Claude.
 
 **Measured on production Hermes (2026-05-31, `deepseek/deepseek-v4-flash` via OpenRouter):**
 

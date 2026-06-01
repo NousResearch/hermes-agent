@@ -1,0 +1,35 @@
+name: fluxer-platform
+label: Fluxer
+kind: platform
+version: 0.1.0
+description: >
+  Fluxer gateway adapter for Hermes Agent. Text-first integration using
+  Fluxer's bot REST API for outbound messages and Gateway WebSocket events
+  for inbound MESSAGE_CREATE dispatches.
+author: Hermes Agent
+requires_env:
+  - name: FLUXER_BASE_URL
+    description: "Fluxer API base URL, e.g. https://fluxer.example/api or https://fluxer.example"
+    prompt: "Fluxer base URL"
+    password: false
+  - name: FLUXER_BOT_TOKEN
+    description: "Fluxer bot token (<applicationId>.<secret>)"
+    prompt: "Fluxer bot token"
+    password: true
+optional_env:
+  - name: FLUXER_ALLOWED_USERS
+    description: "Comma-separated Fluxer user IDs allowed to talk to the bot"
+    prompt: "Allowed Fluxer user IDs"
+    password: false
+  - name: FLUXER_ALLOW_ALL_USERS
+    description: "Allow any Fluxer user to talk to the bot"
+    prompt: "Allow all Fluxer users? (true/false)"
+    password: false
+  - name: FLUXER_HOME_CHANNEL
+    description: "Default Fluxer channel/DM ID for cron and notifications"
+    prompt: "Home channel ID"
+    password: false
+  - name: FLUXER_HOME_CHANNEL_NAME
+    description: "Human label for the home channel"
+    prompt: "Home channel display name"
+    password: false

@@ -621,6 +621,14 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                 ))
                 break  # one finding per line for invisible chars
 
+    # In documentation files (.md), demote code-pattern findings that are
+    # likely prose, code examples, or anti-pattern references rather than
+    # actual executable threats.  Injection and credential-exposure patterns
+    # stay at full severity because prompt injection and leaked secrets are
+    # dangerous even in documentation.
+    if file_path.suffix.lower() == ".md":
+        findings = _demote_doc_findings(findings)
+
     return findings
 
 
@@ -1075,6 +1083,45 @@ def _determine_verdict(findings: List[Finding]) -> str:
         return "caution"
     # medium/low findings alone are informational, not blocking
     return "safe"
+
+
+def _demote_doc_findings(findings: List[Finding]) -> List[Finding]:
+    """Demote code-pattern findings in documentation files.
+
+    In ``.md`` files, most findings from regex pattern matching are false
+    positives: code examples, anti-pattern references, and instructional
+    prose that mentions dangerous tokens without actually executing them.
+
+    Categories that remain at full severity (these ARE threats in docs):
+      - ``injection`` — prompt injection is the primary attack vector for skills
+      - ``credential_exposure`` — leaked secrets are dangerous anywhere
+      - ``persistence`` — agent config modification instructions are threats
+
+    All other categories are demoted:
+      - critical → medium
+      - high    → medium
+      - medium  → low
+      - low     → low (unchanged)
+    """
+    _KEEP_SEVERITY = {"injection", "credential_exposure", "persistence"}
+    _DEMOTE = {"critical": "medium", "high": "medium", "medium": "low"}
+
+    demoted: List[Finding] = []
+    for f in findings:
+        if f.category in _KEEP_SEVERITY:
+            demoted.append(f)
+        else:
+            new_sev = _DEMOTE.get(f.severity, f.severity)
+            demoted.append(Finding(
+                pattern_id=f.pattern_id,
+                severity=new_sev,
+                category=f.category,
+                file=f.file,
+                line=f.line,
+                match=f.match,
+                description=f.description,
+            ))
+    return demoted
 
 
 def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:

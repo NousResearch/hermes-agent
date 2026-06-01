@@ -467,6 +467,26 @@ class TestMediaInsideSerializedJson:
         assert len(media) == 1 and media[0][0] == "/tmp/v.ogg"
         assert media[0][1] is True  # voice flag
 
+    # --- cleaned-text invariants: real tags stripped, JSON data kept verbatim ---
+
+    def test_json_embedded_media_kept_verbatim_in_cleaned_text(self):
+        """A real tag is delivered+stripped; a JSON-embedded MEDIA: stays as
+        literal text (stored data must read back unchanged)."""
+        content = 'MEDIA:/real/r.png\nlog: {"old":"MEDIA:/stale/s.png"}'
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/real/r.png"]
+        # The JSON-embedded path must survive verbatim — not blanked to spaces.
+        assert '{"old":"MEDIA:/stale/s.png"}' in cleaned
+
+    def test_cleaned_text_after_directive_not_truncated(self):
+        """Stripping a tag preceded by a [[as_document]] directive must not
+        shift offsets and chop the path or trailing text."""
+        content = "See [[as_document]] MEDIA:/d/report.pdf now"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert [p for p, _ in media] == ["/d/report.pdf"]
+        assert "MEDIA:" not in cleaned          # real tag removed
+        assert cleaned.endswith("now")          # trailing text intact (not chopped)
+
 
 class TestMediaExtensionAllowlistParity:
     """Regression coverage for issue #34517 — the MEDIA: extension black hole.

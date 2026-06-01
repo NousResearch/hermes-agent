@@ -2355,6 +2355,40 @@ def _format_image_attachment_badges(attached_images: list[Path], image_counter: 
     )
 
 
+def _prepend_turn_note_to_message(note: str, message):
+    """Prepend a one-shot CLI note to text or native multimodal content."""
+    note = str(note or "").strip()
+    if not note:
+        return message
+
+    if isinstance(message, str):
+        return f"{note}\n\n{message}" if message else note
+
+    if isinstance(message, list):
+        updated = []
+        inserted = False
+        for part in message:
+            if (
+                not inserted
+                and isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ):
+                new_part = dict(part)
+                text = new_part.get("text", "")
+                new_part["text"] = f"{note}\n\n{text}" if text else note
+                updated.append(new_part)
+                inserted = True
+            else:
+                updated.append(part)
+
+        if not inserted:
+            return [{"type": "text", "text": note}, *updated]
+        return updated
+
+    return f"{note}\n\n{message}"
+
+
 def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     """Auto-attach clipboard images only for image-only paste gestures."""
     return not pasted_text.strip()
@@ -12138,14 +12172,14 @@ class HermesCLI:
                 # Prepend pending model switch note so the model knows about the switch
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
-                    agent_message = _msn + "\n\n" + agent_message
+                    agent_message = _prepend_turn_note_to_message(_msn, agent_message)
                     self._pending_model_switch_note = None
                 # Prepend pending /reload-skills note so the model sees which
                 # skills were added/removed before handling this turn. Same
                 # one-shot queue pattern as the model-switch note above.
                 _srn = getattr(self, '_pending_skills_reload_note', None)
                 if _srn:
-                    agent_message = _srn + "\n\n" + agent_message
+                    agent_message = _prepend_turn_note_to_message(_srn, agent_message)
                     self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(

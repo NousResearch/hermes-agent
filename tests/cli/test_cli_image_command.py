@@ -5,6 +5,7 @@ from cli import (
     HermesCLI,
     _collect_query_images,
     _format_image_attachment_badges,
+    _prepend_turn_note_to_message,
     _termux_example_image_path,
 )
 
@@ -107,3 +108,33 @@ class TestImageBadgeFormatting:
         badges = _format_image_attachment_badges([img1, img2], image_counter=2, width=45)
 
         assert badges == "[📎 2 images attached]"
+
+
+class TestPrependTurnNoteToMessage:
+    def test_prepends_note_to_text_message(self):
+        message = _prepend_turn_note_to_message("[MODEL SWITCHED]", "describe this")
+
+        assert message == "[MODEL SWITCHED]\n\ndescribe this"
+
+    def test_prepends_note_to_native_image_text_part_without_mutating_original(self):
+        original = [
+            {"type": "text", "text": "What do you see?\n\n[Image attached at: /tmp/a.png]"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+
+        message = _prepend_turn_note_to_message("[MODEL SWITCHED]", original)
+
+        assert isinstance(message, list)
+        assert message[0]["text"].startswith("[MODEL SWITCHED]\n\nWhat do you see?")
+        assert message[1] == original[1]
+        assert original[0]["text"].startswith("What do you see?")
+
+    def test_inserts_text_part_when_native_message_has_only_images(self):
+        original = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+
+        message = _prepend_turn_note_to_message("[MODEL SWITCHED]", original)
+
+        assert message[0] == {"type": "text", "text": "[MODEL SWITCHED]"}
+        assert message[1] == original[0]

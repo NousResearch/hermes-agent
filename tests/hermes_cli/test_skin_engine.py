@@ -96,6 +96,38 @@ class TestBuiltinSkins:
         assert skin.get_color("banner_text") == "#2C1810"
         assert skin.get_color("completion_menu_bg") == "#F5EFE0"
 
+    def test_clean_skin_loads(self):
+        """The accessibility/ADHD-friendly skin must load with the right
+        solid colors, no banner art, and plain text spinner faces."""
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("clean")
+        assert skin.name == "clean"
+        # Solid dark-grey background (per issue #36865)
+        assert skin.get_color("status_bar_bg") == "#1E1E1E"
+        assert skin.get_color("completion_menu_bg") == "#1E1E1E"
+        assert skin.get_color("voice_status_bg") == "#1E1E1E"
+        # High contrast text on the dark background
+        assert skin.get_color("banner_text") == "#E6E6E6"
+        assert skin.get_color("banner_title") == "#E6E6E6"
+        assert skin.get_color("status_bar_text") == "#E6E6E6"
+        # Standard, non-kawaii prompt symbol
+        assert skin.get_branding("prompt_symbol") == "$"
+        # Plain tool prefix and no spinner wings or banner art
+        assert skin.tool_prefix == "|"
+        assert skin.banner_logo == ""
+        assert skin.banner_hero == ""
+        assert skin.get_spinner_wings() == []
+        # Spinner faces are plain ASCII brackets
+        for face in skin.spinner.get("waiting_faces", []):
+            assert all(ord(c) < 128 for c in face), (
+                f"clean skin must avoid decorative Unicode spinner faces, got {face!r}"
+            )
+        # Status-bar color stops use a clear green/amber/red traffic-light set
+        assert skin.get_color("status_bar_good") == "#2EA043"
+        assert skin.get_color("status_bar_warn") == "#D29922"
+        assert skin.get_color("status_bar_bad") == "#F85149"
+
     def test_charizard_skin_has_dark_ember_completion_menu(self):
         from hermes_cli.skin_engine import load_skin
 
@@ -146,6 +178,7 @@ class TestSkinManagement:
         assert "slate" in names
         assert "daylight" in names
         assert "warm-lightmode" in names
+        assert "clean" in names
         for s in skins:
             assert "source" in s
             assert s["source"] == "builtin"

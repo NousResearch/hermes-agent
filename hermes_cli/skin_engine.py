@@ -104,6 +104,7 @@ BUILT-IN SKINS
 - ``slate``   — Cool blue developer-focused theme
 - ``daylight`` — Light background theme with dark text and blue accents
 - ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
+- ``clean``   — Solid dark grey, high-contrast, no decorations (accessibility)
 
 USER SKINS
 ==========
@@ -641,6 +642,58 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⠀⣰⡿⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
+    "clean": {
+        "name": "clean",
+        "description": "Solid dark grey, high-contrast, no decorations — accessibility/ADHD friendly",
+        "colors": {
+            "banner_border": "#555555",
+            "banner_title": "#E6E6E6",
+            "banner_accent": "#FFFFFF",
+            "banner_dim": "#8B949E",
+            "banner_text": "#E6E6E6",
+            "ui_accent": "#4A9EFF",
+            "ui_label": "#FFFFFF",
+            "ui_ok": "#2EA043",
+            "ui_error": "#F85149",
+            "ui_warn": "#D29922",
+            "prompt": "#E6E6E6",
+            "input_rule": "#555555",
+            "response_border": "#555555",
+            "status_bar_bg": "#1E1E1E",
+            "status_bar_text": "#E6E6E6",
+            "status_bar_strong": "#FFFFFF",
+            "status_bar_dim": "#8B949E",
+            "status_bar_good": "#2EA043",
+            "status_bar_warn": "#D29922",
+            "status_bar_bad": "#F85149",
+            "status_bar_critical": "#F85149",
+            "session_label": "#FFFFFF",
+            "session_border": "#555555",
+            "voice_status_bg": "#1E1E1E",
+            "selection_bg": "#264F78",
+            "completion_menu_bg": "#1E1E1E",
+            "completion_menu_current_bg": "#264F78",
+            "completion_menu_meta_bg": "#252525",
+            "completion_menu_meta_current_bg": "#264F78",
+        },
+        "spinner": {
+            "waiting_faces": ["[...]", "[   ]", "[.  ]", "[.. ]"],
+            "thinking_faces": ["[...]", "[   ]", "[.  ]", "[.. ]"],
+            "thinking_verbs": [
+                "working", "processing", "thinking", "reading",
+            ],
+            "wings": [],
+        },
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent. Type a message or /help for commands.",
+            "goodbye": "Goodbye.",
+            "response_label": " Hermes ",
+            "prompt_symbol": "$",
+            "help_header": "Available Commands",
+        },
+        "tool_prefix": "|",
     },
 }
 

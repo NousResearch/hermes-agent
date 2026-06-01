@@ -161,6 +161,54 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def find_skill_dir(name: str) -> Optional[Path]:
+    """Public lookup: return the filesystem path to a skill, or None if not found.
+
+    Thin wrapper around the internal ``_find_skill()`` so external callers
+    (``hermes_cli.skills_hub``, tests, etc.) can resolve skill paths without
+    depending on a private function.
+    """
+    existing = _find_skill(name)
+    if not existing:
+        return None
+    return existing.get("path")
+
+
+def _protected_guard(name: str) -> Optional[str]:
+    """Return a refusal message if *name* has a ``.protected`` marker, else None.
+
+    Protected skills refuse all mutations — edit, patch, write_file, remove_file,
+    and delete.  The marker is a simple dotfile (``<skill-dir>/.protected``)
+    created/removed by ``hermes skills protect`` / ``hermes skills unprotect``.
+
+    Dotfile approach chosen over YAML frontmatter manipulation per House review:
+    zero risk of corrupting SKILL.md, zero YAML parsing for this feature, and
+    the guard is a one-liner (file exists check).
+
+    Note: the OSError catch here is deliberate — if we can't read the filesystem,
+    we refuse the mutation rather than silently allow it.  Fail closed.
+    """
+    existing = _find_skill(name)
+    if not existing:
+        return None  # Let the caller handle "not found"
+    skill_dir = existing.get("path")
+    if not skill_dir:
+        return None
+    try:
+        if (skill_dir / ".protected").exists():
+            return (
+                f"Skill '{name}' is protected and cannot be modified or deleted. "
+                f"Run `hermes skills unprotect {name}` to allow edits."
+            )
+    except OSError:
+        logger.warning("protected-guard: error checking %s, refusing mutation", name, exc_info=True)
+        return (
+            f"Skill '{name}' protection status could not be verified. "
+            f"Refusing mutation as a safety precaution."
+        )
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -836,11 +884,17 @@ def skill_manage(
         result = _create_skill(name, content, category)
 
     elif action == "edit":
+        guard = _protected_guard(name)
+        if guard:
+            return tool_error(guard)
         if not content:
             return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
+        guard = _protected_guard(name)
+        if guard:
+            return tool_error(guard)
         if not old_string:
             return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
         if new_string is None:
@@ -848,9 +902,15 @@ def skill_manage(
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
+        guard = _protected_guard(name)
+        if guard:
+            return tool_error(guard)
         result = _delete_skill(name, absorbed_into=absorbed_into)
 
     elif action == "write_file":
+        guard = _protected_guard(name)
+        if guard:
+            return tool_error(guard)
         if not file_path:
             return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
         if file_content is None:
@@ -858,6 +918,9 @@ def skill_manage(
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":
+        guard = _protected_guard(name)
+        if guard:
+            return tool_error(guard)
         if not file_path:
             return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
@@ -927,7 +990,11 @@ SKILL_MANAGE_SCHEMA = {
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
+        "pitfalls come up; pin only guards against irrecoverable loss.\n\n"
+        "Protected skills (`<skill-dir>/.protected` marker) refuse ALL mutations — "
+        "edit, patch, write_file, remove_file, and delete.  The agent cannot override "
+        "protected; only the user can run `hermes skills unprotect` to allow edits again. "
+        "Use this when a skill captures manual work that auto-refine must not overwrite."
     ),
     "parameters": {
         "type": "object",

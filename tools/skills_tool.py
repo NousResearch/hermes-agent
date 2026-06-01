@@ -610,6 +610,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    "protected": (skill_md.parent / ".protected").exists(),
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -1340,6 +1341,7 @@ def skill_view(
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
+            "protected": (skill_dir / ".protected").exists() if skill_dir else False,
             "tags": tags,
             "related_skills": related_skills,
             "content": rendered_content,

@@ -13364,6 +13364,10 @@ Examples:
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
 
+    skills_protect = skills_subparsers.add_parser("protect", help="Protect or unprotect a skill from agent edits (.protected marker)")
+    skills_protect.add_argument("name", help="Skill name")
+    skills_protect.add_argument("--unprotect", action="store_true", help="Unprotect the skill (remove .protected marker)")
+
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser(
         "config",

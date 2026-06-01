@@ -24,6 +24,7 @@ from rich.table import Table
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from tools.skill_manager_tool import find_skill_dir
 
 _console = Console()
 
@@ -903,6 +904,37 @@ def do_list(source_filter: str = "all",
     c.print(summary)
 
 
+def do_protect(name: str, protect: bool = True, console: Optional[Console] = None) -> None:
+    """Protect or unprotect a skill by creating/removing its ``.protected`` marker.
+
+    Protected skills refuse all agent edits (edit, patch, write_file, remove_file).
+    Only the user can unprotect them.
+
+    Uses a dotfile marker (``<skill-dir>/.protected``) rather than frontmatter
+    manipulation — avoids any risk of corrupting SKILL.md YAML and makes the
+    guard a simple file-exists check (per House review guidance).
+    """
+    c = console or _console
+    skill_dir = find_skill_dir(name)
+    if not skill_dir:
+        c.print(f"[bold red]Skill '{name}' not found.[/]\n")
+        return
+
+    marker = skill_dir / ".protected"
+    if protect:
+        if marker.exists():
+            c.print(f"[yellow]Skill '{name}' is already protected.[/]\n")
+            return
+        marker.touch()
+        c.print(f"[green]Skill '{name}' is now protected. Agent edits will be blocked.[/]\n")
+    else:
+        if not marker.exists():
+            c.print(f"[yellow]Skill '{name}' is not protected.[/]\n")
+            return
+        marker.unlink()
+        c.print(f"[green]Skill '{name}' is now unprotected.[/]\n")
+
+
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
     """Check hub-installed skills for upstream updates."""
     from tools.skills_hub import check_for_skill_updates
@@ -1576,8 +1608,10 @@ def skills_command(args) -> None:
             _console.print("Usage: hermes skills tap [list|add|remove]\n")
             return
         do_tap(tap_action, repo=repo)
+    elif action == "protect":
+        do_protect(args.name, protect=not getattr(args, "unprotect", False))
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap|protect]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1784,6 +1818,12 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         repo = args[1] if len(args) > 1 else ""
         do_tap(tap_action, repo=repo, console=c)
 
+    elif action == "protect":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills protect <skill-name> [--unprotect]\n")
+            return
+        do_protect(args[0], protect="--unprotect" not in args, console=c)
+
     elif action in {"help", "--help", "-h"}:
         _print_skills_help(c)
 
@@ -1809,6 +1849,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
-        "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
+        "  [cyan]tap[/] list|add|remove         Manage skill sources\n"
+        "  [cyan]protect[/] <name> [--unprotect]  Protect/unprotect a skill from agent edits (.protected marker)\n",
         title="/skills",
     ))

@@ -187,6 +187,15 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+TOOL_SEARCH_GUIDANCE = (
+    "Many MCP and plugin tools are loaded on demand via tool_search. "
+    "Before concluding a capability is unavailable, always call "
+    "tool_search(\"keyword\") to check for a matching deferred tool. "
+    "Deferred MCP tools are fully connected and authenticated — "
+    "prefer them over skill-based alternatives that may require "
+    "separate setup."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

@@ -51,6 +51,12 @@ def test_packet_panel_renders_safety_posture_and_untrusted_worker_label():
         assert phrase in source
 
 
+def test_packet_panel_uses_readable_font_for_dense_mobile_controls():
+    source = _read(PANEL_TSX)
+
+    assert "font-readable-ui" in source
+
+
 def test_packet_panel_does_not_render_dangerous_action_buttons():
     source = _read(PANEL_TSX)
 

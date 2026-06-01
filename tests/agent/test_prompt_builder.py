@@ -327,6 +327,10 @@ class TestBuildSkillsSystemPrompt:
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        (tmp_path / "config.yaml").write_text("skills:\n  disabled: [old-tool]\n")
         skills_dir = tmp_path / "skills" / "tools"
         skills_dir.mkdir(parents=True)
 
@@ -342,13 +346,7 @@ class TestBuildSkillsSystemPrompt:
             "---\nname: old-tool\ndescription: Deprecated tool\n---\n"
         )
 
-        from unittest.mock import patch
-
-        with patch(
-            "agent.prompt_builder.get_disabled_skill_names",
-            return_value={"old-tool"},
-        ):
-            result = build_skills_system_prompt()
+        result = build_skills_system_prompt()
 
         assert "web-search" in result
         assert "old-tool" not in result
@@ -426,6 +424,65 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "backend-skill" in result
+
+    def test_eager_skill_body_is_inlined(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "browser"
+
+        eager_skill = skills_dir / "browser-harness"
+        eager_skill.mkdir(parents=True)
+        (eager_skill / "SKILL.md").write_text(
+            "---\n"
+            "name: browser-harness\n"
+            "description: Browser workflows\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    eager: true\n"
+            "---\n"
+            "Search domain-skills/ before improvising.\n"
+        )
+
+        lazy_skill = skills_dir / "plain-skill"
+        lazy_skill.mkdir()
+        (lazy_skill / "SKILL.md").write_text(
+            "---\n"
+            "name: plain-skill\n"
+            "description: Plain skill\n"
+            "---\n"
+            "This body should stay lazy.\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert '<eager_skills>' in result
+        assert '<skill name="browser-harness">' in result
+        assert "Search domain-skills/ before improvising." in result
+        assert "This body should stay lazy." not in result
+
+    def test_eager_skill_body_survives_disk_snapshot(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "browser" / "browser-harness"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: browser-harness\n"
+            "description: Browser workflows\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    eager: true\n"
+            "---\n"
+            "Search domain-skills/ before improvising.\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "Search domain-skills/ before improvising." in first
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        second = build_skills_system_prompt()
+
+        assert "Search domain-skills/ before improvising." in second
 
 
 class TestBuildNousSubscriptionPrompt:
@@ -1245,6 +1302,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
-

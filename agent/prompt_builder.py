@@ -884,7 +884,7 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -957,6 +957,7 @@ def _build_snapshot_entry(
     skills_dir: Path,
     frontmatter: dict,
     description: str,
+    body: str = "",
 ) -> dict:
     """Build a serialisable metadata dict for one skill."""
     rel_path = skill_file.relative_to(skills_dir)
@@ -972,6 +973,9 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    eager = _skill_uses_eager_prompt(frontmatter)
+    cleaned_body = body.strip()
+
     return {
         "skill_name": skill_name,
         "category": category,
@@ -979,6 +983,8 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "eager": eager,
+        "body": cleaned_body if eager else "",
     }
 
 
@@ -986,23 +992,52 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
-    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
+def _coerce_frontmatter_bool(value: object) -> bool:
+    """Coerce YAML-ish truthy values into a strict bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
-    Returns (is_compatible, frontmatter, description). On any error, returns
-    (True, {}, "") to err on the side of showing the skill.
+
+def _skill_uses_eager_prompt(frontmatter: dict) -> bool:
+    """Return whether a skill requests eager body injection."""
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict):
+        hermes_meta = metadata.get("hermes")
+        if isinstance(hermes_meta, dict) and "eager" in hermes_meta:
+            return _coerce_frontmatter_bool(hermes_meta.get("eager"))
+    if "eager" in frontmatter:
+        return _coerce_frontmatter_bool(frontmatter.get("eager"))
+    return False
+
+
+def _parse_skill_file_with_body(skill_file: Path) -> tuple[bool, dict, str, str]:
+    """Read a SKILL.md once and return platform compatibility, frontmatter, description, and body.
+
+    Returns (is_compatible, frontmatter, description, body). On any error,
+    returns (True, {}, "", "") to err on the side of showing the skill.
     """
     try:
         raw = skill_file.read_text(encoding="utf-8")
-        frontmatter, _ = parse_frontmatter(raw)
+        frontmatter, body = parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
-            return False, frontmatter, ""
+            return False, frontmatter, "", ""
 
-        return True, frontmatter, extract_skill_description(frontmatter)
+        return True, frontmatter, extract_skill_description(frontmatter), body.strip()
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
-        return True, {}, ""
+        return True, {}, "", ""
+
+
+def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+    """Backward-compatible wrapper returning skill compatibility metadata."""
+    is_compatible, frontmatter, description, _body = _parse_skill_file_with_body(skill_file)
+    return is_compatible, frontmatter, description
 
 
 def _skill_should_show(
@@ -1034,6 +1069,27 @@ def _skill_should_show(
             return False
 
     return True
+
+
+def _filter_disabled_skill_entries(
+    skills_by_category: dict[str, list[tuple[str, str]]],
+    eager_skill_entries: list[tuple[str, str]],
+    disabled: set[str],
+) -> tuple[dict[str, list[tuple[str, str]]], list[tuple[str, str]]]:
+    """Drop disabled skills from both index entries and eager payloads."""
+    if not disabled:
+        return skills_by_category, eager_skill_entries
+
+    filtered_categories: dict[str, list[tuple[str, str]]] = {}
+    for category, entries in skills_by_category.items():
+        kept = [(name, desc) for name, desc in entries if name not in disabled]
+        if kept:
+            filtered_categories[category] = kept
+
+    filtered_eager = [
+        (name, body) for name, body in eager_skill_entries if name not in disabled
+    ]
+    return filtered_categories, filtered_eager
 
 
 def build_skills_system_prompt(
@@ -1089,6 +1145,7 @@ def build_skills_system_prompt(
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+    eager_skill_entries: list[tuple[str, str]] = []
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1112,6 +1169,8 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
             )
+            if entry.get("eager") and entry.get("body"):
+                eager_skill_entries.append((frontmatter_name, str(entry.get("body", ""))))
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -1120,8 +1179,8 @@ def build_skills_system_prompt(
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
+            is_compatible, frontmatter, desc, body = _parse_skill_file_with_body(skill_file)
+            entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc, body)
             skill_entries.append(entry)
             if not is_compatible:
                 continue
@@ -1137,6 +1196,8 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
             )
+            if entry["eager"] and entry["body"]:
+                eager_skill_entries.append((entry["frontmatter_name"], entry["body"]))
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1167,16 +1228,17 @@ def build_skills_system_prompt(
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
             seen_skill_names.add(name)
+    seen_eager_skill_names = {name for name, _body in eager_skill_entries}
 
     for ext_dir in external_dirs:
         if not ext_dir.exists():
             continue
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
             try:
-                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                is_compatible, frontmatter, desc, body = _parse_skill_file_with_body(skill_file)
                 if not is_compatible:
                     continue
-                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
+                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc, body)
                 skill_name = entry["skill_name"]
                 frontmatter_name = entry["frontmatter_name"]
                 if frontmatter_name in seen_skill_names:
@@ -1193,6 +1255,13 @@ def build_skills_system_prompt(
                 skills_by_category.setdefault(entry["category"], []).append(
                     (frontmatter_name, entry["description"])
                 )
+                if (
+                    entry["eager"]
+                    and entry["body"]
+                    and frontmatter_name not in seen_eager_skill_names
+                ):
+                    seen_eager_skill_names.add(frontmatter_name)
+                    eager_skill_entries.append((frontmatter_name, entry["body"]))
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -1209,6 +1278,13 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    current_disabled = set(get_disabled_skill_names())
+    skills_by_category, eager_skill_entries = _filter_disabled_skill_entries(
+        skills_by_category,
+        eager_skill_entries,
+        current_disabled,
+    )
 
     if not skills_by_category:
         result = ""
@@ -1256,6 +1332,20 @@ def build_skills_system_prompt(
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
+        )
+        if eager_skill_entries:
+            eager_blocks = []
+            for name, body in eager_skill_entries:
+                eager_blocks.append(f'<skill name="{name}">\n{body}\n</skill>')
+            result += (
+                "\n"
+                "The following eager skills are preloaded because their body contains routing or workflow "
+                "instructions you should apply immediately without waiting for another skill_view() call.\n"
+                "<eager_skills>\n"
+                + "\n\n".join(eager_blocks)
+                + "\n</eager_skills>\n"
+            )
+        result += (
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
         )

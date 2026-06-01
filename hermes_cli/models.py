@@ -278,7 +278,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "minimax": [
         "MiniMax-M3",
-        "MiniMax-M3-highspeed",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
@@ -286,13 +285,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "minimax-oauth": [
         "MiniMax-M3",
-        "MiniMax-M3-highspeed",
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
     ],
     "minimax-cn": [
         "MiniMax-M3",
-        "MiniMax-M3-highspeed",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",

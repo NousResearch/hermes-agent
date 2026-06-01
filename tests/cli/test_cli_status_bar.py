@@ -428,6 +428,12 @@ class TestCLIStatusBar:
         assert rendered == "⏱ 25m35s"
         assert "351s" not in rendered
 
+    def test_prompt_elapsed_long_turn_does_not_render_raw_seconds(self):
+        rendered = HermesCLI._format_prompt_elapsed(None, 2312, live=True)
+
+        assert rendered == "⏱ 38m32s"
+        assert "2312s" not in rendered
+
     def test_voice_status_bar_compacts_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._voice_mode = True

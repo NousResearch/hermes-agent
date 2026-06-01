@@ -11083,11 +11083,21 @@ class GatewayRunner:
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
+        platform_value = _gateway_platform_value(platform)
         voice_key = self._voice_key(platform, chat_id)
 
         adapter = self.adapters.get(platform)
 
         if args in {"on", "enable"}:
+            # Telegram "voice mode on" means text + a voice-message copy of
+            # every response. Other platforms keep the historical voice-input
+            # only behavior (Discord voice channels, etc.).
+            if platform_value == "telegram":
+                self._voice_mode[voice_key] = "all"
+                self._save_voice_modes()
+                if adapter:
+                    self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                return t("gateway.voice.tts_enabled")
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
             if adapter:
@@ -11136,11 +11146,11 @@ class GatewayRunner:
             # Toggle: off → on, on/all → off
             current = self._voice_mode.get(voice_key, "off")
             if current == "off":
-                self._voice_mode[voice_key] = "voice_only"
+                self._voice_mode[voice_key] = "all" if platform_value == "telegram" else "voice_only"
                 self._save_voice_modes()
                 if adapter:
                     self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
-                return t("gateway.voice.enabled_short")
+                return t("gateway.voice.tts_enabled") if platform_value == "telegram" else t("gateway.voice.enabled_short")
             else:
                 self._voice_mode[voice_key] = "off"
                 self._save_voice_modes()

@@ -99,7 +99,7 @@ class TestHandleVoiceCommand:
         event = _make_event("/voice on")
         result = await runner._handle_voice_command(event)
         assert "enabled" in result.lower()
-        assert runner._voice_mode["telegram:123"] == "voice_only"
+        assert runner._voice_mode["telegram:123"] == "all"
 
     @pytest.mark.asyncio
     async def test_voice_off(self, runner):
@@ -134,7 +134,7 @@ class TestHandleVoiceCommand:
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)
         assert "enabled" in result.lower()
-        assert runner._voice_mode["telegram:123"] == "voice_only"
+        assert runner._voice_mode["telegram:123"] == "all"
 
     @pytest.mark.asyncio
     async def test_toggle_on_to_off(self, runner):
@@ -150,7 +150,7 @@ class TestHandleVoiceCommand:
         await runner._handle_voice_command(event)
         assert runner._VOICE_MODE_PATH.exists()
         data = json.loads(runner._VOICE_MODE_PATH.read_text())
-        assert data["telegram:123"] == "voice_only"
+        assert data["telegram:123"] == "all"
 
     @pytest.mark.asyncio
     async def test_persistence_loaded(self, runner):
@@ -246,7 +246,7 @@ class TestHandleVoiceCommand:
         e2 = _make_event("/voice tts", chat_id="bbb")
         await runner._handle_voice_command(e1)
         await runner._handle_voice_command(e2)
-        assert runner._voice_mode["telegram:aaa"] == "voice_only"
+        assert runner._voice_mode["telegram:aaa"] == "all"
         assert runner._voice_mode["telegram:bbb"] == "all"
 
     @pytest.mark.asyncio
@@ -259,7 +259,7 @@ class TestHandleVoiceCommand:
         await runner._handle_voice_command(telegram_event)
         await runner._handle_voice_command(slack_event)
 
-        assert runner._voice_mode["telegram:999"] == "voice_only"
+        assert runner._voice_mode["telegram:999"] == "all"
         assert runner._voice_mode["slack:999"] == "off"
 
 

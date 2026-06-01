@@ -3013,7 +3013,12 @@ class AIAgent:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
-                new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
+                kwargs = dict(self._client_kwargs)
+                if not kwargs.get("api_key"):
+                    key = getattr(self, "api_key", "") or getattr(self, "_anthropic_api_key", "")
+                    if key:
+                        kwargs["api_key"] = key
+                new_client = self._create_openai_client(kwargs, reason=reason, shared=True)
             except Exception as exc:
                 logger.warning(
                     "Failed to rebuild shared OpenAI client (%s) %s error=%s",

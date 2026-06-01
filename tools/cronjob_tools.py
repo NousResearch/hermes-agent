@@ -73,6 +73,13 @@ _CRON_THREAT_PATTERNS = [
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    # Gateway lifecycle commands — same patterns as hermes_cli/cron.py.
+    # Prevents agents from scheduling jobs that restart/stop the gateway,
+    # which creates SIGTERM-respawn loops under launchd/systemd KeepAlive.
+    (r'hermes\s+gateway\s+(?:restart|stop|start)', "gateway_lifecycle"),
+    (r'launchctl\s+(?:kickstart|unload|load|stop|restart)\s+\S*hermes', "gateway_lifecycle_launchctl"),
+    (r'systemctl\s+(?:restart|stop|start)\s+\S*hermes', "gateway_lifecycle_systemctl"),
+    (r'p?kill\s+.*hermes.*gateway', "gateway_lifecycle_kill"),
 ]
 
 # Looser pattern set — applied to the assembled prompt when skills are
@@ -469,11 +476,19 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
 
-            # Validate script path before storing
+            # Validate script path before storing; also scan content for
+            # gateway lifecycle commands (mirrors hermes_cli/cron.py).
             if script:
                 script_error = _validate_cron_script_path(script)
                 if script_error:
                     return tool_error(script_error, success=False)
+                try:
+                    script_text = Path(script).read_text(encoding="utf-8")
+                    scan_error = _scan_cron_prompt(script_text)
+                    if scan_error:
+                        return tool_error(scan_error, success=False)
+                except (OSError, UnicodeDecodeError):
+                    pass
 
             # Validate context_from references existing jobs
             if context_from:

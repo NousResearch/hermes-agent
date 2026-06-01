@@ -60,6 +60,21 @@ class FakeKbActionsAdapter(FakeAdapter):
         )
 
 
+class FailingKbActionsAdapter(FakeAdapter):
+    async def send_kb_actions(self, chat_id, text, actions, metadata=None, reply_to=None):
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "actions": actions,
+                "metadata": metadata,
+                "reply_to": reply_to,
+                "failed_native_card": True,
+            }
+        )
+        return SimpleNamespace(success=False, error="button rendering unavailable")
+
+
 def _event(text="/kb"):
     return MessageEvent(
         text=text,
@@ -443,6 +458,34 @@ def test_register_exposes_single_clear_kb_menu_command():
         "Use /kb in Telegram. Try: /kb queue, /kb status, /kb reasoning xhigh, /kb run sync."
     )
     assert "pre_gateway_dispatch" in ctx.hooks
+
+
+def test_send_card_falls_back_to_text_when_native_action_card_fails():
+    from plugins.kb_journeys import _send_card
+    from tools.kb_callback_registry import KbAction
+
+    adapter = FailingKbActionsAdapter()
+    asyncio.run(
+        _send_card(
+            adapter,
+            _event("/kb"),
+            {
+                "title": "KB Queue",
+                "text": "Review proposal",
+                "actions": [
+                    KbAction(label="Preview Reject", action_id="preview", handler=lambda _ctx: None),
+                    KbAction(label="Guidance", action_id="guidance", handler=lambda _ctx: None),
+                ],
+            },
+        )
+    )
+
+    assert len(adapter.sent) == 2
+    assert adapter.sent[0]["failed_native_card"] is True
+    assert adapter.sent[1]["text"] == "Review proposal\n\nActions: Preview Reject, Guidance"
+    assert adapter.sent[1]["reply_to"] == "m1"
+    assert adapter.sent[1]["metadata"]["thread_id"] == "topic-1"
+    assert adapter.sent[1]["metadata"]["telegram_dm_topic_reply_fallback"] is True
 
 
 def test_kb_root_queue_dashboard_is_text_first(monkeypatch):

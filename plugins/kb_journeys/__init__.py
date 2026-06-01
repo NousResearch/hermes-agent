@@ -2958,7 +2958,21 @@ async def _send_card(adapter: Any, event: Any, card: dict[str, Any]) -> None:
     else:
         result = adapter.send(chat_id, card["text"], reply_to=reply_to, metadata=metadata)
     if inspect.isawaitable(result):
-        await result
+        result = await result
+    if actions and not getattr(result, "success", True):
+        labels = []
+        for action in actions:
+            label = getattr(action, "label", None)
+            if label is None and isinstance(action, dict):
+                label = action.get("label")
+            if label:
+                labels.append(str(label))
+        fallback_text = card["text"]
+        if labels:
+            fallback_text = f"{card['text']}\n\nActions: {', '.join(labels)}"
+        fallback = adapter.send(chat_id, fallback_text, reply_to=reply_to, metadata=metadata)
+        if inspect.isawaitable(fallback):
+            await fallback
 
 
 async def _send_mcp_reload_result(adapter: Any, event: Any, gateway: Any) -> None:

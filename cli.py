@@ -6336,50 +6336,58 @@ class HermesCLI:
 
         from hermes_cli.main import _relative_time
 
-        print()
+        # Route through _cprint, not plain print(): in the interactive CLI the
+        # command runs while prompt_toolkit owns the screen, so raw print()
+        # output is swallowed / redrawn over by the prompt (#36815). _cprint
+        # prints plain text above the prompt safely (no Rich markup parsing, so
+        # arbitrary session titles/previews can't break rendering).
+        _cprint("")
         if reason == "history":
-            print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
+            _cprint("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
         else:
-            print("  Recent sessions:")
-        print()
-        print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+            _cprint("  Recent sessions:")
+        _cprint("")
+        _cprint(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        _cprint(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
-        print()
-        print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
-        print("  Example: /resume 2")
-        print()
+            _cprint(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+        _cprint("")
+        _cprint("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
+        _cprint("  Example: /resume 2")
+        _cprint("")
         return True
 
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
             if not self._show_recent_sessions(reason="history"):
-                print("(._.) No conversation history yet.")
+                _cprint("(._.) No conversation history yet.")
             return
 
         preview_limit = 400
         visible_index = 0
         hidden_tool_messages = 0
 
+        # Use _cprint, not plain print(): inside the interactive CLI the prompt
+        # owns the screen and raw print() output is swallowed / overdrawn by the
+        # prompt refresh (#36815).
         def flush_tool_summary():
             nonlocal hidden_tool_messages
             if not hidden_tool_messages:
                 return
 
             noun = "message" if hidden_tool_messages == 1 else "messages"
-            print("\n  [Tools]")
-            print(f"    ({hidden_tool_messages} tool {noun} hidden)")
+            _cprint("\n  [Tools]")
+            _cprint(f"    ({hidden_tool_messages} tool {noun} hidden)")
             hidden_tool_messages = 0
 
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
-        print("+" + "-" * 50 + "+")
+        _cprint("")
+        _cprint("+" + "-" * 50 + "+")
+        _cprint("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
+        _cprint("+" + "-" * 50 + "+")
 
         for msg in self.conversation_history:
             role = msg.get("role", "unknown")
@@ -6398,13 +6406,13 @@ class HermesCLI:
             content_text = "" if content is None else str(content)
 
             if role == "user":
-                print(f"\n  [You #{visible_index}]")
-                print(
+                _cprint(f"\n  [You #{visible_index}]")
+                _cprint(
                     f"    {content_text[:preview_limit]}{'...' if len(content_text) > preview_limit else ''}"
                 )
                 continue
 
-            print(f"\n  [Hermes #{visible_index}]")
+            _cprint(f"\n  [Hermes #{visible_index}]")
             tool_calls = msg.get("tool_calls") or []
             if content_text:
                 preview = content_text[:preview_limit]
@@ -6417,10 +6425,10 @@ class HermesCLI:
             else:
                 preview = "(no text response)"
                 suffix = ""
-            print(f"    {preview}{suffix}")
+            _cprint(f"    {preview}{suffix}")
 
         flush_tool_summary()
-        print()
+        _cprint("")
     
     def _notify_session_boundary(self, event_type: str) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).

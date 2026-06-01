@@ -191,6 +191,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "slack": {
+        "description": "Read-only Slack context tools for channel and thread inspection",
+        "tools": ["slack_list_channels", "slack_get_messages", "slack_get_thread"],
+        "includes": []
+    },
+
     
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
@@ -436,7 +442,11 @@ TOOLSETS = {
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "slack_list_channels",
+            "slack_get_messages",
+            "slack_get_thread",
+        ],
         "includes": []
     },
     

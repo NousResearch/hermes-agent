@@ -1583,6 +1583,86 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return tool_error(f"Unknown tool: {tool_name}")
 
+    # -- Session lifecycle hooks ---------------------------------------------
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        """Flush any buffered turns before the session is torn down.
+
+        Called at actual session boundaries — CLI exit, /reset, gateway
+        session expiry — via ``MemoryManager.on_session_end``, which runs
+        *before* ``shutdown_all()`` / ``shutdown()``.  This is the right
+        place to flush because the writer thread is still alive and can
+        process the enqueued retain.
+
+        Without this, users who set ``retain_every_n_turns > 1`` silently
+        lose whatever turns are buffered when a session ends without
+        hitting the modulo boundary.  ``on_session_switch`` already
+        handles mid-process session rotations (/new, /resume, compression);
+        this method covers the final boundary where no new session follows.
+        """
+        if not self._auto_retain:
+            return
+        if not self._session_turns:
+            return
+        if self._shutting_down.is_set():
+            return
+
+        old_turns = list(self._session_turns)
+        old_content = "[" + ",".join(old_turns) + "]"
+        old_metadata = self._build_metadata(
+            message_count=len(old_turns) * 2,
+            turn_index=self._turn_index,
+        )
+        old_lineage_tags: list[str] = []
+        if self._session_id:
+            old_lineage_tags.append(f"session:{self._session_id}")
+        if self._parent_session_id:
+            old_lineage_tags.append(f"parent:{self._parent_session_id}")
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        bank_id = self._bank_id
+        retain_async_flag = self._retain_async
+        retain_context = self._retain_context
+
+        def _flush_on_end() -> None:
+            try:
+                item = self._build_retain_kwargs(
+                    old_content,
+                    context=retain_context,
+                    metadata=old_metadata,
+                    tags=old_lineage_tags or None,
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                if update_mode is not None:
+                    item["update_mode"] = update_mode
+                logger.debug(
+                    "Hindsight flush-on-session-end: bank=%s, doc=%s, mode=%s, num_turns=%d",
+                    bank_id, document_id, update_mode, len(old_turns),
+                )
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(
+                        bank_id=bank_id,
+                        items=[item],
+                        document_id=document_id,
+                        retain_async=retain_async_flag,
+                    )
+                )
+            except Exception as e:
+                logger.warning("Hindsight flush-on-session-end failed: %s", e, exc_info=True)
+
+        self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_flush_on_end)
+
+        # Clear the buffer so a subsequent shutdown() doesn't re-flush.
+        self._session_turns = []
+        self._turn_counter = 0
+        self._turn_index = 0
+        logger.debug(
+            "Hindsight on_session_end: flushed %d buffered turns for session %s",
+            len(old_turns), self._session_id,
+        )
+
     def on_session_switch(
         self,
         new_session_id: str,

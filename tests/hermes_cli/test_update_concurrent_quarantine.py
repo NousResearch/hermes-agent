@@ -530,3 +530,273 @@ def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
 
     # When --force is set, we should not have even consulted psutil.
     detect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _classify_concurrent_instance / _filter_non_gateway_concurrent_instances
+#
+# These helpers were added so the pre-update concurrent-instance gate can
+# let the update proceed when the only concurrent hermes.exe is a gateway
+# process — the post-update kill+restart block at the bottom of cmd_update
+# already handles gateway PIDs by command-line match, so refusing the
+# update just to make the user kill the gateway manually is friction
+# without benefit.
+# ---------------------------------------------------------------------------
+
+
+def _make_psutil_proc_with_cmdline(pid: int, cmdline: list[str]):
+    """Mock a psutil.Process with a .cmdline() method returning ``cmdline``."""
+    proc = MagicMock()
+    proc.cmdline = MagicMock(return_value=list(cmdline))
+    return proc
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_classify_concurrent_instance_recognises_hermes_gateway(_winp):
+    """A process whose cmdline contains the ``gateway`` keyword classifies
+    as ``"gateway"`` regardless of the launcher (python -m, hermes.exe
+    shim, hermes-gateway.exe shim, or direct gateway/run.py invocation)."""
+    from hermes_cli.main import _classify_concurrent_instance
+
+    cases = [
+        # python -m hermes_cli.main gateway run
+        ["C:/venv/Scripts/python.exe", "-m", "hermes_cli.main", "gateway", "run"],
+        # hermes.exe gateway run (Windows console-script shim)
+        ["C:/venv/Scripts/hermes.exe", "gateway", "run"],
+        # hermes-gateway.exe direct
+        ["C:/venv/Scripts/hermes-gateway.exe"],
+        # direct python gateway/run.py (development launch)
+        ["C:/venv/Scripts/python.exe", "gateway/run.py"],
+        # case-insensitive: uppercase GATEWAY
+        ["hermes.exe", "GATEWAY", "run"],
+    ]
+    for cmdline in cases:
+        fake = types.SimpleNamespace(
+            Process=lambda pid: _make_psutil_proc_with_cmdline(pid, cmdline)
+        )
+        with patch.dict(sys.modules, {"psutil": fake}):
+            result = _classify_concurrent_instance(1234)
+        assert result == "gateway", f"expected gateway for cmdline={cmdline!r}, got {result!r}"
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_classify_concurrent_instance_recognises_non_gateway(_winp):
+    """Processes without ``gateway`` in their cmdline classify as
+    ``"non-gateway"``. This is the bucket that should still trigger the
+    pre-update abort (TUI shells, Desktop backend, plain REPLs)."""
+    from hermes_cli.main import _classify_concurrent_instance
+
+    cases = [
+        # Interactive REPL — no gateway subcommand
+        ["C:/venv/Scripts/hermes.exe"],
+        # Dashboard
+        ["C:/venv/Scripts/hermes.exe", "dashboard"],
+        # Direct python -m hermes_cli.main (no subcommand)
+        ["python", "-m", "hermes_cli.main"],
+        # Empty cmdline
+        [],
+    ]
+    for cmdline in cases:
+        fake = types.SimpleNamespace(
+            Process=lambda pid: _make_psutil_proc_with_cmdline(pid, cmdline)
+        )
+        with patch.dict(sys.modules, {"psutil": fake}):
+            result = _classify_concurrent_instance(1234)
+        assert result == "non-gateway", f"expected non-gateway for cmdline={cmdline!r}, got {result!r}"
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_classify_concurrent_instance_returns_unknown_on_psutil_error(_winp):
+    """If psutil can't read the cmdline (process gone, AccessDenied on a
+    session boundary, etc.) the helper returns ``"unknown"``. The pre-update
+    gate treats ``"unknown"`` as non-gateway — we'd rather block an update
+    we could have completed than kill something we couldn't positively
+    identify as a gateway."""
+    from hermes_cli.main import _classify_concurrent_instance
+
+    class _BrokenProc:
+        def cmdline(self):  # noqa: D401 — psutil Process duck type
+            raise psutil.AccessDenied(pid=1234)
+
+    fake = types.SimpleNamespace(Process=lambda pid: _BrokenProc())
+    import psutil as _real_psutil
+    with patch.dict(sys.modules, {"psutil": _real_psutil}):
+        result = _classify_concurrent_instance(1234)
+    assert result == "unknown"
+
+
+def test_classify_concurrent_instance_returns_unknown_without_psutil():
+    """If psutil isn't importable at all (very rare but possible in slim
+    installs), the helper returns ``"unknown"`` rather than crashing."""
+    from hermes_cli.main import _classify_concurrent_instance
+
+    with patch.dict(sys.modules, {"psutil": None}):
+        result = _classify_concurrent_instance(1234)
+    assert result == "unknown"
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_filter_non_gateway_concurrent_instances_splits_correctly(_winp):
+    """The filter drops PIDs whose cmdline looks like a gateway and keeps
+    the rest. The pre-update gate then aborts only on the kept list."""
+    from hermes_cli.main import _filter_non_gateway_concurrent_instances
+
+    # Three PIDs: one gateway (drop), one TUI/REPL (keep), one Desktop
+    # backend child (keep). The gate should only block on the two
+    # non-gateway entries; the gateway is left for the post-update sweep.
+    def _make_filter_psutil():
+        def _proc_factory(pid: int):
+            if pid == 100:
+                return _make_psutil_proc_with_cmdline(
+                    pid, ["hermes.exe", "gateway", "run"]
+                )
+            if pid == 200:
+                return _make_psutil_proc_with_cmdline(
+                    pid, ["hermes.exe"]  # interactive REPL
+                )
+            if pid == 300:
+                return _make_psutil_proc_with_cmdline(
+                    pid, ["hermes.exe", "dashboard"]
+                )
+            raise AssertionError(f"unexpected pid {pid}")
+
+        return types.SimpleNamespace(Process=_proc_factory)
+
+    matches = [(100, "hermes.exe"), (200, "hermes.exe"), (300, "hermes.exe")]
+
+    with patch.dict(sys.modules, {"psutil": _make_filter_psutil()}):
+        kept = _filter_non_gateway_concurrent_instances(matches)
+
+    assert kept == [(200, "hermes.exe"), (300, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_filter_non_gateway_concurrent_instances_drops_gateway_only(_winp):
+    """If every concurrent instance is a gateway, the filter returns an
+    empty list. The pre-update gate sees no non-gateway matches and lets
+    the update proceed — the gateway PID will be reaped by the post-update
+    kill+restart block."""
+    from hermes_cli.main import _filter_non_gateway_concurrent_instances
+
+    def _proc_factory(pid: int):
+        return _make_psutil_proc_with_cmdline(
+            pid, ["hermes.exe", "gateway", "run"]
+        )
+
+    matches = [(111, "hermes.exe"), (222, "hermes-gateway.exe")]
+
+    with patch.dict(sys.modules, {"psutil": types.SimpleNamespace(Process=_proc_factory)}):
+        kept = _filter_non_gateway_concurrent_instances(matches)
+
+    assert kept == []
+
+
+# ---------------------------------------------------------------------------
+# cmd_update integration with the relaxed pre-update gate
+# ---------------------------------------------------------------------------
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_cmd_update_skips_abort_when_only_concurrent_is_gateway(
+    _winp, tmp_path, capsys
+):
+    """Regression test for the user-reported issue: when the gateway is
+    the only other ``hermes.exe`` running, ``hermes update`` used to abort
+    with exit code 2, forcing the user to kill all hermes.exe manually
+    before retrying. The post-update kill+restart block already handles
+    gateway PIDs cleanly, so the gate should now let the update proceed
+    instead."""
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+
+    args = SimpleNamespace(
+        check=False,
+        gateway=False,
+        yes=False,
+        force=False,
+        backup=False,
+        no_backup=True,
+    )
+
+    # Two concurrent matches, BOTH gateway — filter should return [].
+    # Short-circuit at the first call after the gate so we don't have to
+    # mock the entire update pipeline.
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=scripts_dir
+    ), patch.object(
+        cli_main,
+        "_detect_concurrent_hermes_instances",
+        return_value=[(1000, "hermes.exe"), (2000, "hermes-gateway.exe")],
+    ), patch.object(
+        cli_main, "_filter_non_gateway_concurrent_instances", return_value=[]
+    ), patch.object(
+        cli_main, "_run_pre_update_backup"
+    ) as mock_backup, patch.object(
+        cli_main, "_install_hangup_protection", return_value={}
+    ), patch.object(
+        cli_main, "_finalize_update_output"
+    ):
+        # Should NOT raise SystemExit. The sentinel that fires at the next
+        # real step (pre-update backup) lets us assert we got past the
+        # gate without mocking the whole pipeline.
+        mock_backup.side_effect = RuntimeError("reached post-gate body")
+        with pytest.raises(RuntimeError, match="reached post-gate body"):
+            cli_main.cmd_update(args)
+
+    # Pre-update backup was reached — gate let us through.
+    mock_backup.assert_called_once()
+
+    captured = capsys.readouterr().out
+    assert "Another hermes.exe is running" not in captured
+    assert "--force" not in captured  # the abort-message override hint
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_cmd_update_still_aborts_on_non_gateway_concurrent(
+    _winp, tmp_path, capsys
+):
+    """The gate must STILL abort when an unrelated concurrent hermes.exe
+    is in the list (TUI, Desktop backend, plain REPL). Only gateway-only
+    matches are exempted — see test_cmd_update_skips_abort_when_only_*
+    for the relaxed case."""
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+
+    args = SimpleNamespace(
+        check=False,
+        gateway=False,
+        yes=False,
+        force=False,
+        backup=False,
+        no_backup=True,
+    )
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=scripts_dir
+    ), patch.object(
+        cli_main,
+        "_detect_concurrent_hermes_instances",
+        return_value=[
+            (1000, "hermes.exe"),  # would be classified as gateway
+            (3000, "hermes.exe"),  # would be classified as non-gateway
+        ],
+    ), patch.object(
+        cli_main,
+        "_filter_non_gateway_concurrent_instances",
+        return_value=[(3000, "hermes.exe")],  # simulated filter result
+    ), patch.object(
+        cli_main, "_run_pre_update_backup"
+    ) as mock_backup, patch.object(
+        cli_main, "_install_hangup_protection", return_value={}
+    ), patch.object(
+        cli_main, "_finalize_update_output"
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main.cmd_update(args)
+
+    assert excinfo.value.code == 2
+    mock_backup.assert_not_called()
+
+    captured = capsys.readouterr().out
+    assert "3000" in captured
+    assert "--force" in captured

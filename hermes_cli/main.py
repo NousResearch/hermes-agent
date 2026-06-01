@@ -8235,6 +8235,70 @@ def _format_concurrent_instances_message(
     return "\n".join(lines)
 
 
+def _classify_concurrent_instance(pid: int) -> str:
+    """Return ``"gateway"`` if ``pid``'s command line looks like a gateway.
+
+    Mirrors the substring patterns used by
+    ``hermes_cli.gateway._scan_gateway_pids`` so a PID classified as
+    ``"gateway"`` here is the same set of PIDs the post-update kill+restart
+    block will reap. That symmetry is what lets the pre-update concurrent
+    gate safely skip the abort for gateway-only matches: the gateway is
+    going to be killed anyway, so refusing to update just to make the user
+    kill it manually is friction without benefit.
+
+    Returns ``"non-gateway"`` when the cmdline doesn't match the gateway
+    patterns, and ``"unknown"`` when psutil can't read it (process gone,
+    access denied, etc.). The pre-update gate treats ``"unknown"`` as
+    non-gateway (i.e. errs on the side of the existing abort) — we'd
+    rather block an update we could have completed than kill something
+    we couldn't positively identify as a gateway.
+    """
+    try:
+        import psutil
+    except Exception:
+        return "unknown"
+
+    try:
+        proc = psutil.Process(int(pid))
+        cmdline_list = proc.cmdline()
+    except Exception:
+        return "unknown"
+
+    cmdline = " ".join(cmdline_list or [])
+    cmdline_lc = cmdline.lower()
+    gateway_markers = (
+        "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
+        "hermes gateway",
+        "hermes.exe gateway",
+        "hermes-gateway.exe",
+        "gateway/run.py",
+    )
+    if any(marker in cmdline_lc for marker in gateway_markers):
+        return "gateway"
+    return "non-gateway"
+
+
+def _filter_non_gateway_concurrent_instances(
+    matches: list[tuple[int, str]],
+) -> list[tuple[int, str]]:
+    """Return only the concurrent-instance matches that are NOT the gateway.
+
+    Used by the pre-update concurrent gate to decide whether to abort
+    ``hermes update``. If every concurrent instance is a gateway, the
+    post-update kill+restart block will handle it — we let the update
+    proceed. If anything else (a TUI shell, a Hermes Desktop backend
+    child, an unrelated ``hermes`` REPL) is in the list, we still abort
+    with the existing message, since those aren't covered by the
+    post-update sweep.
+    """
+    non_gateway: list[tuple[int, str]] = []
+    for pid, name in matches:
+        if _classify_concurrent_instance(pid) != "gateway":
+            non_gateway.append((pid, name))
+    return non_gateway
+
+
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4
 ) -> list[tuple[Path, Path]]:
@@ -9301,13 +9365,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
     # that silently falls back to the slower ZIP route. See issue #26670.
+    #
+    # Exception: when the only concurrent instance is a gateway process, the
+    # post-update logic at the bottom of this function (the gateway kill+
+    # restart block) already handles it cleanly — it matches gateways by
+    # command line ("hermes gateway" / "hermes.exe gateway" / etc.), not by
+    # the venv shim .exe path, so the gateway is always stopped and respawned
+    # after a successful code update. Aborting the update just to make the
+    # user do the same kill manually is pointless friction — the gateway is
+    # going to be killed anyway. Skip the abort in that case and let the
+    # update flow continue; the gateway PID gets reaped by the post-update
+    # block a few seconds later.
     if _is_windows() and not getattr(args, "force", False):
         scripts_dir = _venv_scripts_dir()
         if scripts_dir is not None:
             concurrent = _detect_concurrent_hermes_instances(scripts_dir)
             if concurrent:
-                print(_format_concurrent_instances_message(concurrent, scripts_dir))
-                sys.exit(2)
+                non_gateway = _filter_non_gateway_concurrent_instances(concurrent)
+                if non_gateway:
+                    print(_format_concurrent_instances_message(non_gateway, scripts_dir))
+                    sys.exit(2)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.

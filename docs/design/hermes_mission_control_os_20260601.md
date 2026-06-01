@@ -491,10 +491,19 @@ Packet-write tools remain local-only/deferred for remote use until a later
 review. The dashboard stays private and must not become the remote MCP
 surface.
 
-Phase 6: Carefully gated actions
+Phase 6: Inert remote MCP policy/schema tests
 
-- Consider additional fixed, dry-run-first local actions only after Phase 1-4
-  are stable.
+- Encode the Phase 5 scope matrix as static policy metadata only.
+- Keep every future remote tool disabled by default.
+- Keep packet-write tools local-only and non-dispatching.
+- Test that blocked tool names/classes cannot enter the policy.
+- Do not add OAuth, remote transport, public routes, ChatGPT connection, or
+  execution paths.
+
+Phase 7: Local MCP client E2E validation
+
+- Validate the existing local/stdout bridge from a local MCP client.
+- Keep the test local and inert; do not expose remote transport.
 - Never add autonomous computer-use or real browser/mouse/keyboard control.
 
 ## Next Implementation Prompt

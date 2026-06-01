@@ -291,3 +291,25 @@ The policy should encode the scope matrix, remote-disabled defaults, blocked
 tool names, rate-limit defaults, and audit-required flags. Tests should assert
 that all write tools are remote-disabled by default and that no forbidden tool
 can appear in the policy.
+
+## Phase 6 Implementation Note
+
+Phase 6 adds `hermes_cli/mission_control_mcp_policy.py` as a static inert
+remote policy/schema for the Phase 5 matrix. The policy does not start a
+server, define a remote transport, implement OAuth, expose a public route, or
+connect ChatGPT.
+
+Remote remains disabled for every tool. Read-only Mission Control tools are
+marked only as `eligible_first` or `deferred` until future OAuth, audit,
+rate-limit, and binding controls exist. Packet-write tools remain
+`local_only`, remote-disabled, confirmation-required, audited, redacted, and
+non-dispatching.
+
+The Phase 6 tests enforce that forbidden tool names and action classes are
+absent, every entry has audit/redaction/rate-limit metadata, no tool executes
+or dispatches, no tool exposes secret material, and the policy tool set stays
+aligned with the Phase 4 local MCP allowlist.
+
+The next safest step is local MCP client E2E validation against the existing
+stdio bridge. Remote OAuth implementation planning should remain separate from
+remote exposure and should not add a public endpoint.

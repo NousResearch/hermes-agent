@@ -1629,6 +1629,20 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_sets_nofiles_resource_limits(self, tmp_path, monkeypatch):
+        """generate_launchd_plist must set NumberOfFiles limits so the long-running
+        gateway doesn't hit launchd's default 256 soft RLIMIT_NOFILE (issue #36899)."""
+        profile_dir = tmp_path / ".hermes"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>HardResourceLimits</key>" in plist
+        assert plist.count("<key>NumberOfFiles</key>") == 2
+        assert plist.count("<integer>65536</integer>") >= 2
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

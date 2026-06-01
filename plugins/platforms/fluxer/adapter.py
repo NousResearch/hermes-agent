@@ -25,7 +25,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 4000
-_DEFAULT_BASE_URL = "https://fluxer.app"
+_DEFAULT_BASE_URL = "https://api.fluxer.app/v1"
 _GATEWAY_VERSION = 1
 
 
@@ -36,15 +36,17 @@ def _strip_slash(url: str) -> str:
 def _api_base(base_url: str) -> str:
     """Normalize a user-provided Fluxer URL to the REST API base.
 
-    Fluxer exposes routes under `/api` in the monolith, while some operators may
-    choose to configure an already-scoped `/api` or `/api/v1` URL. Preserve those
-    and append `/api` only for a plain origin.
+    The official hosted API is already scoped as ``https://api.fluxer.app/v1``.
+    Self-hosted Fluxer may expose either an already-scoped API URL or a plain
+    web origin; preserve scoped URLs and append ``/api`` only for a plain origin.
     """
     base = _strip_slash(base_url)
     if not base:
         return ""
-    if base.endswith("/api") or base.endswith("/api/v1") or "/api/" in base:
+    if base.endswith("/api") or base.endswith("/api/v1") or base.endswith("/v1") or "/api/" in base:
         return base
+    if base == "https://api.fluxer.app":
+        return f"{base}/v1"
     return f"{base}/api"
 
 
@@ -132,7 +134,7 @@ class FluxerAdapter(BasePlatformAdapter):
         if not self.base_url or not self.bot_token:
             self._set_fatal_error(
                 "missing_config",
-                "Fluxer requires FLUXER_BASE_URL and FLUXER_BOT_TOKEN",
+                "Fluxer requires FLUXER_BOT_TOKEN; FLUXER_BASE_URL is optional and defaults to https://api.fluxer.app/v1",
                 retryable=False,
             )
             return False
@@ -323,7 +325,7 @@ class FluxerAdapter(BasePlatformAdapter):
 
 
 def check_requirements() -> bool:
-    if not (os.getenv("FLUXER_BASE_URL") and os.getenv("FLUXER_BOT_TOKEN")):
+    if not os.getenv("FLUXER_BOT_TOKEN"):
         return False
     try:
         import httpx  # noqa: F401
@@ -335,9 +337,8 @@ def check_requirements() -> bool:
 
 def validate_config(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
-    base_url = os.getenv("FLUXER_BASE_URL") or extra.get("base_url", "")
     token = os.getenv("FLUXER_BOT_TOKEN") or extra.get("bot_token", "")
-    return bool(str(base_url).strip() and str(token).strip())
+    return bool(str(token).strip())
 
 
 def is_connected(config) -> bool:
@@ -347,9 +348,11 @@ def is_connected(config) -> bool:
 def _env_enablement() -> dict | None:
     base_url = os.getenv("FLUXER_BASE_URL", "").strip()
     token = os.getenv("FLUXER_BOT_TOKEN", "").strip()
-    if not (base_url and token):
+    if not token:
         return None
-    seed: dict = {"base_url": base_url, "bot_token": token}
+    seed: dict = {"bot_token": token}
+    if base_url:
+        seed["base_url"] = base_url
     gateway_url = os.getenv("FLUXER_GATEWAY_URL", "").strip()
     if gateway_url:
         seed["gateway_url"] = gateway_url
@@ -381,7 +384,8 @@ async def _standalone_send(
 
 def interactive_setup() -> None:
     print("Fluxer platform setup")
-    print("Set FLUXER_BASE_URL and FLUXER_BOT_TOKEN in ~/.hermes/.env, then restart the gateway.")
+    print("Set FLUXER_BOT_TOKEN in ~/.hermes/.env, then restart the gateway.")
+    print("Optional: set FLUXER_BASE_URL for self-hosted Fluxer; official hosted defaults to https://api.fluxer.app/v1.")
 
 
 def register(ctx) -> None:
@@ -392,7 +396,7 @@ def register(ctx) -> None:
         check_fn=check_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
-        required_env=["FLUXER_BASE_URL", "FLUXER_BOT_TOKEN"],
+        required_env=["FLUXER_BOT_TOKEN"],
         install_hint="pip install httpx websockets   # Fluxer adapter dependencies",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,

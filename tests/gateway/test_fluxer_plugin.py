@@ -32,15 +32,15 @@ def test_platform_enum_resolves_via_plugin_scan():
     assert Platform("fluxer") is p
 
 
-def test_check_requirements_needs_base_url_and_token(monkeypatch):
+def test_check_requirements_needs_token_only(monkeypatch):
     monkeypatch.delenv("FLUXER_BASE_URL", raising=False)
     monkeypatch.delenv("FLUXER_BOT_TOKEN", raising=False)
 
     assert check_requirements() is False
 
 
-def test_check_requirements_true_when_configured(monkeypatch):
-    monkeypatch.setenv("FLUXER_BASE_URL", "https://fluxer.example")
+def test_check_requirements_true_when_token_configured(monkeypatch):
+    monkeypatch.delenv("FLUXER_BASE_URL", raising=False)
     monkeypatch.setenv("FLUXER_BOT_TOKEN", "app.secret")
 
     assert check_requirements() is True
@@ -53,6 +53,12 @@ def test_validate_config_uses_env_or_extra(monkeypatch):
     monkeypatch.delenv("FLUXER_BOT_TOKEN", raising=False)
 
     assert validate_config(PlatformConfig(enabled=True)) is False
+    assert validate_config(
+        PlatformConfig(
+            enabled=True,
+            extra={"bot_token": "app.secret"},
+        )
+    ) is True
     assert validate_config(
         PlatformConfig(
             enabled=True,
@@ -70,7 +76,7 @@ def test_is_connected_mirrors_validate(monkeypatch):
     assert is_connected(
         PlatformConfig(
             enabled=True,
-            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret"},
+            extra={"bot_token": "app.secret"},
         )
     ) is True
     assert is_connected(PlatformConfig(enabled=True)) is False
@@ -110,9 +116,28 @@ def test_adapter_init_and_platform_identity(monkeypatch):
     )
 
     assert adapter.base_url == "https://fluxer.example"
+    assert adapter.api_base_url == "https://fluxer.example/api"
     assert adapter.bot_token == "app.secret"
     assert adapter.platform is Platform("fluxer")
     assert adapter._running is False
+
+
+def test_adapter_defaults_to_official_hosted_api(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("FLUXER_BASE_URL", raising=False)
+    monkeypatch.delenv("FLUXER_BOT_TOKEN", raising=False)
+
+    adapter = FluxerAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"bot_token": "app.secret"},
+        )
+    )
+
+    assert adapter.base_url == "https://api.fluxer.app/v1"
+    assert adapter.api_base_url == "https://api.fluxer.app/v1"
+    assert adapter.bot_token == "app.secret"
 
 
 def test_build_identify_payload_contains_bot_token_and_client_properties():
@@ -252,7 +277,7 @@ def test_register_metadata():
     entry = calls[0]
     assert entry["name"] == "fluxer"
     assert entry["label"] == "Fluxer"
-    assert entry["required_env"] == ["FLUXER_BASE_URL", "FLUXER_BOT_TOKEN"]
+    assert entry["required_env"] == ["FLUXER_BOT_TOKEN"]
     assert entry["allowed_users_env"] == "FLUXER_ALLOWED_USERS"
     assert entry["allow_all_env"] == "FLUXER_ALLOW_ALL_USERS"
     assert entry["cron_deliver_env_var"] == "FLUXER_HOME_CHANNEL"

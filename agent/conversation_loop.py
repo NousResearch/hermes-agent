@@ -794,16 +794,25 @@ def run_conversation(
         )
 
     # Agentic stall-retry guard: dflash can stall more than once in a long
-    # tool loop, so allow a bounded number of successful rescues per user turn.
-    # If the cap is exhausted, fail partial rather than accept another
-    # planning-only text response as final. See agent/stall_retry.py.
+    # tool loop. Count total attempts for telemetry, but only consume the
+    # terminal budget when the retry lane fails to produce forward progress.
+    # A recovered tool call is work advanced, not a reason to kill the turn.
+    # See agent/stall_retry.py.
     _stall_retry_count = 0
+    _stall_retry_success_count = 0
+    _stall_retry_failed_count = 0
+    agent._stall_retry_runtime_promoted = False
     try:
-        from agent.stall_retry import get_stall_retry_max_per_turn
+        from agent.stall_retry import (
+            get_stall_retry_max_per_turn,
+            get_stall_retry_promote_after,
+        )
 
         _stall_retry_max_per_turn = get_stall_retry_max_per_turn(agent)
+        _stall_retry_promote_after = get_stall_retry_promote_after(agent)
     except Exception:
         _stall_retry_max_per_turn = 5
+        _stall_retry_promote_after = 2
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -3640,6 +3649,7 @@ def run_conversation(
                 try:
                     from agent.stall_retry import (
                         EMPTY_AFTER_TOOL_RETRY_NUDGE,
+                        activate_stall_retry_runtime,
                         get_stall_retry_max_chars,
                         has_recent_tool_result,
                         looks_like_incomplete_final_fragment,
@@ -3658,7 +3668,7 @@ def run_conversation(
                     )
                     if (
                         _empty_after_tool_result
-                        and _stall_retry_count < _stall_retry_max_per_turn
+                        and _stall_retry_failed_count < _stall_retry_max_per_turn
                     ):
                         _stall_retry_count += 1
                         retried = retry_on_stall(
@@ -3681,7 +3691,21 @@ def run_conversation(
                             )
                             agent._empty_content_retries = 0
                             agent._post_tool_empty_retried = False
+                            _stall_retry_success_count += 1
+                            _stall_retry_failed_count = 0
+                            if (
+                                getattr(retried, "tool_calls", None)
+                                and _stall_retry_promote_after > 0
+                                and _stall_retry_success_count >= _stall_retry_promote_after
+                            ):
+                                activate_stall_retry_runtime(
+                                    agent,
+                                    retry_model,
+                                    promote_after=_stall_retry_promote_after,
+                                    successful_retries=_stall_retry_success_count,
+                                )
                         else:
+                            _stall_retry_failed_count += 1
                             logging.warning(
                                 "Stall retry lane did not recover empty "
                                 "post-tool response; continuing "
@@ -3702,13 +3726,13 @@ def run_conversation(
                         False,
                         max_chars,
                     ):
-                        if _stall_retry_count >= _stall_retry_max_per_turn:
+                        if _stall_retry_max_per_turn <= 0:
                             _turn_exit_reason = "stall_retry_limit_exhausted"
                             agent._mute_post_response = False
                             agent._vprint(
                                 (
                                     f"{agent.log_prefix}❌ Stall retry limit "
-                                    f"({_stall_retry_max_per_turn}/turn) exhausted; "
+                                    f"({_stall_retry_max_per_turn}/turn) disabled; "
                                     "saving as partial without storing the "
                                     "planning-only assistant turn."
                                 ),
@@ -3749,7 +3773,21 @@ def run_conversation(
                             )
                             if getattr(retried, "tool_calls", None) and finish_reason != "tool_calls":
                                 finish_reason = "tool_calls"
+                            _stall_retry_success_count += 1
+                            _stall_retry_failed_count = 0
+                            if (
+                                getattr(retried, "tool_calls", None)
+                                and _stall_retry_promote_after > 0
+                                and _stall_retry_success_count >= _stall_retry_promote_after
+                            ):
+                                activate_stall_retry_runtime(
+                                    agent,
+                                    retry_model,
+                                    promote_after=_stall_retry_promote_after,
+                                    successful_retries=_stall_retry_success_count,
+                                )
                         else:
+                            _stall_retry_failed_count += 1
                             _turn_exit_reason = "stall_retry_failed_no_tool_call"
                             agent._mute_post_response = False
                             agent._vprint(

@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from agent import conversation_loop
 from agent.stall_retry import (
     EMPTY_AFTER_TOOL_RETRY_NUDGE,
+    activate_stall_retry_runtime,
     get_stall_retry_max_chars,
     get_stall_retry_max_per_turn,
     get_stall_retry_model,
     get_stall_retry_nudge_enabled,
+    get_stall_retry_promote_after,
     has_recent_tool_result,
     looks_like_incomplete_final_fragment,
     looks_like_stall,
@@ -383,6 +385,83 @@ def test_stall_retry_empty_agent_config_falls_back_to_loaded_config(monkeypatch)
     assert get_stall_retry_max_per_turn(provider_only_agent) == 3
 
 
+def test_stall_retry_promote_after_uses_config_and_env(monkeypatch) -> None:
+    agent = SimpleNamespace(_stall_retry_config={"promote_after": 4})
+
+    monkeypatch.delenv("HERMES_STALL_RETRY_PROMOTE_AFTER", raising=False)
+    assert get_stall_retry_promote_after(agent) == 4
+
+    monkeypatch.setenv("HERMES_STALL_RETRY_PROMOTE_AFTER", "0")
+    assert get_stall_retry_promote_after(agent) == 0
+
+
+def test_activate_stall_retry_runtime_promotes_for_current_turn(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    fake_client = SimpleNamespace(
+        api_key="retry-key",
+        base_url="http://taro:8080/v1",
+        _custom_headers={"X-Test": "1"},
+    )
+
+    def fake_resolve_provider_client(**kwargs: object) -> tuple[object, str]:
+        captured["resolve_kwargs"] = dict(kwargs)
+        return fake_client, "qwen3.6-27b-256k"
+
+    def update_model(**kwargs: object) -> None:
+        captured["context_model"] = dict(kwargs)
+
+    agent = SimpleNamespace(
+        model="dflash",
+        provider="custom",
+        base_url="http://primary:8080/v1",
+        api_key="primary-key",
+        api_mode="chat_completions",
+        _client_kwargs={"api_key": "primary-key", "base_url": "http://primary:8080/v1"},
+        _stall_retry_config={
+            "model": "qwen3.6-27b-256k",
+            "provider": "taro",
+            "base_url": "http://taro:8080/v1",
+        },
+        _transport_cache={"chat": object()},
+        _config_context_length=262144,
+        _custom_providers=[],
+        context_compressor=SimpleNamespace(update_model=update_model),
+        _anthropic_prompt_cache_policy=lambda **_kwargs: (False, False),
+        _ensure_lmstudio_runtime_loaded=lambda: None,
+        _emit_status=lambda message: captured.setdefault("status", message),
+        _fallback_activated=False,
+    )
+
+    monkeypatch.setenv("HERMES_STALL_RETRY_TELEMETRY", "0")
+    monkeypatch.setattr(
+        "agent.auxiliary_client.resolve_provider_client",
+        lambda provider, **kwargs: fake_resolve_provider_client(
+            provider=provider, **kwargs
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 262144,
+    )
+
+    assert activate_stall_retry_runtime(
+        agent,
+        "qwen3.6-27b-256k",
+        promote_after=2,
+        successful_retries=2,
+    )
+    assert agent.model == "qwen3.6-27b-256k"
+    assert agent.provider == "taro"
+    assert str(agent.base_url) == "http://taro:8080/v1"
+    assert agent._fallback_activated is True
+    assert agent._stall_retry_runtime_promoted is True
+    assert agent._stall_retry_promoted_from == "dflash"
+    assert agent._transport_cache == {}
+    assert captured["resolve_kwargs"]["provider"] == "taro"
+    assert captured["context_model"]["model"] == "qwen3.6-27b-256k"
+    assert "rest of this turn" in captured["status"]
+
+
 def test_retry_on_stall_uses_configured_retry_provider(monkeypatch) -> None:
     captured: dict[str, object] = {}
     tool_call = SimpleNamespace(
@@ -586,3 +665,20 @@ def test_conversation_loop_allows_bounded_multiple_stall_retries() -> None:
     assert "_stall_retry_count += 1" in source
     assert "get_stall_retry_max_per_turn" in source
     assert "stall_retry_limit_exhausted" in source
+
+
+def test_conversation_loop_does_not_treat_recovered_stalls_as_failures() -> None:
+    source = inspect.getsource(conversation_loop.run_conversation)
+
+    assert "_stall_retry_failed_count" in source
+    assert "if _stall_retry_count >= _stall_retry_max_per_turn" not in source
+    assert "A recovered tool call is work advanced" in source
+
+
+def test_conversation_loop_promotes_retry_lane_after_repeated_rescues() -> None:
+    source = inspect.getsource(conversation_loop.run_conversation)
+
+    assert "get_stall_retry_promote_after" in source
+    assert "_stall_retry_success_count += 1" in source
+    assert "activate_stall_retry_runtime(" in source
+    assert "_stall_retry_success_count >= _stall_retry_promote_after" in source

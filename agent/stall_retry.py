@@ -21,7 +21,12 @@ Env:
   HERMES_STALL_RETRY_MODEL  retry lane/model name (required to enable)
   HERMES_STALL_RETRY_PROVIDER  optional provider override for the retry lane
   HERMES_STALL_RETRY_BASE_URL  optional OpenAI-compatible retry endpoint
-  HERMES_STALL_RETRY_MAX_PER_TURN  max retries per user turn (default 5)
+  HERMES_STALL_RETRY_MAX_PER_TURN  max unrecovered retries per user turn
+                                (default 5). Successful retry-lane tool calls
+                                are progress and do not consume this budget.
+  HERMES_STALL_RETRY_PROMOTE_AFTER  successful rescues before routing the rest
+                                of the turn through the retry lane (default 2,
+                                0 disables)
   HERMES_STALL_RETRY_MAX_CHARS  max content length to still count as a stall
                                 (default 400; longer open action preambles
                                 ending in ":" get a bounded exception)
@@ -202,6 +207,21 @@ def get_stall_retry_max_per_turn(agent: Any | None = None) -> int:
         return max(0, int(cfg_value))
     except (TypeError, ValueError):
         return 5
+
+
+def get_stall_retry_promote_after(agent: Any | None = None) -> int:
+    """Return successful retry rescues needed before turn-scoped promotion."""
+    env_value = os.environ.get("HERMES_STALL_RETRY_PROMOTE_AFTER")
+    if env_value is not None:
+        try:
+            return max(0, int(env_value))
+        except ValueError:
+            return 2
+    cfg_value = _stall_retry_config(agent).get("promote_after")
+    try:
+        return max(0, int(cfg_value))
+    except (TypeError, ValueError):
+        return 2
 
 
 def get_stall_retry_nudge_enabled(agent: Any | None = None) -> bool:
@@ -509,6 +529,226 @@ def _retry_api_call(agent: Any, api_kwargs: dict[str, Any], retry_model: str) ->
         return client.chat.completions.create(**retry_kwargs)
 
     return agent._interruptible_api_call(api_kwargs)
+
+
+def activate_stall_retry_runtime(
+    agent: Any,
+    retry_model: str,
+    *,
+    promote_after: int,
+    successful_retries: int,
+) -> bool:
+    """Route the rest of this turn through the retry lane.
+
+    A repeated pattern of primary-model stalls followed by retry-lane tool-call
+    recovery means the primary is no longer reliable for this agentic turn. This
+    helper promotes the already-configured retry lane into the active runtime
+    without updating ``_primary_runtime``; Hermes' normal start-of-turn restore
+    then switches back to the user's selected primary on the next user turn.
+    """
+
+    retry_model = str(retry_model or "").strip()
+    if not retry_model:
+        return False
+    if getattr(agent, "_stall_retry_runtime_promoted", False):
+        return False
+
+    original_model = str(getattr(agent, "model", "") or "")
+    original_provider = str(getattr(agent, "provider", "") or "")
+    original_base_url = str(getattr(agent, "base_url", "") or "")
+    retry_provider = get_stall_retry_provider(agent)
+    retry_base_url = get_stall_retry_base_url(agent)
+    retry_api_key = _configured_retry_api_key(agent, retry_provider, retry_base_url)
+    if not retry_base_url and retry_api_key:
+        retry_base_url = original_base_url
+
+    provider = retry_provider or original_provider
+    base_url = retry_base_url or original_base_url
+    api_key = retry_api_key or getattr(agent, "api_key", "")
+    client = None
+    resolved_model = retry_model
+    client_kwargs: dict[str, Any] = {}
+
+    try:
+        if retry_provider or retry_base_url or retry_api_key:
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, provider_model = resolve_provider_client(
+                provider or "custom",
+                model=retry_model,
+                raw_codex=True,
+                explicit_base_url=retry_base_url or None,
+                explicit_api_key=retry_api_key or None,
+            )
+            if client is None:
+                record_stall_retry_event(
+                    agent,
+                    "promotion_skipped",
+                    retry_model=retry_model,
+                    original_model=original_model,
+                    reason="provider_unavailable",
+                    promote_after=promote_after,
+                    successful_retries=successful_retries,
+                )
+                return False
+            resolved_model = provider_model or retry_model
+            base_url = str(getattr(client, "base_url", base_url) or base_url)
+            api_key = getattr(client, "api_key", api_key)
+            headers = (
+                getattr(client, "_custom_headers", None)
+                or getattr(client, "default_headers", None)
+            )
+            client_kwargs = {
+                "api_key": api_key,
+                "base_url": base_url,
+                **({"default_headers": dict(headers)} if headers else {}),
+            }
+        else:
+            if retry_model == original_model:
+                record_stall_retry_event(
+                    agent,
+                    "promotion_skipped",
+                    retry_model=retry_model,
+                    original_model=original_model,
+                    reason="same_model",
+                    promote_after=promote_after,
+                    successful_retries=successful_retries,
+                )
+                return False
+            client_kwargs = dict(getattr(agent, "_client_kwargs", {}) or {})
+            if not client_kwargs:
+                client_kwargs = {
+                    "api_key": api_key,
+                    "base_url": base_url,
+                }
+
+        try:
+            from hermes_cli.providers import determine_api_mode
+
+            api_mode = determine_api_mode(provider, base_url)
+        except Exception:
+            api_mode = getattr(agent, "api_mode", "") or "chat_completions"
+        if api_mode in {"anthropic_messages", "bedrock_converse", "codex_responses"}:
+            record_stall_retry_event(
+                agent,
+                "promotion_skipped",
+                retry_model=retry_model,
+                original_model=original_model,
+                reason=f"unsupported_api_mode:{api_mode}",
+                promote_after=promote_after,
+                successful_retries=successful_retries,
+            )
+            return False
+
+        try:
+            from hermes_cli.timeouts import get_provider_request_timeout
+
+            timeout = get_provider_request_timeout(provider, resolved_model)
+            if timeout is not None:
+                client_kwargs["timeout"] = timeout
+        except Exception:
+            pass
+
+        agent._config_context_length = None
+        agent.model = resolved_model
+        agent.provider = provider
+        agent.base_url = base_url
+        agent.api_key = api_key
+        agent.api_mode = api_mode or "chat_completions"
+        agent._client_kwargs = client_kwargs
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
+        if client is not None:
+            agent.client = client
+        elif hasattr(agent, "_create_openai_client"):
+            agent.client = agent._create_openai_client(
+                dict(client_kwargs),
+                reason="stall_retry_runtime_promotion",
+                shared=True,
+            )
+
+        try:
+            agent._use_prompt_caching, agent._use_native_cache_layout = (
+                agent._anthropic_prompt_cache_policy(
+                    provider=provider,
+                    base_url=base_url,
+                    api_mode=agent.api_mode,
+                    model=resolved_model,
+                )
+            )
+        except Exception:
+            pass
+
+        if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
+            agent._ensure_lmstudio_runtime_loaded()
+
+        context_length = None
+        if getattr(agent, "context_compressor", None):
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                ctx_api_key = api_key if isinstance(api_key, str) else ""
+                context_length = get_model_context_length(
+                    resolved_model,
+                    base_url=base_url,
+                    api_key=ctx_api_key,
+                    provider=provider,
+                    config_context_length=getattr(agent, "_config_context_length", None),
+                    custom_providers=getattr(agent, "_custom_providers", None),
+                )
+                agent.context_compressor.update_model(
+                    model=resolved_model,
+                    context_length=context_length,
+                    base_url=base_url,
+                    api_key=api_key,
+                    provider=provider,
+                    api_mode=agent.api_mode,
+                )
+            except Exception:
+                pass
+
+        agent._fallback_activated = True
+        agent._stall_retry_runtime_promoted = True
+        agent._stall_retry_promoted_from = original_model
+
+        record_stall_retry_event(
+            agent,
+            "runtime_promoted",
+            retry_model=resolved_model,
+            original_model=original_model,
+            original_provider=original_provider,
+            promote_after=promote_after,
+            successful_retries=successful_retries,
+            context_length=context_length,
+        )
+        try:
+            agent._emit_status(
+                "↻ dflash stalled repeatedly; using "
+                f"{resolved_model} for the rest of this turn. "
+                "Primary model will be restored next turn."
+            )
+        except Exception:
+            try:
+                agent._vprint(
+                    f"{getattr(agent, 'log_prefix', '')}↻ dflash stalled "
+                    f"repeatedly; using {resolved_model} for the rest of this turn.",
+                    force=True,
+                )
+            except Exception:
+                pass
+        return True
+    except Exception as exc:
+        record_stall_retry_event(
+            agent,
+            "promotion_exception",
+            retry_model=retry_model,
+            original_model=original_model,
+            error_type=type(exc).__name__,
+            error=str(exc)[:300],
+            promote_after=promote_after,
+            successful_retries=successful_retries,
+        )
+        return False
 
 
 def looks_like_stall(content: str, finish_reason: str, has_tool_calls: bool,

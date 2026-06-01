@@ -944,21 +944,29 @@ def _extract_curl_method_and_url(tokens: list[str]) -> tuple[str, str]:
     return method, url
 
 
+_GRANT_VERDICT_ATFILE_RE = re.compile(r"^grant_verdict_[A-Za-z0-9_.-]+\.(?:json|md)$")
+
+
 def _resolve_confined_curl_atfile_payload(value: str) -> str:
     if not value.startswith("@"):
         return value
     path = value[1:]
     try:
-        real_path = os.path.realpath(path)
-        # kn77d5y7: only Grant-owned /tmp/grant_* temp payloads may be read.
-        # Realpath both sides so macOS /tmp -> /private/tmp normalization keeps
-        # the intended security boundary while still blocking symlink escapes.
-        if not real_path.startswith(os.path.realpath("/tmp/grant_")):
-            return value
+        if not path or path == "-" or "\x00" in path or ".." in path.split(os.sep):
+            return ""
+        normalized_path = os.path.normpath(path)
+        filename = os.path.basename(normalized_path)
+        if os.path.dirname(normalized_path) != "/tmp" or not _GRANT_VERDICT_ATFILE_RE.fullmatch(filename):
+            return ""
+        if os.path.islink(normalized_path):
+            return ""
+        real_path = os.path.realpath(normalized_path)
+        if os.path.dirname(real_path) != os.path.realpath("/tmp") or os.path.basename(real_path) != filename:
+            return ""
         with open(real_path, encoding="utf-8") as payload_file:
             return payload_file.read()
-    except OSError:
-        return value
+    except (OSError, ValueError):
+        return ""
 
 
 def _extract_curl_payload(tokens: list[str]) -> str:

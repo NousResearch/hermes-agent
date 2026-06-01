@@ -106,8 +106,8 @@ class TestWebhookReadonlyAllowlist:
             f"--data-binary {data_arg}"
         )
 
-    def _write_grant_tmp_payload(self, tmp_path, name, payload):
-        path = Path(f"/tmp/grant_{os.getpid()}_{tmp_path.name}_{name}.json")
+    def _write_grant_tmp_payload(self, tmp_path, name, payload, suffix="json"):
+        path = Path(f"/tmp/grant_verdict_{os.getpid()}_{tmp_path.name}_{name}.{suffix}")
         path.write_text(payload, encoding="utf-8")
         return path
 
@@ -153,19 +153,41 @@ class TestWebhookReadonlyAllowlist:
             self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
             encoding="utf-8",
         )
-        result = self._check(self._curl_mutation_with_data(f"@{payload_path}"))
+        with mock_patch("builtins.open", side_effect=AssertionError("outside @file was read")):
+            result = self._check(self._curl_mutation_with_data(f"@{payload_path}"))
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
     def test_webhook_blocks_sensitive_atfile_without_reading(self):
-        result = self._check(self._curl_mutation_with_data("@/Users/TJ/.hermes/.env"))
+        with mock_patch("builtins.open", side_effect=AssertionError("sensitive @file was read")):
+            result = self._check(self._curl_mutation_with_data("@/Users/TJ/.hermes/.env"))
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_path_traversal_grant_atfile(self):
+        with mock_patch("builtins.open", side_effect=AssertionError("traversal @file was read")):
+            result = self._check(self._curl_mutation_with_data("@/tmp/grant_verdict_../../etc/passwd"))
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
     def test_webhook_blocks_missing_confined_grant_atfile_without_crashing(self, tmp_path):
-        missing_path = Path(f"/tmp/grant_{os.getpid()}_{tmp_path.name}_missing.json")
+        missing_path = Path(f"/tmp/grant_verdict_{os.getpid()}_{tmp_path.name}_missing.json")
         missing_path.unlink(missing_ok=True)
         result = self._check(self._curl_mutation_with_data(f"@{missing_path}"))
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_blocks_other_mutation_with_confined_grant_atfile(self, tmp_path):
+        payload_path = self._write_grant_tmp_payload(
+            tmp_path,
+            "other_mutation",
+            '{"path":"tasks:updateDescription","args":{"id":"kn715rhv354j03jchj738137qh87te4m",'
+            '"description":"<!-- grant-verdict: not a notes verdict write -->"}}',
+        )
+        try:
+            result = self._check(self._curl_mutation_with_data(f"@{payload_path}"))
+        finally:
+            payload_path.unlink(missing_ok=True)
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
@@ -175,7 +197,7 @@ class TestWebhookReadonlyAllowlist:
             self._grant_update_notes_payload("<!-- grant-verdict:2026-06-01T12:00:00Z:CHANGES_REQUIRED -->"),
             encoding="utf-8",
         )
-        symlink_path = Path(f"/tmp/grant_{os.getpid()}_{tmp_path.name}_symlink.json")
+        symlink_path = Path(f"/tmp/grant_verdict_{os.getpid()}_{tmp_path.name}_symlink.json")
         symlink_path.unlink(missing_ok=True)
         symlink_path.symlink_to(secret_path)
         try:

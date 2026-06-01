@@ -155,6 +155,38 @@ class TestDDGSProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"] == []
 
+    def test_search_timeout_returns_failure(self, monkeypatch):
+        """When the ddgs library hangs, the search must time out gracefully."""
+        import threading
+
+        _hang = threading.Event()  # never set → blocks forever
+
+        fake = types.ModuleType("ddgs")
+
+        class _HangingDDGS:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_a):
+                return False
+            def text(self, query, max_results=5):
+                _hang.wait(timeout=999)  # blocks until timeout (never fires)
+                yield  # pragma: no cover
+
+        fake.DDGS = _HangingDDGS
+        monkeypatch.setitem(sys.modules, "ddgs", fake)
+        monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
+
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        # Use a very short timeout so the test finishes fast
+        monkeypatch.setattr(
+            "plugins.web.ddgs.provider._SEARCH_TIMEOUT_SECS", 0.5
+        )
+        result = DDGSWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
+        assert "timed out" in result["error"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available / _get_backend / check_web_api_key

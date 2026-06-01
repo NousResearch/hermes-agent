@@ -2420,6 +2420,8 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
         return {"ok": True, "platform": platform_id}
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         _log.exception("PUT /api/messaging/platforms/%s failed", platform_id)
         raise HTTPException(status_code=500, detail="Internal server error")

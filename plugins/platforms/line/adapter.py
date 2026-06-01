@@ -884,7 +884,7 @@ class LineAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request) -> Any:
         from aiohttp import web
-        return web.json_response({"status": "ok", "platform": "line"})
+        return web.json_response({"status": "ok", "platform": self.platform.value})
 
     async def _handle_webhook(self, request) -> Any:
         from aiohttp import web

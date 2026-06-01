@@ -244,6 +244,40 @@ async def test_lifecycle_lock_namespace_uses_adapter_platform(monkeypatch):
     assert release_calls[1][0] == "line"
 
 
+@pytest.mark.asyncio
+async def test_health_response_reports_adapter_platform(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        customer = LineAdapter(PlatformConfig(enabled=True))
+        admin = LineAdapter(
+            PlatformConfig(enabled=True),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    customer_response = await customer._handle_health(None)
+    admin_response = await admin._handle_health(None)
+
+    assert json.loads(customer_response.text)["platform"] == "line"
+    assert json.loads(admin_response.text)["platform"] == "line_admin"
+
+
 def test_hmac_signatures_are_isolated_by_channel_secret(monkeypatch):
     from gateway.config import PlatformConfig
     from gateway.platform_registry import PlatformEntry, platform_registry

@@ -10,7 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -112,17 +112,43 @@ class ChatCompletionsTransport(ProviderTransport):
     def convert_messages(
         self, messages: list[dict[str, Any]], **kwargs
     ) -> list[dict[str, Any]]:
-        """Messages are already in OpenAI format — sanitize Codex leaks only.
+        """Messages are already in OpenAI format — strip internal fields
+        that strict chat-completions providers reject with HTTP 400/422
+        (or, in the case of some OpenAI-compatible gateways, 5xx):
 
-        Strips Codex Responses API fields (``codex_reasoning_items`` /
-        ``codex_message_items`` on the message, ``call_id``/``response_item_id``
-        on tool_calls) that strict chat-completions providers reject with 400/422.
+        - Codex Responses API fields: ``codex_reasoning_items`` /
+          ``codex_message_items`` on the message, ``call_id`` /
+          ``response_item_id`` on ``tool_calls`` entries.
+        - ``tool_name`` on tool-result messages — written by
+          ``make_tool_result_message()`` for the SQLite FTS index, but not
+          part of the Chat Completions schema. Strict providers (Fireworks,
+          Moonshot/Kimi) reject any payload containing it with
+          ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
+          Permissive providers (OpenRouter, MiniMax) silently ignore the
+          field, which masked the bug for months.
+        - Hermes-internal scaffolding markers — any top-level message key
+          starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
+          ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
+          bookkeeping flags the agent loop attaches to messages so the
+          persistence layer can later strip its own scaffolding; they must
+          never reach the wire. Permissive providers (real OpenAI,
+          Anthropic) silently drop unknown message keys, but strict
+          gateways (e.g. opencode-go, codex.nekos.me) reject with
+          ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
+          which then poisons every subsequent request in the session.
         """
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if "codex_reasoning_items" in msg or "codex_message_items" in msg:
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "tool_name" in msg
+            ):
+                needs_sanitize = True
+                break
+            if any(isinstance(k, str) and k.startswith("_") for k in msg):
                 needs_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
@@ -145,6 +171,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 continue
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
+            msg.pop("tool_name", None)
+            # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
+            # OpenAI's message schema has no ``_``-prefixed fields, so this
+            # is safe and future-proofs against new markers being added.
+            for key in [k for k in msg if isinstance(k, str) and k.startswith("_")]:
+                msg.pop(key, None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -279,7 +311,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in ("low", "medium", "high"):
+                    if _e in {"low", "medium", "high"}:
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
@@ -294,7 +326,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 _tokenhub_effort = "high"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in ("low", "medium", "high"):
+                    if _e in {"low", "medium", "high"}:
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
@@ -322,6 +354,21 @@ class ChatCompletionsTransport(ProviderTransport):
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
             extra_body["provider"] = provider_prefs
+
+        # Pareto Code router plugin — model-gated. Same shape as the
+        # profile path in plugins/model-providers/openrouter/__init__.py;
+        # this branch only runs when the OpenRouter profile isn't loaded.
+        if is_openrouter and model == "openrouter/pareto-code":
+            _pareto_score = params.get("openrouter_min_coding_score")
+            if _pareto_score is not None and _pareto_score != "":
+                try:
+                    _pareto_score_f = float(_pareto_score)
+                except (TypeError, ValueError):
+                    _pareto_score_f = None
+                if _pareto_score_f is not None and 0.0 <= _pareto_score_f <= 1.0:
+                    extra_body["plugins"] = [
+                        {"id": "pareto-router", "min_coding_score": _pareto_score_f}
+                    ]
 
         # Kimi extra_body.thinking
         if is_kimi:
@@ -429,13 +476,17 @@ class ChatCompletionsTransport(ProviderTransport):
         ephemeral = params.get("ephemeral_max_output_tokens")
         user_max = params.get("max_tokens")
         anthropic_max = params.get("anthropic_max_output")
+        # Per-model default cap — profiles override get_max_tokens() when
+        # they front several backends with different completion-token limits
+        # (e.g. opencode-go: mimo-v2.5-pro = 131072).
+        profile_max = profile.get_max_tokens(model)
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))
         elif user_max is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(user_max))
-        elif profile.default_max_tokens and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(profile.default_max_tokens))
+        elif profile_max and max_tokens_fn:
+            api_kwargs.update(max_tokens_fn(profile_max))
         elif anthropic_max is not None:
             api_kwargs["max_tokens"] = anthropic_max
 
@@ -448,6 +499,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 qwen_session_metadata=params.get("qwen_session_metadata"),
                 model=model,
                 ollama_num_ctx=params.get("ollama_num_ctx"),
+                session_id=params.get("session_id"),
             )
         )
         api_kwargs.update(top_level_from_profile)
@@ -462,6 +514,7 @@ class ChatCompletionsTransport(ProviderTransport):
             model=model,
             base_url=params.get("base_url"),
             reasoning_config=reasoning_config,
+            openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         if profile_body:
             extra_body.update(profile_body)

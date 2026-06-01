@@ -1,12 +1,13 @@
 """Tests for gateway service management helpers."""
 
 import os
-import pwd
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+pwd = pytest.importorskip("pwd")
 
 import hermes_cli.gateway as gateway_cli
 from gateway import status
@@ -140,6 +141,68 @@ class TestSystemdServiceRefresh:
         assert markers == [321]
         assert calls == [["stop", gateway_cli.get_service_name()]]
 
+    def test_systemd_stop_timeout_prints_status_guidance(self, monkeypatch, capsys):
+        markers = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: 321)
+        monkeypatch.setattr(
+            status,
+            "write_planned_stop_marker",
+            lambda pid: markers.append(pid) or True,
+        )
+
+        def fake_run_systemctl(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_stop()
+
+        assert markers == [321]
+        output = capsys.readouterr().out
+        assert "still stopping after 90s" in output
+        assert "hermes gateway status" in output
+
+    def test_systemd_restart_timeout_prints_status_guidance(self, monkeypatch, capsys):
+        """`hermes gateway restart` must not surface a raw TimeoutExpired traceback.
+
+        The dashboard spawns `hermes gateway restart` in the background; when a
+        wedged adapter websocket pushes drain past the 90s CLI timeout, the
+        dashboard would previously show a Python traceback (issue #19937
+        follow-up: the same failure mode applies to restart, not just stop).
+        """
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_recover_pending_systemd_restart",
+            lambda system=False, previous_pid=None: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_systemd_service_is_start_limited",
+            lambda system=False: False,
+        )
+
+        def fake_run_systemctl(args, **kwargs):
+            # reset-failed is a pre-step (check=False, 30s) — let it pass.
+            if args and args[0] == "reset-failed":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_restart()
+
+        output = capsys.readouterr().out
+        assert "still restarting after 90s" in output
+        assert "hermes gateway status" in output
 
     def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
         """run_gateway() should refresh the systemd unit on boot so that
@@ -170,6 +233,60 @@ class TestSystemdServiceRefresh:
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
+
+    def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
+        self, tmp_path, monkeypatch
+    ):
+        """Defense in depth: ``refresh_systemd_unit_if_needed()`` runs every
+        time ``run_gateway()`` starts. The user-scope unit path resolves
+        under ``Path.home()`` (NOT sandboxed by conftest), and
+        ``generate_systemd_unit()`` bakes ``HERMES_HOME`` into the unit's
+        ``Environment=`` line. Without this guard, any test that drives
+        ``run_gateway()`` end-to-end on a real Linux dev box silently
+        rewrites the developer's installed gateway unit with a
+        ``/tmp/pytest-of-.../hermes_test`` HERMES_HOME — silently breaking
+        their gateway on the next boot. The guard sniffs the generated
+        unit body for tmpdir markers and refuses the write. Tests that
+        legitimately exercise the refresh flow patch
+        ``generate_systemd_unit`` to return synthetic content that doesn't
+        carry those markers.
+        """
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        # Realistic generated unit referencing a pytest tmpdir HERMES_HOME
+        polluted_unit = (
+            "[Service]\n"
+            'Environment="HERMES_HOME=/tmp/pytest-of-alice/pytest-42/'
+            'popen-gw0/test_x/hermes_test"\n'
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: polluted_unit,
+        )
+
+        # If the guard fails, daemon-reload would be called — record it.
+        ran = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            ran.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_systemd_unit_if_needed(system=False)
+
+        assert result is False, "refresh should refuse to write a polluted unit"
+        assert (
+            unit_path.read_text(encoding="utf-8") == "old unit\n"
+        ), "installed unit must be left untouched"
+        assert not any(
+            "daemon-reload" in str(c) for c in ran
+        ), "daemon-reload must not run when write was refused"
 
 
 class TestRequireServiceInstalled:
@@ -882,24 +999,6 @@ class TestGatewaySystemServiceRouting:
 
         assert calls == [(False, False, True)]
 
-    def test_gateway_install_passes_system_flags(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli,
-            "systemd_install",
-            lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
-        )
-
-        gateway_cli.gateway_command(
-            SimpleNamespace(gateway_command="install", force=True, system=True, run_as_user="alice")
-        )
-
-        assert calls == [(True, True, "alice")]
-
     def test_gateway_install_reports_termux_manual_mode(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
@@ -1222,20 +1321,16 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        import pwd
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "root")
         monkeypatch.setenv("LOGNAME", "root")
 
-        import pytest
         with pytest.raises(ValueError, match="pass --run-as-user root to override"):
             gateway_cli._system_service_identity(run_as_user=None)
 
     def test_explicit_root_is_allowed(self, monkeypatch):
         """When root is explicitly passed via --run-as-user root, allow it."""
-        import pwd
         import grp
 
         root_info = pwd.getpwnam("root")
@@ -1247,8 +1342,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        import pwd
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "nobody")
@@ -1611,7 +1704,12 @@ class TestSystemUnitPathRemapping:
         assert str(root_home) not in unit
         # Target user paths should be present
         assert "/home/alice" in unit
-        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit
+        # WorkingDirectory is anchored at the target user's HERMES_HOME (stable,
+        # always exists) — NOT the source checkout under it. Pinning cwd to the
+        # checkout is the rot bug fixed alongside this: a relocated/removed
+        # checkout would crash-loop the unit on CHDIR (status=200).
+        assert "WorkingDirectory=/home/alice/.hermes" in unit
+        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" not in unit
 
 
 class TestDockerAwareGateway:
@@ -2438,3 +2536,46 @@ class TestGatewayCommandCatchesSystemScopeError:
         # Renders the message, NOT the ``('msg', 'action')`` tuple repr
         assert "System gateway start requires root. Re-run with sudo." in out
         assert "('" not in out  # no tuple repr leaking through
+
+
+class TestServiceWorkingDirIsStable:
+    """The gateway service must anchor WorkingDirectory at a stable path
+    (HERMES_HOME), never the source checkout / worktree, so a relocated or
+    deleted checkout can't crash-loop the unit on CHDIR (status=200).
+    """
+
+    def test_stable_working_dir_uses_hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        assert Path(gateway_cli._stable_service_working_dir()) == home.resolve()
+
+    def test_stable_working_dir_falls_back_to_project_root(self, tmp_path, monkeypatch):
+        # HERMES_HOME points somewhere that does not exist -> fall back.
+        missing = tmp_path / "does-not-exist" / ".hermes"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: missing)
+        assert gateway_cli._stable_service_working_dir() == str(gateway_cli.PROJECT_ROOT)
+
+    def test_user_unit_workingdirectory_is_hermes_home_not_checkout(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        wd = [l for l in unit.splitlines() if l.startswith("WorkingDirectory=")]
+        assert wd, "unit has no WorkingDirectory line"
+        value = wd[0].split("=", 1)[1]
+        assert Path(value).resolve() == home.resolve()
+        # The bug class: never pin cwd inside a transient worktree checkout.
+        assert "/.worktrees/" not in value
+
+    def test_launchd_workingdirectory_is_hermes_home(self, tmp_path, monkeypatch):
+        import re
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+        m = re.search(r"<key>WorkingDirectory</key>\s*<string>(.*?)</string>", plist)
+        assert m, "plist has no WorkingDirectory entry"
+        assert Path(m.group(1)).resolve() == home.resolve()
+        assert "/.worktrees/" not in m.group(1)

@@ -2,6 +2,7 @@
 name: powerpoint
 description: "Create, read, edit .pptx decks, slides, notes, templates."
 license: Proprietary. LICENSE.txt has complete terms
+platforms: [linux, macos, windows]
 ---
 
 # Powerpoint Skill

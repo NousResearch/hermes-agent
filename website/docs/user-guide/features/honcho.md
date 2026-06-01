@@ -45,7 +45,7 @@ memory:
 ```
 
 ```bash
-echo "HONCHO_API_KEY=*** >> ~/.hermes/.env
+echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
 ```
 
 Get an API key at [honcho.dev](https://honcho.dev).
@@ -105,6 +105,10 @@ The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1
 ## Configuration Options
 
 Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
+
+### Self-Hosted Honcho with Authentication
+
+When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and `hermes memory setup`) ask for a **local JWT / bearer token** after the base URL. Paste a JWT signed with the server's `AUTH_JWT_SECRET` (the Honcho compose env var) to enable authenticated access; leave it blank for servers running with `AUTH_USE_AUTH=false`. The local token is stored under the host block (`hosts.<host>.apiKey` in `honcho.json`), separate from any cloud `apiKey`, so you can flip the `Cloud or local?` prompt back to `cloud` later without losing either credential.
 
 ### Full Config Reference
 
@@ -199,17 +203,24 @@ When Honcho is active as the memory provider, five tools become available:
 
 ## CLI Commands
 
+The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). On a fresh install, configure Honcho directly with `hermes memory setup honcho` (or run `hermes memory setup` and pick it from the list); the `hermes honcho` subcommand then appears on the next invocation.
+
 ```bash
+hermes memory setup honcho    # Configure Honcho directly (works before activation)
 hermes honcho status          # Connection status, config, and key settings
-hermes honcho setup           # Interactive setup wizard
-hermes honcho strategy        # Show or set session strategy
-hermes honcho peer            # Update peer names for multi-agent setups
-hermes honcho mode            # Show or set recall mode
-hermes honcho tokens          # Show or set context token budget
-hermes honcho identity        # Show Honcho peer identity
-hermes honcho sync            # Sync host blocks for all profiles
-hermes honcho enable          # Enable Honcho
-hermes honcho disable         # Disable Honcho
+hermes honcho setup           # Redirects to `hermes memory setup` (post-activation alias)
+hermes honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
+hermes honcho peer            # Show or update peer names + dialectic reasoning level
+hermes honcho mode            # Show or set recall mode (hybrid/context/tools)
+hermes honcho tokens          # Show or set token budget for context and dialectic
+hermes honcho identity        # Seed or show the AI peer's Honcho identity
+hermes honcho sync            # Sync Honcho config to all existing profiles
+hermes honcho peers           # Show peer identities across all profiles
+hermes honcho sessions        # List known Honcho session mappings
+hermes honcho map             # Map current directory to a Honcho session name
+hermes honcho enable          # Enable Honcho for the active profile
+hermes honcho disable         # Disable Honcho for the active profile
+hermes honcho migrate         # Step-by-step migration guide from openclaw-honcho
 ```
 
 ## Migrating from `hermes honcho`

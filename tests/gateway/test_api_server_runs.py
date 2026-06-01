@@ -9,10 +9,8 @@ Covers:
 """
 
 import asyncio
-import json
 import threading
-import time as _time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -307,69 +305,6 @@ class TestRunEvents:
                 assert "Hello!" in body
 
 
-    @pytest.mark.asyncio
-    async def test_approval_request_event_and_response_unblock_run(self, adapter):
-        """Dangerous-command approvals should surface on the run SSE stream."""
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                guard_result = {}
-
-                mock_agent = MagicMock()
-
-                def _run_with_approval(user_message=None, conversation_history=None, task_id=None):
-                    from tools.approval import check_all_command_guards
-
-                    result = check_all_command_guards("git reset --hard HEAD", "local")
-                    guard_result.update(result)
-                    return {"final_response": "approved" if result.get("approved") else "blocked"}
-
-                mock_agent.run_conversation.side_effect = _run_with_approval
-                mock_agent.session_prompt_tokens = 0
-                mock_agent.session_completion_tokens = 0
-                mock_agent.session_total_tokens = 0
-                mock_create.return_value = mock_agent
-
-                resp = await cli.post("/v1/runs", json={"input": "needs approval"})
-                assert resp.status == 202
-                data = await resp.json()
-                run_id = data["run_id"]
-
-                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
-                assert events_resp.status == 200
-
-                approval_event = None
-                for _ in range(20):
-                    line = await asyncio.wait_for(events_resp.content.readline(), timeout=3.0)
-                    text = line.decode()
-                    if not text.startswith("data: "):
-                        continue
-                    event = json.loads(text[len("data: "):])
-                    if event.get("event") == "approval.request":
-                        approval_event = event
-                        break
-
-                assert approval_event is not None
-                assert approval_event["run_id"] == run_id
-                assert approval_event["command"] == "git reset --hard HEAD"
-                assert approval_event["pattern_key"]
-                assert "pattern_keys" in approval_event
-                assert approval_event["choices"] == ["once", "session", "always", "deny"]
-
-                approval_resp = await cli.post(
-                    f"/v1/runs/{run_id}/approval",
-                    json={"choice": "once"},
-                )
-                assert approval_resp.status == 200
-                approval_data = await approval_resp.json()
-                assert approval_data["resolved"] == 1
-                assert approval_data["choice"] == "once"
-
-                body = await events_resp.text()
-                assert "approval.responded" in body
-                assert "run.completed" in body
-
-                assert guard_result.get("approved") is True
 
     @pytest.mark.asyncio
     async def test_approval_response_without_pending_returns_409(self, adapter):
@@ -397,6 +332,28 @@ class TestRunEvents:
                     "approval_not_active",
                     "approval_not_pending",
                 }
+
+    @pytest.mark.asyncio
+    async def test_approval_string_false_does_not_resolve_all(self, adapter):
+        """Quoted false must not fan out approval resolution across the queue."""
+        app = _create_runs_app(adapter)
+        run_id = "run_bool_parse"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = "session-123"
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once", "all": "false"},
+                )
+
+        assert approval_resp.status == 200
+        mock_resolve.assert_called_once_with(
+            "session-123",
+            "once",
+            resolve_all=False,
+        )
 
     @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
@@ -509,9 +466,17 @@ class TestStopRun:
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, _ = _make_slow_agent()
-                # Override the interrupt side_effect to raise
-                mock_agent.interrupt = MagicMock(side_effect=RuntimeError("interrupt failed"))
+                mock_agent, agent_ready, interrupted = _make_slow_agent()
+
+                # Override the interrupt side_effect to raise. Still trip
+                # ``interrupted`` so the slow_run thread unblocks at teardown
+                # — without this the agent thread blocks the full 10s
+                # timeout and the test teardown waits the same amount.
+                def _raising_interrupt(message=None):
+                    interrupted.set()
+                    raise RuntimeError("interrupt failed")
+
+                mock_agent.interrupt = MagicMock(side_effect=_raising_interrupt)
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})

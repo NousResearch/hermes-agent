@@ -256,7 +256,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                         await self._handle_ha_event(data.get("event", {}))
                 except json.JSONDecodeError:
                     logger.debug("Invalid JSON from HA WS: %s", ws_msg.data[:200])
-            elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif ws_msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 break
 
     async def _handle_ha_event(self, event: Dict[str, Any]) -> None:
@@ -361,7 +361,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                 f"(was {'triggered' if old_val == 'on' else 'cleared'})"
             )
 
-        if domain in ("light", "switch", "fan"):
+        if domain in {"light", "switch", "fan"}:
             return (
                 f"[Home Assistant] {friendly_name}: turned "
                 f"{'on' if new_val == 'on' else 'off'}"

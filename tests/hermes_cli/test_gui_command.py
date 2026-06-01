@@ -60,6 +60,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup") as mock_fixup, \
          patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
@@ -70,6 +71,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+    mock_fixup.assert_called_once_with(desktop_dir)
 
 
 def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
@@ -85,6 +87,7 @@ def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns(

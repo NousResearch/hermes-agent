@@ -2551,7 +2551,9 @@ class GatewayRunner:
 
         # Per-route model overlay (Tier-1): channel_models on the source's
         # platform config. A session /model override (below) still wins.
-        if source is not None and self.config is not None:
+        # Guard config with getattr: this runs on every _run_agent call,
+        # including lean runners (cron/codex paths) that never set self.config.
+        if source is not None and getattr(self, "config", None) is not None:
             try:
                 plat_cfg = self.config.platforms.get(source.platform)
                 if routed := resolve_channel_model(

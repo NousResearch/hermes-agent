@@ -121,3 +121,10 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
     assert f'exec "{pip_entry}"' in shim_text
     shim_mode = shim_path.stat().st_mode
     assert shim_mode & stat.S_IXUSR, "shim must be user-executable"
+
+
+def test_setup_path_installs_gpt_auth_launcher() -> None:
+    text = INSTALL_SH.read_text()
+    assert 'GPT_AUTH_BIN="$INSTALL_DIR/venv/bin/gpt-auth"' in text
+    assert 'rm -f "$command_link_dir/gpt-auth"' in text
+    assert 'exec "$GPT_AUTH_BIN" "\\$@"' in text

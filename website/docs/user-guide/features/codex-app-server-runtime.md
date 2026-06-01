@@ -141,6 +141,16 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets â
    ```
    Hermes' own `hermes auth login codex` writes to `~/.hermes/auth.json` â€” that's a separate session. **Run `codex login` separately** if you haven't.
 
+   Parent VM operator runbook:
+   ```bash
+   ssh <parent-vm>
+   gpt-auth
+   # Open the printed verification URL, enter the printed device code, complete 2FA.
+   # Press Enter at the HITL pause after the browser flow completes.
+   exit
+   ```
+   `gpt-auth` exits immediately when the existing Codex CLI session is valid. When auth is needed, it suppresses raw Codex CLI output and prints only the device code, verification URL, and HITL pause prompt before verifying `codex login status`.
+
 3. **(Optional) Install the Codex plugins you want.** When you enable the runtime, Hermes auto-migrates whichever curated plugins you've already installed via Codex CLI:
    ```bash
    codex plugin marketplace add openai-curated

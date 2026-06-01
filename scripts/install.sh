@@ -1242,12 +1242,14 @@ PY
 }
 
 setup_path() {
-    log_info "Setting up hermes command..."
+    log_info "Setting up hermes commands..."
 
     if [ "$USE_VENV" = true ]; then
         HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+        GPT_AUTH_BIN="$INSTALL_DIR/venv/bin/gpt-auth"
     else
         HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
+        GPT_AUTH_BIN="$(which gpt-auth 2>/dev/null || echo "")"
         if [ -z "$HERMES_BIN" ]; then
             log_warn "hermes not found on PATH after install"
             return 0
@@ -1287,6 +1289,20 @@ exec "$HERMES_BIN" "\$@"
 EOF
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
+
+    if [ -x "$GPT_AUTH_BIN" ]; then
+        rm -f "$command_link_dir/gpt-auth"
+        cat > "$command_link_dir/gpt-auth" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$GPT_AUTH_BIN" "\$@"
+EOF
+        chmod +x "$command_link_dir/gpt-auth"
+        log_success "Installed gpt-auth launcher → $command_link_display_dir/gpt-auth"
+    else
+        log_warn "gpt-auth entry point not found at $GPT_AUTH_BIN"
+    fi
 
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"

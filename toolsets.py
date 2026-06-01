@@ -240,6 +240,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "accounting": {
+        "description": "Agent-native accounting-lite core: payment receipts, bank/cash accounts, income/expense journal, and accountant exports",
+        "tools": [
+            "accounting_status", "accounting_account_upsert", "accounting_receipt_create",
+            "accounting_receipt_get", "accounting_journal_entry_create", "accounting_export_create",
+        ],
+        "includes": []
+    },
+
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],

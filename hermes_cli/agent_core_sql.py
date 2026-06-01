@@ -26,6 +26,7 @@ DEFAULTS = {
     "FACTORY_DB_RUNTIME_USER": "factory_runtime",
     "CRM_DB_RUNTIME_USER": "crm_runtime",
     "SALES_DB_RUNTIME_USER": "sales_runtime",
+    "ACCOUNTING_DB_RUNTIME_USER": "accounting_runtime",
 }
 
 

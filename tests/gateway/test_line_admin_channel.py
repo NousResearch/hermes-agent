@@ -153,3 +153,43 @@ def test_hmac_signatures_are_isolated_by_channel_secret(monkeypatch):
     assert not verify_line_signature(body, admin_sig, customer.channel_secret)
     assert verify_line_signature(body, admin_sig, admin.channel_secret)
     assert not verify_line_signature(body, customer_sig, admin.channel_secret)
+
+
+def test_admin_sources_use_distinct_session_namespace(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from gateway.session import build_session_key
+
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "customer-token")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "customer-secret")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_ACCESS_TOKEN", "admin-token")
+    monkeypatch.setenv("LINE_ADMIN_CHANNEL_SECRET", "admin-secret")
+    platform_registry.register(
+        PlatformEntry(
+            name="line_admin",
+            label="LINE (對內)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+    )
+
+    try:
+        customer = LineAdapter(PlatformConfig(enabled=True))
+        admin = LineAdapter(
+            PlatformConfig(enabled=True),
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
+        )
+    finally:
+        platform_registry.unregister("line_admin")
+
+    customer_source = customer.build_source(chat_id="U123", chat_type="dm", user_id="U123")
+    admin_source = admin.build_source(chat_id="U123", chat_type="dm", user_id="U123")
+
+    assert customer_source.platform.value == "line"
+    assert admin_source.platform.value == "line_admin"
+    assert build_session_key(customer_source) == "agent:main:line:dm:U123"
+    assert build_session_key(admin_source) == "agent:main:line_admin:dm:U123"

@@ -1181,6 +1181,36 @@ class TestSkillViewCollisionDetection:
         assert "Ambiguous" in result["error"]
         assert len(result["matches"]) == 2
 
+    def test_hidden_skill_bundle_mirrors_do_not_collide(self, tmp_path):
+        """A skill bundle may carry hidden editor-specific skill mirrors.
+
+        Those hidden descendants are implementation detail, not user-facing
+        skills. They must not make the real top-level skill ambiguous.
+        """
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+
+        _make_skill(local_dir, "gstack-setup-gbrain", body="TOP LEVEL VERSION")
+        _make_skill(
+            local_dir / "gstack" / ".hermes" / "skills",
+            "gstack-setup-gbrain",
+            body="HIDDEN MIRROR VERSION",
+        )
+        _make_skill(
+            local_dir / "gstack" / ".gbrain" / "skills",
+            "gstack-setup-gbrain",
+            body="HIDDEN GBRAIN MIRROR VERSION",
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("gstack-setup-gbrain")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "TOP LEVEL VERSION" in result["content"]
+        assert "HIDDEN MIRROR VERSION" not in result["content"]
+
     def test_collision_resolvable_via_categorized_path(self, tmp_path):
         """User can recover from a collision by passing the full
         categorized path — the bare name is ambiguous, the path is not."""

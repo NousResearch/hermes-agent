@@ -636,6 +636,8 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 def _line_env_name(env_prefix: str, name: str) -> str:
     if env_prefix == "LINE" and name in {"ACCESS_TOKEN", "SECRET"}:
         return f"LINE_CHANNEL_{name}"
+    if env_prefix == "LINE" and name == "HOME":
+        return "LINE_HOME_CHANNEL"
     return f"{env_prefix}_{name}"
 
 
@@ -1536,15 +1538,23 @@ def check_requirements_admin() -> bool:
     return _check_requirements("LINE_ADMIN_CHANNEL")
 
 
-def validate_config(config) -> bool:
+def _validate_config(config, env_prefix: str) -> bool:
     extra = getattr(config, "extra", {}) or {}
     has_token = bool(
-        os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token")
+        os.getenv(_line_env_name(env_prefix, "ACCESS_TOKEN")) or extra.get("channel_access_token")
     )
     has_secret = bool(
-        os.getenv("LINE_CHANNEL_SECRET") or extra.get("channel_secret")
+        os.getenv(_line_env_name(env_prefix, "SECRET")) or extra.get("channel_secret")
     )
     return has_token and has_secret
+
+
+def validate_config(config) -> bool:
+    return _validate_config(config, "LINE")
+
+
+def validate_config_admin(config) -> bool:
+    return _validate_config(config, "LINE_ADMIN_CHANNEL")
 
 
 def is_connected(config) -> bool:
@@ -1552,28 +1562,48 @@ def is_connected(config) -> bool:
     return validate_config(config)
 
 
-def _env_enablement() -> Optional[Dict[str, Any]]:
+def is_connected_admin(config) -> bool:
+    """Surface in ``hermes status`` even before the adapter is instantiated."""
+    return validate_config_admin(config)
+
+
+def _env_enablement_for_prefix(env_prefix: str) -> Optional[Dict[str, Any]]:
     """Auto-seed PlatformConfig.extra from env-only setups.
 
     Lets ``hermes status`` reflect a LINE configuration that lives entirely
     in ``.env`` without a ``platforms.line`` block in ``config.yaml``.
     Mirrors the IRC plugin's pattern.
     """
-    if not (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") and os.getenv("LINE_CHANNEL_SECRET")):
+    if not (
+        os.getenv(_line_env_name(env_prefix, "ACCESS_TOKEN"))
+        and os.getenv(_line_env_name(env_prefix, "SECRET"))
+    ):
         return None
     seeded: Dict[str, Any] = {}
-    if os.getenv("LINE_PORT"):
+    port_env = _line_env_name(env_prefix, "PORT")
+    if os.getenv(port_env):
         try:
-            seeded["port"] = int(os.environ["LINE_PORT"])
+            seeded["port"] = int(os.environ[port_env])
         except ValueError:
             pass
-    if os.getenv("LINE_HOST"):
-        seeded["host"] = os.environ["LINE_HOST"]
-    if os.getenv("LINE_PUBLIC_URL"):
-        seeded["public_url"] = os.environ["LINE_PUBLIC_URL"]
-    if os.getenv("LINE_HOME_CHANNEL"):
-        seeded["home_channel"] = os.environ["LINE_HOME_CHANNEL"]
+    host_env = _line_env_name(env_prefix, "HOST")
+    if os.getenv(host_env):
+        seeded["host"] = os.environ[host_env]
+    public_url_env = _line_env_name(env_prefix, "PUBLIC_URL")
+    if os.getenv(public_url_env):
+        seeded["public_url"] = os.environ[public_url_env]
+    home_env = _line_env_name(env_prefix, "HOME")
+    if os.getenv(home_env):
+        seeded["home_channel"] = os.environ[home_env]
     return seeded or {}
+
+
+def _env_enablement() -> Optional[Dict[str, Any]]:
+    return _env_enablement_for_prefix("LINE")
+
+
+def _env_enablement_admin() -> Optional[Dict[str, Any]]:
+    return _env_enablement_for_prefix("LINE_ADMIN_CHANNEL")
 
 
 async def _standalone_send(
@@ -1584,6 +1614,47 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[List[str]] = None,
     force_document: bool = False,
+) -> Dict[str, Any]:
+    return await _standalone_send_for_prefix(
+        pconfig,
+        chat_id,
+        message,
+        thread_id=thread_id,
+        media_files=media_files,
+        force_document=force_document,
+        env_prefix="LINE",
+    )
+
+
+async def _standalone_send_admin(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    return await _standalone_send_for_prefix(
+        pconfig,
+        chat_id,
+        message,
+        thread_id=thread_id,
+        media_files=media_files,
+        force_document=force_document,
+        env_prefix="LINE_ADMIN_CHANNEL",
+    )
+
+
+async def _standalone_send_for_prefix(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+    env_prefix: str,
 ) -> Dict[str, Any]:
     """Out-of-process push delivery for cron jobs running detached from the gateway.
 
@@ -1599,7 +1670,7 @@ async def _standalone_send(
     """
     extra = getattr(pconfig, "extra", {}) or {}
     token = (
-        os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+        os.getenv(_line_env_name(env_prefix, "ACCESS_TOKEN"))
         or extra.get("channel_access_token", "")
     )
     if not token or not chat_id:
@@ -1665,6 +1736,16 @@ def interactive_setup() -> None:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
+    platform_hint = (
+        "You are chatting via LINE Messaging API. LINE does NOT render "
+        "Markdown — text bubbles show ** and # literally. Bare URLs are "
+        "auto-linked, but \\[label\\](url) syntax is not. Each text bubble "
+        "is capped at 5000 characters and at most 5 bubbles are sent per "
+        "reply, so keep responses concise. Image/audio/video sending "
+        "requires LINE_PUBLIC_URL configured to a publicly reachable HTTPS "
+        "host. Slow responses surface a 'Get answer' button the user taps "
+        "to fetch the reply via a fresh free token."
+    )
     ctx.register_platform(
         name="line",
         label="LINE",
@@ -1685,14 +1766,34 @@ def register(ctx) -> None:
         emoji="💚",
         pii_safe=False,
         allow_update_command=True,
-        platform_hint=(
-            "You are chatting via LINE Messaging API. LINE does NOT render "
-            "Markdown — text bubbles show ** and # literally. Bare URLs are "
-            "auto-linked, but \\[label\\](url) syntax is not. Each text bubble "
-            "is capped at 5000 characters and at most 5 bubbles are sent per "
-            "reply, so keep responses concise. Image/audio/video sending "
-            "requires LINE_PUBLIC_URL configured to a publicly reachable HTTPS "
-            "host. Slow responses surface a 'Get answer' button the user taps "
-            "to fetch the reply via a fresh free token."
+        platform_hint=platform_hint,
+    )
+    ctx.register_platform(
+        name="line_admin",
+        label="LINE (對內)",
+        adapter_factory=lambda cfg: LineAdapter(
+            cfg,
+            platform_value="line_admin",
+            env_prefix="LINE_ADMIN_CHANNEL",
+            default_port=8647,
+            default_webhook_path="/line-admin/webhook",
+            default_media_prefix="/line-admin/media",
         ),
+        check_fn=check_requirements_admin,
+        validate_config=validate_config_admin,
+        is_connected=is_connected_admin,
+        required_env=[],
+        install_hint="pip install aiohttp",
+        setup_fn=interactive_setup,
+        env_enablement_fn=_env_enablement_admin,
+        cron_deliver_env_var="LINE_ADMIN_CHANNEL_HOME",
+        standalone_sender_fn=_standalone_send_admin,
+        allowed_users_env="LINE_ADMIN_CHANNEL_ALLOWED_USERS",
+        allow_all_env="LINE_ADMIN_CHANNEL_ALLOW_ALL_USERS",
+        # LINE per-bubble cap is 5000; smart-chunker uses 4500.
+        max_message_length=LINE_SAFE_BUBBLE_CHARS,
+        emoji="💚",
+        pii_safe=False,
+        allow_update_command=True,
+        platform_hint=platform_hint,
     )

@@ -9,6 +9,7 @@ _line = load_plugin_adapter("line")
 LineAdapter = _line.LineAdapter
 check_requirements = _line.check_requirements
 check_requirements_admin = getattr(_line, "check_requirements_admin", lambda: "missing")
+register = _line.register
 
 
 def test_customer_defaults_remain_unchanged_without_admin_env(monkeypatch):
@@ -68,3 +69,21 @@ def test_admin_constructor_reads_admin_env_and_defaults(monkeypatch):
     assert adapter.platform == Platform("line_admin")
     assert adapter.webhook_port == 8647
     assert adapter.webhook_path == "/line-admin/webhook"
+
+
+def test_register_adds_customer_and_admin_platforms():
+    class _FakeCtx:
+        def __init__(self):
+            self.calls = []
+
+        def register_platform(self, **kwargs):
+            self.calls.append(kwargs)
+
+    ctx = _FakeCtx()
+
+    register(ctx)
+
+    by_name = {call["name"]: call for call in ctx.calls}
+    assert set(by_name) == {"line", "line_admin"}
+    assert by_name["line"]["check_fn"] is check_requirements
+    assert by_name["line_admin"]["check_fn"] is check_requirements_admin

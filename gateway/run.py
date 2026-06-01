@@ -852,6 +852,77 @@ _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 
+def _bridge_terminal_config_to_env(terminal_cfg) -> None:
+    """Bridge config.yaml terminal settings to TERMINAL_* env vars.
+
+    config.yaml is the documented, authoritative source for terminal settings,
+    so it must win over stale values loaded from ~/.hermes/.env at startup and
+    after the gateway's per-turn dotenv reload.
+    """
+    if not isinstance(terminal_cfg, dict) or not terminal_cfg:
+        return
+    _terminal_env_map = {
+        "backend": "TERMINAL_ENV",
+        "cwd": "TERMINAL_CWD",
+        "timeout": "TERMINAL_TIMEOUT",
+        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+        "docker_image": "TERMINAL_DOCKER_IMAGE",
+        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+        "modal_image": "TERMINAL_MODAL_IMAGE",
+        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        # Daytona expansion keys
+        "daytona_create_mode": "TERMINAL_DAYTONA_CREATE_MODE",
+        "daytona_snapshot": "TERMINAL_DAYTONA_SNAPSHOT",
+        "daytona_language": "TERMINAL_DAYTONA_LANGUAGE",
+        "daytona_name_prefix": "TERMINAL_DAYTONA_NAME_PREFIX",
+        "daytona_name_scope": "TERMINAL_DAYTONA_NAME_SCOPE",
+        "daytona_labels": "TERMINAL_DAYTONA_LABELS",
+        "daytona_auto_stop_interval": "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL",
+        "daytona_auto_archive_interval": "TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL",
+        "daytona_auto_delete_interval": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL",
+        "daytona_ephemeral": "TERMINAL_DAYTONA_EPHEMERAL",
+        "daytona_env_vars": "TERMINAL_DAYTONA_ENV_VARS",
+        "daytona_network_block_all": "TERMINAL_DAYTONA_NETWORK_BLOCK_ALL",
+        "daytona_network_allow_list": "TERMINAL_DAYTONA_NETWORK_ALLOW_LIST",
+        "daytona_volume_mounts": "TERMINAL_DAYTONA_VOLUME_MOUNTS",
+        "daytona_gpu": "TERMINAL_DAYTONA_GPU",
+        "daytona_sync_cwd": "TERMINAL_DAYTONA_SYNC_CWD",
+        "daytona_sync_cwd_source": "TERMINAL_DAYTONA_SYNC_CWD_SOURCE",
+        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+        "ssh_host": "TERMINAL_SSH_HOST",
+        "ssh_user": "TERMINAL_SSH_USER",
+        "ssh_port": "TERMINAL_SSH_PORT",
+        "ssh_key": "TERMINAL_SSH_KEY",
+        "container_cpu": "TERMINAL_CONTAINER_CPU",
+        "container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "container_disk": "TERMINAL_CONTAINER_DISK",
+        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+        "docker_env": "TERMINAL_DOCKER_ENV",
+        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    }
+    for _cfg_key, _env_var in _terminal_env_map.items():
+        if _cfg_key in terminal_cfg:
+            _val = terminal_cfg[_cfg_key]
+            # Skip cwd placeholder values (".", "auto", "cwd") — the
+            # gateway resolves these to Path.home() later. Writing the raw
+            # placeholder here would just be noise. Only bridge explicit paths.
+            if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
+                continue
+            if _cfg_key == "cwd" and isinstance(_val, str):
+                _val = os.path.expanduser(_val)
+            if isinstance(_val, (list, dict)):
+                os.environ[_env_var] = json.dumps(_val)
+            else:
+                os.environ[_env_var] = str(_val)
+
+
 def _reload_runtime_env_preserving_config_authority() -> None:
     """Reload .env for fresh credentials without letting stale .env override config.
 
@@ -880,6 +951,10 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     agent_cfg = cfg.get("agent", {})
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+
+    terminal_cfg = cfg.get("terminal", {})
+    if isinstance(terminal_cfg, dict):
+        _bridge_terminal_config_to_env(terminal_cfg)
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
@@ -914,6 +989,23 @@ if _config_path.exists():
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+                # Daytona expansion keys (P1)
+                "daytona_create_mode": "TERMINAL_DAYTONA_CREATE_MODE",
+                "daytona_snapshot": "TERMINAL_DAYTONA_SNAPSHOT",
+                "daytona_language": "TERMINAL_DAYTONA_LANGUAGE",
+                "daytona_name_prefix": "TERMINAL_DAYTONA_NAME_PREFIX",
+                "daytona_name_scope": "TERMINAL_DAYTONA_NAME_SCOPE",
+                "daytona_labels": "TERMINAL_DAYTONA_LABELS",
+                "daytona_auto_stop_interval": "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL",
+                "daytona_auto_archive_interval": "TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL",
+                "daytona_auto_delete_interval": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL",
+                "daytona_ephemeral": "TERMINAL_DAYTONA_EPHEMERAL",
+                "daytona_env_vars": "TERMINAL_DAYTONA_ENV_VARS",
+                "daytona_network_block_all": "TERMINAL_DAYTONA_NETWORK_BLOCK_ALL",
+                "daytona_network_allow_list": "TERMINAL_DAYTONA_NETWORK_ALLOW_LIST",
+                "daytona_volume_mounts": "TERMINAL_DAYTONA_VOLUME_MOUNTS",
+                "daytona_gpu": "TERMINAL_DAYTONA_GPU",
+                "daytona_sync_cwd": "TERMINAL_DAYTONA_SYNC_CWD",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",

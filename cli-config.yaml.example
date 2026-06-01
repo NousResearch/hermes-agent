@@ -254,6 +254,22 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   # Snapshot mode (optional): omit daytona_image unless you want an explicit fallback.
+#   # daytona_create_mode: "snapshot"    # "image" or "snapshot"
+#   # daytona_snapshot: "my-snapshot-id"
+#   # Daytona SDK-supported language values: "python", "typescript", "javascript".
+#   # daytona_language: "python"
+#   # daytona_labels: {"project": "hermes", "owner": "agents"}
+#   # daytona_env_vars: {"APP_ENV": "dev"}  # Non-secret sandbox env; keep secrets in .env/provider stores.
+#   # daytona_auto_stop_interval: 30      # minutes; 0 disables
+#   # daytona_auto_archive_interval: 120  # minutes; 0 disables
+#   # daytona_auto_delete_interval: 0     # minutes; GPU sandboxes force this to 0
+#   # daytona_ephemeral: false
+#   # daytona_volume_mounts:
+#   #   - {"volume_id": "vol_123", "mount_path": "/mnt/data"}
+#   # daytona_gpu: 0                      # set >0 only when your Daytona workspace allows GPUs
+#   # daytona_sync_cwd: false             # explicit opt-in: upload host source to /workspace
+#   # daytona_sync_cwd_source: "~/Code/my-project"  # required source when sync_cwd is true
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #

@@ -1031,6 +1031,30 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
+def _parse_json_env_var(name: str, default: str, expected_type: type) -> object:
+    """Parse a JSON env var and validate its top-level type (dict or list)."""
+    raw = os.getenv(name, default)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(
+            f"Invalid value for {name}: expected valid JSON. "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+    if not isinstance(parsed, expected_type):
+        type_name = (
+            "dict" if expected_type is dict
+            else "list" if expected_type is list
+            else expected_type.__name__
+        )
+        raise ValueError(
+            f"Invalid value for {name}: {raw!r} "
+            f"(expected JSON {type_name}, got {type(parsed).__name__}). "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+    return parsed
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1068,14 +1092,40 @@ def _get_env_config() -> Dict[str, Any]:
             host_cwd = candidate
             cwd = "/workspace"
     elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
-        # Host paths and relative paths that won't work inside containers
+        # Host paths and relative paths that won't work inside containers.
+        # Daytona CWD sync uses TERMINAL_DAYTONA_SYNC_CWD_SOURCE as the upload
+        # source; TERMINAL_CWD is only the sandbox command cwd and must never
+        # implicitly become an upload source (gateway defaults it to $HOME).
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
+        if env_type == "daytona" and os.path.isabs(cwd) and os.path.isdir(cwd):
+            is_host_path = not cwd.startswith(("/workspace", "/root", "/home/daytona"))
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
         if (is_host_path or is_relative) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
             cwd = default_cwd
+
+    if env_type == "daytona":
+        daytona_labels = _parse_json_env_var("TERMINAL_DAYTONA_LABELS", "{}", dict)
+        daytona_env_vars = _parse_json_env_var("TERMINAL_DAYTONA_ENV_VARS", "{}", dict)
+        daytona_volume_mounts = _parse_json_env_var("TERMINAL_DAYTONA_VOLUME_MOUNTS", "[]", list)
+        daytona_sync_cwd_source = os.getenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", "").strip()
+        if daytona_sync_cwd_source:
+            candidate = Path(os.path.expanduser(daytona_sync_cwd_source)).resolve()
+            if candidate == Path.home().resolve():
+                logger.warning("Ignoring TERMINAL_DAYTONA_SYNC_CWD_SOURCE=%r because it resolves to the operator home", daytona_sync_cwd_source)
+            elif candidate.is_dir():
+                host_cwd = str(candidate)
+            else:
+                logger.warning("Ignoring TERMINAL_DAYTONA_SYNC_CWD_SOURCE=%r because it is not a directory", daytona_sync_cwd_source)
+        if os.getenv("TERMINAL_DAYTONA_SYNC_CWD", "false").lower() in {"true", "1", "yes"} and host_cwd:
+            cwd = "/workspace"
+    else:
+        daytona_labels = {}
+        daytona_env_vars = {}
+        daytona_volume_mounts = []
+        daytona_sync_cwd_source = ""
 
     return {
         "env_type": env_type,
@@ -1085,6 +1135,25 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        # Daytona expansion config keys
+        "daytona_create_mode": os.getenv("TERMINAL_DAYTONA_CREATE_MODE", "image"),
+        "daytona_snapshot": os.getenv("TERMINAL_DAYTONA_SNAPSHOT", ""),
+        "daytona_language": os.getenv("TERMINAL_DAYTONA_LANGUAGE", ""),
+        "daytona_name_prefix": os.getenv("TERMINAL_DAYTONA_NAME_PREFIX", "hermes"),
+        "daytona_name_scope": os.getenv("TERMINAL_DAYTONA_NAME_SCOPE", "task"),
+        "daytona_labels": daytona_labels,
+        "daytona_auto_stop_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", "0"),
+        "daytona_auto_archive_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", "0"),
+        "daytona_auto_delete_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "0"),
+        "daytona_ephemeral": os.getenv("TERMINAL_DAYTONA_EPHEMERAL", "false").lower() in {"true", "1", "yes"},
+        "daytona_env_vars": daytona_env_vars,
+        "daytona_network_block_all": os.getenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "false").lower() in {"true", "1", "yes"},
+        "daytona_network_allow_list": os.getenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", ""),
+        "daytona_volume_mounts": daytona_volume_mounts,
+        "daytona_gpu": _parse_env_var("TERMINAL_DAYTONA_GPU", "0"),
+        "daytona_sync_cwd": os.getenv("TERMINAL_DAYTONA_SYNC_CWD", "false").lower() in {"true", "1", "yes"},
+        "daytona_sync_cwd_source": daytona_sync_cwd_source,
+        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1129,6 +1198,50 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_orphan_reaper": os.getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
+    }
+
+
+_CONTAINER_BACKENDS = {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+
+
+def _build_container_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the shared container/sandbox config passed to _create_environment.
+
+    Terminal, file, and execute_code tools can all be the first creator of a
+    sandbox. Keep this map centralized so Daytona/Docker/Modal/Vercel settings
+    do not drift between those creation paths.
+    """
+    return {
+        "container_cpu": config.get("container_cpu", 1),
+        "container_memory": config.get("container_memory", 5120),
+        "container_disk": config.get("container_disk", 51200),
+        "container_persistent": config.get("container_persistent", True),
+        "modal_mode": config.get("modal_mode", "auto"),
+        "vercel_runtime": config.get("vercel_runtime", ""),
+        "daytona_create_mode": config.get("daytona_create_mode", "image"),
+        "daytona_snapshot": config.get("daytona_snapshot", ""),
+        "daytona_language": config.get("daytona_language", ""),
+        "daytona_name_prefix": config.get("daytona_name_prefix", "hermes"),
+        "daytona_name_scope": config.get("daytona_name_scope", "task"),
+        "daytona_labels": config.get("daytona_labels", {}),
+        "daytona_auto_stop_interval": config.get("daytona_auto_stop_interval", 0),
+        "daytona_auto_archive_interval": config.get("daytona_auto_archive_interval", 0),
+        "daytona_auto_delete_interval": config.get("daytona_auto_delete_interval", 0),
+        "daytona_ephemeral": config.get("daytona_ephemeral", False),
+        "daytona_env_vars": config.get("daytona_env_vars", {}),
+        "daytona_network_block_all": config.get("daytona_network_block_all", False),
+        "daytona_network_allow_list": config.get("daytona_network_allow_list", ""),
+        "daytona_volume_mounts": config.get("daytona_volume_mounts", []),
+        "daytona_gpu": config.get("daytona_gpu", 0),
+        "daytona_sync_cwd": config.get("daytona_sync_cwd", False),
+        "daytona_sync_cwd_source": config.get("daytona_sync_cwd_source", ""),
+        "host_cwd": config.get("host_cwd"),
+        "docker_volumes": config.get("docker_volumes", []),
+        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_env": config.get("docker_env", {}),
+        "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+        "docker_extra_args": config.get("docker_extra_args", []),
     }
 
 
@@ -1270,6 +1383,23 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
+            create_mode=cc.get("daytona_create_mode", "image"),
+            snapshot=cc.get("daytona_snapshot", ""),
+            language=cc.get("daytona_language", ""),
+            name_prefix=cc.get("daytona_name_prefix", "hermes"),
+            name_scope=cc.get("daytona_name_scope", "task"),
+            labels=cc.get("daytona_labels") or None,
+            auto_stop_interval=int(cc.get("daytona_auto_stop_interval", 0)),
+            auto_archive_interval=int(cc.get("daytona_auto_archive_interval", 0)),
+            auto_delete_interval=int(cc.get("daytona_auto_delete_interval", 0)),
+            ephemeral=cc.get("daytona_ephemeral", False),
+            env_vars=cc.get("daytona_env_vars") or None,
+            network_block_all=cc.get("daytona_network_block_all", False),
+            network_allow_list=cc.get("daytona_network_allow_list", ""),
+            volume_mounts=cc.get("daytona_volume_mounts") or None,
+            gpu=int(cc.get("daytona_gpu", 0)),
+            host_cwd=cc.get("host_cwd") or host_cwd,
+            sync_cwd=cc.get("daytona_sync_cwd", False),
         )
 
     elif env_type == "ssh":
@@ -1813,8 +1943,17 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
-        # Get configuration
-        config = _get_env_config()
+        # Get configuration. Bad config/env values should surface as a clean
+        # tool error, not as an unhandled traceback from the outer catch-all.
+        try:
+            config = _get_env_config()
+        except ValueError as e:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": str(e),
+                "status": "error",
+            }, ensure_ascii=False)
         env_type = config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent
@@ -1912,22 +2051,8 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
-                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                            }
+                        if env_type in _CONTAINER_BACKENDS:
+                            container_config = _build_container_config(config)
 
                         local_config = None
                         if env_type == "local":

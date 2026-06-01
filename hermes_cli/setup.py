@@ -1364,10 +1364,131 @@ def setup_terminal_backend(config: dict):
                 save_env_value("DAYTONA_API_KEY", api_key)
                 print_success("    Configured")
 
-        # Image and resource limits use defaults; tune via `hermes setup terminal`.
-        config["terminal"].setdefault(
-            "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
-        )
+        # --- Create mode: image vs snapshot ---
+        print()
+        current_mode = cfg_get(config, "terminal", "daytona_create_mode", default="image")
+        mode_choices = [
+            "Image — create sandbox from a Docker image (default)",
+            "Snapshot — create sandbox from an existing Daytona snapshot",
+        ]
+        mode_default = 0 if current_mode == "image" else 1
+        mode_idx = prompt_choice("Sandbox create mode:", mode_choices, mode_default)
+        create_mode = "image" if mode_idx == 0 else "snapshot"
+        config["terminal"]["daytona_create_mode"] = create_mode
+        save_env_value("TERMINAL_DAYTONA_CREATE_MODE", create_mode)
+
+        if create_mode == "image":
+            # Sandbox image (only relevant in image mode)
+            current_image = cfg_get(config, "terminal", "daytona_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
+            image = prompt("  Sandbox image", current_image)
+            config["terminal"]["daytona_image"] = image
+            save_env_value("TERMINAL_DAYTONA_IMAGE", image)
+        else:
+            # Snapshot name/ID (only relevant in snapshot mode)
+            current_snapshot = cfg_get(config, "terminal", "daytona_snapshot", default="")
+            snapshot = prompt("  Snapshot name or ID", current_snapshot or "my-snapshot")
+            config["terminal"]["daytona_snapshot"] = snapshot
+            save_env_value("TERMINAL_DAYTONA_SNAPSHOT", snapshot)
+            # Image is still used as fallback; offer to set it but don't nag
+            current_image = cfg_get(config, "terminal", "daytona_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
+            if prompt_yes_no("  Set fallback image for snapshot mode?", False):
+                image = prompt("    Fallback image", current_image)
+                config["terminal"]["daytona_image"] = image
+                save_env_value("TERMINAL_DAYTONA_IMAGE", image)
+
+        # --- Language ---
+        print()
+        from tools.environments.daytona import get_supported_daytona_languages
+        supported_languages = get_supported_daytona_languages()
+        current_lang = str(cfg_get(config, "terminal", "daytona_language", default="") or "").lower()
+        language_choices = ["Default (SDK/image default)"] + [
+            f"{lang} — Daytona SDK supported" for lang in supported_languages
+        ]
+        language_default = 0
+        if current_lang in supported_languages:
+            language_default = supported_languages.index(current_lang) + 1
+        elif current_lang:
+            print_warning(
+                f"  Existing Daytona language {current_lang!r} is not supported by the installed SDK; clearing it."
+            )
+        lang_idx = prompt_choice("  Sandbox language:", language_choices, language_default)
+        lang = "" if lang_idx == 0 else supported_languages[lang_idx - 1]
+        config["terminal"]["daytona_language"] = lang
+        save_env_value("TERMINAL_DAYTONA_LANGUAGE", lang)
+
+        # --- Profile-scoped naming ---
+        print()
+        current_prefix = cfg_get(config, "terminal", "daytona_name_prefix", default="hermes")
+        prefix = prompt("  Sandbox name prefix", current_prefix)
+        config["terminal"]["daytona_name_prefix"] = prefix
+        save_env_value("TERMINAL_DAYTONA_NAME_PREFIX", prefix)
+
+        current_scope = cfg_get(config, "terminal", "daytona_name_scope", default="task")
+        scope_choices = [
+            "task — {prefix}-{task_id} (default, one sandbox per task)",
+            "profile — {prefix}-{profile_id}-{task_id} (isolate by profile)",
+            "global — {prefix} (shared sandbox across all tasks)",
+        ]
+        scope_map = {0: "task", 1: "profile", 2: "global"}
+        scope_default = {"task": 0, "profile": 1, "global": 2}.get(current_scope, 0)
+        scope_idx = prompt_choice("  Name scope:", scope_choices, scope_default)
+        name_scope = scope_map.get(scope_idx, "task")
+        config["terminal"]["daytona_name_scope"] = name_scope
+        save_env_value("TERMINAL_DAYTONA_NAME_SCOPE", name_scope)
+
+        # --- Lifecycle intervals ---
+        print()
+        print_info("Lifecycle intervals (0 = disabled):")
+
+        current_stop = cfg_get(config, "terminal", "daytona_auto_stop_interval", default=0)
+        stop_str = prompt("  Auto-stop interval (minutes)", str(current_stop))
+        try:
+            config["terminal"]["daytona_auto_stop_interval"] = int(stop_str)
+            save_env_value("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", stop_str)
+        except ValueError:
+            pass
+
+        current_archive = cfg_get(config, "terminal", "daytona_auto_archive_interval", default=0)
+        archive_str = prompt("  Auto-archive interval (minutes)", str(current_archive))
+        try:
+            config["terminal"]["daytona_auto_archive_interval"] = int(archive_str)
+            save_env_value("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", archive_str)
+        except ValueError:
+            pass
+
+        current_delete = cfg_get(config, "terminal", "daytona_auto_delete_interval", default=0)
+        delete_str = prompt("  Auto-delete interval (minutes)", str(current_delete))
+        try:
+            config["terminal"]["daytona_auto_delete_interval"] = int(delete_str)
+            save_env_value("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", delete_str)
+        except ValueError:
+            pass
+
+        # --- Ephemeral ---
+        current_ephemeral = cfg_get(config, "terminal", "daytona_ephemeral", default=False)
+        ephemeral_label = "yes" if current_ephemeral else "no"
+        ephemeral = prompt_yes_no("  Ephemeral mode? (short-lived sandboxes)", current_ephemeral)
+        config["terminal"]["daytona_ephemeral"] = ephemeral
+        save_env_value("TERMINAL_DAYTONA_EPHEMERAL", str(ephemeral).lower())
+
+        # --- Network ---
+        print()
+        current_block = cfg_get(config, "terminal", "daytona_network_block_all", default=False)
+        block_label = "yes" if current_block else "no"
+        block_all = prompt_yes_no("  Block all network access?", current_block)
+        config["terminal"]["daytona_network_block_all"] = block_all
+        save_env_value("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", str(block_all).lower())
+
+        current_allow = cfg_get(config, "terminal", "daytona_network_allow_list", default="")
+        if block_all:
+            allow_str = prompt("  Network allow list (comma-separated CIDR ranges, or empty)", current_allow)
+        else:
+            allow_str = ""
+        config["terminal"]["daytona_network_allow_list"] = allow_str
+        save_env_value("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", allow_str)
+
+        if create_mode == "image":
+            _prompt_container_resources(config)
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

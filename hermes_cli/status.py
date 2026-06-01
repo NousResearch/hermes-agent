@@ -7,13 +7,14 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
+import importlib.util
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config, read_raw_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
@@ -60,6 +61,21 @@ def _format_iso_timestamp(value) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def _raw_terminal_config() -> dict:
+    """Return terminal keys explicitly present in config.yaml, excluding defaults."""
+    try:
+        raw = read_raw_config()
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        return {}
+    terminal = raw.get("terminal", {})
+    return terminal if isinstance(terminal, dict) else {}
+
+
+# -----------------------------------------------------------------------------
+# Model helpers
+# -----------------------------------------------------------------------------
 def _configured_model_label(config: dict) -> str:
     """Return the configured default model from config.yaml."""
     model_cfg = config.get("model")
@@ -397,6 +413,7 @@ def show_status(args):
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
 
     terminal_cfg = config.get("terminal", {}) if isinstance(config.get("terminal"), dict) else {}
+    raw_terminal_cfg = _raw_terminal_config()
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
         terminal_env = terminal_cfg.get("backend", "local")
@@ -411,8 +428,74 @@ def show_status(args):
         docker_image = os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim")
         print(f"  Docker Image: {docker_image}")
     elif terminal_env == "daytona":
-        daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
-        print(f"  Daytona Image: {daytona_image}")
+        # --- Create mode & image/snapshot ---
+        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or terminal_cfg.get("daytona_create_mode", "image")
+        if create_mode == "snapshot":
+            snapshot = os.getenv("TERMINAL_DAYTONA_SNAPSHOT") or terminal_cfg.get("daytona_snapshot", "")
+            print(f"  Mode:         snapshot")
+            print(f"  Snapshot:     {snapshot or '(not set)'}")
+            # Image is fallback in snapshot mode; show only if explicitly configured.
+            daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE")
+            if daytona_image is None and "daytona_image" in raw_terminal_cfg:
+                daytona_image = raw_terminal_cfg.get("daytona_image", "")
+            if daytona_image:
+                print(f"  Fallback image: {daytona_image}")
+        else:
+            daytona_image = (
+                os.getenv("TERMINAL_DAYTONA_IMAGE")
+                or terminal_cfg.get("daytona_image")
+                or "nikolaik/python-nodejs:python3.11-nodejs20"
+            )
+            print(f"  Mode:         image")
+            print(f"  Image:        {daytona_image}")
+
+        # --- Language ---
+        language = os.getenv("TERMINAL_DAYTONA_LANGUAGE") or terminal_cfg.get("daytona_language", "")
+        if language:
+            print(f"  Language:     {language}")
+
+        # --- Profile-scoped naming ---
+        name_prefix = os.getenv("TERMINAL_DAYTONA_NAME_PREFIX") or terminal_cfg.get("daytona_name_prefix", "hermes")
+        name_scope = os.getenv("TERMINAL_DAYTONA_NAME_SCOPE") or terminal_cfg.get("daytona_name_scope", "task")
+        print(f"  Name prefix:  {name_prefix}")
+        print(f"  Name scope:   {name_scope}")
+
+        # --- Lifecycle ---
+        auto_stop = os.getenv("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL") or terminal_cfg.get("daytona_auto_stop_interval", 0)
+        auto_archive = os.getenv("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL") or terminal_cfg.get("daytona_auto_archive_interval", 0)
+        auto_delete = os.getenv("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL") or terminal_cfg.get("daytona_auto_delete_interval", 0)
+        ephemeral = os.getenv("TERMINAL_DAYTONA_EPHEMERAL") or terminal_cfg.get("daytona_ephemeral", False)
+        ephemeral_str = str(ephemeral).lower() if isinstance(ephemeral, bool) else str(ephemeral)
+        print(f"  Ephemeral:    {ephemeral_str}")
+        if auto_stop not in (0, "0", ""):
+            print(f"  Auto-stop:    {auto_stop} min")
+        if auto_archive not in (0, "0", ""):
+            print(f"  Auto-archive: {auto_archive} min")
+        if auto_delete not in (0, "0", ""):
+            print(f"  Auto-delete:  {auto_delete} min")
+
+        # --- Network ---
+        block_all = str(os.getenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "")).lower() or str(terminal_cfg.get("daytona_network_block_all", False)).lower()
+        if block_all in ("true", "1", "yes"):
+            print(f"  Network:      block requested (Daytona-enforced)")
+            allow_list = os.getenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST") or terminal_cfg.get("daytona_network_allow_list", "")
+            if allow_list:
+                print(f"  Allow list:   {allow_list}")
+        else:
+            print(f"  Network:     open")
+
+        # --- SDK & Auth ---
+        sdk_ok = importlib.util.find_spec("daytona") is not None
+        sdk_label = "installed" if sdk_ok else "missing (run: pip install daytona)"
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        api_key_set = bool(os.getenv("DAYTONA_API_KEY"))
+        print(f"  API key:      {check_mark(api_key_set)} {('configured' if api_key_set else 'not set')}")
+
+        # --- CWD sync ---
+        sync_cwd = os.getenv("TERMINAL_DAYTONA_SYNC_CWD") or terminal_cfg.get("daytona_sync_cwd", False)
+        sync_cwd_bool = str(sync_cwd).lower() in ("true", "1", "yes") if isinstance(sync_cwd, str) else bool(sync_cwd)
+        if sync_cwd_bool:
+            print(f"  Sync CWD:    enabled (host project dir → /workspace)")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

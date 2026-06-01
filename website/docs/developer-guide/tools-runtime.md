@@ -221,6 +221,22 @@ It also supports:
 - PTY mode
 - approval callbacks for dangerous commands
 
+### Daytona backend details
+
+The Daytona backend (`tools/environments/daytona.py`) supports two creation modes:
+
+- **image mode** (default): creates a sandbox from a Docker image via `CreateSandboxFromImageParams`. CPU, memory, and disk resources are forwarded.
+- **snapshot mode**: creates a sandbox from an existing Daytona snapshot via `CreateSandboxFromSnapshotParams`. Snapshot-owned resources take precedence; `resources` is **not** forwarded to the SDK in this mode (Daytona SDK ≥0.155.0 does not expose a `resources` field on snapshot params).
+
+Key implementation details:
+
+- **Profile-scoped naming**: sandbox names follow `{prefix}-{scope_id}` patterns. The `name_scope` setting (`task`, `profile`, `global`, `legacy`) controls how the scope ID is derived. `profile` scope uses an 8-character SHA-256 hash of `HERMES_HOME` so different profiles get isolated sandbox namespaces.
+- **Label merging**: Hermes adds reserved `{hermes_task_id, hermes_profile_id, hermes_backend}` labels to every sandbox. Custom `daytona_labels` are merged, but cannot override those reserved labels because they drive sandbox discovery/profile isolation.
+- **Ephemeral flag**: when `daytona_ephemeral=True`, the `auto_delete_interval` is forced to 0 and the SDK receives `ephemeral=True`. The flag signals intent for short-lived sandboxes.
+- **CWD sync** (`daytona_sync_cwd`): when enabled, `_sync_cwd_to_sandbox()` uploads the host project directory to `/workspace` with exclusion rules and a size cap. Default off for security.
+- **Validation**: create_mode and snapshot are validated before any SDK side effects. Invalid modes raise `ValueError`; snapshot mode without a snapshot value raises `ValueError`.
+- **Resume logic**: on init, the backend tries `daytona.get(sandbox_name)` → `daytona.list(labels=merged_labels)` to find existing sandboxes before creating a new one.
+
 ## Concurrency
 
 Tool calls may execute sequentially or concurrently depending on the tool mix and interaction requirements.

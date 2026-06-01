@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import json
 import logging
 import os
 import platform
@@ -890,7 +891,33 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        # Daytona expansion defaults
+        "daytona_create_mode": "image",
+        "daytona_snapshot": "",
+        "daytona_language": "",
+        "daytona_name_prefix": "hermes",
+        "daytona_name_scope": "task",
+        "daytona_labels": {},
+        "daytona_auto_stop_interval": 0,
+        "daytona_auto_archive_interval": 0,
+        "daytona_auto_delete_interval": 0,
+        "daytona_ephemeral": False,
+        "daytona_env_vars": {},
+        "daytona_network_block_all": False,
+        "daytona_network_allow_list": "",
+        "daytona_volume_mounts": [],
+        "daytona_gpu": 0,
+        # Daytona CWD sync: explicit opt-in. When True, the host project
+        # directory is synced to the Daytona sandbox at /workspace. Default off
+        # because uploading host directories to cloud sandboxes has security and
+        # cost implications — the user must consciously enable this.
+        "daytona_sync_cwd": False,
+        # Explicit host-side source for Daytona CWD sync. TERMINAL_CWD is the
+        # sandbox command cwd and may default to $HOME in gateway mode; it is
+        # intentionally not used as an implicit upload source.
+        "daytona_sync_cwd_source": "",
+        "vercel_runtime": "node24",
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -5559,7 +5586,20 @@ def show_config():
         modal_token = get_env_value('MODAL_TOKEN_ID')
         print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
     elif terminal.get('backend') == 'daytona':
-        print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        # --- Create mode & image/snapshot ---
+        create_mode = terminal.get('daytona_create_mode', 'image')
+        if create_mode == 'snapshot':
+            snapshot = terminal.get('daytona_snapshot', '')
+            print(f"  Mode:         snapshot")
+            print(f"  Snapshot:     {snapshot or '(not set)'}")
+            daytona_image = terminal.get('daytona_image', '')
+            if daytona_image:
+                print(f"  Fallback image: {daytona_image}")
+        else:
+            daytona_image = terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
+            print(f"  Mode:         image")
+            print(f"  Image:        {daytona_image}")
+
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
@@ -5692,6 +5732,18 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
+def _config_env_sync_value(key: str, value: Any) -> str:
+    """Serialize config values for env mirrors read by runtime backends."""
+    structured_keys = {
+        "terminal.daytona_labels",
+        "terminal.daytona_env_vars",
+        "terminal.daytona_volume_mounts",
+    }
+    if key in structured_keys:
+        return json.dumps(value, separators=(",", ":"), sort_keys=True)
+    return str(value)
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -5732,8 +5784,25 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
+    structured_json_keys = {
+        "terminal.daytona_labels": dict,
+        "terminal.daytona_env_vars": dict,
+        "terminal.daytona_volume_mounts": list,
+    }
+
     # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
+    if key in structured_json_keys:
+        expected_type = structured_json_keys[key]
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            print(f"✗ {key} must be valid JSON: {exc}")
+            return
+        if not isinstance(value, expected_type):
+            expected_label = "object" if expected_type is dict else "array"
+            print(f"✗ {key} must be a JSON {expected_label}")
+            return
+    elif value.lower() in {'true', 'yes', 'on'}:
         value = True
     elif value.lower() in {'false', 'no', 'off'}:
         value = False
@@ -5758,6 +5827,25 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        # Daytona expansion keys
+        "terminal.daytona_create_mode": "TERMINAL_DAYTONA_CREATE_MODE",
+        "terminal.daytona_snapshot": "TERMINAL_DAYTONA_SNAPSHOT",
+        "terminal.daytona_language": "TERMINAL_DAYTONA_LANGUAGE",
+        "terminal.daytona_name_prefix": "TERMINAL_DAYTONA_NAME_PREFIX",
+        "terminal.daytona_name_scope": "TERMINAL_DAYTONA_NAME_SCOPE",
+        "terminal.daytona_labels": "TERMINAL_DAYTONA_LABELS",
+        "terminal.daytona_auto_stop_interval": "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL",
+        "terminal.daytona_auto_archive_interval": "TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL",
+        "terminal.daytona_auto_delete_interval": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL",
+        "terminal.daytona_ephemeral": "TERMINAL_DAYTONA_EPHEMERAL",
+        "terminal.daytona_env_vars": "TERMINAL_DAYTONA_ENV_VARS",
+        "terminal.daytona_network_block_all": "TERMINAL_DAYTONA_NETWORK_BLOCK_ALL",
+        "terminal.daytona_network_allow_list": "TERMINAL_DAYTONA_NETWORK_ALLOW_LIST",
+        "terminal.daytona_volume_mounts": "TERMINAL_DAYTONA_VOLUME_MOUNTS",
+        "terminal.daytona_gpu": "TERMINAL_DAYTONA_GPU",
+        "terminal.daytona_sync_cwd": "TERMINAL_DAYTONA_SYNC_CWD",
+        "terminal.daytona_sync_cwd_source": "TERMINAL_DAYTONA_SYNC_CWD_SOURCE",
+        "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
@@ -5775,7 +5863,7 @@ def set_config_value(key: str, value: str):
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+        save_env_value(_config_to_env_sync[key], _config_env_sync_value(key, value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
 

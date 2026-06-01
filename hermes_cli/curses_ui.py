@@ -5,9 +5,118 @@ Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
 import sys
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Set
 
 from hermes_cli.colors import Colors, color
+
+
+def _query_matches(label: str, query: str) -> bool:
+    """Return True when every query token is a case-insensitive subsequence."""
+    normalized = label.lower()
+    tokens = query.lower().split()
+
+    if not tokens:
+        return True
+
+    for token in tokens:
+        pos = 0
+
+        for ch in token:
+            pos = normalized.find(ch, pos)
+
+            if pos < 0:
+                return False
+
+            pos += 1
+
+    return True
+
+
+def _filter_indices(items: List[str], query: str) -> List[int]:
+    """Return original item indices matching *query*, preserving list order."""
+    q = query.strip()
+
+    if not q:
+        return list(range(len(items)))
+
+    return [i for i, label in enumerate(items) if _query_matches(label, q)]
+
+
+@dataclass
+class _SearchState:
+    """Mutable search state shared by curses picker loops."""
+
+    active: bool = False
+    query: str = ""
+
+
+def _reconcile_cursor(filtered: List[int], cursor: int) -> tuple[int, int]:
+    """Return ``(cursor, cursor_pos)`` inside the filtered index list."""
+    if not filtered:
+        return cursor, 0
+
+    if cursor not in filtered:
+        cursor = filtered[0]
+
+    return cursor, filtered.index(cursor)
+
+
+def _move_filtered_cursor(
+    filtered: List[int], cursor: int, cursor_pos: int, delta: int
+) -> int:
+    """Move through the filtered index list, wrapping like the legacy menus."""
+    if not filtered:
+        return cursor
+
+    return filtered[(cursor_pos + delta) % len(filtered)]
+
+
+def _scroll_for_cursor(
+    scroll_offset: int, cursor_pos: int, visible_rows: int, total_rows: int
+) -> int:
+    """Clamp scroll offset so the cursor remains visible."""
+    visible_rows = max(1, visible_rows)
+
+    if cursor_pos < scroll_offset:
+        scroll_offset = cursor_pos
+    elif cursor_pos >= scroll_offset + visible_rows:
+        scroll_offset = cursor_pos - visible_rows + 1
+
+    return max(0, min(scroll_offset, max(0, total_rows - visible_rows)))
+
+
+def _handle_active_search_key(
+    curses_mod, key: int, search: _SearchState
+) -> tuple[bool, bool, bool]:
+    """Handle a key while the search prompt is active.
+
+    Returns ``(handled, confirm, changed)``. Active search consumes query
+    editing keys, but leaves navigation keys for the menu loop to handle.
+    """
+    if not search.active:
+        return False, False, False
+
+    if key == 27:
+        search.active = False
+        return True, False, False
+
+    if key in (curses_mod.KEY_BACKSPACE, 127, 8):
+        search.query = search.query[:-1]
+        return True, False, True
+
+    if key == 21:  # Ctrl+U
+        search.query = ""
+        return True, False, True
+
+    if key in (curses_mod.KEY_ENTER, 10, 13):
+        return True, True, False
+
+    if 0 <= key < 256 and chr(key).isprintable():
+        search.query += chr(key)
+        return True, False, True
+
+    return False, False, False
 
 
 def flush_stdin() -> None:

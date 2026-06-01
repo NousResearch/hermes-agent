@@ -288,11 +288,9 @@ def compress_context(
     # The check itself sets ``agent._compression_warning`` so the
     # status-callback replay machinery still emits the warning to the user
     # the first time it would matter.
-    if not getattr(agent, "_compression_feasibility_checked", True):
-        try:
-            check_compression_model_feasibility(agent)
-        finally:
-            agent._compression_feasibility_checked = True
+    if not getattr(agent, "_compression_feasibility_checked", False):
+        check_compression_model_feasibility(agent)
+        agent._compression_feasibility_checked = True
 
     _pre_msg_count = len(messages)
     logger.info(

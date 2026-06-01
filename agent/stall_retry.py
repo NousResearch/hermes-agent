@@ -27,6 +27,9 @@ Env:
   HERMES_STALL_RETRY_PROMOTE_AFTER  successful rescues before routing the rest
                                 of the turn through the retry lane (default 2,
                                 0 disables)
+  HERMES_STALL_RETRY_NO_TOOL_RECOVERY_MAX  corrective same-turn continuations
+                                after the retry lane also returns no tool call
+                                (default 2, 0 disables)
   HERMES_STALL_RETRY_MAX_CHARS  max content length to still count as a stall
                                 (default 400; longer open action preambles
                                 ending in ":" get a bounded exception)
@@ -87,6 +90,13 @@ EMPTY_AFTER_TOOL_RETRY_NUDGE = (
     "requires another tool, call it immediately; otherwise provide the next "
     "concise response. Do not summarize or apologize."
 )
+FAILED_STALL_RETRY_RECOVERY_NUDGE = (
+    "The previous assistant response again described an action but did not "
+    "include a tool call. Continue the same task now. If that action requires "
+    "a tool, call it immediately. If no tool is needed because the task is "
+    "complete, state completion explicitly instead of describing another "
+    "future action."
+)
 
 
 def _as_positive_int(value: Any, default: int) -> int:
@@ -95,6 +105,14 @@ def _as_positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+def _as_nonnegative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -213,15 +231,19 @@ def get_stall_retry_promote_after(agent: Any | None = None) -> int:
     """Return successful retry rescues needed before turn-scoped promotion."""
     env_value = os.environ.get("HERMES_STALL_RETRY_PROMOTE_AFTER")
     if env_value is not None:
-        try:
-            return max(0, int(env_value))
-        except ValueError:
-            return 2
-    cfg_value = _stall_retry_config(agent).get("promote_after")
-    try:
-        return max(0, int(cfg_value))
-    except (TypeError, ValueError):
-        return 2
+        return _as_nonnegative_int(env_value, 2)
+    return _as_nonnegative_int(_stall_retry_config(agent).get("promote_after"), 2)
+
+
+def get_stall_retry_no_tool_recovery_max(agent: Any | None = None) -> int:
+    """Return corrective continuations allowed after retry returns no tools."""
+    env_value = os.environ.get("HERMES_STALL_RETRY_NO_TOOL_RECOVERY_MAX")
+    if env_value is not None:
+        return _as_nonnegative_int(env_value, 2)
+    return _as_nonnegative_int(
+        _stall_retry_config(agent).get("no_tool_recovery_max"),
+        2,
+    )
 
 
 def get_stall_retry_nudge_enabled(agent: Any | None = None) -> bool:
@@ -828,7 +850,8 @@ def retry_on_stall(
         # so no client rebuild is needed.
         api_kwargs = agent._build_api_kwargs(retry_messages)
         orig_model = api_kwargs.get("model")
-        if retry_model == orig_model:
+        same_model_retry = retry_model == orig_model
+        if same_model_retry and not getattr(agent, "_stall_retry_runtime_promoted", False):
             record_stall_retry_event(
                 agent,
                 "skipped_same_model",
@@ -837,6 +860,14 @@ def retry_on_stall(
                 retry_index=retry_index,
             )
             return None  # nothing to gain retrying the same model
+        if same_model_retry:
+            record_stall_retry_event(
+                agent,
+                "same_model_retry_after_promotion",
+                retry_model=retry_model,
+                finish_reason=finish_reason,
+                retry_index=retry_index,
+            )
         api_kwargs = dict(api_kwargs)
         api_kwargs["model"] = retry_model
         # Force non-streaming for the retry (simpler, we only inspect the result).

@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from agent import conversation_loop
 from agent.stall_retry import (
     EMPTY_AFTER_TOOL_RETRY_NUDGE,
+    FAILED_STALL_RETRY_RECOVERY_NUDGE,
     activate_stall_retry_runtime,
     get_stall_retry_max_chars,
     get_stall_retry_max_per_turn,
     get_stall_retry_model,
+    get_stall_retry_no_tool_recovery_max,
     get_stall_retry_nudge_enabled,
     get_stall_retry_promote_after,
     has_recent_tool_result,
@@ -305,6 +307,95 @@ def test_retry_on_stall_still_rejects_content_without_accept_content(monkeypatch
     ) is None
 
 
+def test_retry_on_stall_skips_same_model_before_runtime_promotion(monkeypatch) -> None:
+    captured = {"called": False}
+
+    agent = SimpleNamespace(
+        api_mode="openai",
+        _is_anthropic_oauth=False,
+        log_prefix="",
+        _build_api_kwargs=lambda messages: {
+            "model": "qwen3.6-27b-256k",
+            "messages": messages,
+            "stream": True,
+        },
+        _interruptible_api_call=lambda _kwargs: captured.__setitem__("called", True),
+        _get_transport=lambda: SimpleNamespace(
+            normalize_response=lambda response, **_kwargs: response
+        ),
+        _vprint=lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.setenv("HERMES_STALL_RETRY_MODEL", "qwen3.6-27b-256k")
+    monkeypatch.setenv("HERMES_STALL_RETRY_TELEMETRY", "0")
+
+    assert retry_on_stall(agent, [{"role": "user", "content": "go"}], "stop") is None
+    assert captured["called"] is False
+    summary = stall_retry_summary(agent)
+    assert summary is not None
+    assert any(
+        event.get("event") == "skipped_same_model"
+        for event in getattr(agent, "_stall_retry_events", [])
+    )
+
+
+def test_retry_on_stall_allows_same_model_after_runtime_promotion(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    tool_call = SimpleNamespace(
+        function=SimpleNamespace(name="terminal", arguments='{"cmd":"pwd"}')
+    )
+    normalized = SimpleNamespace(
+        content="",
+        tool_calls=[tool_call],
+        finish_reason="tool_calls",
+    )
+
+    def interruptible_api_call(kwargs: dict[str, object]) -> object:
+        captured["kwargs"] = dict(kwargs)
+        return normalized
+
+    agent = SimpleNamespace(
+        api_mode="openai",
+        _is_anthropic_oauth=False,
+        log_prefix="",
+        _stall_retry_runtime_promoted=True,
+        _build_api_kwargs=lambda messages: {
+            "model": "qwen3.6-27b-256k",
+            "messages": messages,
+            "stream": True,
+        },
+        _interruptible_api_call=interruptible_api_call,
+        _get_transport=lambda: SimpleNamespace(
+            normalize_response=lambda response, **_kwargs: response
+        ),
+        _vprint=lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.setenv("HERMES_STALL_RETRY_MODEL", "qwen3.6-27b-256k")
+    monkeypatch.setenv("HERMES_STALL_RETRY_TELEMETRY", "0")
+
+    result = retry_on_stall(
+        agent,
+        [{"role": "user", "content": "go"}],
+        "stop",
+        stalled_content="Let me check the repo.",
+        retry_index=3,
+    )
+
+    assert result is normalized
+    assert captured["kwargs"]["model"] == "qwen3.6-27b-256k"
+    assert captured["kwargs"]["stream"] is False
+    assert captured["kwargs"]["messages"][-1]["role"] == "user"
+    assert "required tool call" in captured["kwargs"]["messages"][-1]["content"]
+    summary = stall_retry_summary(agent)
+    assert summary is not None
+    assert any(
+        event.get("event") == "same_model_retry_after_promotion"
+        for event in getattr(agent, "_stall_retry_events", [])
+    )
+    assert summary["recovered"] == 1
+
+
 def test_retry_on_stall_uses_agent_config_when_env_is_absent(monkeypatch) -> None:
     captured: dict[str, object] = {}
     tool_call = SimpleNamespace(
@@ -393,6 +484,16 @@ def test_stall_retry_promote_after_uses_config_and_env(monkeypatch) -> None:
 
     monkeypatch.setenv("HERMES_STALL_RETRY_PROMOTE_AFTER", "0")
     assert get_stall_retry_promote_after(agent) == 0
+
+
+def test_stall_retry_no_tool_recovery_max_uses_config_and_env(monkeypatch) -> None:
+    agent = SimpleNamespace(_stall_retry_config={"no_tool_recovery_max": 4})
+
+    monkeypatch.delenv("HERMES_STALL_RETRY_NO_TOOL_RECOVERY_MAX", raising=False)
+    assert get_stall_retry_no_tool_recovery_max(agent) == 4
+
+    monkeypatch.setenv("HERMES_STALL_RETRY_NO_TOOL_RECOVERY_MAX", "0")
+    assert get_stall_retry_no_tool_recovery_max(agent) == 0
 
 
 def test_activate_stall_retry_runtime_promotes_for_current_turn(monkeypatch) -> None:
@@ -629,6 +730,10 @@ def test_conversation_loop_adopts_retry_before_tool_call_branch() -> None:
     assert retry_idx < tool_branch_idx
     assert "continue  # re-enter loop top; tool-calls path handles it" not in source
     assert "stall_retry_failed_no_tool_call" in source
+    assert "FAILED_STALL_RETRY_RECOVERY_NUDGE" in source
+    assert "no_tool_recovery_prompt" in source
+    assert "agent._session_messages = messages" in source
+    assert "continue" in source
 
 
 def test_conversation_loop_retries_empty_post_tool_before_tool_branch() -> None:
@@ -682,3 +787,12 @@ def test_conversation_loop_promotes_retry_lane_after_repeated_rescues() -> None:
     assert "_stall_retry_success_count += 1" in source
     assert "activate_stall_retry_runtime(" in source
     assert "_stall_retry_success_count >= _stall_retry_promote_after" in source
+
+
+def test_conversation_loop_configures_no_tool_recovery_limit() -> None:
+    source = inspect.getsource(conversation_loop.run_conversation)
+
+    assert "get_stall_retry_no_tool_recovery_max(agent)" in source
+    assert "_stall_retry_no_tool_recovery_count" in source
+    assert "_stall_retry_no_tool_recovery_max" in source
+    assert FAILED_STALL_RETRY_RECOVERY_NUDGE

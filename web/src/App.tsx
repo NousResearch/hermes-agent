@@ -2,10 +2,12 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Routes,
   Route,
@@ -31,6 +33,8 @@ import {
   Menu,
   MessageSquare,
   Package,
+  PanelLeftClose,
+  PanelLeftOpen,
   Puzzle,
   RotateCw,
   Settings,
@@ -44,14 +48,16 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Typography } from "@/components/NouiTypography";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
+import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
+import { useSidebarStatus } from "@/hooks/useSidebarStatus";
+import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
@@ -76,6 +82,7 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
+import type { StatusResponse } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -305,6 +312,8 @@ function buildRoutes(
   return routes;
 }
 
+const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
+
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -312,6 +321,27 @@ export default function App() {
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      } catch { /* localStorage may be unavailable in private browsing */ }
+      return next;
+    });
+  }, []);
+  const isMobile = useBelowBreakpoint(1024);
+  const isDesktopCollapsed = collapsed && !isMobile;
+  const tooltipWarmRef = useRef(0);
+  const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
@@ -326,7 +356,9 @@ export default function App() {
     api
       .getConfig()
       .then((cfg) => {
-        const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
+        const dash = (cfg?.dashboard ?? {}) as {
+          show_token_analytics?: unknown;
+        };
         setShowTokenAnalytics(dash.show_token_analytics === true);
       })
       .catch(() => setShowTokenAnalytics(false));
@@ -366,7 +398,9 @@ export default function App() {
     const base = embeddedChat
       ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
       : BUILTIN_NAV_REST;
-    return showTokenAnalytics ? base : base.filter((n) => n.path !== "/analytics");
+    return showTokenAnalytics
+      ? base
+      : base.filter((n) => n.path !== "/analytics");
   }, [embeddedChat, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
@@ -416,7 +450,7 @@ export default function App() {
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
+      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -442,7 +476,7 @@ export default function App() {
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-midground/70 hover:text-midground"
+          className="text-text-secondary hover:text-midground"
         >
           <Menu />
         </Button>
@@ -478,9 +512,11 @@ export default function App() {
               "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
               "border-r border-current/20",
               "bg-background-base/95 backdrop-blur-sm",
-              "transition-transform duration-200 ease-out",
+              "transition-[transform] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
+              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
+              "lg:transition-[width] lg:duration-[600ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
+              collapsed && "lg:w-14",
             )}
             style={{
               background: "var(--component-sidebar-background)",
@@ -490,15 +526,21 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2 px-4",
+                "flex h-14 shrink-0 items-center gap-2",
                 "border-b border-current/20",
+                collapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
               )}
             >
-              <div className="flex items-center gap-2">
+              <div
+                className={cn(
+                  "flex items-center gap-2",
+                  collapsed && "lg:hidden",
+                )}
+              >
                 <PluginSlot name="header-left" />
 
                 <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
                   Hermes
@@ -512,9 +554,25 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-midground/70 hover:text-midground"
+                className="lg:hidden text-text-secondary hover:text-midground"
               >
                 <X />
+              </Button>
+
+              <Button
+                ghost
+                size="icon"
+                onClick={toggleCollapsed}
+                aria-label={
+                  collapsed ? t.common.expand : t.common.collapse
+                }
+                className="hidden lg:flex text-text-secondary hover:text-midground"
+              >
+                {collapsed ? (
+                  <PanelLeftOpen className="h-4 w-4" />
+                ) : (
+                  <PanelLeftClose className="h-4 w-4" />
+                )}
               </Button>
             </div>
 
@@ -526,9 +584,11 @@ export default function App() {
                 {sidebarNav.coreItems.map((item) => (
                   <SidebarNavLink
                     closeMobile={closeMobile}
+                    collapsed={isDesktopCollapsed}
                     item={item}
                     key={item.path}
                     t={t}
+                    tooltipWarmRef={tooltipWarmRef}
                   />
                 ))}
               </ul>
@@ -542,7 +602,8 @@ export default function App() {
                   <span
                     className={cn(
                       "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+                      isDesktopCollapsed && "lg:hidden",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
@@ -553,9 +614,11 @@ export default function App() {
                     {sidebarNav.pluginItems.map((item) => (
                       <SidebarNavLink
                         closeMobile={closeMobile}
+                        collapsed={isDesktopCollapsed}
                         item={item}
                         key={item.path}
                         t={t}
+                        tooltipWarmRef={tooltipWarmRef}
                       />
                     ))}
                   </ul>
@@ -563,23 +626,58 @@ export default function App() {
               )}
             </nav>
 
-            <SidebarSystemActions onNavigate={closeMobile} />
+            <SidebarSystemActions
+              collapsed={isDesktopCollapsed}
+              onNavigate={closeMobile}
+              status={sidebarStatus}
+              tooltipWarmRef={tooltipWarmRef}
+            />
 
             <div
               className={cn(
-                "flex shrink-0 items-center justify-between gap-2",
+                "flex shrink-0 items-center gap-2",
                 "px-3 py-2",
                 "border-t border-current/20",
+                isDesktopCollapsed
+                  ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
+                  : "justify-between",
               )}
             >
-              <div className="flex min-w-0 items-center gap-2">
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-2",
+                  isDesktopCollapsed && "lg:flex-col lg:items-start",
+                )}
+              >
                 <PluginSlot name="header-right" />
-                <ThemeSwitcher dropUp />
-                <LanguageSwitcher dropUp />
+
+                <SidebarIconWithTooltip
+                  collapsed={isDesktopCollapsed}
+                  label={t.theme?.switchTheme ?? "Switch theme"}
+                  tooltipWarmRef={tooltipWarmRef}
+                >
+                  <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
+                </SidebarIconWithTooltip>
+
+                <SidebarIconWithTooltip
+                  collapsed={isDesktopCollapsed}
+                  label={t.language.switchTo}
+                  tooltipWarmRef={tooltipWarmRef}
+                >
+                  <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp />
+                </SidebarIconWithTooltip>
               </div>
             </div>
 
-            <SidebarFooter />
+            <div
+              className={cn(
+                "flex shrink-0 flex-col",
+                isDesktopCollapsed && "lg:hidden",
+              )}
+            >
+              <AuthWidget />
+              <SidebarFooter status={sidebarStatus} />
+            </div>
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
@@ -654,27 +752,44 @@ export default function App() {
   );
 }
 
-function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
+function SidebarNavLink({
+  closeMobile,
+  collapsed,
+  item,
+  tooltipWarmRef,
+  t,
+}: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
+  const liRef = useRef<HTMLLIElement>(null);
+  const [hovered, setHovered] = useState(false);
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
     : label;
 
   return (
-    <li>
+    <li
+      ref={liRef}
+      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
+      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+    >
       <NavLink
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
+        aria-label={collapsed ? navLabel : undefined}
+        onFocus={collapsed ? () => setHovered(true) : undefined}
+        onBlur={collapsed ? () => setHovered(false) : undefined}
         className={({ isActive }) =>
           cn(
-            "group relative flex items-center gap-3",
+            "group/nav relative flex items-center gap-3",
             "px-5 py-2.5",
-            "font-mondwest text-[0.8rem] tracking-[0.12em]",
+            "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-            isActive ? "text-midground" : "opacity-60 hover:opacity-100",
+            isActive
+              ? "text-midground"
+              : "text-text-secondary hover:text-midground",
           )
         }
         style={{
@@ -684,11 +799,19 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
         {({ isActive }) => (
           <>
             <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{navLabel}</span>
+
+            <span
+              className={cn(
+                "truncate transition-opacity duration-300",
+                collapsed ? "lg:opacity-0" : "lg:opacity-100",
+              )}
+            >
+              {navLabel}
+            </span>
 
             <span
               aria-hidden
-              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/nav:opacity-5"
             />
 
             {isActive && (
@@ -701,11 +824,20 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
           </>
         )}
       </NavLink>
+
+      {collapsed && hovered && liRef.current && (
+        <SidebarTooltip anchor={liRef.current} label={navLabel} warmRef={tooltipWarmRef} />
+      )}
     </li>
   );
 }
 
-function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
+function SidebarSystemActions({
+  collapsed,
+  onNavigate,
+  status,
+  tooltipWarmRef,
+}: SidebarSystemActionsProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
@@ -746,74 +878,247 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
       <span
         className={cn(
           "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+          collapsed && "lg:hidden",
         )}
       >
         {t.app.system}
       </span>
 
-      <SidebarStatusStrip />
+      <div className={cn(collapsed && "lg:hidden")}>
+        <SidebarStatusStrip status={status} />
+      </div>
+
+      <GatewayDot collapsed={collapsed} status={status} tooltipWarmRef={tooltipWarmRef} />
 
       <ul className="flex flex-col">
-        {items.map(({ action, icon: Icon, label, runningLabel, spin }) => {
-          const isPending = pendingAction === action;
-          const isActionRunning =
-            activeAction === action && isRunning && !isPending;
-          const busy = isPending || isActionRunning;
-          const displayLabel = isActionRunning ? runningLabel : label;
-          const disabled = isBusy && !busy;
-
-          return (
-            <li key={action}>
-              <ListItem
-                onClick={() => handleClick(action)}
-                disabled={disabled}
-                aria-busy={busy}
-                active={busy}
-                className={cn(
-                  "gap-3 px-5 py-1.5 whitespace-nowrap",
-                  "font-mondwest text-[0.75rem] tracking-[0.1em]",
-                  "transition-opacity",
-                  busy
-                    ? "text-midground opacity-100"
-                    : "opacity-60 hover:opacity-100",
-                  "disabled:opacity-30",
-                )}
-              >
-                {isPending ? (
-                  <Spinner className="shrink-0 text-[0.875rem]" />
-                ) : isActionRunning && spin ? (
-                  <Spinner className="shrink-0 text-[0.875rem]" />
-                ) : (
-                  <Icon
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0",
-                      isActionRunning && !spin && "animate-pulse",
-                    )}
-                  />
-                )}
-
-                <span className="truncate">{displayLabel}</span>
-
-                <span
-                  aria-hidden
-                  className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                />
-
-                {busy && (
-                  <span
-                    aria-hidden
-                    className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                    style={{ mixBlendMode: "plus-lighter" }}
-                  />
-                )}
-              </ListItem>
-            </li>
-          );
-        })}
+        {items.map((item) => (
+          <SystemActionButton
+            key={item.action}
+            collapsed={collapsed}
+            disabled={isBusy && !(pendingAction === item.action || (activeAction === item.action && isRunning))}
+            tooltipWarmRef={tooltipWarmRef}
+            isPending={pendingAction === item.action}
+            isRunning={activeAction === item.action && isRunning && pendingAction !== item.action}
+            item={item}
+            onClick={() => handleClick(item.action)}
+          />
+        ))}
       </ul>
     </div>
   );
+}
+
+function SystemActionButton({
+  collapsed,
+  disabled,
+  isPending,
+  isRunning: isActionRunning,
+  item,
+  onClick,
+  tooltipWarmRef,
+}: SystemActionButtonProps) {
+  const { icon: Icon, label, runningLabel, spin } = item;
+  const liRef = useRef<HTMLLIElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const busy = isPending || isActionRunning;
+  const displayLabel = isActionRunning ? runningLabel : label;
+
+  return (
+    <li
+      ref={liRef}
+      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
+      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+    >
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        aria-busy={busy}
+        aria-label={collapsed ? displayLabel : undefined}
+        onFocus={collapsed ? () => setHovered(true) : undefined}
+        onBlur={collapsed ? () => setHovered(false) : undefined}
+        type="button"
+        className={cn(
+          "group/action relative flex w-full items-center gap-3",
+          "px-5 py-2.5",
+          "font-mondwest text-display text-xs tracking-[0.1em]",
+          "whitespace-nowrap transition-colors cursor-pointer",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+          busy
+            ? "text-midground"
+            : "text-text-secondary hover:text-midground",
+          "disabled:text-text-disabled disabled:cursor-not-allowed",
+        )}
+      >
+        {isPending ? (
+          <Spinner className="shrink-0 text-[0.875rem]" />
+        ) : isActionRunning && spin ? (
+          <Spinner className="shrink-0 text-[0.875rem]" />
+        ) : (
+          <Icon
+            className={cn(
+              "h-3.5 w-3.5 shrink-0",
+              isActionRunning && !spin && "animate-pulse",
+            )}
+          />
+        )}
+
+        <span className={cn(
+          "truncate transition-opacity duration-300",
+          collapsed ? "lg:opacity-0" : "lg:opacity-100",
+        )}>
+          {displayLabel}
+        </span>
+
+        <span
+          aria-hidden
+          className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/action:opacity-5"
+        />
+
+        {busy && (
+          <span
+            aria-hidden
+            className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+            style={{ mixBlendMode: "plus-lighter" }}
+          />
+        )}
+      </button>
+
+      {collapsed && hovered && liRef.current && (
+        <SidebarTooltip anchor={liRef.current} label={displayLabel} warmRef={tooltipWarmRef} />
+      )}
+    </li>
+  );
+}
+
+function SidebarIconWithTooltip({
+  children,
+  collapsed,
+  label,
+  tooltipWarmRef,
+}: SidebarIconWithTooltipProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        "relative w-fit",
+        collapsed && "group/icon",
+      )}
+      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
+      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+    >
+      {children}
+
+      {collapsed && (
+        <span
+          aria-hidden
+          className="absolute inset-y-0 inset-x-[-0.375rem] bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/icon:opacity-5 hidden lg:block"
+        />
+      )}
+
+      {collapsed && hovered && ref.current && (
+        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      )}
+    </div>
+  );
+}
+
+function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
+  const { t } = useI18n();
+  const ref = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState(false);
+
+  const toneToColor: Record<string, string> = {
+    "text-success": "bg-success",
+    "text-warning": "bg-warning",
+    "text-destructive": "bg-destructive",
+    "text-muted-foreground": "bg-muted-foreground",
+  };
+
+  let color: string;
+  let label: string;
+
+  if (!status) {
+    color = "bg-midground/20";
+    label = t.status.gateway;
+  } else {
+    const gw = gatewayLine(status, t);
+    color = toneToColor[gw.tone] ?? "bg-muted-foreground";
+    label = `${t.status.gateway} ${gw.label}`;
+  }
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
+        collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
+      )}
+      role="status"
+      aria-label={label}
+      tabIndex={collapsed ? 0 : -1}
+      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
+      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onFocus={collapsed ? () => setHovered(true) : undefined}
+      onBlur={collapsed ? () => setHovered(false) : undefined}
+    >
+      <span
+        aria-hidden
+        className={cn("h-1.5 w-1.5 rounded-full", color)}
+      />
+
+      {hovered && ref.current && (
+        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      )}
+    </div>
+  );
+}
+
+function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
+  const rect = anchor.getBoundingClientRect();
+  const sidebar = document.getElementById("app-sidebar");
+  const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
+
+  const isWarm = warmRef ? Date.now() - warmRef.current < 300 : false;
+
+  useEffect(() => {
+    if (warmRef) warmRef.current = Date.now();
+    return () => {
+      if (warmRef) warmRef.current = Date.now();
+    };
+  }, [warmRef]);
+
+  return createPortal(
+    <span
+      className={cn(
+        "fixed z-[100] pointer-events-none",
+        "px-2 py-1",
+        "bg-background-base/95 border border-current/20 backdrop-blur-sm shadow-lg",
+        "font-mondwest text-display text-xs tracking-[0.1em] text-midground uppercase",
+      )}
+      style={{
+        top: rect.top + rect.height / 2,
+        left: sidebarRight + 8,
+        transform: "translateY(-50%)",
+        opacity: isWarm ? 1 : undefined,
+        animation: isWarm ? "none" : "sidebar-tooltip-in 120ms ease-out",
+      }}
+    >
+      {label}
+    </span>,
+    document.body,
+  );
+}
+
+type TooltipWarmRef = React.RefObject<number>;
+
+interface GatewayDotProps {
+  collapsed: boolean;
+  status: StatusResponse | null;
+  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface NavItem {
@@ -823,10 +1128,42 @@ interface NavItem {
   path: string;
 }
 
+interface SidebarIconWithTooltipProps {
+  children: ReactNode;
+  collapsed: boolean;
+  label: string;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
 interface SidebarNavLinkProps {
   closeMobile: () => void;
+  collapsed: boolean;
   item: NavItem;
   t: Translations;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
+interface SidebarSystemActionsProps {
+  collapsed: boolean;
+  onNavigate: () => void;
+  status: StatusResponse | null;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
+interface SidebarTooltipProps {
+  anchor: HTMLElement;
+  label: string;
+  warmRef?: TooltipWarmRef;
+}
+
+interface SystemActionButtonProps {
+  collapsed: boolean;
+  disabled: boolean;
+  isPending: boolean;
+  isRunning: boolean;
+  item: SystemActionItem;
+  onClick: () => void;
+  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface SystemActionItem {

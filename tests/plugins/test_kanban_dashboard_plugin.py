@@ -835,8 +835,6 @@ def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     the cancellation outcome deterministically.
     """
     import asyncio
-    import types
-    import sys as _sys
 
     home = tmp_path / ".hermes"
     home.mkdir()

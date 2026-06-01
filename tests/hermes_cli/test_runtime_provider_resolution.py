@@ -226,20 +226,6 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     assert resolved["provider"] != "qwen-oauth"
 
 
-def test_resolve_runtime_provider_ai_gateway(monkeypatch):
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-ai-gw-key")
-
-    resolved = rp.resolve_runtime_provider(requested="ai-gateway")
-
-    assert resolved["provider"] == "ai-gateway"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://ai-gateway.vercel.sh/v1"
-    assert resolved["api_key"] == "test-ai-gw-key"
-    assert resolved["requested_provider"] == "ai-gateway"
-
-
 def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
     monkeypatch.setattr(
@@ -349,36 +335,6 @@ def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypa
     # Saved config base_url wins over env var (standard contract).
     assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
     assert resolved["api_key"] == "dummy-lm-api-key"
-
-
-def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkeypatch):
-    def _unexpected_pool(provider):
-        raise AssertionError(f"load_pool should not be called for {provider}")
-
-    def _unexpected_provider_resolution(provider):
-        raise AssertionError(f"resolve_api_key_provider_credentials should not be called for {provider}")
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setattr(rp, "load_pool", _unexpected_pool)
-    monkeypatch.setattr(
-        rp,
-        "resolve_api_key_provider_credentials",
-        _unexpected_provider_resolution,
-    )
-
-    resolved = rp.resolve_runtime_provider(
-        requested="ai-gateway",
-        explicit_api_key="ai-gateway-explicit-token",
-        explicit_base_url="https://proxy.example.com/v1/",
-    )
-
-    assert resolved["provider"] == "ai-gateway"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["api_key"] == "ai-gateway-explicit-token"
-    assert resolved["base_url"] == "https://proxy.example.com/v1"
-    assert resolved["source"] == "explicit"
-    assert resolved.get("credential_pool") is None
 
 
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
@@ -835,6 +791,54 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["requested_provider"] == "mycorp-proxy"
     assert resolved["source"] == "custom_provider:MyCorp Proxy"
     assert resolved["model"] == "acme-large"
+
+
+def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
+    """Named custom providers on one gateway must keep their own credentials and protocol."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("GPT_KEY", "gpt-secret")
+    monkeypatch.setenv("CLAUDE_KEY", "claude-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "gpt",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "GPT_KEY",
+                    "api_mode": "codex_responses",
+                    "model": "gpt-5.5",
+                },
+                {
+                    "name": "claude",
+                    "base_url": "https://gateway.example.com",
+                    "key_env": "CLAUDE_KEY",
+                    "api_mode": "anthropic_messages",
+                    "model": "claude-opus-4-8",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:claude")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.example.com"
+    assert resolved["api_key"] == "claude-secret"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["requested_provider"] == "custom:claude"
+    assert resolved["model"] == "claude-opus-4-8"
 
 
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
@@ -1631,6 +1635,33 @@ def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
     assert resolved["provider"] == "custom"
 
 
+def test_named_custom_runtime_propagates_extra_body_direct_path(monkeypatch):
+    """Custom provider extra_body should become runtime request_overrides."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "extra_body": {
+                "enable_thinking": True,
+                "reasoning_effort": "high",
+            },
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+    assert resolved["request_overrides"] == {
+        "extra_body": {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+        }
+    }
+
+
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     """Model should propagate even when credential pool handles credentials."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
@@ -1660,6 +1691,36 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
         "model must be injected into pool result"
     )
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
+
+
+def test_named_custom_runtime_propagates_extra_body_pool_path(monkeypatch):
+    """Custom provider extra_body should survive credential-pool resolution."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "extra_body": {"enable_thinking": True},
+        },
+    )
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-gemma",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+    assert resolved["request_overrides"] == {
+        "extra_body": {"enable_thinking": True}
+    }
 
 
 def test_named_custom_runtime_no_model_when_absent(monkeypatch):
@@ -2150,6 +2211,24 @@ class TestProviderEntryApiKeyEnvAlias:
         key_env so the set stays in sync with what the runtime actually reads."""
         from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
         assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
+
+    def test_extra_body_is_supported_schema(self):
+        from hermes_cli.config import (
+            _VALID_CUSTOM_PROVIDER_FIELDS,
+            _normalize_custom_provider_entry,
+        )
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": True},
+                "include_reasoning": True,
+            },
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert "extra_body" in _VALID_CUSTOM_PROVIDER_FIELDS
+        assert normalized["extra_body"] == entry["extra_body"]
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

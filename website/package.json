@@ -34,6 +34,10 @@
     "@docusaurus/types": "3.9.2",
     "typescript": "~5.6.2"
   },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "uuid": "^14.0.0"
+  },
   "browserslist": {
     "production": [
       ">0.5%",

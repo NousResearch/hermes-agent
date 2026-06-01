@@ -528,6 +528,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    extra_body = entry.get("extra_body")
+                    if isinstance(extra_body, dict):
+                        result["extra_body"] = dict(extra_body)
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -553,6 +556,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
+                        extra_body = entry.get("extra_body")
+                        if isinstance(extra_body, dict):
+                            result["extra_body"] = dict(extra_body)
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
@@ -596,6 +602,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             result["key_env"] = key_env
         if provider_key:
             result["provider_key"] = provider_key
+        extra_body = entry.get("extra_body")
+        if isinstance(extra_body, dict):
+            result["extra_body"] = dict(extra_body)
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -605,6 +614,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return result
 
     return None
+
+
+def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
+    extra_body = custom_provider.get("extra_body")
+    if not isinstance(extra_body, dict) or not extra_body:
+        return {}
+    return {"extra_body": dict(extra_body)}
 
 
 def _resolve_named_custom_runtime(
@@ -683,6 +699,12 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        request_overrides = _custom_provider_request_overrides(custom_provider)
+        if request_overrides:
+            pool_result["request_overrides"] = {
+                **dict(pool_result.get("request_overrides") or {}),
+                **request_overrides,
+            }
         return pool_result
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
@@ -714,6 +736,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    request_overrides = _custom_provider_request_overrides(custom_provider)
+    if request_overrides:
+        result["request_overrides"] = request_overrides
     return result
 
 
@@ -1090,14 +1115,20 @@ def _resolve_explicit_runtime(
             explicit_base_url
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
-        # Only use the agent_key compatibility field for inference. It may be
-        # either a NAS invoke JWT or a legacy opaque session key; raw OAuth
-        # access_token fallback is handled by resolve_nous_runtime_credentials().
-        api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
+        # Only use the agent_key compatibility field for inference when it
+        # contains a NAS invoke JWT; raw OAuth access_token fallback is handled
+        # by resolve_nous_runtime_credentials().
+        api_key = explicit_api_key or (
+            str(state.get("agent_key") or "").strip()
+            if _agent_key_is_usable(
+                state,
+                max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+            )
+            else ""
+        )
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
             )
             api_key = creds.get("api_key", "")
@@ -1284,12 +1315,11 @@ def resolve_runtime_provider(
                 or getattr(entry, "access_token", "")
             )
         # For Nous, the pool entry's runtime_api_key is the agent_key
-        # compatibility field: either an invoke JWT or legacy opaque key.
-        # The pool doesn't
+        # compatibility field. It must be an invoke JWT. The pool doesn't
         # refresh it during selection (that would trigger network calls in
         # non-runtime contexts like `hermes auth list`).  If the key is
         # expired, clear pool_api_key so we fall through to
-        # resolve_nous_runtime_credentials() which handles refresh + fallback.
+        # resolve_nous_runtime_credentials() which handles refresh.
         if provider == "nous" and entry is not None and pool_api_key:
             min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
             nous_state = {
@@ -1313,7 +1343,6 @@ def resolve_runtime_provider(
     if provider == "nous":
         try:
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
             )
             return {

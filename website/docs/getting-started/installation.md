@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows (early beta), or Android via Termux"
+description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows, or Android via Termux"
 ---
 
 # Installation
@@ -10,7 +10,15 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### One-Line Installer (Linux / macOS / WSL2)
+### Desktop App (macOS + Windows)
+
+Prefer a native installer?
+
+- **Desktop downloads:** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
+
+Desktop builds ship signed/notarized macOS artifacts and Windows installers with checksum files.
+
+### One-Line CLI Installer (Linux / macOS / WSL2)
 
 For a git-based install that tracks `main` and gives you the latest changes immediately:
 
@@ -18,11 +26,9 @@ For a git-based install that tracks `main` and gives you the latest changes imme
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-### Windows (native, PowerShell) — Early Beta
+### Windows (native, PowerShell)
 
-:::warning Early BETA
-Native Windows support is **early beta**. It installs and works for the common paths, but hasn't been road-tested as broadly as our POSIX installers. Please [file issues](https://github.com/NousResearch/hermes-agent/issues) when you hit rough edges. For the most battle-tested setup on Windows today, use the Linux/macOS one-liner above inside **WSL2** instead.
-:::
+Native Windows runs Hermes without WSL — the CLI, gateway, TUI, and tools all work natively. (Both native and WSL2 installs coexist cleanly; see the feature note below for the one WSL2-only feature.) Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
 
 Open PowerShell and run:
 
@@ -61,9 +67,9 @@ The installer detects Termux automatically and switches to a tested Android flow
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
-:::note Windows Feature Parity (Early Beta)
+:::note Windows Feature Parity
 
-Native Windows is in **early beta**. Everything except the browser-based dashboard chat terminal runs natively on Windows:
+Everything except the browser-based dashboard chat terminal runs natively on Windows:
 - **CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …)** — native, uses your default terminal
 - **Gateway (Telegram, Discord, Slack, …)** — native, runs as a background PowerShell process
 - **Cron scheduler** — native
@@ -108,6 +114,16 @@ hermes gateway setup  # Set up messaging platforms
 hermes config set     # Set individual config values
 hermes setup          # Or run the full setup wizard to configure everything at once
 ```
+
+:::tip Fastest path: Nous Portal
+One subscription covers 300+ models plus the [Tool Gateway](/user-guide/features/tool-gateway) (web search, image generation, TTS, cloud browser). Skip the per-tool key juggling:
+
+```bash
+hermes setup --portal
+```
+
+That logs you in, sets Nous as your provider, and turns on the Tool Gateway in one command.
+:::
 
 ---
 

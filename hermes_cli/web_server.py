@@ -10,14 +10,18 @@ Usage:
 """
 
 import asyncio
+import base64
+import binascii
 import hmac
 import importlib.util
 import json
 import logging
 import os
 import secrets
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -46,9 +50,13 @@ from hermes_cli.config import (
     save_env_value,
     remove_env_value,
     check_config_version,
+    detect_install_method,
+    format_docker_update_message,
+    recommended_update_command_for_method,
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from utils import env_var_enabled
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -81,10 +89,13 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
-# Generated fresh on every server start — dies when the process exits.
-# Injected into the SPA HTML so only the legitimate web UI can use it.
+# The desktop shell mints the token and injects it via
+# HERMES_DASHBOARD_SESSION_TOKEN so its main process can authenticate the
+# /api calls it makes on the user's behalf; otherwise we generate one fresh
+# on every server start. Either way it dies when the process exits and is
+# injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
@@ -109,18 +120,20 @@ app.add_middleware(
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
-# /api/ is gated by the auth middleware below.  Keep this list minimal —
-# only truly non-sensitive, read-only endpoints belong here.
+# /api/ is gated by the auth middleware below.
+#
+# This list is defined in ``hermes_cli.dashboard_auth.public_paths`` so the
+# OAuth gate middleware can honour the same allowlist — keeping the two
+# gates in lockstep avoids drift like the wildcard-subdomain regression
+# where ``/api/status`` was public under the legacy gate but 401'd under
+# the OAuth gate (breaking the portal's liveness probe).
+#
+# Keep the upstream list minimal — only truly non-sensitive, read-only
+# endpoints belong there.
 # ---------------------------------------------------------------------------
-_PUBLIC_API_PATHS: frozenset = frozenset({
-    "/api/status",
-    "/api/config/defaults",
-    "/api/config/schema",
-    "/api/model/info",
-    "/api/dashboard/themes",
-    "/api/dashboard/plugins",
-    "/api/dashboard/plugins/rescan",
-})
+from hermes_cli.dashboard_auth.public_paths import (
+    PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
+)
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -158,6 +171,22 @@ def _require_token(request: Request) -> None:
 _LOOPBACK_HOST_VALUES: frozenset = frozenset({
     "localhost", "127.0.0.1", "::1",
 })
+
+
+def should_require_auth(host: str, allow_public: bool) -> bool:
+    """Return True iff the dashboard OAuth auth gate must be active.
+
+    Truth table:
+      host == loopback                              → False (no auth)
+      host != loopback AND allow_public (--insecure)→ False (legacy escape hatch)
+      host != loopback AND NOT allow_public         → True  (gate engages)
+
+    "Loopback" matches the same set used by ``--insecure`` enforcement in
+    ``start_server``: 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local
+    are deliberately treated as PUBLIC — a hostile device on the same LAN is
+    exactly the threat model the gate is designed for.
+    """
+    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
@@ -234,9 +263,29 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# ---------------------------------------------------------------------------
+# Dashboard OAuth auth gate — engaged only when start_server flags the
+# bind as non-loopback-without-insecure.  No-op pass-through in loopback
+# mode so the legacy auth_middleware (below) handles those binds via
+# the injected ``_SESSION_TOKEN``.  Registered between host_header and
+# auth_middleware so the order is: host check → cookie auth → token auth.
+# ---------------------------------------------------------------------------
+
+
+@app.middleware("http")
+async def _dashboard_auth_gate(request: Request, call_next):
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+    return await gated_auth_middleware(request, call_next)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
+    # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
+    # and is skipped here so the gate's session attachment isn't overridden.
+    if getattr(request.app.state, "auth_required", False):
+        return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
@@ -266,12 +315,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
-    },
-    "terminal.vercel_runtime": {
-        "type": "select",
-        "description": "Vercel Sandbox runtime",
-        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
+        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
     },
     "terminal.modal_mode": {
         "type": "select",
@@ -288,7 +332,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Speech-to-text provider",
         # "mistral" temporarily removed — mistralai PyPI package quarantined
         # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-        "options": ["local", "openai"],
+        "options": ["local", "groq", "openai", "xai", "elevenlabs"],
+    },
+    "stt.elevenlabs.model_id": {
+        "type": "select",
+        "description": "ElevenLabs Scribe model",
+        "options": ["scribe_v2", "scribe_v1"],
     },
     "display.skin": {
         "type": "select",
@@ -461,6 +510,55 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class MessagingPlatformUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    env: Dict[str, str] = {}
+    clear_env: List[str] = []
+
+
+class AudioTranscriptionRequest(BaseModel):
+    data_url: str
+    mime_type: Optional[str] = None
+
+
+class ModelAssignment(BaseModel):
+    """Payload for POST /api/model/set — assign a provider/model to a slot.
+
+    scope="main"        → writes model.provider + model.default
+    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
+    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
+    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
+    """
+
+    scope: str
+    provider: str
+    model: str
+    task: str = ""
+
+
+_AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/m4a": ".m4a",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+    "video/webm": ".webm",
+}
+_MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _audio_extension_for_mime(mime_type: str) -> str:
+    normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+    return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -622,6 +720,19 @@ async def get_status():
     except Exception:
         pass
 
+    # Dashboard auth gate (Phase 7): surface whether the gate is engaged
+    # and which providers are registered so ``hermes status`` and the
+    # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
+    # "loopback only — no auth gate" with no extra round trips.
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    auth_providers: list[str] = []
+    try:
+        from hermes_cli.dashboard_auth import list_providers as _list_providers
+        auth_providers = [p.name for p in _list_providers()]
+    except Exception:
+        # Module not importable yet (early startup) — leave as [].
+        pass
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -638,6 +749,8 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "auth_required": auth_required,
+        "auth_providers": auth_providers,
     }
 
 
@@ -662,6 +775,26 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
 # report liveness and exit code without shelling out to ``ps``.
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
+
+# ``name`` → completed synthetic action result for actions the server handled
+# without spawning a subprocess (for example, unsupported Docker updates).
+_ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
+
+
+def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:
+    """Record a non-spawned action result and write it to the action log."""
+    log_file_name = _ACTION_LOG_FILES[name]
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _ACTION_LOG_DIR / log_file_name
+    with open(log_path, "ab", buffering=0) as log_file:
+        log_file.write(
+            f"\n=== {name} completed {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+        )
+        log_file.write(message.encode("utf-8", errors="replace"))
+        if not message.endswith("\n"):
+            log_file.write(b"\n")
+    _ACTION_PROCS.pop(name, None)
+    _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
 
 
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
@@ -696,6 +829,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
+    _ACTION_RESULTS.pop(name, None)
     _ACTION_PROCS[name] = proc
     return proc
 
@@ -732,6 +866,19 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    install_method = detect_install_method(PROJECT_ROOT)
+    if install_method == "docker":
+        message = format_docker_update_message()
+        _record_completed_action("hermes-update", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "hermes-update",
+            "error": "docker_update_unsupported",
+            "message": message,
+            "update_command": recommended_update_command_for_method(install_method),
+        }
+
     try:
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:
@@ -741,6 +888,206 @@ async def update_hermes():
         "ok": True,
         "pid": proc.pid,
         "name": "hermes-update",
+    }
+
+
+@app.post("/api/audio/transcribe")
+async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
+    data_url = (payload.data_url or "").strip()
+    if not data_url.startswith("data:") or "," not in data_url:
+        raise HTTPException(status_code=400, detail="Invalid audio payload")
+
+    header, encoded = data_url.split(",", 1)
+    if ";base64" not in header:
+        raise HTTPException(
+            status_code=400, detail="Audio payload must be base64 encoded"
+        )
+
+    mime_type = (
+        payload.mime_type or header[5:].split(";", 1)[0] or "audio/webm"
+    ).strip()
+    normalized_mime_type = mime_type.split(";", 1)[0].lower()
+    if not (
+        normalized_mime_type.startswith("audio/")
+        or normalized_mime_type == "video/webm"
+    ):
+        raise HTTPException(
+            status_code=400, detail="Payload must be an audio recording"
+        )
+
+    try:
+        audio_bytes = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Audio payload is not valid base64")
+
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio recording is empty")
+    if len(audio_bytes) > _MAX_TRANSCRIPTION_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Audio recording is too large")
+
+    temp_path = ""
+    try:
+        suffix = _audio_extension_for_mime(mime_type)
+        with tempfile.NamedTemporaryFile(
+            prefix="hermes-desktop-voice-",
+            suffix=suffix,
+            delete=False,
+        ) as tmp:
+            tmp.write(audio_bytes)
+            temp_path = tmp.name
+
+        from tools.transcription_tools import transcribe_audio
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, transcribe_audio, temp_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Desktop voice transcription failed")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error") or "Transcription failed",
+        )
+
+    return {
+        "ok": True,
+        "transcript": str(result.get("transcript") or "").strip(),
+        "provider": result.get("provider"),
+    }
+
+
+class TTSSpeakRequest(BaseModel):
+    text: str
+
+
+def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
+    name = str(voice.get("name") or voice.get("voice_id") or "Voice").strip()
+    category = str(voice.get("category") or "").strip()
+
+    return f"{name} ({category})" if category else name
+
+
+@app.get("/api/audio/elevenlabs/voices")
+async def get_elevenlabs_voices():
+    """Return ElevenLabs voices when an API key is configured.
+
+    The desktop UI uses this for the ``tts.elevenlabs.voice_id`` dropdown.
+    Only non-secret voice metadata is returned; the API key stays server-side.
+    """
+    api_key = (load_env().get("ELEVENLABS_API_KEY") or os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+    if not api_key:
+        return {"available": False, "voices": []}
+
+    request = urllib.request.Request(
+        "https://api.elevenlabs.io/v1/voices",
+        headers={
+            "Accept": "application/json",
+            "xi-api-key": api_key,
+        },
+    )
+
+    try:
+        loop = asyncio.get_running_loop()
+
+        def _fetch() -> Dict[str, Any]:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        payload = await loop.run_in_executor(None, _fetch)
+    except Exception as exc:
+        _log.warning("ElevenLabs voice list failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices")
+
+    voices = []
+    for voice in payload.get("voices") or []:
+        if not isinstance(voice, dict):
+            continue
+
+        voice_id = str(voice.get("voice_id") or "").strip()
+        if not voice_id:
+            continue
+
+        voices.append({
+            "voice_id": voice_id,
+            "name": str(voice.get("name") or voice_id),
+            "label": _elevenlabs_voice_label(voice),
+        })
+
+    voices.sort(key=lambda item: str(item.get("label") or "").lower())
+    return {"available": True, "voices": voices}
+
+
+@app.post("/api/audio/speak")
+async def speak_text(payload: TTSSpeakRequest):
+    """Synthesize speech and return audio as base64 data URL.
+
+    Used by the desktop voice-conversation mode to play back assistant
+    responses without exposing the on-disk file path. Reuses the
+    existing TTS provider chain (Edge / OpenAI / ElevenLabs / etc.)
+    configured in ``~/.hermes/config.yaml`` under ``tts.``.
+    """
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    try:
+        from tools.tts_tool import text_to_speech_tool
+        loop = asyncio.get_running_loop()
+        result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
+    except Exception as exc:
+        _log.exception("Desktop voice TTS failed")
+        raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}")
+
+    try:
+        result = json.loads(result_json) if isinstance(result_json, str) else result_json
+    except Exception:
+        raise HTTPException(status_code=500, detail="Invalid TTS response")
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error") or "Speech synthesis failed",
+        )
+
+    file_path = result.get("file_path")
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(status_code=500, detail="Audio file missing")
+
+    ext = os.path.splitext(file_path)[1].lower()
+    mime_type = {
+        ".mp3": "audio/mpeg",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".wav": "audio/wav",
+        ".flac": "audio/flac",
+    }.get(ext, "audio/mpeg")
+
+    try:
+        with open(file_path, "rb") as fh:
+            audio_bytes = fh.read()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read audio: {exc}")
+    finally:
+        try:
+            os.unlink(file_path)
+        except OSError:
+            pass
+
+    encoded = base64.b64encode(audio_bytes).decode("ascii")
+    return {
+        "ok": True,
+        "data_url": f"data:{mime_type};base64,{encoded}",
+        "mime_type": mime_type,
+        "provider": result.get("provider"),
     }
 
 
@@ -756,9 +1103,10 @@ async def get_action_status(name: str, lines: int = 200):
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:
+        result = _ACTION_RESULTS.get(name)
         running = False
-        exit_code: Optional[int] = None
-        pid: Optional[int] = None
+        exit_code = result.get("exit_code") if result else None
+        pid = result.get("pid") if result else None
     else:
         exit_code = proc.poll()
         running = exit_code is None
@@ -774,13 +1122,16 @@ async def get_action_status(name: str, lines: int = 200):
 
 
 @app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+async def get_sessions(limit: int = 20, offset: int = 0, min_messages: int = 0):
     try:
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
+            min_message_count = max(0, min_messages)
+            sessions = db.list_sessions_rich(
+                limit=limit, offset=offset, min_message_count=min_message_count
+            )
+            total = db.session_count(min_message_count=min_message_count)
             now = time.time()
             for s in sessions:
                 s["is_active"] = (
@@ -976,11 +1327,13 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "vision",
     "web_extract",
     "compression",
-    "session_search",
     "skills_hub",
     "approval",
     "mcp",
     "title_generation",
+    "triage_specifier",
+    "kanban_decomposer",
+    "profile_describer",
     "curator",
 )
 
@@ -997,10 +1350,82 @@ def get_model_options():
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        return build_models_payload(load_picker_context(), max_models=50)
+        return build_models_payload(load_picker_context(), max_models=50, pricing=True)
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
+
+
+@app.get("/api/model/recommended-default")
+def get_recommended_default_model(provider: str = ""):
+    """Return the recommended default model for a freshly-authenticated provider.
+
+    Mirrors the model-curation `hermes model` does so GUI onboarding lands on a
+    sensible default instead of blindly taking the first curated entry. For
+    Nous this honors the user's free/paid tier: free users get a free model,
+    paid users get the full curated default. For any other provider it falls
+    back to the first curated model (same as before).
+
+    Response: {"provider": str, "model": str, "free_tier": bool | None}
+    where free_tier is True/False for Nous and None otherwise. `model` may be
+    empty if nothing could be resolved (caller degrades gracefully).
+    """
+    slug = (provider or "").strip().lower()
+
+    if slug == "nous":
+        try:
+            from hermes_cli.models import (
+                get_curated_nous_model_ids,
+                get_pricing_for_provider,
+                check_nous_free_tier,
+                partition_nous_models_by_tier,
+                union_with_portal_free_recommendations,
+                union_with_portal_paid_recommendations,
+            )
+            from hermes_cli.auth import get_provider_auth_state
+
+            model_ids = get_curated_nous_model_ids()
+            pricing = get_pricing_for_provider("nous") or {}
+            free_tier = check_nous_free_tier(force_fresh=True)
+
+            portal_url = ""
+            try:
+                state = get_provider_auth_state("nous") or {}
+                portal_url = state.get("portal_base_url", "") or ""
+            except Exception:
+                portal_url = ""
+
+            if free_tier:
+                model_ids, pricing = union_with_portal_free_recommendations(
+                    model_ids, pricing, portal_url
+                )
+                model_ids, _unavailable = partition_nous_models_by_tier(
+                    model_ids, pricing, free_tier=True
+                )
+            else:
+                model_ids, pricing = union_with_portal_paid_recommendations(
+                    model_ids, pricing, portal_url
+                )
+
+            model = model_ids[0] if model_ids else ""
+            return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
+        except Exception:
+            _log.exception("GET /api/model/recommended-default (nous) failed")
+            return {"provider": "nous", "model": "", "free_tier": None}
+
+    # Non-Nous: first curated model for the provider, matching prior behaviour.
+    try:
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
+        payload = build_models_payload(load_picker_context(), max_models=50)
+        for row in payload.get("providers", []):
+            if str(row.get("slug", "")).lower() == slug:
+                models = row.get("models") or []
+                return {"provider": slug, "model": models[0] if models else "", "free_tier": None}
+        return {"provider": slug, "model": "", "free_tier": None}
+    except Exception:
+        _log.exception("GET /api/model/recommended-default failed")
+        return {"provider": slug, "model": "", "free_tier": None}
 
 
 @app.get("/api/model/auxiliary")
@@ -1082,8 +1507,44 @@ async def set_model_assignment(body: ModelAssignment):
             if "context_length" in model_cfg:
                 model_cfg.pop("context_length", None)
             cfg["model"] = model_cfg
+
+            # When switching the main provider to Nous, mirror the CLI's
+            # post-model-selection behaviour (hermes_cli/main.py
+            # prompt_enable_tool_gateway / tools_config apply_nous_managed_defaults):
+            # auto-route any *unconfigured* tools through the Nous Tool Gateway.
+            # This is purely additive — apply_nous_managed_defaults skips every
+            # tool where the user already has a direct key (FIRECRAWL_API_KEY,
+            # FAL_KEY, etc.) or an explicit backend/provider in config, so it
+            # never overwrites a user's own setup. GUI users thus land on the
+            # gateway the same way CLI users do, without a separate prompt.
+            gateway_tools: list[str] = []
+            if provider.strip().lower() == "nous":
+                try:
+                    from hermes_cli.nous_subscription import apply_nous_managed_defaults
+                    from hermes_cli.tools_config import _get_platform_tools
+
+                    enabled = _get_platform_tools(
+                        cfg, "cli", include_default_mcp_servers=False
+                    )
+                    changed = apply_nous_managed_defaults(
+                        cfg,
+                        enabled_toolsets=enabled,
+                        force_fresh=True,
+                    )
+                    gateway_tools = sorted(changed)
+                except Exception:
+                    # Portal lookup hiccups / non-subscriber / non-nous gating
+                    # must never block saving the model assignment.
+                    _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
+
             save_config(cfg)
-            return {"ok": True, "scope": "main", "provider": provider, "model": model}
+            return {
+                "ok": True,
+                "scope": "main",
+                "provider": provider,
+                "model": model,
+                "gateway_tools": gateway_tools,
+            }
 
         # scope == "auxiliary"
         aux = cfg.get("auxiliary")
@@ -1221,9 +1682,83 @@ async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
+    except ValueError as exc:
+        # save_env_value raises ValueError for invalid names and for keys
+        # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the
+        # message to the SPA so the user understands why the write was
+        # refused instead of seeing an opaque 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         _log.exception("PUT /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# Live credential probes keyed by env var. Each entry is (method, url, auth)
+# where auth is "bearer" (Authorization header) or "query" (?key=). A cheap
+# read-only models/key call that 401s on a bad token — enough to catch a
+# mistyped key before it's persisted. Providers absent from this map (or local
+# endpoints) are not network-validated; the client treats those as "unknown".
+_CREDENTIAL_PROBES: dict[str, tuple[str, str]] = {
+    "OPENROUTER_API_KEY": ("https://openrouter.ai/api/v1/key", "bearer"),
+    "OPENAI_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
+    "XAI_API_KEY": ("https://api.x.ai/v1/models", "bearer"),
+    "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "query"),
+}
+
+
+@app.post("/api/providers/validate")
+async def validate_provider_credential(body: EnvVarUpdate, request: Request):
+    """Live-probe a provider credential before it's saved.
+
+    Returns {ok, reachable, message}. ok=True means the provider accepted the
+    key; ok=False + reachable=True means the key is bad (caller should block);
+    reachable=False means the network probe couldn't run (caller may save with
+    a warning rather than hard-blocking offline users).
+    """
+    _require_token(request)
+    import httpx
+
+    key = (body.key or "").strip()
+    value = (body.value or "").strip()
+    if not value:
+        return {"ok": False, "reachable": True, "message": "Enter a value first."}
+
+    # Local / custom endpoint: validate connectivity, not auth — any HTTP
+    # response (even 401) proves the endpoint is up.
+    if key == "OPENAI_BASE_URL":
+        url = value.rstrip("/") + "/models"
+        try:
+            with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+                client.get(url)
+            return {"ok": True, "reachable": True, "message": ""}
+        except Exception:
+            return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+
+    probe = _CREDENTIAL_PROBES.get(key)
+    if not probe:
+        # No probe for this provider — can't validate, don't block.
+        return {"ok": True, "reachable": False, "message": ""}
+
+    url, auth = probe
+    headers = {"Accept": "application/json"}
+    params = {}
+    if auth == "bearer":
+        headers["Authorization"] = f"Bearer {value}"
+    else:
+        params["key"] = value
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(10.0)) as client:
+            resp = client.get(url, headers=headers, params=params)
+    except Exception:
+        return {"ok": False, "reachable": False, "message": "Could not reach the provider to verify the key."}
+
+    if resp.status_code in (401, 403):
+        return {"ok": False, "reachable": True, "message": "That API key was rejected. Double-check it and try again."}
+    if resp.status_code == 429 or resp.is_success:
+        # 429 = key is valid but rate-limited; success = valid.
+        return {"ok": True, "reachable": True, "message": ""}
+    return {"ok": False, "reachable": True, "message": f"Provider returned HTTP {resp.status_code} for this key."}
 
 
 @app.delete("/api/env")
@@ -1268,6 +1803,667 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
 
     _log.info("env/reveal: %s", body.key)
     return {"key": body.key, "value": value}
+
+
+# Entries omit fields they don't need to override; the catalog builder fills
+# in env_vars from OPTIONAL_ENV_VARS via prefix matching when not specified,
+# and pulls required_env from a plugin's PlatformEntry when available.
+_PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
+    "telegram": {
+        "name": "Telegram",
+        "description": "Run Hermes from Telegram DMs, groups, and topics.",
+        "docs_url": "https://core.telegram.org/bots/features#botfather",
+        "env_vars": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_PROXY"),
+        "required_env": ("TELEGRAM_BOT_TOKEN",),
+    },
+    "discord": {
+        "name": "Discord",
+        "description": "Connect Hermes to Discord DMs, channels, and threads.",
+        "docs_url": "https://discord.com/developers/applications",
+        "env_vars": (
+            "DISCORD_BOT_TOKEN",
+            "DISCORD_ALLOWED_USERS",
+            "DISCORD_REPLY_TO_MODE",
+        ),
+        "required_env": ("DISCORD_BOT_TOKEN",),
+    },
+    "slack": {
+        "name": "Slack",
+        "description": "Use Hermes from Slack via Socket Mode.",
+        "docs_url": "https://api.slack.com/apps",
+        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+        "required_env": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+    },
+    "mattermost": {
+        "name": "Mattermost",
+        "description": "Connect Hermes to Mattermost channels and direct messages.",
+        "docs_url": "https://mattermost.com/deploy/",
+        "env_vars": ("MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS"),
+        "required_env": ("MATTERMOST_URL", "MATTERMOST_TOKEN"),
+    },
+    "matrix": {
+        "name": "Matrix",
+        "description": "Use Hermes in Matrix rooms and direct messages.",
+        "docs_url": "https://matrix.org/ecosystem/servers/",
+        "env_vars": (
+            "MATRIX_HOMESERVER",
+            "MATRIX_ACCESS_TOKEN",
+            "MATRIX_USER_ID",
+            "MATRIX_ALLOWED_USERS",
+        ),
+        "required_env": ("MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN", "MATRIX_USER_ID"),
+    },
+    "signal": {
+        "name": "Signal",
+        "description": "Connect through a signal-cli REST bridge.",
+        "docs_url": "https://github.com/bbernhard/signal-cli-rest-api",
+        "env_vars": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_ALLOWED_USERS"),
+        "required_env": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"),
+    },
+    "whatsapp": {
+        "name": "WhatsApp",
+        "description": "Use Hermes through the bundled WhatsApp bridge with QR-based auth.",
+        "docs_url": "https://github.com/tulir/whatsmeow",
+        "env_vars": ("WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS"),
+        "required_env": (),
+    },
+    "homeassistant": {
+        "name": "Home Assistant",
+        "description": "Control your smart home from Hermes via Home Assistant.",
+        "docs_url": "https://www.home-assistant.io/docs/authentication/",
+        "env_vars": ("HASS_URL", "HASS_TOKEN"),
+        "required_env": ("HASS_URL", "HASS_TOKEN"),
+    },
+    "email": {
+        "name": "Email",
+        "description": "Talk to Hermes through an IMAP/SMTP mailbox.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
+        "env_vars": (
+            "EMAIL_ADDRESS",
+            "EMAIL_PASSWORD",
+            "EMAIL_IMAP_HOST",
+            "EMAIL_SMTP_HOST",
+        ),
+        "required_env": (
+            "EMAIL_ADDRESS",
+            "EMAIL_PASSWORD",
+            "EMAIL_IMAP_HOST",
+            "EMAIL_SMTP_HOST",
+        ),
+    },
+    "sms": {
+        "name": "SMS (Twilio)",
+        "description": "Send and receive text messages via Twilio.",
+        "docs_url": "https://www.twilio.com/console",
+        "env_vars": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
+        "required_env": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
+    },
+    "dingtalk": {
+        "name": "DingTalk",
+        "description": "Connect Hermes to DingTalk groups (钉钉).",
+        "docs_url": "https://open.dingtalk.com/document/orgapp/the-robot-development-process",
+        "env_vars": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
+        "required_env": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
+    },
+    "feishu": {
+        "name": "Feishu / Lark",
+        "description": "Use Hermes inside Feishu / Lark.",
+        "docs_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/intro",
+        "env_vars": (
+            "FEISHU_APP_ID",
+            "FEISHU_APP_SECRET",
+            "FEISHU_ENCRYPT_KEY",
+            "FEISHU_VERIFICATION_TOKEN",
+        ),
+        "required_env": ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
+    },
+    "wecom": {
+        "name": "WeCom (group bot)",
+        "description": "Send-only WeCom group bot via webhook.",
+        "docs_url": "https://developer.work.weixin.qq.com/document/path/91770",
+        "env_vars": ("WECOM_BOT_ID", "WECOM_SECRET"),
+        "required_env": ("WECOM_BOT_ID",),
+    },
+    "wecom_callback": {
+        "name": "WeCom (app)",
+        "description": "Two-way WeCom integration via callback app.",
+        "docs_url": "https://developer.work.weixin.qq.com/document/path/90930",
+        "env_vars": (
+            "WECOM_CALLBACK_CORP_ID",
+            "WECOM_CALLBACK_CORP_SECRET",
+            "WECOM_CALLBACK_AGENT_ID",
+            "WECOM_CALLBACK_TOKEN",
+            "WECOM_CALLBACK_ENCODING_AES_KEY",
+        ),
+        "required_env": (
+            "WECOM_CALLBACK_CORP_ID",
+            "WECOM_CALLBACK_CORP_SECRET",
+            "WECOM_CALLBACK_AGENT_ID",
+        ),
+    },
+    "weixin": {
+        "name": "WeChat (Official Account)",
+        "description": "Connect a WeChat Official Account.",
+        "docs_url": "https://developers.weixin.qq.com/doc/offiaccount/Getting_Started/Overview.html",
+        "env_vars": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
+        "required_env": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"),
+    },
+    "bluebubbles": {
+        "name": "BlueBubbles (iMessage)",
+        "description": "Use Hermes through iMessage via a BlueBubbles server.",
+        "docs_url": "https://bluebubbles.app/",
+        "env_vars": (
+            "BLUEBUBBLES_SERVER_URL",
+            "BLUEBUBBLES_PASSWORD",
+            "BLUEBUBBLES_ALLOWED_USERS",
+        ),
+        "required_env": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
+    },
+    "qqbot": {
+        "name": "QQ Bot",
+        "description": "Connect Hermes to a QQ Bot from the QQ Open Platform.",
+        "docs_url": "https://q.qq.com",
+        "env_vars": ("QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_ALLOWED_USERS"),
+        "required_env": ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
+    },
+    "yuanbao": {
+        "name": "Yuanbao (元宝)",
+        "description": "Connect Hermes to Tencent Yuanbao.",
+        "docs_url": "",
+        "required_env": (),
+    },
+    "api_server": {
+        "name": "API server",
+        "description": "Expose Hermes as an OpenAI-compatible HTTP API for tools like Open WebUI.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
+        "env_vars": (
+            "API_SERVER_ENABLED",
+            "API_SERVER_KEY",
+            "API_SERVER_PORT",
+            "API_SERVER_HOST",
+            "API_SERVER_MODEL_NAME",
+        ),
+        "required_env": (),
+    },
+    "webhook": {
+        "name": "Webhooks",
+        "description": "Receive events from GitHub, GitLab, and other webhook sources.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/",
+        "env_vars": ("WEBHOOK_ENABLED", "WEBHOOK_PORT", "WEBHOOK_SECRET"),
+        "required_env": (),
+    },
+}
+
+# Display order: well-known platforms surface first; unknown plugins fall to
+# the end alphabetically.
+_PLATFORM_ORDER: tuple[str, ...] = (
+    "telegram",
+    "discord",
+    "slack",
+    "mattermost",
+    "matrix",
+    "whatsapp",
+    "signal",
+    "bluebubbles",
+    "homeassistant",
+    "email",
+    "sms",
+    "dingtalk",
+    "feishu",
+    "wecom",
+    "wecom_callback",
+    "weixin",
+    "qqbot",
+    "yuanbao",
+    "api_server",
+    "webhook",
+)
+
+# Display labels for env vars not in OPTIONAL_ENV_VARS (HOME_CHANNEL_*, bridge
+# toggles, Twilio, HASS, Email, etc.). Anything missing from OPTIONAL_ENV_VARS
+# falls back here so the UI can still render a friendly label.
+_MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
+    "SIGNAL_HTTP_URL": {
+        "description": "signal-cli REST API base URL, e.g. http://127.0.0.1:8080",
+        "prompt": "Signal bridge URL",
+        "url": "https://github.com/bbernhard/signal-cli-rest-api",
+    },
+    "SIGNAL_ACCOUNT": {
+        "description": "Signal account phone number registered with the bridge",
+        "prompt": "Signal account",
+    },
+    "SIGNAL_ALLOWED_USERS": {
+        "description": "Comma-separated Signal users allowed to use the bot",
+        "prompt": "Allowed Signal users",
+    },
+    "WHATSAPP_ENABLED": {
+        "description": "Enable the WhatsApp gateway adapter",
+        "prompt": "Enable WhatsApp",
+        "advanced": True,
+    },
+    "WHATSAPP_MODE": {
+        "description": "WhatsApp bridge mode",
+        "prompt": "WhatsApp mode",
+        "advanced": True,
+    },
+    "WHATSAPP_ALLOWED_USERS": {
+        "description": "Comma-separated WhatsApp users allowed to use the bot",
+        "prompt": "Allowed WhatsApp users",
+    },
+    "HASS_URL": {
+        "description": "Home Assistant base URL, e.g. https://homeassistant.local:8123",
+        "prompt": "Home Assistant URL",
+    },
+    "HASS_TOKEN": {
+        "description": "Long-lived access token from Home Assistant (Profile → Security)",
+        "prompt": "Home Assistant access token",
+        "password": True,
+    },
+    "EMAIL_ADDRESS": {
+        "description": "Email address to send and receive from",
+        "prompt": "Email address",
+    },
+    "EMAIL_PASSWORD": {
+        "description": "Email account password or app password",
+        "prompt": "Email password",
+        "password": True,
+    },
+    "EMAIL_IMAP_HOST": {
+        "description": "IMAP server host (e.g. imap.gmail.com)",
+        "prompt": "IMAP host",
+    },
+    "EMAIL_SMTP_HOST": {
+        "description": "SMTP server host (e.g. smtp.gmail.com)",
+        "prompt": "SMTP host",
+    },
+    "TWILIO_ACCOUNT_SID": {
+        "description": "Twilio Account SID",
+        "prompt": "Twilio Account SID",
+        "url": "https://www.twilio.com/console",
+    },
+    "TWILIO_AUTH_TOKEN": {
+        "description": "Twilio Auth Token",
+        "prompt": "Twilio Auth Token",
+        "password": True,
+    },
+    "WECOM_BOT_ID": {"description": "WeCom group bot ID", "prompt": "WeCom Bot ID"},
+    "WECOM_SECRET": {
+        "description": "WeCom group bot secret",
+        "prompt": "WeCom Secret",
+        "password": True,
+    },
+    "WECOM_CALLBACK_CORP_ID": {
+        "description": "WeCom corp ID",
+        "prompt": "WeCom Corp ID",
+    },
+    "WECOM_CALLBACK_CORP_SECRET": {
+        "description": "WeCom app corp secret",
+        "prompt": "WeCom Corp Secret",
+        "password": True,
+    },
+    "WECOM_CALLBACK_AGENT_ID": {
+        "description": "WeCom app agent ID",
+        "prompt": "WeCom Agent ID",
+    },
+    "WECOM_CALLBACK_TOKEN": {
+        "description": "WeCom callback verification token",
+        "prompt": "WeCom Token",
+    },
+    "WECOM_CALLBACK_ENCODING_AES_KEY": {
+        "description": "WeCom callback AES encoding key",
+        "prompt": "WeCom AES Key",
+        "password": True,
+    },
+    "WEIXIN_ACCOUNT_ID": {
+        "description": "WeChat Official Account ID",
+        "prompt": "Account ID",
+    },
+    "WEIXIN_TOKEN": {
+        "description": "WeChat callback token",
+        "prompt": "Token",
+        "password": True,
+    },
+    "WEIXIN_BASE_URL": {
+        "description": "WeChat platform base URL",
+        "prompt": "Base URL",
+    },
+    "FEISHU_APP_ID": {"description": "Feishu / Lark app ID", "prompt": "App ID"},
+    "FEISHU_APP_SECRET": {
+        "description": "Feishu / Lark app secret",
+        "prompt": "App secret",
+        "password": True,
+    },
+    "FEISHU_ENCRYPT_KEY": {
+        "description": "Feishu / Lark encrypt key",
+        "prompt": "Encrypt key",
+        "password": True,
+    },
+    "FEISHU_VERIFICATION_TOKEN": {
+        "description": "Feishu / Lark verification token",
+        "prompt": "Verification token",
+        "password": True,
+    },
+    "DINGTALK_CLIENT_ID": {
+        "description": "DingTalk client ID (App key)",
+        "prompt": "Client ID",
+    },
+    "DINGTALK_CLIENT_SECRET": {
+        "description": "DingTalk client secret (App secret)",
+        "prompt": "Client secret",
+        "password": True,
+    },
+}
+
+
+def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
+    """Build the messaging catalog from the gateway's Platform enum + plugin registry.
+
+    Built-in platforms come from ``gateway.config.Platform`` (LOCAL is excluded).
+    Plugin platforms come from ``gateway.platform_registry.plugin_entries()``,
+    which lets newly installed adapters (e.g. IRC) appear without a code change
+    here. Per-platform UI metadata (description, docs URL, env-var picks) lives
+    in :data:`_PLATFORM_OVERRIDES`; anything not overridden gets reasonable
+    defaults derived from the platform id and required_env.
+    """
+    from gateway.config import Platform
+
+    seen: set[str] = set()
+    entries: list[dict[str, Any]] = []
+
+    for member in Platform.__members__.values():
+        if member.value == "local":
+            continue
+        if member.value in seen:
+            continue
+        seen.add(member.value)
+        entries.append(_build_catalog_entry(member.value))
+
+    try:
+        from gateway.platform_registry import platform_registry
+
+        for plugin_entry in platform_registry.plugin_entries():
+            if plugin_entry.name in seen:
+                continue
+            seen.add(plugin_entry.name)
+            entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
+    except Exception:
+        _log.debug("plugin platform registry unavailable", exc_info=True)
+
+    order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
+    entries.sort(
+        key=lambda e: (order.get(e["id"], len(_PLATFORM_ORDER)), e["name"].lower())
+    )
+    return tuple(entries)
+
+
+def _build_catalog_entry(
+    platform_id: str, plugin_entry: Any | None = None
+) -> dict[str, Any]:
+    override = _PLATFORM_OVERRIDES.get(platform_id, {})
+
+    if "env_vars" in override:
+        env_vars: tuple[str, ...] = tuple(override["env_vars"])
+    elif plugin_entry is not None and plugin_entry.required_env:
+        env_vars = tuple(plugin_entry.required_env)
+    else:
+        prefix = platform_id.upper() + "_"
+        env_vars = tuple(k for k in OPTIONAL_ENV_VARS if k.startswith(prefix))
+
+    if "required_env" in override:
+        required_env = tuple(override["required_env"])
+    elif plugin_entry is not None:
+        required_env = tuple(plugin_entry.required_env or ())
+    else:
+        required_env = ()
+
+    if override.get("name"):
+        name = override["name"]
+    elif plugin_entry is not None and plugin_entry.label:
+        name = plugin_entry.label
+    else:
+        name = platform_id.replace("_", " ").title()
+
+    description = override.get("description")
+    if not description and plugin_entry is not None:
+        description = plugin_entry.install_hint or ""
+
+    return {
+        "id": platform_id,
+        "name": name,
+        "description": description or "",
+        "docs_url": override.get("docs_url", ""),
+        "env_vars": env_vars,
+        "required_env": required_env,
+    }
+
+
+def _catalog_lookup(platform_id: str) -> dict[str, Any] | None:
+    for entry in _messaging_platform_catalog():
+        if entry["id"] == platform_id:
+            return entry
+    return None
+
+
+def _messaging_env_info(key: str) -> dict[str, Any]:
+    info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+    return {
+        "description": info.get("description", ""),
+        "prompt": info.get("prompt", key),
+        "url": info.get("url"),
+        "is_password": info.get("password", False),
+        "advanced": info.get("advanced", False),
+    }
+
+
+def _gateway_platform_config(platform_id: str):
+    from gateway.config import Platform, load_gateway_config
+
+    config = load_gateway_config()
+    platform = Platform(platform_id)
+    platform_config = config.platforms.get(platform)
+    return config, platform, platform_config
+
+
+def _messaging_platform_payload(
+    entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None
+) -> dict[str, Any]:
+    platform_id = entry["id"]
+    gateway_running = get_running_pid() is not None
+    runtime_platforms = runtime.get("platforms") if runtime else {}
+    runtime_platform = (
+        runtime_platforms.get(platform_id, {})
+        if isinstance(runtime_platforms, dict)
+        else {}
+    )
+    env_vars = []
+
+    for key in entry["env_vars"]:
+        value = env_on_disk.get(key) or os.getenv(key, "")
+        env_vars.append(
+            {
+                "key": key,
+                "required": key in entry["required_env"],
+                "is_set": bool(value),
+                "redacted_value": redact_key(value) if value else None,
+                **_messaging_env_info(key),
+            }
+        )
+
+    try:
+        gateway_config, platform, platform_config = _gateway_platform_config(
+            platform_id
+        )
+        enabled = bool(platform_config and platform_config.enabled)
+        configured = bool(
+            platform_config
+            and gateway_config._is_platform_connected(platform, platform_config)
+        )
+        home_channel = (
+            platform_config.home_channel.to_dict()
+            if platform_config and platform_config.home_channel
+            else None
+        )
+    except Exception:
+        enabled = False
+        configured = all(
+            env_on_disk.get(key) or os.getenv(key, "") for key in entry["required_env"]
+        )
+        home_channel = None
+
+    state = (
+        runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
+    )
+    if not enabled:
+        state = "disabled"
+    elif not configured:
+        state = "not_configured"
+    elif gateway_running and not state:
+        state = "pending_restart"
+    elif not gateway_running and not state:
+        state = "gateway_stopped"
+
+    return {
+        "id": platform_id,
+        "name": entry["name"],
+        "description": entry["description"],
+        "docs_url": entry["docs_url"],
+        "enabled": enabled,
+        "configured": configured,
+        "gateway_running": gateway_running,
+        "state": state,
+        "error_code": (
+            runtime_platform.get("error_code")
+            if isinstance(runtime_platform, dict)
+            else None
+        ),
+        "error_message": (
+            runtime_platform.get("error_message")
+            if isinstance(runtime_platform, dict)
+            else None
+        ),
+        "updated_at": (
+            runtime_platform.get("updated_at")
+            if isinstance(runtime_platform, dict)
+            else None
+        ),
+        "home_channel": home_channel,
+        "env_vars": env_vars,
+    }
+
+
+def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
+    config = load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+    platform_config = platforms.setdefault(platform_id, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[platform_id] = platform_config
+    platform_config["enabled"] = enabled
+    save_config(config)
+
+
+@app.get("/api/messaging/platforms")
+async def get_messaging_platforms():
+    env_on_disk = load_env()
+    runtime = read_runtime_status()
+    return {
+        "platforms": [
+            _messaging_platform_payload(entry, env_on_disk, runtime)
+            for entry in _messaging_platform_catalog()
+        ]
+    }
+
+
+@app.put("/api/messaging/platforms/{platform_id}")
+async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate):
+    entry = _catalog_lookup(platform_id)
+    if not entry:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown messaging platform: {platform_id}"
+        )
+
+    allowed_env = set(entry["env_vars"])
+    try:
+        for key in body.clear_env:
+            if key not in allowed_env:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} is not configurable for {entry['name']}",
+                )
+            remove_env_value(key)
+
+        for key, value in body.env.items():
+            if key not in allowed_env:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} is not configurable for {entry['name']}",
+                )
+            trimmed = value.strip()
+            if trimmed:
+                save_env_value(key, trimmed)
+
+        if body.enabled is not None:
+            _write_platform_enabled(platform_id, body.enabled)
+
+        return {"ok": True, "platform": platform_id}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/messaging/platforms/%s failed", platform_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/messaging/platforms/{platform_id}/test")
+async def test_messaging_platform(platform_id: str):
+    entry = _catalog_lookup(platform_id)
+    if not entry:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown messaging platform: {platform_id}"
+        )
+
+    env_on_disk = load_env()
+    payload = _messaging_platform_payload(entry, env_on_disk, read_runtime_status())
+    if not payload["enabled"]:
+        message = f"{entry['name']} is disabled. Enable it, then restart the gateway."
+        return {"ok": False, "state": payload["state"], "message": message}
+    if not payload["configured"]:
+        missing = [
+            field["key"]
+            for field in payload["env_vars"]
+            if field["required"] and not field["is_set"]
+        ]
+        message = (
+            f"Missing required setup: {', '.join(missing)}"
+            if missing
+            else "Platform setup is incomplete."
+        )
+        return {"ok": False, "state": payload["state"], "message": message}
+    if not payload["gateway_running"]:
+        return {
+            "ok": False,
+            "state": payload["state"],
+            "message": "Gateway is not running. Restart the gateway to connect this platform.",
+        }
+    if payload["state"] == "connected":
+        return {
+            "ok": True,
+            "state": payload["state"],
+            "message": f"{entry['name']} is connected.",
+        }
+    if payload.get("error_message"):
+        return {
+            "ok": False,
+            "state": payload["state"],
+            "message": payload["error_message"],
+        }
+    return {
+        "ok": False,
+        "state": payload["state"],
+        "message": "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1685,7 +2881,25 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "expiresAt": expires_at_ms,
     }
     _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _HERMES_OAUTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path = _HERMES_OAUTH_FILE.with_name(
+        f"{_HERMES_OAUTH_FILE.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    )
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, _HERMES_OAUTH_FILE)
+        try:
+            _HERMES_OAUTH_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -1823,8 +3037,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     """
     if provider_id == "nous":
         from hermes_cli.auth import (
-            _nous_device_scope_with_env_override,
-            _request_nous_device_code_with_scope_fallback,
+            _request_device_code,
             PROVIDER_REGISTRY,
         )
         import httpx
@@ -1835,22 +3048,21 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             or pconfig.portal_base_url
         ).rstrip("/")
         client_id = pconfig.client_id
-        scope, explicit_scope = _nous_device_scope_with_env_override(
-            None,
-            default_scope=pconfig.scope,
-        )
+        scope = pconfig.scope
 
         def _do_nous_device_request():
             with httpx.Client(
                 timeout=httpx.Timeout(15.0),
                 headers={"Accept": "application/json"},
             ) as client:
-                return _request_nous_device_code_with_scope_fallback(
-                    client=client,
-                    portal_base_url=portal_base_url,
-                    client_id=client_id,
-                    scope=scope,
-                    allow_legacy_fallback=not explicit_scope,
+                return (
+                    _request_device_code(
+                        client=client,
+                        portal_base_url=portal_base_url,
+                        client_id=client_id,
+                        scope=scope,
+                    ),
+                    scope,
                 )
 
         device_data, effective_scope = await asyncio.get_running_loop().run_in_executor(
@@ -1992,7 +3204,6 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
     from hermes_cli.auth import (
-        NOUS_INFERENCE_AUTH_MODE_FRESH,
         _poll_for_token,
         refresh_nous_oauth_from_state,
     )
@@ -2018,7 +3229,7 @@ def _nous_poller(session_id: str) -> None:
                 expires_in=expires_in,
                 poll_interval=interval,
             )
-        # Same post-processing as _nous_device_code_login (mint agent key)
+        # Same post-processing as _nous_device_code_login (validate/refresh JWT)
         now = datetime.now(timezone.utc)
         token_ttl = int(token_data.get("expires_in") or 0)
         auth_state = {
@@ -2038,10 +3249,8 @@ def _nous_poller(session_id: str) -> None:
         }
         full_state = refresh_nous_oauth_from_state(
             auth_state,
-            min_key_ttl_seconds=300,
             timeout_seconds=15.0,
             force_refresh=False,
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
         )
         from hermes_cli.auth import persist_nous_credentials
         persist_nous_credentials(full_state)
@@ -2487,6 +3696,31 @@ async def delete_session_endpoint(session_id: str):
         db.close()
 
 
+class SessionRename(BaseModel):
+    title: Optional[str] = None
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session_endpoint(session_id: str, body: SessionRename):
+    """Rename a session (or clear its title when ``title`` is empty/null)."""
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        try:
+            updated = db.set_session_title(sid, body.title or "")
+        except ValueError as e:
+            # Title too long, invalid characters, or already in use.
+            raise HTTPException(status_code=400, detail=str(e))
+        if not updated:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True, "title": db.get_session_title(sid) or ""}
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Log viewer endpoint
 # ---------------------------------------------------------------------------
@@ -2691,7 +3925,10 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    try:
+        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -2735,7 +3972,11 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    if not _call_cron_for_profile(selected, "remove_job", job_id):
+    try:
+        removed = _call_cron_for_profile(selected, "remove_job", job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
 
@@ -3058,6 +4299,123 @@ async def get_toolsets():
     return result
 
 
+class ToolsetToggle(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/tools/toolsets/{name}")
+async def toggle_toolset(name: str, body: ToolsetToggle):
+    """Enable/disable a configurable toolset for the desktop (cli) platform.
+
+    Persists to ``platform_toolsets.cli`` via the same ``_save_platform_tools``
+    helper the CLI ``hermes tools`` picker uses, so the GUI and CLI stay in
+    lockstep. Returns 400 for unknown toolset keys.
+    """
+    from hermes_cli.tools_config import (
+        _get_effective_configurable_toolsets,
+        _get_platform_tools,
+        _save_platform_tools,
+    )
+
+    valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in valid:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
+
+    config = load_config()
+    enabled = set(
+        _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    )
+    if body.enabled:
+        enabled.add(name)
+    else:
+        enabled.discard(name)
+    _save_platform_tools(config, "cli", enabled)
+    return {"ok": True, "name": name, "enabled": body.enabled}
+
+
+@app.get("/api/tools/toolsets/{name}/config")
+async def get_toolset_config(name: str):
+    """Return the provider matrix + key status for a toolset's config panel.
+
+    Surfaces the same provider rows the CLI ``hermes tools`` picker shows
+    (via ``_visible_providers``), each with its ``env_vars`` annotated with
+    current ``is_set`` state so the GUI can render provider selection + key
+    entry. Toolsets without a ``TOOL_CATEGORIES`` entry return an empty
+    provider list and ``has_category: false``. Returns 400 for unknown keys.
+    """
+    from hermes_cli.tools_config import (
+        TOOL_CATEGORIES,
+        _get_effective_configurable_toolsets,
+        _visible_providers,
+    )
+    from hermes_cli.config import get_env_value
+
+    valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in valid:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
+
+    config = load_config()
+    cat = TOOL_CATEGORIES.get(name)
+    providers = []
+    if cat:
+        for prov in _visible_providers(cat, config, force_fresh=True):
+            env_vars = [
+                {
+                    "key": e["key"],
+                    "prompt": e.get("prompt", e["key"]),
+                    "url": e.get("url"),
+                    "default": e.get("default"),
+                    "is_set": bool(get_env_value(e["key"])),
+                }
+                for e in prov.get("env_vars", [])
+            ]
+            providers.append({
+                "name": prov["name"],
+                "badge": prov.get("badge", ""),
+                "tag": prov.get("tag", ""),
+                "env_vars": env_vars,
+                "post_setup": prov.get("post_setup"),
+                "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+            })
+    return {
+        "name": name,
+        "has_category": cat is not None,
+        "providers": providers,
+    }
+
+
+class ToolsetProviderSelect(BaseModel):
+    provider: str
+
+
+@app.put("/api/tools/toolsets/{name}/provider")
+async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
+    """Persist a provider selection for a toolset (no key prompting).
+
+    Delegates to ``apply_provider_selection`` — the shared, non-interactive
+    core extracted from the CLI configurator — so the GUI and ``hermes tools``
+    write identical config keys (``web.backend``, ``tts.provider``, etc.).
+    API keys and post-setup flows are handled by separate endpoints. Returns
+    400 for unknown toolset or provider names.
+    """
+    from hermes_cli.tools_config import (
+        apply_provider_selection,
+        _get_effective_configurable_toolsets,
+    )
+
+    valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    if name not in valid:
+        raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
+
+    config = load_config()
+    try:
+        apply_provider_selection(name, body.provider, config)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+    save_config(config)
+    return {"ok": True, "name": name, "provider": body.provider}
+
+
 # ---------------------------------------------------------------------------
 # Raw YAML config endpoint
 # ---------------------------------------------------------------------------
@@ -3269,7 +4627,6 @@ async def get_models_analytics(days: int = 30):
 # ---------------------------------------------------------------------------
 
 import re
-import asyncio
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
 # Windows the import raises; catch and leave PtyBridge=None so the rest of
@@ -3294,23 +4651,130 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
-def _is_public_bind() -> bool:
-    """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
-
-
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    Loopback bind: only loopback clients allowed — the legacy
+    ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
+    don't want LAN hosts guessing tokens.
+
+    Explicit non-loopback bind (``--host 0.0.0.0``, ``--host ::``, or a
+    specific address such as a Tailscale/LAN IP, always with
+    ``--insecure``): allow any peer. The operator explicitly opted into
+    non-loopback exposure, so the loopback-only peer restriction does not
+    apply. DNS-rebinding is still blocked by the Host/Origin guard in
+    :func:`_ws_host_origin_is_allowed`, which mirrors the HTTP layer and
+    requires the Host header to match the bound interface — the same
+    defence ``_is_accepted_host`` applies to non-loopback HTTP requests.
+
+    Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
+    (enabled when the OAuth gate is active so cookies can pick up
+    ``X-Forwarded-Proto``) rewrites ``ws.client.host`` to the
+    X-Forwarded-For value, which is the real internet client IP. The
+    OAuth gate + single-use ``?ticket=`` is the auth at that point; the
+    Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
+    blocks DNS-rebinding here, not the peer IP.
     """
-    if _is_public_bind():
+    if getattr(app.state, "auth_required", False):
+        return True
+    # Any explicit non-loopback bind (0.0.0.0, ::, or a specific LAN /
+    # Tailscale address) means the operator opted into non-loopback
+    # access via --insecure.  The loopback-only peer gate only applies to
+    # an actual loopback bind; otherwise the WS handshake is rejected even
+    # though same-bind HTTP requests pass _is_accepted_host.
+    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    if bound_host and bound_host not in _LOOPBACK_HOSTS:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
     return client_host in _LOOPBACK_HOSTS
+
+
+def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+    """Apply the dashboard Host/Origin guard to WebSocket upgrades.
+
+    FastAPI HTTP middleware does not run for WebSocket routes, so the
+    DNS-rebinding Host check used for normal dashboard HTTP requests must be
+    repeated here before accepting the upgrade.  Browsers also send an Origin
+    header on WebSocket handshakes; when present, require it to target the
+    same bound dashboard host.
+    """
+    bound_host = getattr(app.state, "bound_host", None)
+    if not bound_host:
+        return True
+
+    host_header = ws.headers.get("host", "")
+    if not _is_accepted_host(host_header, bound_host):
+        return False
+
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        return True
+
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"}:
+        # Packaged Electron loads the desktop renderer over file://, so its
+        # WebSocket handshake carries a non-web Origin such as file:// or null.
+        # DNS-rebinding attacks originate from an http(s) site; they cannot
+        # forge a file:// origin and still hold the loopback session token.
+        # Public/gated binds have no legitimate non-web client, so keep
+        # rejecting these origins there.
+        return bound_host.lower() in _LOOPBACK_HOST_VALUES
+
+    if not parsed.netloc:
+        return False
+
+    return _is_accepted_host(parsed.netloc, bound_host)
+
+
+def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+    """Return True when the WebSocket upgrade matches dashboard boundaries."""
+    return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
+
+
+def _ws_auth_ok(ws: "WebSocket") -> bool:
+    """Validate WS-upgrade auth in either loopback or gated mode.
+
+    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
+    parameter, constant-time compared.
+
+    Gated (public bind, no ``--insecure``): ``?ticket=<single-use>`` query
+    parameter consumed against the dashboard-auth ticket store. The legacy
+    token path is unconditionally rejected in this mode (the SPA bundle
+    isn't carrying the token any longer).
+
+    Returns True if the WS should be accepted; callers close with the
+    appropriate WS code (4401) on False. Audit-logs the rejection so
+    operators can debug "WS keeps closing" issues from the log.
+    """
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    if auth_required:
+        ticket = ws.query_params.get("ticket", "")
+        if not ticket:
+            return False
+        # Lazy import — keeps this function importable in test harnesses
+        # that don't bring in the dashboard_auth layer.
+        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_ticket,
+        )
+
+        try:
+            consume_ticket(ticket)
+            return True
+        except TicketInvalid as exc:
+            audit_log(
+                AuditEvent.WS_TICKET_REJECTED,
+                reason=str(exc),
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return False
+
+    token = ws.query_params.get("token", "")
+    return hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -3334,6 +4798,10 @@ def _resolve_chat_argv(
     matching what ``hermes_cli.main._launch_tui`` does for the CLI path.
     Appending ``--resume <id>`` to argv doesn't work because ``ui-tui`` does
     not parse its argv.
+
+    ``HERMES_TUI_GATEWAY_URL`` is injected so the PTY child can attach to
+    this process's in-memory ``tui_gateway`` instance instead of spawning
+    its own Python gateway subprocess.
 
     `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
@@ -3362,11 +4830,46 @@ def _resolve_chat_argv(
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
+    if gateway_ws_url := _build_gateway_ws_url():
+        env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+
     return list(argv), str(cwd) if cwd else None, env
 
 
+def _build_gateway_ws_url() -> Optional[str]:
+    """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic."""
+    host = getattr(app.state, "bound_host", None)
+    port = getattr(app.state, "bound_port", None)
+
+    if not host or not port:
+        return None
+
+    netloc = (
+        f"[{host}]:{port}"
+        if ":" in host and not host.startswith("[")
+        else f"{host}:{port}"
+    )
+    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
+
+    return f"ws://{netloc}/api/ws?{qs}"
+
+
 def _build_sidecar_url(channel: str) -> Optional[str]:
-    """ws:// URL the PTY child should publish events to, or None when unbound."""
+    """ws:// URL the PTY child should publish events to, or None when unbound.
+
+    Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
+
+    Gated mode: mints a single-use ticket via the dashboard-auth ticket
+    store (server-side mint, no HTTP round trip — the PTY child is a
+    server-spawned process and we trust it). The ticket binds to the
+    pseudo-user ``"pty-sidecar"`` so audit logs can distinguish these from
+    browser-initiated tickets.
+
+    The single-use lifetime means the PTY child cannot reconnect without a
+    new sidecar URL. PTY children open ``/api/pub`` once at startup; if
+    reconnect semantics ever become important, this should be upgraded to
+    a long-lived process-scoped token.
+    """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
 
@@ -3374,7 +4877,15 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
         return None
 
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+
+    if getattr(app.state, "auth_required", False):
+        # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
+        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+
+        ticket = mint_ticket(user_id="pty-sidecar", provider="server-internal")
+        qs = urllib.parse.urlencode({"ticket": ticket, "channel": channel})
+    else:
+        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 
     return f"ws://{netloc}/api/pub?{qs}"
 
@@ -3390,7 +4901,7 @@ async def _broadcast_event(channel: str, payload: str) -> None:
         except Exception:
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
-            pass
+            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -3407,13 +4918,11 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    token = ws.query_params.get("token", "")
-    expected = _SESSION_TOKEN
-    if not hmac.compare_digest(token.encode(), expected.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3527,12 +5036,11 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3559,12 +5067,11 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3588,12 +5095,11 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3629,24 +5135,13 @@ async def events_ws(ws: WebSocket) -> None:
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
-    Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
-    no prefix is set / the header is malformed. We deliberately reject
-    anything containing ``..`` or non-printable bytes so a hostile proxy
-    can't inject HTML via the prefix.
+    Thin re-export of :func:`hermes_cli.dashboard_auth.prefix.normalise_prefix`
+    — the single source of truth lives in the dashboard_auth package so
+    the gate middleware, the OAuth routes, the cookie helpers, and the
+    SPA mount all agree on validation rules.
     """
-    if not raw:
-        return ""
-    p = raw.strip()
-    if not p:
-        return ""
-    if not p.startswith("/"):
-        p = "/" + p
-    p = p.rstrip("/")
-    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
-        return ""
-    if len(p) > 64:
-        return ""
-    return p
+    from hermes_cli.dashboard_auth.prefix import normalise_prefix
+    return normalise_prefix(raw)
 
 
 def mount_spa(application: FastAPI):
@@ -3679,14 +5174,33 @@ def mount_spa(application: FastAPI):
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
         or empty string when served at root.
+
+        When the OAuth auth gate is active (``app.state.auth_required``),
+        the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
+        identity from ``/api/auth/me`` over cookie auth instead.  The
+        ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
+        auth scheme for /api/pty and /api/ws (ticket vs token).
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
-        )
+        gated = bool(getattr(app.state, "auth_required", False))
+        gated_js = "true" if gated else "false"
+        if gated:
+            bootstrap_script = (
+                f"<script>"
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
+        else:
+            bootstrap_script = (
+                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -3696,7 +5210,7 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        html = html.replace("</head>", f"{token_script}</head>", 1)
+        html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -3730,6 +5244,17 @@ def mount_spa(application: FastAPI):
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        # An unmatched /api/* path is a missing/renamed endpoint, NOT a
+        # client-side route. Falling through to index.html here returns
+        # `<!doctype html>` with status 200, which makes JSON clients (the
+        # desktop app's fetchJson, dashboard fetch wrappers) blow up with an
+        # opaque `SyntaxError: Unexpected token '<'`. Return a real 404 JSON
+        # so the caller sees a clear "no such endpoint" instead.
+        if full_path == "api" or full_path.startswith("api/"):
+            return JSONResponse(
+                {"detail": f"No such API endpoint: /{full_path}"},
+                status_code=404,
+            )
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
@@ -4045,6 +5570,43 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
+    """Validate the manifest's ``api`` field for the plugin loader.
+
+    The web server later imports this file as a Python module via
+    ``importlib.util.spec_from_file_location`` (arbitrary code
+    execution by design — that's how plugins extend the backend).
+    Pre-#29156 the field was used as-is, which meant:
+
+    * An absolute path swallowed the plugin's dashboard directory
+      entirely — ``Path('safe/dashboard') / '/tmp/evil.py'`` resolves
+      to ``/tmp/evil.py``, so any attacker-controlled manifest could
+      point the import at any Python file on disk (GHSA-5qr3-c538-wm9j).
+    * A ``../..`` traversal could climb out of the plugin into
+      neighbouring directories on the search path.
+
+    Return the original string when the resolved path stays under
+    ``dashboard_dir``; return ``None`` (with a warning logged at the
+    call site) otherwise so the plugin still loads its static JS/CSS
+    but its backend ``api`` is rejected.
+    """
+    if not isinstance(api_field, str) or not api_field.strip():
+        return None
+    candidate = Path(api_field)
+    if candidate.is_absolute():
+        return None
+    try:
+        resolved = (dashboard_dir / candidate).resolve()
+        base = dashboard_dir.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        return None
+    return api_field
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -4063,7 +5625,16 @@ def _discover_dashboard_plugins() -> list:
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
     ]
-    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
+    # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
+    # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,
+    # and ``=no`` — all of which the agent loader and operators correctly
+    # read as "disabled" — silently *enabled* the untrusted project source
+    # in the web server.  Combined with the absolute-path RCE primitive on
+    # the manifest's ``api`` field (now patched below), this turned the
+    # opt-in into a sticky always-on switch.  Use the shared truthy
+    # semantics (``1`` / ``true`` / ``yes`` / ``on``) so the gate matches
+    # ``hermes_cli/plugins.py`` and the documented user contract.
+    if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
 
     for plugins_root, source in search_dirs:
@@ -4102,6 +5673,23 @@ def _discover_dashboard_plugins() -> list:
                 slots: List[str] = []
                 if isinstance(slots_src, list):
                     slots = [s for s in slots_src if isinstance(s, str) and s]
+                # Validate ``api`` at discovery time so the value cached
+                # on the plugin entry is already safe to feed into the
+                # importer.  An attacker-controlled manifest can name
+                # any absolute path or ``..`` traversal here — the
+                # web server then imports that file as a Python module
+                # (RCE, GHSA-5qr3-c538-wm9j).
+                raw_api = data.get("api")
+                dashboard_dir = child / "dashboard"
+                safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
+                if raw_api and safe_api is None:
+                    _log.warning(
+                        "Plugin %s: refusing unsafe api path %r (must be a "
+                        "relative file inside the plugin's dashboard/ "
+                        "directory); backend routes from this plugin will "
+                        "not be mounted",
+                        name, raw_api,
+                    )
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -4112,10 +5700,10 @@ def _discover_dashboard_plugins() -> list:
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),
-                    "has_api": bool(data.get("api")),
+                    "has_api": bool(safe_api),
                     "source": source,
-                    "_dir": str(child / "dashboard"),
-                    "_api_file": data.get("api"),
+                    "_dir": str(dashboard_dir),
+                    "_api_file": safe_api,
                 })
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
@@ -4321,12 +5909,13 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
 
 def _validate_plugin_name(name: str) -> str:
     """Reject path-traversal attempts in plugin name URL parameters."""
-    if not name or "/" in name or "\\" in name or ".." in name:
+    name = name.strip("/")
+    if not name or ".." in name or "\\" in name:
         raise HTTPException(status_code=400, detail="Invalid plugin name.")
     return name
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/enable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4338,7 +5927,7 @@ async def post_agent_plugin_enable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/disable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4350,7 +5939,7 @@ async def post_agent_plugin_disable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/update")
+@app.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4363,7 +5952,7 @@ async def post_agent_plugin_update(request: Request, name: str):
     return result
 
 
-@app.delete("/api/dashboard/agent-plugins/{name}")
+@app.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4401,7 +5990,7 @@ class _PluginVisibilityBody(BaseModel):
     hidden: bool
 
 
-@app.post("/api/dashboard/plugins/{name}/visibility")
+@app.post("/api/dashboard/plugins/{name:path}/visibility")
 async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
     _require_token(request)
@@ -4430,6 +6019,17 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
 
     Only serves files from the plugin's ``dashboard/`` subdirectory.
     Path traversal is blocked by checking ``resolve().is_relative_to()``.
+
+    Restricted to a browser-fetchable suffix allowlist (JS/CSS/JSON/HTML/
+    SVG/PNG/JPG/WOFF). The dashboard loads plugin JS via ``<script src>``
+    and CSS via ``<link href>``, neither of which can attach a custom
+    auth header — so this route stays unauthenticated to keep the SPA
+    working. But user-installed plugins ship a ``plugin_api.py``
+    backend module that the browser never fetches; it's only imported
+    by :func:`_mount_plugin_api_routes` at startup. Without a suffix
+    allowlist, anyone on the loopback port can curl the ``.py`` source
+    of a private third-party plugin. Reject everything outside the
+    browser-asset set.
     """
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
@@ -4444,7 +6044,11 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Guess content type
+    # Browser-asset suffix allowlist. Everything outside this set is
+    # rejected with 404 so we don't leak ``.py`` backend sources, README
+    # files, ``.env.example`` templates, etc. — none of which the SPA
+    # actually fetches. Add to this set deliberately when a new asset
+    # type comes up; do NOT change the default fallback.
     suffix = target.suffix.lower()
     content_types = {
         ".js": "application/javascript",
@@ -4455,10 +6059,22 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         ".svg": "image/svg+xml",
         ".png": "image/png",
         ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".ico": "image/x-icon",
         ".woff2": "font/woff2",
         ".woff": "font/woff",
+        ".ttf": "font/ttf",
+        ".otf": "font/otf",
+        ".map": "application/json",
     }
-    media_type = content_types.get(suffix, "application/octet-stream")
+    if suffix not in content_types:
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+    media_type = content_types[suffix]
     return FileResponse(
         target,
         media_type=media_type,
@@ -4472,12 +6088,42 @@ def _mount_plugin_api_routes():
     Each plugin's ``api`` field points to a Python file that must expose
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
+
+    Backend import is restricted to ``bundled`` and ``user`` sources.
+    Project plugins (``./.hermes/plugins/``) ship with the CWD and are
+    therefore attacker-controlled in any threat model where the user
+    opens a malicious repo; they can extend the dashboard UI via
+    static JS/CSS but their Python ``api`` file is never auto-imported
+    by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        api_path = Path(plugin["_dir"]) / api_file_name
+        if plugin.get("source") == "project":
+            _log.warning(
+                "Plugin %s: ignoring backend api=%s (project plugins may "
+                "not auto-import Python code; move the plugin to "
+                "~/.hermes/plugins/ if you trust it)",
+                plugin["name"], api_file_name,
+            )
+            continue
+        dashboard_dir = Path(plugin["_dir"])
+        api_path = dashboard_dir / api_file_name
+        try:
+            resolved_api = api_path.resolve()
+            resolved_base = dashboard_dir.resolve()
+            resolved_api.relative_to(resolved_base)
+        except (OSError, RuntimeError, ValueError):
+            # Discovery already filters this, but re-check here in case
+            # ``_dir`` was tampered with after caching or a future caller
+            # bypasses the validator.  Defence in depth keeps the import
+            # primitive contained even if the upstream check regresses.
+            _log.warning(
+                "Plugin %s: refusing to import api file outside its "
+                "dashboard directory (%s)", plugin["name"], api_path,
+            )
+            continue
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue
@@ -4512,6 +6158,13 @@ def _mount_plugin_api_routes():
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
+# Mount the dashboard auth routes (/login, /auth/*, /api/auth/*) before the
+# SPA catch-all so /{full_path:path} doesn't swallow them.  These are
+# always mounted — the gate middleware decides whether to enforce auth,
+# not whether the routes exist.
+from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+app.include_router(_dashboard_auth_router)
+
 mount_spa(app)
 
 
@@ -4529,14 +6182,65 @@ def start_server(
     global _DASHBOARD_EMBEDDED_CHAT_ENABLED
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
-    _LOCALHOST = ("127.0.0.1", "localhost", "::1")
-    if host not in _LOCALHOST and not allow_public:
-        raise SystemExit(
-            f"Refusing to bind to {host} — the dashboard exposes API keys "
-            f"and config without robust authentication.\n"
-            f"Use --insecure to override (NOT recommended on untrusted networks)."
+    # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
+    # injection / WS-auth paths can branch on it consistently.  Phase 3.5
+    # uses this to decide whether to refuse the bind, log the gate-on
+    # banner, and enable uvicorn proxy_headers.
+    app.state.auth_required = should_require_auth(host, allow_public)
+
+    if app.state.auth_required:
+        # Phase 3.5: the gate engages on non-loopback binds.  The legacy
+        # "refusing to bind" guard is replaced by "require at least one
+        # provider to be registered, else fail closed".
+        from hermes_cli.dashboard_auth import list_providers
+        if not list_providers():
+            # Surface the *specific* reason any bundled provider declined
+            # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).
+            # Each provider plugin that ships with Hermes Agent exposes a
+            # module-level ``LAST_SKIP_REASON`` string for this purpose;
+            # without it the operator would only see "no providers" which
+            # is misleading when the provider IS installed but unconfigured.
+            skip_reasons: list[str] = []
+            try:
+                from plugins.dashboard_auth import nous as _nous_plugin
+
+                if _nous_plugin.LAST_SKIP_REASON:
+                    skip_reasons.append(
+                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
+                    )
+            except Exception:
+                pass
+
+            if skip_reasons:
+                raise SystemExit(
+                    f"Refusing to bind dashboard to {host} — the OAuth auth "
+                    f"gate engages on non-loopback binds, but no auth "
+                    f"providers are registered.\n"
+                    f"\n"
+                    f"Bundled providers reported these issues:\n"
+                    + "\n".join(skip_reasons)
+                    + "\n"
+                    f"\n"
+                    f"Or pass --insecure to skip the auth gate (NOT "
+                    f"recommended on untrusted networks)."
+                )
+            raise SystemExit(
+                f"Refusing to bind dashboard to {host} — the OAuth auth "
+                f"gate engages on non-loopback binds, but no auth providers "
+                f"are registered and no bundled plugin reported a reason "
+                f"(was the dashboard_auth/nous plugin removed?).\n"
+                f"Install a DashboardAuthProvider plugin, or pass --insecure "
+                f"to skip the auth gate (NOT recommended on untrusted "
+                f"networks)."
+            )
+        _log.info(
+            "Dashboard binding to %s with OAuth auth gate enabled. "
+            "Providers: %s",
+            host,
+            ", ".join(p.name for p in list_providers()),
         )
-    if host not in _LOCALHOST:
+    elif host not in _LOOPBACK_HOST_VALUES and allow_public:
+        # --insecure path — no auth, loud warning.
         _log.warning(
             "Binding to %s with --insecure — the dashboard has no robust "
             "authentication. Only use on trusted networks.", host,
@@ -4581,7 +6285,13 @@ def start_server(
             )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
-    # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
-    # rather than X-Forwarded-For's rewritten value (which would defeat the
-    # loopback gate when behind a reverse proxy).
-    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=False)
+    # proxy_headers defaults to False so _ws_client_is_allowed sees the real
+    # connection peer rather than X-Forwarded-For's rewritten value (which
+    # would defeat the loopback gate when behind a reverse proxy).  When the
+    # OAuth gate is active we are explicitly running behind a TLS terminator
+    # (Fly.io) and need X-Forwarded-Proto to decide cookie Secure flags, so
+    # we flip proxy_headers on for that mode.
+    uvicorn.run(
+        app, host=host, port=port, log_level="warning",
+        proxy_headers=bool(app.state.auth_required),
+    )

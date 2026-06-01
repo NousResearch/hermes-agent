@@ -108,6 +108,15 @@ _IS_WINDOWS = sys.platform == "win32"
 # workloads either finish within 15m, set a longer claim explicitly, or use
 # ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` to raise the default claim window for
 # long single-call MCP workflows.
+# Valid target_node values for proof-node gate (t_728a7e43).
+# NULL or "any" allow completion without proof; others require matching
+# verified_on_node in completion metadata.
+VALID_TARGET_NODES = {"conductor", "cfo-vm", "mac", "any"}
+
+# A running task's claim is valid for 15 minutes; after that the next
+# dispatcher tick reclaims it.  Workers that outlive this window should call
+# ``heartbeat_claim(task_id)`` periodically.  In practice most kanban
+# workloads either finish within 15m or set a longer claim explicitly.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
 # If a worker's PID is still alive but its ``last_heartbeat_at`` is
@@ -744,6 +753,11 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Proof-node gate for infra/operator cards (t_728a7e43). When set to
+    # a specific node name (conductor, cfo-vm, mac), completion must include
+    # metadata with ``verified_on_node`` matching this value. ``None`` or
+    # ``"any"`` allow completion without proof (default for non-infra cards).
+    target_node: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -818,6 +832,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            target_node=(
+                row["target_node"] if "target_node" in keys else None
             ),
         )
 
@@ -981,6 +998,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT
+    -- Proof-node gate for infra/operator cards: when set to a node name
+    -- (conductor, cfo-vm, mac), completion must include metadata with
+    -- verified_on_node matching this value. NULL or 'any' allow completion
+    -- without proof (default for non-infra cards). See t_728a7e43.
+    target_node          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1650,6 +1672,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
+    if "target_node" not in cols:
+        # Proof-node gate for infra/operator cards (t_728a7e43). NULL or
+        # 'any' = no proof required; specific node names (conductor, cfo-vm,
+        # mac) require completion metadata with matching verified_on_node.
+        # Existing rows get NULL, which preserves legacy behavior (complete
+        # without proof).
+        _add_column_if_missing(conn, "tasks", "target_node", "target_node TEXT")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -2014,6 +2043,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    target_node: Optional[str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2039,6 +2069,13 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``target_node`` is an optional proof-node gate for infra/operator
+    cards (t_728a7e43). When set to a specific node name (conductor,
+    cfo-vm, mac), completion requires matching ``verified_on_node`` in
+    the metadata. ``None`` or ``"any"`` allow completion without proof
+    (default for non-infra cards). Prevents false-DONE where proof is
+    collected on the wrong machine.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2056,6 +2093,16 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    
+    # Validate target_node
+    if target_node is not None:
+        target_node = target_node.strip().lower() if target_node else None
+        if target_node and target_node not in VALID_TARGET_NODES:
+            raise ValueError(
+                f"target_node must be one of {sorted(VALID_TARGET_NODES)}, "
+                f"got {target_node!r}"
+            )
+    
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2179,8 +2226,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        target_node
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2202,6 +2250,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        target_node,
                     ),
                 )
                 for pid in parents:
@@ -3541,6 +3590,36 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    # Gate: verify target_node proof BEFORE the main write txn. A rejected
+    # completion still needs an auditable event, so we emit it in a tiny
+    # dedicated txn, then return False. The task remains in its current
+    # state (running/ready/blocked).
+    row = conn.execute(
+        "SELECT target_node FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row:
+        target_node = row["target_node"]
+        # NULL or 'any' allow completion without proof
+        if target_node and target_node != "any":
+            # Specific node name (conductor, cfo-vm, mac) requires matching proof
+            verified_on_node = metadata.get("verified_on_node") if metadata else None
+            if verified_on_node != target_node:
+                # Proof missing or mismatched — emit event and reject
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "completion_blocked_target_node_mismatch",
+                        {
+                            "expected": target_node,
+                            "actual": verified_on_node,
+                            "summary_preview": (
+                                (summary or result or "").strip().splitlines()[0][:200]
+                                if (summary or result)
+                                else None
+                            ),
+                        },
+                    )
+                return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a

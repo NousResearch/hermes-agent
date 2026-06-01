@@ -470,9 +470,12 @@ class TestRegister:
     class _FakeCtx:
         def __init__(self):
             self.kwargs = None
+            self.calls = []
 
         def register_platform(self, **kw):
-            self.kwargs = kw
+            self.calls.append(kw)
+            if self.kwargs is None:
+                self.kwargs = kw
 
     def test_register_calls_register_platform(self):
         ctx = self._FakeCtx()

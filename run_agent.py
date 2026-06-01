@@ -44,8 +44,10 @@ import sys
 import tempfile
 import time
 import threading
+import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
+from types import SimpleNamespace
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -106,7 +108,9 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import StreamingContextScrubber, sanitize_context
+from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.think_scrubber import StreamingThinkScrubber
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
@@ -146,6 +150,8 @@ from agent.codex_responses_adapter import (
     _summarize_user_message_for_log,  # noqa: F401  # re-exported for tests
 )
 from agent.tool_guardrails import (
+    ToolCallGuardrailConfig,
+    ToolCallGuardrailController,
     ToolGuardrailDecision,
     append_toolguard_guidance,
     toolguard_synthetic_result,
@@ -170,7 +176,12 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname
+from utils import (
+    atomic_json_write,
+    base_url_host_matches,
+    base_url_hostname,
+    normalize_proxy_url,
+)
 
 
 

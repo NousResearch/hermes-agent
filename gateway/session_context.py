@@ -95,28 +95,6 @@ def set_session_vars(
     Returns a list of ``Token`` objects (one per variable) that can be
     passed to ``clear_session_vars``.
     """
-    # Also export to os.environ so that tools invoked in worker threads
-    # which did not inherit the ContextVar (e.g. spawn_pool threads from
-    # libraries that bypass ``propagate_context_to_thread``) can still
-    # resolve the platform via ``os.environ``.  Without this mirror, a
-    # follow-up turn triggered from inside a tool (auto-skill review,
-    # memory sweep, cron-style background) loses the platform and
-    # downstream code like TTS's ``want_opus`` falls back to MP3 instead
-    # of converting to Opus voice bubbles.
-    import os
-    if platform:
-        os.environ["HERMES_SESSION_PLATFORM"] = platform
-    if chat_id:
-        os.environ["HERMES_SESSION_CHAT_ID"] = chat_id
-    if session_key:
-        os.environ["HERMES_SESSION_KEY"] = session_key
-    if thread_id:
-        os.environ["HERMES_SESSION_THREAD_ID"] = str(thread_id)
-    if user_id:
-        os.environ["HERMES_SESSION_USER_ID"] = str(user_id)
-    if session_key:
-        os.environ["HERMES_SESSION_ID"] = session_key
-
     tokens = [
         _SESSION_PLATFORM.set(platform),
         _SESSION_CHAT_ID.set(chat_id),

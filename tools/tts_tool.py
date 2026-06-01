@@ -1662,26 +1662,21 @@ def text_to_speech_tool(
         )
         text = text[:max_len]
 
-    # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Detect platform from gateway session context to choose the best output
+    # format.  Telegram voice bubbles require Opus (.ogg); OpenAI and
+    # ElevenLabs can produce Opus natively (no ffmpeg needed).  Edge TTS
+    # always outputs MP3 and needs ffmpeg for conversion.
     #
-    # Resolution order:
-    #   1. gateway.session_context (ContextVar set by the gateway for the
-    #      active turn — survives concurrent gateway messages).
-    #   2. ``os.environ`` — covers the case where a tool worker thread
-    #      spawned for a follow-up turn (e.g. auto-skill review) has lost
-    #      its ContextVar inheritance, or a tool is invoked from a
-    #      non-gateway entry point that still propagates the env.
-    #   3. empty string — neither known, so we assume non-voice and skip
-    #      the ffmpeg conversion. ``want_opus`` stays False in that case
-    #      so CLI / cron / local invocations keep their native MP3/WAV.
+    # Resolution: ``gateway.session_context`` (ContextVar set by the
+    # gateway for the active turn).  Reading ``os.environ`` is **not**
+    # safe here because ``os.environ`` is process-global and concurrent
+    # gateway sessions (e.g. Telegram + Discord) can race overwriting
+    # each other's platform.  When the ContextVar is unset (CLI / cron /
+    # worker thread that lost ContextVar inheritance) we conservatively
+    # skip the Opus conversion rather than read a stale or cross-session
+    # platform from the environment.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
-    if not platform:
-        import os as _os
-        platform = _os.environ.get("HERMES_SESSION_PLATFORM", "").strip().lower()
     want_opus = (platform == "telegram")
 
     # Determine output path

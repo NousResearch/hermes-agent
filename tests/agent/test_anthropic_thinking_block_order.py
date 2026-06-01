@@ -231,5 +231,104 @@ class TestInterleavedThinkingBlockOrder:
         )
 
 
+class TestInterleavedReplayCredentialRedaction:
+    """The verbatim-replay fast path must not leak un-redacted secrets.
+
+    anthropic_content_blocks captures each tool_use ``input`` from the RAW API
+    response (normalize_response), which is NOT credential-redacted. The
+    parallel tool_calls[].function.arguments IS redacted at storage time
+    (build_assistant_message, #19798). If the fast path replays the block's raw
+    input verbatim, a secret the model inlined into a tool call rides back onto
+    the wire — even though it is redacted everywhere else in history. The fix
+    re-sources tool_use input from the redacted tool_calls map by id.
+    """
+
+    def test_tool_use_input_resourced_from_redacted_tool_calls(self):
+        REDACTED = "[REDACTED_SECRET]"
+        # Ordered channel: raw input carries the live secret (as captured from
+        # the unredacted API response).
+        ordered = [
+            {"type": "thinking", "thinking": "Call the API.", "signature": "sig-AAA"},
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "terminal",
+                "input": {"command": "curl -H 'Authorization: Bearer sk-LIVE-SECRET-123'"},
+            },
+            {"type": "thinking", "thinking": "Now the second call.", "signature": "sig-BBB"},
+            {
+                "type": "tool_use",
+                "id": "toolu_2",
+                "name": "terminal",
+                "input": {"command": "echo done"},
+            },
+        ]
+        # Stored tool_calls: arguments already redacted (the #19798 path).
+        assistant_msg = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_details": [b for b in ordered if b["type"] == "thinking"],
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": json.dumps(
+                            {"command": f"curl -H 'Authorization: Bearer {REDACTED}'"}
+                        ),
+                    },
+                },
+                {
+                    "id": "toolu_2",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": json.dumps({"command": "echo done"}),
+                    },
+                },
+            ],
+            "anthropic_content_blocks": ordered,
+        }
+        messages = [
+            {"role": "user", "content": "Hit the API twice."},
+            assistant_msg,
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "200 OK"},
+            {"role": "tool", "tool_call_id": "toolu_2", "content": "done"},
+        ]
+
+        _system, anthropic_messages = convert_messages_to_anthropic(
+            messages, base_url=None, model="claude-opus-4-8",
+        )
+        assistant_out = [m for m in anthropic_messages if m.get("role") == "assistant"]
+        assert assistant_out, "no assistant message in converted output"
+        blocks = assistant_out[-1]["content"]
+
+        tool_uses = {b["id"]: b for b in blocks if b.get("type") == "tool_use"}
+        assert set(tool_uses) == {"toolu_1", "toolu_2"}, "tool_use blocks missing/renamed"
+
+        # The replayed input must be the REDACTED value, not the live secret.
+        replayed_cmd = tool_uses["toolu_1"]["input"]["command"]
+        assert "sk-LIVE-SECRET-123" not in replayed_cmd, (
+            "Un-redacted secret leaked onto the wire via the verbatim-replay "
+            "fast path. tool_use input must be re-sourced from the redacted "
+            "tool_calls map, not the raw captured block."
+        )
+        assert REDACTED in replayed_cmd
+
+        # Interleave order is still preserved (the reason the channel exists).
+        order = [
+            ("thinking", b.get("signature")) if b.get("type") == "thinking"
+            else ("tool_use", b.get("id"))
+            for b in blocks if b.get("type") in ("thinking", "tool_use")
+        ]
+        assert order == [
+            ("thinking", "sig-AAA"),
+            ("tool_use", "toolu_1"),
+            ("thinking", "sig-BBB"),
+            ("tool_use", "toolu_2"),
+        ]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

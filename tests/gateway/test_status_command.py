@@ -633,3 +633,75 @@ async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
     assert fired == []
     assert session_key in adapter._post_delivery_callbacks
     assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+
+@pytest.mark.asyncio
+async def test_post_delivery_callback_runs_after_typing_task_stops():
+    """Regression: cleanup stops typing before post-delivery callback awaits."""
+    import inspect
+    from gateway.platforms.base import BasePlatformAdapter
+
+    source_text = inspect.getsource(BasePlatformAdapter._process_message_background)
+    stop_idx = source_text.find("await _stop_typing_task()")
+    cb_idx = source_text.find("if callable(_post_cb):")
+
+    assert stop_idx != -1 and cb_idx != -1
+    assert stop_idx < cb_idx
+
+
+@pytest.mark.asyncio
+async def test_post_delivery_callback_await_is_timeout_bounded(monkeypatch):
+    """Regression: awaited post-delivery callbacks must be bounded by timeout."""
+    import asyncio
+    import inspect
+    import gateway.platforms.base as base_module
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    callback_released = asyncio.Event()
+    seen_timeouts = []
+    real_wait_for = asyncio.wait_for
+
+    class _ConcreteAdapter(BasePlatformAdapter):
+        platform = Platform.TELEGRAM
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def send(self, chat_id, content, **kwargs):
+            return SendResult(success=True, message_id="m2")
+
+        async def get_chat_info(self, chat_id):
+            return {}
+
+    adapter = _ConcreteAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+
+    async def fake_handler(event):
+        return "ok"
+
+    async def fake_wait_for(awaitable, timeout):
+        seen_timeouts.append(timeout)
+        if timeout == 30.0:
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            raise asyncio.TimeoutError()
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(base_module.asyncio, "wait_for", fake_wait_for)
+    adapter.set_message_handler(fake_handler)
+    event = MessageEvent(text="hello", source=source, message_id="m2")
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    async def _blocked_callback():
+        await callback_released.wait()
+
+    adapter._post_delivery_callbacks[session_key] = _blocked_callback
+    await adapter._process_message_background(event, session_key)
+
+    assert 30.0 in seen_timeouts

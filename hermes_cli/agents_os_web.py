@@ -29,11 +29,15 @@ API_ROUTES = [
     "/api/tasks",
     "/api/approvals",
     "/api/runs",
+    "/api/runs/{id}",
     "/api/events",
     "/api/agents",
     "/api/workflows",
     "/api/safety",
     "/api/artifacts",
+    "/api/sessions",
+    "/api/skills",
+    "/api/cron",
 ]
 STATIC_DIR = Path(__file__).with_name("agents_os_web_static")
 
@@ -213,6 +217,133 @@ class MissionControlWebApp:
         known = {r["id"] for r in rows}
         rows.extend([x for x in extras if x["id"] not in known])
         return rows
+
+    def _redact_preview(self, text: str | None, limit: int = 220) -> str:
+        text = (text or "").replace("\n", " ").strip()
+        patterns = [
+            r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*\S+",
+            r"sk-[A-Za-z0-9_-]{12,}",
+            r"xox[baprs]-[A-Za-z0-9-]+",
+        ]
+        for pat in patterns:
+            text = re.sub(pat, "[redacted]", text)
+        return text[:limit]
+
+    def sessions_payload(self) -> list[dict[str, Any]]:
+        db_path = self.paths.home / "state.db"
+        if not db_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT id, source, user_id, model, started_at, ended_at, message_count,
+                       tool_call_count, title
+                FROM sessions
+                ORDER BY started_at DESC
+                LIMIT 50
+            """).fetchall()
+            sessions = []
+            for row in rows:
+                last_msg = conn.execute("""
+                    SELECT role, content, timestamp, tool_name
+                    FROM messages
+                    WHERE session_id=? AND role IN ('user','assistant')
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT 1
+                """, (row["id"],)).fetchone()
+                sessions.append({
+                    "id": row["id"],
+                    "source": row["source"],
+                    "user_id": row["user_id"],
+                    "model": row["model"],
+                    "started_at": row["started_at"],
+                    "ended_at": row["ended_at"],
+                    "message_count": row["message_count"],
+                    "tool_call_count": row["tool_call_count"],
+                    "title": row["title"] or row["id"],
+                    "last_message_role": last_msg["role"] if last_msg else None,
+                    "last_message_preview": self._redact_preview(last_msg["content"] if last_msg else ""),
+                    "read_only": True,
+                })
+            return sessions
+        except sqlite3.Error:
+            return []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def skills_payload(self) -> list[dict[str, Any]]:
+        root = self.paths.home / "skills"
+        if not root.exists():
+            return []
+        out: list[dict[str, Any]] = []
+        for skill_file in sorted(root.rglob("SKILL.md")):
+            try:
+                text = skill_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            rel = skill_file.parent.relative_to(root)
+            category = str(rel.parent) if str(rel.parent) != "." else "uncategorized"
+            name = rel.name
+            description = ""
+            fm = re.match(r"---\n(.*?)\n---", text, re.S)
+            if fm:
+                for line in fm.group(1).splitlines():
+                    if line.startswith("name:"):
+                        name = line.split(":", 1)[1].strip().strip('"') or name
+                    elif line.startswith("description:"):
+                        description = line.split(":", 1)[1].strip().strip('"')
+            out.append({
+                "name": name,
+                "category": category,
+                "path": str(skill_file.parent),
+                "description": description,
+                "modified_at": int(skill_file.stat().st_mtime),
+                "read_only": True,
+            })
+        return out[:200]
+
+    def cron_payload(self) -> list[dict[str, Any]]:
+        jobs_file = self.paths.home / "cron" / "jobs.json"
+        if not jobs_file.exists():
+            return []
+        try:
+            data = json.loads(jobs_file.read_text(encoding="utf-8"), strict=False)
+        except (OSError, json.JSONDecodeError):
+            return []
+        jobs = data.get("jobs", []) if isinstance(data, dict) else []
+        safe = []
+        for job in jobs[:200]:
+            if not isinstance(job, dict):
+                continue
+            safe.append({
+                "id": job.get("id"),
+                "name": job.get("name") or job.get("id"),
+                "schedule": job.get("schedule_display") or job.get("schedule"),
+                "enabled": bool(job.get("enabled", True)),
+                "paused": bool(job.get("paused", False)),
+                "last_run_at": job.get("last_run_at"),
+                "next_run_at": job.get("next_run_at"),
+                "deliver": job.get("deliver"),
+                "no_agent": bool(job.get("no_agent", False)),
+                "script": job.get("script"),
+                "read_only": True,
+            })
+        return safe
+
+    def run_detail_payload(self, run_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            run = _row(conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+            if run is None:
+                return err("run_not_found", f"Run not found: {run_id}", 404)
+            task = _row(conn.execute("SELECT * FROM tasks WHERE id=?", (run.get("task_id"),)).fetchone()) if run.get("task_id") else None
+            artifacts = [_row(r) for r in conn.execute("SELECT * FROM artifacts WHERE run_id=? OR task_id=? ORDER BY created_at DESC", (run_id, run.get("task_id") or "")).fetchall()]
+            events = [_row(r) for r in conn.execute("SELECT * FROM events WHERE run_id=? OR task_id=? ORDER BY created_at ASC", (run_id, run.get("task_id") or "")).fetchall()]
+        run = self._annotate_runs([run])[0]
+        return ok({"run": run, "task": task, "artifacts": artifacts, "events": events, "read_only": True})
 
     def safety_payload(self) -> dict[str, Any]:
         doctor = self._doctor_payload()
@@ -441,6 +572,15 @@ class MissionControlWebApp:
                 return ok(self.dashboard_payload()["approvals"])
             if method == "GET" and route == "/api/runs":
                 return ok(self.dashboard_payload()["runs"])
+            m = re.fullmatch(r"/api/runs/([^/]+)", route)
+            if method == "GET" and m:
+                return self.run_detail_payload(m.group(1))
+            if method == "GET" and route == "/api/sessions":
+                return ok(self.sessions_payload())
+            if method == "GET" and route == "/api/skills":
+                return ok(self.skills_payload())
+            if method == "GET" and route == "/api/cron":
+                return ok(self.cron_payload())
             if method == "GET" and route == "/api/events":
                 return ok(self.dashboard_payload()["events"])
             if method == "GET" and route == "/api/agents":

@@ -14,12 +14,15 @@ function item(title, meta='', actions=''){return `<div class="item"><div class="
 
 async function refresh(){
   state.dashboard = await api('/api/dashboard');
+  state.sessions = await api('/api/sessions');
+  state.skills = await api('/api/skills');
+  state.cron = await api('/api/cron');
   $('#healthPill').innerHTML = state.dashboard.status.status === 'ok' ? 'HEALTH OK' : 'ATTENTION';
   $('#healthPill').className = 'health ' + (state.dashboard.status.status === 'ok' ? 'ok' : 'warn');
   $('#clock').textContent = new Date().toLocaleTimeString();
   renderAll();
 }
-function renderAll(){ renderHome(); renderTasks(); renderApprovals(); renderRuns(); renderAgents(); renderArtifacts(); renderWorkflows(); renderSafety(); }
+function renderAll(){ renderHome(); renderTasks(); renderApprovals(); renderRuns(); renderSessions(); renderSkills(); renderCron(); renderAgents(); renderArtifacts(); renderWorkflows(); renderSafety(); }
 function renderHome(){
   const q=state.dashboard.queue_summary;
   const cards=[['Action required',q.action_required],['Open tasks',q.open_tasks],['Running',q.running_tasks],['Blocked',q.blocked_tasks],['Approvals',q.pending_approvals],['Failed runs',q.failed_executions],['Review',q.review_tasks],['Completed',q.completed_tasks]];
@@ -37,9 +40,19 @@ function renderApprovals(){
   $('#approvalList').innerHTML=state.dashboard.approvals.map(a=>item(`${escapeHtml(a.title)} ${badge(a.status)}`, `risk=${escapeHtml(a.risk)} · task=${escapeHtml(a.task_id||'-')}<br><span class="path">${escapeHtml(a.payload||'')}</span>`, `<button onclick="approve('${a.id}')">Approve</button><button onclick="deny('${a.id}')">Deny</button>`)).join('') || '<p class="muted">No approvals.</p>';
 }
 function renderRuns(){
-  $('#runsList').innerHTML='<h3>Runs</h3>'+state.dashboard.runs.map(r=>item(`${escapeHtml(r.id)} ${badge(r.status)}`, `kind=${escapeHtml(r.kind)} · workflow=${escapeHtml(r.workflow)} · task=${escapeHtml(r.task_id||'-')}`)).join('');
+  $('#runsList').innerHTML='<h3>Runs</h3>'+state.dashboard.runs.map(r=>item(`${escapeHtml(r.id)} ${badge(r.status)}`, `kind=${escapeHtml(r.kind)} · workflow=${escapeHtml(r.workflow)} · task=${escapeHtml(r.task_id||'-')}`, `<button onclick="showRun('${r.id}')">Details</button>`)).join('');
   $('#eventsList').innerHTML='<h3>Events</h3>'+state.dashboard.events.map(e=>item(escapeHtml(e.event_type), `${escapeHtml(e.created_at)} · task=${escapeHtml(e.task_id||'-')}`)).join('');
 }
+function renderSessions(){
+  $('#sessionsList').innerHTML=(state.sessions||[]).map(s=>item(escapeHtml(s.title||s.id), `${escapeHtml(s.source)} · model=${escapeHtml(s.model||'-')} · messages=${escapeHtml(s.message_count||0)} · tools=${escapeHtml(s.tool_call_count||0)}<br><span class="path">${escapeHtml(s.last_message_preview||'')}</span>`)).join('') || '<p class="muted">No sessions found.</p>';
+}
+function renderSkills(){
+  $('#skillsList').innerHTML=(state.skills||[]).map(s=>`<div class="card"><label>${escapeHtml(s.category)}</label><strong>${escapeHtml(s.name)}</strong><p>${escapeHtml(s.description||'No description')}</p><p class="path">${escapeHtml(s.path)}</p><p>${badge('read-only')}</p></div>`).join('') || '<p class="muted">No skills found.</p>';
+}
+function renderCron(){
+  $('#cronList').innerHTML=(state.cron||[]).map(j=>item(`${escapeHtml(j.name||j.id)} ${badge(j.enabled && !j.paused ? 'enabled':'paused')}`, `schedule=${escapeHtml(j.schedule||'-')} · last=${escapeHtml(j.last_run_at||'-')} · next=${escapeHtml(j.next_run_at||'-')} · deliver=${escapeHtml(j.deliver||'-')} · no_agent=${escapeHtml(j.no_agent)}`)).join('') || '<p class="muted">No cron jobs found.</p>';
+}
+async function showRun(id){const d=await api(`/api/runs/${id}`);switchView('runs');$('#runDetail').textContent=JSON.stringify(d,null,2);}
 function renderAgents(){
   $('#agentsList').innerHTML=state.dashboard.agents.map(a=>`<div class="card"><label>${escapeHtml(a.kind)}</label><strong>${escapeHtml(a.name||a.id)}</strong><p>${badge(a.status)}</p><p class="path">${escapeHtml(a.home||'runtime registered')}</p><p class="muted">${escapeHtml(a.memory_boundary||'Doni Agents OS registry')}</p><p>${escapeHtml(a.capabilities||'[]')}</p></div>`).join('');
 }
@@ -65,4 +78,4 @@ async function runWorkflow(id){modal(`Run workflow: ${id}`,'<label>Title<input n
 async function showArtifact(id){const p=await api(`/api/artifacts/${id}`);switchView('artifacts');if(p.preview_type==='image' && p.raw_url){$('#artifactPreview').outerHTML='<div id="artifactPreview" class="preview panel"><img src="'+p.raw_url+'" style="max-width:100%;border-radius:12px" alt="artifact image"><p class="path">'+escapeHtml(p.path)+'</p></div>';}else{const old=$('#artifactPreview'); if(old.tagName.toLowerCase()!=='pre'){old.outerHTML='<pre id="artifactPreview" class="preview panel"></pre>';} $('#artifactPreview').textContent = p.content;}}
 $$('nav button').forEach(b=>b.onclick=()=>switchView(b.dataset.view));$('#refreshBtn').onclick=refresh;document.body.addEventListener('click',e=>{if(e.target.dataset.action==='create-task')createTask();});
 refresh().catch(e=>{document.body.innerHTML='<pre class="preview">Mission Control failed to load: '+escapeHtml(e.message)+'</pre>';});
-window.createTask=createTask;window.routeTask=routeTask;window.executeTask=executeTask;window.closeTask=closeTask;window.approve=approve;window.deny=deny;window.runWorkflow=runWorkflow;window.showArtifact=showArtifact;
+window.createTask=createTask;window.routeTask=routeTask;window.executeTask=executeTask;window.closeTask=closeTask;window.approve=approve;window.deny=deny;window.runWorkflow=runWorkflow;window.showArtifact=showArtifact;window.showRun=showRun;

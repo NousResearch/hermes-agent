@@ -21,6 +21,9 @@
         <button data-view="tasks">Tasks</button>
         <button data-view="approvals">Approvals</button>
         <button data-view="runs">Runs</button>
+        <button data-view="sessions">Sessions</button>
+        <button data-view="skills">Skills</button>
+        <button data-view="cron">Cron</button>
         <button data-view="agents">Agents</button>
         <button data-view="artifacts">Artifacts</button>
         <button data-view="workflows">Workflows</button>
@@ -66,6 +69,22 @@
       <section id="runs" class="view">
         <div class="panel-toolbar"><h3>Runs / events / logs</h3></div>
         <div class="grid two"><div id="runsList" class="list panel"></div><div id="eventsList" class="list panel"></div></div>
+        <pre id="runDetail" class="preview panel">Select run…</pre>
+      </section>
+
+      <section id="sessions" class="view">
+        <div class="panel-toolbar"><h3>Sessions</h3><span class="muted">Read-only recent Hermes sessions</span></div>
+        <div id="sessionsList" class="list panel"></div>
+      </section>
+
+      <section id="skills" class="view">
+        <div class="panel-toolbar"><h3>Skills</h3><span class="muted">Read-only installed skill inventory</span></div>
+        <div id="skillsList" class="cards wide"></div>
+      </section>
+
+      <section id="cron" class="view">
+        <div class="panel-toolbar"><h3>Cron / watchdogs</h3><span class="muted">Read-only scheduled jobs</span></div>
+        <div id="cronList" class="list panel"></div>
       </section>
 
       <section id="agents" class="view">

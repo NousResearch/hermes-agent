@@ -50,7 +50,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv pip install -e ".[all,dev,simplex-streaming]"
 
       - name: Run tests
         run: |

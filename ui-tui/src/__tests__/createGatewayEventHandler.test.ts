@@ -1113,4 +1113,40 @@ describe('createGatewayEventHandler', () => {
       vi.useRealTimers()
     }
   })
+
+  it('updates sid on session.info when ev.session_id changes (compression fork)', () => {
+    const appended: Msg[] = []
+    patchUiState({ sid: 'old-sid' })
+
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { usage: { input: 1, output: 2 } },
+      session_id: 'new-sid',
+      type: 'session.info'
+    } as any)
+
+    expect(getUiState().sid).toBe('new-sid')
+  })
+
+  it('keeps sid unchanged on session.info when session_id matches or is absent', () => {
+    const appended: Msg[] = []
+    patchUiState({ sid: 'same-sid' })
+
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {},
+      session_id: 'same-sid',
+      type: 'session.info'
+    } as any)
+    expect(getUiState().sid).toBe('same-sid')
+
+    onEvent({
+      payload: {},
+      type: 'session.info'
+    } as any)
+    expect(getUiState().sid).toBe('same-sid')
+  })
+
 })

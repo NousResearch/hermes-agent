@@ -370,7 +370,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
-    if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
+    if (
+      ev.session_id &&
+      sid &&
+      ev.session_id !== sid &&
+      !ev.type.startsWith('gateway.') &&
+      ev.type !== 'session.info'
+    ) {
       return
     }
 
@@ -388,13 +394,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'session.info': {
         const info = ev.payload
+        const incomingSid = ev.session_id
 
-        patchUiState(state => ({
-          ...state,
-          info,
-          status: state.status === 'starting agent…' ? 'ready' : state.status,
-          usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
-        }))
+        patchUiState(state => {
+          const sidChanged = Boolean(incomingSid) && incomingSid !== state.sid
+          return {
+            ...state,
+            info,
+            sid: sidChanged ? (incomingSid as string) : state.sid,
+            status: state.status === 'starting agent…' ? 'ready' : state.status,
+            usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
+          }
+        })
 
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
 

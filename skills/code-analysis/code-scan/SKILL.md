@@ -9,7 +9,42 @@ hermes.tags: [on-demand, code-analysis, project-mapping]
 Load on-demand to run the code-scan pipeline against any target directory.
 Never auto-injected; triggered explicitly by the user.
 
-## Orchestration Steps
+## Mode Selection
+
+Use the **UA-005 mode router** (`scripts/code-scan/run_ua.py`) for all new code-scan
+runs.  It replaces the manual orchestration steps below with explicit mode selection.
+
+```bash
+python scripts/code-scan/run_ua.py --target <dir> --out <bundle_dir> [--mode <mode>]
+```
+
+### Available Modes
+
+| Mode | Pipeline Stages | Use When… |
+|---|---|---|
+| **inventory** (default: no) | scan + imports only | Quick inventory of files and dependencies. |
+| **structure** (default) | scan + imports + graph + validation | Default — balanced structural analysis with graph validation. |
+| **review** | structure + analytics + context envelope + report | Deep review with analytics, subagent context, and markdown report. |
+| **delta** | incremental scan + delta summary against prior manifest | Detect changes since a prior run (use `--prior-manifest`). |
+| **preflight** | structure + entrypoints/hubs + subagent context | Subagent handoff preparation with structure and context. |
+| **full** | all available deterministic enrichers | Everything available — analytics, context, report. |
+
+### Mode Routing Guarantees
+
+- **Validation failures are never hidden.** Any mode that runs graph assembly
+  also runs the validation gate and writes `validation.json`.
+- **Quick modes avoid unnecessary graph analytics.** `inventory` and `structure`
+  do not produce `analytics.json` or `subagent-context.json`.
+- **Missing enrichers are recorded as skipped.** When upstream beads (UA-002/003/004)
+  are not present, optional artifacts are omitted and noted in `artifacts_missing`
+  metadata — nothing is fabricated.
+- **Default mode is `structure`**, preserving backward compatibility with the
+  existing pipeline behavior (scan → imports → graph → validation).
+
+## Orchestration Steps (Legacy Manual Path)
+
+> **Prefer** `run_ua.py` mode selection above.  The manual steps below remain
+> documented for compatibility but are superseded by the mode router.
 
 1. **Confirm target:** Ask user for target directory or use working directory.
 2. **Check fingerprints & run scan:**

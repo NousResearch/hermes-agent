@@ -1,0 +1,650 @@
+#!/usr/bin/env python3
+"""run_ua.py — UA-005 Explicit UA Mode Router.
+
+CLI entrypoint that wraps canonical run-bundle behavior (UA-001) with explicit
+mode selection.  Modes control which deterministic pipeline stages are executed.
+
+Defaults to ``structure`` mode for backward compatibility with existing skill
+instructions.  Mode routing never hides validation failures.  Quick modes
+avoid unnecessary graph analytics.
+
+Usage:
+    python run_ua.py --target <target_dir> --out <bundle_dir> [--mode <mode>]
+
+Modes:
+    inventory   — scan + imports only
+    structure   — scan + imports + graph + validation   [default]
+    review      — structure + analytics + context envelope + report
+    delta       — incremental scan + delta summary against prior manifest
+    preflight   — structure + entrypoints/hubs + subagent context
+    full        — all available deterministic enrichers
+"""
+import argparse
+import hashlib
+import json
+import os
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+# Ensure scripts/code-scan is on sys.path for sibling imports
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from extract_imports import build_import_map
+from assemble_graph import assemble_graph
+from graph_schema import validate_graph
+
+# --- Optional enrichers (may be absent if upstream beads not yet available) ---
+try:
+    from analyze_graph import analyze_graph
+    _HAS_ANALYTICS = True
+except ImportError:
+    _HAS_ANALYTICS = False
+
+try:
+    from build_context_bundle import build_context_envelope
+    _HAS_CONTEXT = True
+except ImportError:
+    _HAS_CONTEXT = False
+
+# ── Valid modes ─────────────────────────────────────────────────────────────
+
+VALID_MODES = frozenset([
+    "inventory",
+    "structure",
+    "review",
+    "delta",
+    "preflight",
+    "full",
+])
+
+DEFAULT_MODE = "structure"
+
+
+# ── Helper: script versioning ────────────────────────────────────────────────
+
+def _script_hash(path: Path) -> str:
+    """SHA-256 hex digest of a script file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()
+
+
+def _get_script_versions() -> dict:
+    """Collect script hashes for manifest reproducibility."""
+    versions = {
+        "scan_project.py": _script_hash(_SCRIPT_DIR / "scan_project.py"),
+        "extract_imports.py": _script_hash(_SCRIPT_DIR / "extract_imports.py"),
+        "assemble_graph.py": _script_hash(_SCRIPT_DIR / "assemble_graph.py"),
+        "graph_schema.py": _script_hash(_SCRIPT_DIR / "graph_schema.py"),
+        "run_ua.py": _script_hash(_SCRIPT_DIR / "run_ua.py"),
+        "run_bundle.py": _script_hash(_SCRIPT_DIR / "run_bundle.py"),
+    }
+    return versions
+
+
+# ── Helper: git HEAD ─────────────────────────────────────────────────────────
+
+def _get_git_head(target_dir: str) -> Optional[str]:
+    """Return the current git HEAD SHA for *target_dir*, or None."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=target_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+# ── RunUA class ──────────────────────────────────────────────────────────────
+
+class RunUA:
+    """Mode-aware UA pipeline runner.
+
+    Routes to the appropriate pipeline stages based on *mode*, writes artifacts
+    to *out_dir*, and records a manifest with mode metadata.
+    """
+
+    def __init__(
+        self,
+        target_dir: str,
+        out_dir: str,
+        *,
+        mode: str = DEFAULT_MODE,
+        in_repo_cache: bool = False,
+        external_cache_dir: Optional[str] = None,
+        prior_manifest: Optional[str] = None,
+    ) -> None:
+        self.target_dir = os.path.realpath(target_dir)
+        self.out_dir = os.path.realpath(out_dir)
+        self.mode = mode if mode in VALID_MODES else DEFAULT_MODE
+        self.in_repo_cache = in_repo_cache
+        self.external_cache_dir = external_cache_dir
+        self.prior_manifest = prior_manifest
+
+        self.artifact_paths: dict[str, str] = {}
+        self.scan_data: Optional[dict] = None
+        self.imports_data: Optional[dict] = None
+        self.graph_data: Optional[dict] = None
+        self.validation_data: Optional[dict] = None
+        self.analytics_data: Optional[dict] = None
+        self.context_data: Optional[dict] = None
+        self.summary_data: Optional[dict] = None
+        self.delta_data: Optional[dict] = None
+        self._missing_artifacts: list[str] = []
+
+    # ── pipeline stages ────────────────────────────────────────
+
+    def _scan(self) -> dict:
+        """Run scan_project.py and return the scan dict."""
+        import subprocess
+        cmd = [
+            sys.executable,
+            str(_SCRIPT_DIR / "scan_project.py"),
+            self.target_dir,
+        ]
+        if self.in_repo_cache:
+            cmd.extend(["--incremental", "--in-repo-cache"])
+        else:
+            cache_dir = os.path.join(self.out_dir, "cache")
+            cmd.extend(["--incremental", "--no-repo-cache",
+                        "--external-cache-dir", cache_dir])
+        if self.external_cache_dir:
+            cmd.extend(["--external-cache-dir", self.external_cache_dir])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"scan_project.py failed (rc={result.returncode}): {result.stderr}"
+            )
+        return json.loads(result.stdout)
+
+    def _extract_imports(self) -> dict:
+        """Run import extraction on the scan data."""
+        return build_import_map(self.scan_data, self.target_dir)
+
+    def _assemble_graph(self) -> tuple[dict, dict]:
+        """Assemble graph and validate. Returns (graph, validation)."""
+        graph = assemble_graph(
+            scans=[self.scan_data],
+            imports_list=[self.imports_data] if self.imports_data else [],
+        )
+        validation = validate_graph(graph)
+        return graph, validation
+
+    def _run_analytics(self) -> dict:
+        """Run deterministic graph analytics (UA-003)."""
+        if not _HAS_ANALYTICS or not self.graph_data:
+            return {}
+        return analyze_graph(self.graph_data)
+
+    def _build_context(self) -> dict:
+        """Build subagent context envelope (UA-004)."""
+        if not _HAS_CONTEXT:
+            return {}
+        return build_context_envelope(self.out_dir)
+
+    def _build_report_raw(self) -> str:
+        """Generate REPORT.md content directly."""
+        s = self._build_summary()
+        lines = [
+            "# UA Run Bundle Report",
+            "",
+            f"- **Target**: `{self.target_dir}`",
+            f"- **Bundle**: `{self.out_dir}`",
+            f"- **Mode**: `{self.mode}`",
+            f"- **Timestamp**: {s.get('timestamp', 'N/A')}",
+            "",
+            "## Artifacts",
+            "",
+        ]
+        for name, path in sorted(self.artifact_paths.items()):
+            lines.append(f"- `{name}` → `{path}`")
+        lines.append("")
+
+        if self.scan_data:
+            scan = s.get("scan", {})
+            lines.extend([
+                "## Scan Summary",
+                "",
+                f"- **Total files**: {scan.get('total_files', 0)}",
+                f"- **Total lines**: {scan.get('total_lines', 0)}",
+                f"- **Languages**: {', '.join(scan.get('languages', {}).keys()) or 'none'}",
+                "",
+            ])
+
+        if self.imports_data:
+            totals = s.get("imports", {}).get("totals", {})
+            lines.extend([
+                "## Import Summary",
+                "",
+                f"- **Files with imports**: {totals.get('files_with_imports', 0)}",
+                f"- **Unique modules**: {totals.get('unique_modules', 0)}",
+                "",
+            ])
+
+        if self.graph_data:
+            g = s.get("graph", {})
+            lines.extend([
+                "## Graph Summary",
+                "",
+                f"- **Nodes**: {g.get('total_nodes', 0)}",
+                f"- **Edges**: {g.get('total_edges', 0)}",
+                f"- **Orphan nodes**: {g.get('orphan_nodes', 0)}",
+                "",
+            ])
+
+        if self.validation_data:
+            v = self.validation_data
+            lines.extend([
+                "## Validation",
+                "",
+                f"- **Issues**: {len(v.get('issues', []))}",
+                f"- **Warnings**: {len(v.get('warnings', []))}",
+                "",
+            ])
+            if v.get("issues"):
+                lines.append("### Issues")
+                lines.append("")
+                for issue in v["issues"]:
+                    lines.append(f"- {issue}")
+                lines.append("")
+            if v.get("warnings"):
+                lines.append("### Warnings")
+                lines.append("")
+                for warning in v["warnings"]:
+                    lines.append(f"- {warning}")
+                lines.append("")
+
+        lines.append("---")
+        lines.append("*Generated by run_ua.py (UA-005 mode router)*")
+        return "\n".join(lines) + "\n"
+
+    def _build_summary(self) -> dict:
+        """Build summary.json data."""
+        summary = {
+            "target": self.target_dir,
+            "bundle_dir": self.out_dir,
+            "mode": self.mode,
+            "timestamp": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "artifact_count": len(self.artifact_paths),
+        }
+        if self.scan_data:
+            summary["scan"] = {
+                "total_files": self.scan_data.get("total_files", 0),
+                "total_lines": self.scan_data.get("total_lines", 0),
+                "languages": self.scan_data.get("languages", {}),
+            }
+        if self.imports_data:
+            summary["imports"] = {
+                "schema_version": self.imports_data.get("schema_version"),
+                "totals": self.imports_data.get("totals", {}),
+            }
+        if self.graph_data:
+            summary["graph"] = self.graph_data.get("summary", {})
+        if self.validation_data:
+            summary["validation"] = {
+                "issue_count": len(self.validation_data.get("issues", [])),
+                "warning_count": len(self.validation_data.get("warnings", [])),
+            }
+        return summary
+
+    def _build_delta_summary(self) -> dict:
+        """Build delta_summary by comparing current scan to prior manifest."""
+        delta_summary = {
+            "files_scanned": 0,
+            "changes": 0,
+            "prior_run_id": None,
+            "mode": "delta",
+        }
+        if self.prior_manifest:
+            try:
+                with open(self.prior_manifest, "r") as f:
+                    prior = json.load(f)
+                delta_summary["prior_run_id"] = prior.get("run_id", "unknown")
+            except (OSError, json.JSONDecodeError):
+                delta_summary["changes"] = -1  # could not parse prior
+        if self.scan_data:
+            delta_summary["files_scanned"] = self.scan_data.get("total_files", 0)
+        return delta_summary
+
+    def _record_missing(self, artifact_name: str) -> None:
+        """Record an expected artifact that could not be produced."""
+        if artifact_name not in self._missing_artifacts:
+            self._missing_artifacts.append(artifact_name)
+
+    def _build_manifest(self, run_id: str) -> dict:
+        """Build manifest.json with all required metadata."""
+        manifest = {
+            "run_id": run_id,
+            "mode": self.mode,
+            "timestamp": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "target_path": self.target_dir,
+            "target_git_head": _get_git_head(self.target_dir),
+            "bundle_dir": self.out_dir,
+            "command_flags": {
+                "mode": self.mode,
+                "in_repo_cache": self.in_repo_cache,
+                "external_cache_dir": self.external_cache_dir,
+            },
+            "artifact_paths": dict(self.artifact_paths),
+            "script_versions": _get_script_versions(),
+            "target_mutation_allowed": self.in_repo_cache,
+        }
+        if self.delta_data:
+            manifest["delta_summary"] = self.delta_data
+        manifest["artifacts_missing"] = sorted(self._missing_artifacts) if self._missing_artifacts else []
+        return manifest
+
+    # ── artifact writers ──────────────────────────────────────
+
+    def _write_json(self, filename: str, data: dict) -> str:
+        """Write data to a JSON artifact and register it."""
+        path = os.path.join(self.out_dir, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        self.artifact_paths[filename] = path
+        return path
+
+    def _write_text(self, filename: str, text: str) -> str:
+        """Write text to a file artifact and register it."""
+        path = os.path.join(self.out_dir, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        self.artifact_paths[filename] = path
+        return path
+
+    # ── mode routing ──────────────────────────────────────────
+
+    def run(self) -> dict:
+        """Execute the mode-selected pipeline and write artifacts.
+
+        Returns the manifest dict.
+        """
+        run_id = uuid.uuid4().hex
+        os.makedirs(self.out_dir, exist_ok=True)
+
+        if self.mode == "inventory":
+            return self._mode_inventory(run_id)
+        elif self.mode == "structure":
+            return self._mode_structure(run_id)
+        elif self.mode == "review":
+            return self._mode_review(run_id)
+        elif self.mode == "delta":
+            return self._mode_delta(run_id)
+        elif self.mode == "preflight":
+            return self._mode_preflight(run_id)
+        elif self.mode == "full":
+            return self._mode_full(run_id)
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
+    def _mode_inventory(self, run_id: str) -> dict:
+        """inventory: scan + imports only."""
+        self.scan_data = self._scan()
+        self._write_json("scan.json", self.scan_data)
+
+        self.imports_data = self._extract_imports()
+        self._write_json("imports.json", self.imports_data)
+
+        self.summary_data = self._build_summary()
+        self._write_json("summary.json", self.summary_data)
+
+        # Manifest (always present)
+        manifest = self._build_manifest(run_id)
+        self._write_json("manifest.json", manifest)
+
+        return manifest
+
+    def _mode_structure(self, run_id: str) -> dict:
+        """structure: scan + imports + graph + validation."""
+        self.scan_data = self._scan()
+        self._write_json("scan.json", self.scan_data)
+
+        self.imports_data = self._extract_imports()
+        self._write_json("imports.json", self.imports_data)
+
+        # Graph + validation — never hidden
+        self.graph_data, self.validation_data = self._assemble_graph()
+        self._write_json("graph.json", self.graph_data)
+        self._write_json("validation.json", self.validation_data)
+
+        self.summary_data = self._build_summary()
+        self._write_json("summary.json", self.summary_data)
+
+        manifest = self._build_manifest(run_id)
+        self._write_json("manifest.json", manifest)
+
+        return manifest
+
+    def _mode_review(self, run_id: str) -> dict:
+        """review: structure + analytics + context envelope + report."""
+        # Structure pipeline
+        self.scan_data = self._scan()
+        self._write_json("scan.json", self.scan_data)
+
+        self.imports_data = self._extract_imports()
+        self._write_json("imports.json", self.imports_data)
+
+        # Graph + validation — never hidden
+        self.graph_data, self.validation_data = self._assemble_graph()
+        self._write_json("graph.json", self.graph_data)
+        self._write_json("validation.json", self.validation_data)
+
+        # Analytics (UA-003) — optional enricher
+        if _HAS_ANALYTICS:
+            self.analytics_data = self._run_analytics()
+            self._write_json("analytics.json", self.analytics_data)
+        else:
+            self._record_missing("analytics.json")
+
+        # Context envelope (UA-004) — optional enricher
+        if _HAS_CONTEXT:
+            self.context_data = self._build_context()
+            self._write_json("subagent-context.json", self.context_data)
+        else:
+            self._record_missing("subagent-context.json")
+
+        # Report
+        self._write_text("REPORT.md", self._build_report_raw())
+
+        self.summary_data = self._build_summary()
+        self._write_json("summary.json", self.summary_data)
+
+        manifest = self._build_manifest(run_id)
+        self._write_json("manifest.json", manifest)
+
+        return manifest
+
+    def _mode_delta(self, run_id: str) -> dict:
+        """delta: incremental scan + delta summary against prior manifest."""
+        self.scan_data = self._scan()
+        self._write_json("scan.json", self.scan_data)
+
+        self.imports_data = self._extract_imports()
+        self._write_json("imports.json", self.imports_data)
+
+        # Build delta summary
+        self.delta_data = self._build_delta_summary()
+
+        manifest = self._build_manifest(run_id)
+        self._write_json("manifest.json", manifest)
+
+        return manifest
+
+    def _mode_preflight(self, run_id: str) -> dict:
+        """preflight: structure + entrypoints/hubs + subagent context."""
+        # Structure pipeline
+        self.scan_data = self._scan()
+        self._write_json("scan.json", self.scan_data)
+
+        self.imports_data = self._extract_imports()
+        self._write_json("imports.json", self.imports_data)
+
+        # Graph + validation — always present for preflight
+        self.graph_data, self.validation_data = self._assemble_graph()
+        self._write_json("graph.json", self.graph_data)
+        self._write_json("validation.json", self.validation_data)
+
+        # Subagent context (UA-004) — optional enricher
+        if _HAS_CONTEXT:
+            self.context_data = self._build_context()
+            self._write_json("subagent-context.json", self.context_data)
+        else:
+            self._record_missing("subagent-context.json")
+
+        self.summary_data = self._build_summary()
+        self._write_json("summary.json", self.summary_data)
+
+        manifest = self._build_manifest(run_id)
+        self._write_json("manifest.json", manifest)
+
+        return manifest
+
+    def _mode_full(self, run_id: str) -> dict:
+        """full: all available deterministic enrichers."""
+        # Everything in review (structure + analytics + context + report)
+        self.scan_data = self._scan()
+        self._write_json("scan.json", self.scan_data)
+
+        self.imports_data = self._extract_imports()
+        self._write_json("imports.json", self.imports_data)
+
+        # Graph + validation — never hidden
+        self.graph_data, self.validation_data = self._assemble_graph()
+        self._write_json("graph.json", self.graph_data)
+        self._write_json("validation.json", self.validation_data)
+
+        # Analytics (UA-003) — optional enricher
+        if _HAS_ANALYTICS:
+            self.analytics_data = self._run_analytics()
+            self._write_json("analytics.json", self.analytics_data)
+        else:
+            self._record_missing("analytics.json")
+
+        # Context envelope (UA-004) — optional enricher
+        if _HAS_CONTEXT:
+            self.context_data = self._build_context()
+            self._write_json("subagent-context.json", self.context_data)
+        else:
+            self._record_missing("subagent-context.json")
+
+        # Report
+        self._write_text("REPORT.md", self._build_report_raw())
+
+        self.summary_data = self._build_summary()
+        self._write_json("summary.json", self.summary_data)
+
+        manifest = self._build_manifest(run_id)
+        self._write_json("manifest.json", manifest)
+
+        return manifest
+
+
+# ── Module-level convenience function ────────────────────────────────────
+
+def run_ua_pipeline(
+    target_dir: str,
+    out_dir: str,
+    *,
+    mode: str = DEFAULT_MODE,
+    in_repo_cache: bool = False,
+    external_cache_dir: Optional[str] = None,
+    prior_manifest: Optional[str] = None,
+) -> dict:
+    """Convenience: run the mode-selected UA pipeline and return manifest."""
+    ua = RunUA(
+        target_dir,
+        out_dir,
+        mode=mode,
+        in_repo_cache=in_repo_cache,
+        external_cache_dir=external_cache_dir,
+        prior_manifest=prior_manifest,
+    )
+    return ua.run()
+
+
+# ── CLI entry point ────────────────────────────────────────────────────
+
+def main() -> int:
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="UA-005 Mode Router — explicit mode selection for UA pipeline.",
+    )
+    parser.add_argument(
+        "--target",
+        required=True,
+        help="Path to the project directory to scan",
+    )
+    parser.add_argument(
+        "--out",
+        required=True,
+        help="Path to the output bundle directory",
+    )
+    parser.add_argument(
+        "--mode",
+        default=DEFAULT_MODE,
+        choices=sorted(VALID_MODES),
+        help=f"Pipeline mode (default: {DEFAULT_MODE})",
+    )
+    parser.add_argument(
+        "--in-repo-cache",
+        action="store_true",
+        default=False,
+        help="Allow writing fingerprints inside the target repo",
+    )
+    parser.add_argument(
+        "--external-cache-dir",
+        default=None,
+        help="Directory for external fingerprint cache",
+    )
+    parser.add_argument(
+        "--prior-manifest",
+        default=None,
+        help="Path to prior manifest.json (for delta mode comparison)",
+    )
+    args = parser.parse_args()
+
+    target = os.path.realpath(args.target)
+    if not os.path.isdir(target):
+        print(f"Error: '{args.target}' is not a valid directory",
+              file=sys.stderr)
+        return 1
+
+    try:
+        manifest = run_ua_pipeline(
+            target,
+            args.out,
+            mode=args.mode,
+            in_repo_cache=args.in_repo_cache,
+            external_cache_dir=args.external_cache_dir,
+            prior_manifest=args.prior_manifest,
+        )
+        print(f"Bundle written to: {args.out}")
+        print(f"Mode: {manifest['mode']}")
+        print(f"Run ID: {manifest['run_id']}")
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

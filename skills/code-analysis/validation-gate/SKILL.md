@@ -61,6 +61,12 @@ The `severity_classified_warnings` field provides individual entries:
 
 The skill delegates to `graph_schema.py` which enforces: valid `NodeType`/`EdgeType` enums (or aliases), `node_id` present + string, `filePath` present, `edge_type` resolves, `source`/`target` reference known node IDs, no self-referencing edges, orphan nodes flagged as severity-classified warnings.
 
+## Integration with the UA Run Bundle
+
+The validation gate is normally invoked as part of a **UA run bundle** (via `run_ua.py` mode router, see `skills/code-analysis/code-scan/SKILL.md`). In any mode that assembles the dependency graph (`structure`, `review`, `preflight`, `full`), `validation.json` is written alongside `graph.json` in the bundle directory. The validation gate skill can also be loaded standalone to inspect an existing bundle's validation results.
+
+When the UA run includes **subagent context** generation (`review`, `preflight`, `full` modes), the validation verdict is recorded in the `PROJECT_STATE.md` ledger if `--record-project-state` was set (UA-006). See the **Opt-In Project-State Integration** section in the code-scan skill for details.
+
 ## Output Format
 
 ```

@@ -61,6 +61,29 @@ python scripts/code-scan/run_ua.py --target <dir> --out <bundle_dir> [--mode <mo
 6. **Render summary:** Output as structured markdown (format below).
 7. **Clean up:** Temp files can be deleted; they are not tracked artifacts.
 
+## Canonical Run Bundle Shape
+
+> **Reference:** Full mode definitions, bundle layout, and usage details are documented in [references/ua-run-bundle-and-modes.md](references/ua-run-bundle-and-modes.md).
+
+Every UA run bundle produced by `run_ua.py` is a directory containing:
+
+| Artifact | Description |
+|----------|-------------|
+| `manifest.json` | Run metadata: `run_id`, `mode`, `timestamp`, `target_path`, `target_git_head`, `bundle_dir`, `command_flags`, `artifact_paths`, `script_versions`, `target_mutation_allowed`, `artifacts_missing` (when upstream enrichers are absent), `project_state_recorded`, `ledger_path`. |
+| `scan.json` | Deterministic file inventory and language distribution. |
+| `imports.json` | Deterministic import map with schema version and totals. |
+| `graph.json` | Dependency graph (`nodes` + `edges`) — present in all modes except `inventory` and `delta`. |
+| `validation.json` | Deterministic validation results (`issues`, `warnings`, `severity_summary`, `severity_classified_warnings`) — present whenever graph is built. |
+| `analytics.json` | Graph analytics (centrality, hubs, etc.) — present only when `analyze_graph` is available and mode produces analytics (`review`, `full`). Recorded in `artifacts_missing` otherwise. |
+| `subagent-context.json` | Subagent context envelope — present only when `build_context_bundle` is available and mode produces context (`review`, `preflight`, `full`). Recorded in `artifacts_missing` otherwise. |
+| `summary.json` | Compact aggregate summary of all produced stages. |
+| `REPORT.md` | Human-readable markdown report — present only in `review` and `full` modes. |
+| `cache/` (optional) | External fingerprint cache directory when `--external-cache-dir` is used. |
+
+**Read-only target guarantee:** The target directory is **never mutated** by the UA pipeline. All artifacts are written exclusively to the `--out` bundle directory. The only exception is when `--in-repo-cache` is explicitly passed, which writes fingerprints inside the target repo's `.hermes/code-state/`. By default, fingerprints use an external cache under `<bundle>/cache/`, leaving the target fully read-only.
+
+**Deterministic boundary:** Deterministic scripts (`scan_project.py`, `extract_imports.py`, `assemble_graph.py`, `graph_schema.py`, and optional enrichers) produce **facts** — JSON artifacts with stable schemas. The LLM's role is to **interpret** those facts (e.g., synthesizing project name, description, and framework narrative from scan data). Never allow LLM intuition to override deterministic validation results, graph structure, or severity classifications.
+
 ## Constraints
 - Never hallucinate file structures — only report what scan scripts return.
 - If scan fails, report the error; do not guess.

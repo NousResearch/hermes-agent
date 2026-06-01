@@ -1,14 +1,14 @@
 ---
 name: hermes-architecture-diagram
-description: "Use when generating or updating the Hermes Agent architecture diagram HTML visualization. Auto-detects the current install's environment and includes a mandatory Bar Raiser verification gate that ground-truths every claim against the live system before delivery."
-version: 1.2.0
+description: "Use when generating or updating the Hermes Agent architecture visualization. Four output formats: SVG/HTML diagram, AI-generated image, interactive animated HTML (GSAP), and HyperFrames MP4 video. Auto-detects environment and includes a Bar Raiser verification gate."
+version: 2.0.0
 author: Keith Motte TopofMind.AI
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [architecture, diagram, visualization, hermes, svg, html]
-    related_skills: [hermes-agent, architecture-diagram]
+    tags: [architecture, diagram, visualization, hermes, svg, html, video, hyperframes, animation, gsap, image-gen]
+    related_skills: [hermes-agent, architecture-diagram, manim-video, p5js]
 ---
 
 # Hermes Architecture Diagram
@@ -246,6 +246,112 @@ Components: terminal(), File Tools, execute_code() — all run in sandbox.
 ## Output Path
 
 Default: `~/hermes-agent-architecture.html`
+
+## Output Format Options
+
+Ask the user which format they want. Default is the SVG/HTML diagram, but three additional premium formats are available:
+
+### Option A: SVG/HTML Diagram (default)
+The standard output. Interactive, lightweight, opens in any browser.
+- File: `~/hermes-agent-architecture.html`
+- No dependencies beyond a browser
+- Best for: documentation, READMEs, quick reference
+
+### Option B: AI-Generated Image (polished visual)
+Use the `image_generate` tool to create a high-fidelity architectural illustration.
+
+**Workflow:**
+1. Complete Steps 1-4 (discover env, determine topology, customize)
+2. Build a detailed image prompt from the discovered values:
+
+Prompt template (customize with real values):
+"Professional dark-themed technical architecture diagram for an AI agent system called Hermes Agent. Two zones separated by a glowing border: LEFT zone labeled 'Host Machine ({OS_NAME})' in purple contains: user interfaces (Telegram, Discord, CLI), gateway router, prompt builder, agent loop (central glowing node), tool dispatch hub, and local execution tools (terminal, file tools, code execution) in green. RIGHT zone labeled 'Cloud Services' in amber contains: LLM provider box showing '{CURRENT_MODEL} via {CURRENT_PROVIDER}' as the highlighted active model, browser automation, web search, image generation, and subagent spawning. Numbered data flow arrows (1-6) trace the path from user input through the system. Color scheme: cyan for interfaces, emerald for engine, amber for LLM, green for local tools, orange for cloud tools. Style: blueprint aesthetic, dark slate background (#020617), JetBrains Mono font, subtle grid pattern, glowing borders on components. 16:9 landscape."
+
+3. Generate: `image_generate(prompt=<built prompt>, aspect_ratio="landscape")`
+4. Run Bar Raiser Step 5 by visually inspecting the image against discovered facts
+5. Output: image file path
+
+**Best for:** presentations, social media, marketing, pitch decks
+
+### Option C: Interactive Motion HTML (animated walkthrough)
+An HTML page with CSS/JS animations that walks through the data flow step by step. Uses GSAP for sequenced animations. No video rendering needed — plays in any browser.
+
+**Workflow:**
+1. Complete Steps 1-4
+2. Build an HTML page that extends the SVG template with:
+   - GSAP timeline (loaded from CDN: `https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js`)
+   - Step-by-step reveal: components fade in following the numbered data flow (1-6)
+   - Arrows animate along their paths with `drawSVG` or `stroke-dashoffset` CSS
+   - Each step has a text overlay explaining what happens
+   - Auto-plays on load with a 2-second pause between steps
+   - Total animation: 20-30 seconds, then holds the full diagram
+   - Play/pause button and step indicator in the corner
+3. Interactive controls:
+   - Click any numbered marker to jump to that step
+   - Hover any component to highlight its connections
+   - Keyboard: Space = play/pause, Arrow keys = step forward/back
+4. Run Bar Raiser (visual content must match discovered environment)
+5. Output: `~/hermes-agent-architecture-animated.html`
+
+**Best for:** demos, onboarding, live presentations, team walkthroughs
+
+### Option D: HyperFrames Video (MP4 export)
+Use HeyGen's open-source HyperFrames framework to render the architecture walkthrough as a deterministic MP4 video. HTML-native — no timeline editor, no proprietary format.
+
+**Requirements:**
+- Node.js 22+ and FFmpeg installed
+- Install HyperFrames: `npx hyperframes --version` (auto-installs on first run)
+
+**Workflow:**
+1. Complete Steps 1-4
+2. Create a HyperFrames composition directory:
+
+       npx hyperframes init hermes-architecture
+       cd hermes-architecture
+
+3. Build the composition HTML (`index.html`) using HyperFrames data attributes:
+   - Root element: `data-composition-id`, `data-start="0"`, `data-width="1920"`, `data-height="1080"`
+   - Each architecture zone is a clip with `data-start`, `data-duration`, `data-track-index`
+   - Scene breakdown (approx 60 seconds total):
+     - **Scene 1 (0-3s):** Title card — "How Hermes Agent Works" with environment details
+     - **Scene 2 (3-10s):** Host Machine zone fades in, user interfaces appear left-to-right
+     - **Scene 3 (10-18s):** Input processing layer, arrows animate from interfaces to routers
+     - **Scene 4 (18-25s):** Core engine — Prompt Builder, Agent Loop (pulsing glow), Tool Dispatch
+     - **Scene 5 (25-35s):** Data flow to LLM — arrow traces to cloud, streams back
+     - **Scene 6 (35-45s):** Tool dispatch fans out — local tools (green) + cloud tools (orange)
+     - **Scene 7 (45-55s):** Full diagram visible, numbered markers pulse in sequence
+     - **Scene 8 (55-60s):** Summary card with environment details and TopofMind.AI credit
+   - Animations via GSAP timelines registered to `window.__timelines`
+   - Use HyperFrames catalog blocks where available:
+     - `npx hyperframes add flash-through-white` (scene transitions)
+     - `npx hyperframes add data-chart` (if showing metrics)
+
+4. Preview before rendering:
+
+       npx hyperframes preview
+
+5. Render to MP4:
+
+       npx hyperframes render --output ~/hermes-agent-architecture.mp4
+
+6. Run Bar Raiser — verify the composition HTML content matches discovered environment
+7. Output: `~/hermes-agent-architecture.mp4` (1080p, 60 seconds)
+
+**Optional enhancements:**
+- Add voiceover: include an `<audio>` element with `data-track-index` for narration
+- Add background music: `data-volume="0.3"` for subtle ambient track
+- Add captions: text clips with `data-start` timing synced to narration
+
+**Best for:** YouTube, social media, product demos, investor decks, documentation sites
+
+### Combining Formats
+
+Formats can be combined. Common combos:
+- **A + B:** SVG diagram for docs, AI image for social sharing
+- **A + C:** Static reference + animated version for demos
+- **A + D:** Static reference + video for YouTube/content marketing
+- **C + D:** Animated HTML for web, MP4 for platforms that need video files
+- **All four:** Full content kit for maximum distribution
 
 ## Common Pitfalls
 

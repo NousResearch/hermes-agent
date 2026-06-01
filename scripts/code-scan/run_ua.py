@@ -327,7 +327,7 @@ class RunUA:
         }
         if self.prior_manifest:
             try:
-                with open(self.prior_manifest, "r") as f:
+                with open(self.prior_manifest, "r", encoding="utf-8") as f:
                     prior = json.load(f)
                 delta_summary["prior_run_id"] = prior.get("run_id", "unknown")
             except (OSError, json.JSONDecodeError):

@@ -580,27 +580,38 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
         ]
 
-    def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
+    def test_launchd_restart_self_requests_graceful_restart_with_kickstart(self, monkeypatch, capsys):
         calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
         )
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
             gateway_cli,
             "_request_gateway_self_restart",
             lambda pid: calls.append(("self", pid)) or True,
         )
         monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda timeout, force_after=None: calls.append(("wait", timeout, force_after)) or True,
+        )
+        monkeypatch.setattr(
             gateway_cli.subprocess,
             "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
+            lambda cmd, check=False, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
         )
 
         gateway_cli.launchd_restart()
 
-        assert calls == [("self", 321)]
+        assert calls == [
+            ("self", 321),
+            ("wait", 12.0, None),
+            ["launchctl", "kickstart", "-k", target],
+        ]
         assert "restart requested" in capsys.readouterr().out.lower()
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):

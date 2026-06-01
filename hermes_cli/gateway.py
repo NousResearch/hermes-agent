@@ -3327,8 +3327,12 @@ def launchd_restart():
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
-            return
-        if pid is not None:
+            exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
+            if not exited:
+                print(
+                    f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
+                )
+        elif pid is not None:
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):

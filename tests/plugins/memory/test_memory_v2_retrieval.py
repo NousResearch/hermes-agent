@@ -41,6 +41,13 @@ def test_rule_based_router_detects_preference_recall_query():
     assert decision.should_search is True
 
 
+def test_rule_based_router_treats_dylan_prefer_memory_v2_as_preference_not_project():
+    decision = RuleBasedMemoryRouter().route("What does Dylan prefer about Memory v2 dogfood reports?")
+
+    assert decision.route == "preference_recall"
+    assert "dogfood reports" in decision.search_query
+
+
 def test_rule_based_router_suppresses_obviously_memory_free_queries():
     decision = RuleBasedMemoryRouter().route("hello")
 

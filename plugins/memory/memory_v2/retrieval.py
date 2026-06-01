@@ -40,6 +40,9 @@ class RuleBasedMemoryRouter:
     )
     PREFERENCE_PATTERNS = (
         "what do i prefer",
+        "what does dylan prefer",
+        "does dylan prefer",
+        "dylan prefer",
         "what style do i prefer",
         "what response style",
         "how do i like",
@@ -155,6 +158,10 @@ class RuleBasedMemoryRouter:
     @staticmethod
     def _search_query(query: str) -> str:
         lowered = query.lower()
+        if any(term in lowered for term in ("prefer", "preference", "preferences")):
+            if " i " in f" {lowered} " or lowered.startswith("do i ") or lowered.startswith("what do i "):
+                return f"Dylan {query}"
+            return query
         if "memory v2" in lowered or "memory_v2" in lowered:
             return "Memory v2"
         if "qwen" in lowered and "reasoning" in lowered:

@@ -2003,14 +2003,20 @@ class HindsightMemoryProvider(MemoryProvider):
         parts = []
 
         agent_content = self.get_agent_model_content()
-        if agent_content and agent_content != self._baked_agent_model_content:
-            clean_context = agent_content.replace("</agent-context>", "")
-            parts.append(f"<agent-context>\n{clean_context}\n</agent-context>")
+        if agent_content:
+            if self._baked_agent_model_content is None:
+                self._baked_agent_model_content = agent_content
+            elif agent_content != self._baked_agent_model_content:
+                clean_context = agent_content.replace("</agent-context>", "")
+                parts.append(f"<agent-context>\n{clean_context}\n</agent-context>")
 
         user_content = self.get_user_model_content()
-        if user_content and user_content != self._baked_user_model_content:
-            clean_context = user_content.replace("</user-context>", "")
-            parts.append(f"<user-context>\n{clean_context}\n</user-context>")
+        if user_content:
+            if self._baked_user_model_content is None:
+                self._baked_user_model_content = user_content
+            elif user_content != self._baked_user_model_content:
+                clean_context = user_content.replace("</user-context>", "")
+                parts.append(f"<user-context>\n{clean_context}\n</user-context>")
 
         return "\n\n".join(parts) if parts else ""
 

@@ -1978,11 +1978,19 @@ class TestHindsightMentalModels:
         assert p._agent_model_id == "env-agent-model"
         assert p._cache_ttl == 600
 
-    def test_ttl_cache_decorator(self):
+    def test_ttl_cache_decorator(self, monkeypatch):
         call_count = 0
         from plugins.memory.hindsight import ttl_cache
 
-        @ttl_cache(maxsize=128, default_ttl=1)
+        # Mock clock state
+        current_time = 1000.0
+
+        def mock_time():
+            return current_time
+
+        monkeypatch.setattr("time.time", mock_time)
+
+        @ttl_cache(maxsize=128, default_ttl=10)
         def my_test_func(x):
             nonlocal call_count
             call_count += 1
@@ -1992,13 +2000,12 @@ class TestHindsightMentalModels:
         assert my_test_func(42) == 42
         assert call_count == 1
 
-        # Second call within 1s: cached
+        # Second call within 10s: cached
         assert my_test_func(42) == 42
         assert call_count == 1
 
-        # Wait for TTL expiration (1s)
-        import time
-        time.sleep(1.1)
+        # Fast-forward mock clock past TTL (10s)
+        current_time = 1011.0
 
         # Third call: cache expired, executes again
         assert my_test_func(42) == 42

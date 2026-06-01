@@ -1223,6 +1223,8 @@ async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         _log.exception("PUT /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")

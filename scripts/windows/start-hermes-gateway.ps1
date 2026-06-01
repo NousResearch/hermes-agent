@@ -4,8 +4,11 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
-$PythonExe = Join-Path $RepoRoot "venv\Scripts\python.exe"
-if (-not (Test-Path -LiteralPath $PythonExe)) {
+$PythonExe = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $PythonExe) -or -not (Test-Path -LiteralPath (Join-Path $RepoRoot ".venv\pyvenv.cfg"))) {
+    $PythonExe = Join-Path $RepoRoot "venv\Scripts\python.exe"
+}
+if (-not (Test-Path -LiteralPath $PythonExe) -or -not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent (Split-Path -Parent $PythonExe)) "pyvenv.cfg"))) {
     $PythonExe = (Get-Command python -ErrorAction Stop).Source
 }
 

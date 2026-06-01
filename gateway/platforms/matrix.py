@@ -2517,20 +2517,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _is_dm_room(self, room_id: str) -> bool:
         """Check if a room is a DM."""
-        if self._dm_rooms.get(room_id, False):
-            return True
-        # Fallback: check member count via state store.
-        state_store = (
-            getattr(self._client, "state_store", None) if self._client else None
-        )
-        if state_store:
-            try:
-                members = await state_store.get_members(room_id)
-                if members and len(members) == 2:
-                    return True
-            except Exception:
-                pass
-        return False
+        return self._dm_rooms.get(room_id, False)
 
     async def _refresh_dm_cache(self) -> None:
         """Refresh the DM room cache from m.direct account data."""

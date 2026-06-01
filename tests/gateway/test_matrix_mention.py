@@ -364,6 +364,51 @@ async def test_require_mention_dm_always_responds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_two_member_non_dm_still_requires_mention(monkeypatch):
+    """A two-member room not marked in m.direct is treated as group chat."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "true")
+    monkeypatch.setenv("MATRIX_DM_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(
+        state_store=SimpleNamespace(
+            get_members=AsyncMock(return_value=["@alice:example.org", "@hermes:example.org"])
+        )
+    )
+    adapter._dm_rooms.clear()
+    event = _make_event("hello without mention")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_two_member_non_dm_uses_group_auto_thread(monkeypatch):
+    """Two-member non-DM rooms should use MATRIX_AUTO_THREAD behavior."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "true")
+    monkeypatch.setenv("MATRIX_DM_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(
+        state_store=SimpleNamespace(
+            get_members=AsyncMock(return_value=["@alice:example.org", "@hermes:example.org"])
+        )
+    )
+    adapter._dm_rooms.clear()
+    event = _make_event("@hermes:example.org please reply", event_id="$msg1")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id == "$msg1"
+    assert "$msg1" in adapter._threads
+
+
+@pytest.mark.asyncio
 async def test_dm_strips_full_mxid(monkeypatch):
     """DMs strip the full MXID from body when require_mention is on (default)."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)

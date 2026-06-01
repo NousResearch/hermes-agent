@@ -9,7 +9,8 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
+import inspect
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
@@ -69,7 +70,17 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
     for platform, adapter in adapters.items():
         try:
-            if platform == Platform.DISCORD:
+            list_channels = getattr(adapter, "list_channels", None)
+            if callable(list_channels) and platform not in {Platform.DISCORD, Platform.SLACK}:
+                channels = list_channels()
+                if inspect.isawaitable(channels):
+                    channels = await channels
+                channels = cast(Any, channels)
+                if isinstance(channels, list):
+                    platforms[platform.value] = channels
+                else:
+                    platforms[platform.value] = list(channels or [])
+            elif platform == Platform.DISCORD:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)

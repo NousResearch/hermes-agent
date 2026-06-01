@@ -3,9 +3,10 @@ label: Fluxer
 kind: platform
 version: 0.1.0
 description: >
-  Fluxer gateway adapter for Hermes Agent. Text-first integration using
-  Fluxer's bot REST API for outbound messages and Gateway WebSocket events
-  for inbound MESSAGE_CREATE dispatches.
+  Fluxer gateway adapter for Hermes Agent. Native Fluxer integration using
+  Fluxer's bot REST API for outbound messages, Gateway WebSocket events for
+  inbound dispatches, native components, slash-command interactions, pins,
+  threads, and channel-directory enumeration.
 author: Hermes Agent
 requires_env:
   - name: FLUXER_BOT_TOKEN
@@ -32,4 +33,72 @@ optional_env:
   - name: FLUXER_HOME_CHANNEL_NAME
     description: "Human label for the home channel"
     prompt: "Home channel display name"
+    password: false
+  - name: FLUXER_GATEWAY_URL
+    description: "Override Fluxer Gateway WebSocket URL; normally discovered via /gateway/bot"
+    prompt: "Gateway WebSocket URL"
+    password: false
+  - name: FLUXER_BACKLOG_RECOVERY
+    description: "Recover recent channel messages after reconnect/startup (true/false)"
+    prompt: "Enable backlog recovery?"
+    password: false
+  - name: FLUXER_BACKLOG_LIMIT
+    description: "Maximum recent messages to scan per known channel during backlog recovery"
+    prompt: "Backlog recovery limit"
+    password: false
+  - name: FLUXER_BACKLOG_BOOTSTRAP_SECONDS
+    description: "Startup lookback window, in seconds, when no previous disconnect time exists"
+    prompt: "Backlog bootstrap seconds"
+    password: false
+  - name: FLUXER_REQUIRE_MENTION
+    description: "Require bot mention/direct address in non-home channels (true/false)"
+    prompt: "Require mention in channels?"
+    password: false
+  - name: FLUXER_STRICT_MENTION
+    description: "Require a fresh mention on every channel message, ignoring mentioned-thread memory"
+    prompt: "Strict mention mode?"
+    password: false
+  - name: FLUXER_FREE_RESPONSE_CHANNELS
+    description: "Comma-separated channel IDs where Fluxer responds without mention"
+    prompt: "Free-response channel IDs"
+    password: false
+  - name: FLUXER_ALLOWED_CHANNELS
+    description: "Comma-separated channel IDs where Fluxer is allowed to respond; empty means all"
+    prompt: "Allowed channel IDs"
+    password: false
+  - name: FLUXER_MENTION_PATTERNS
+    description: "Comma-separated regexes that count as direct bot mentions"
+    prompt: "Mention regex patterns"
+    password: false
+  - name: FLUXER_ALLOW_MENTION_EVERYONE
+    description: "Permit outbound @everyone/@here mentions instead of neutralizing them"
+    prompt: "Allow @everyone/@here?"
+    password: false
+  - name: FLUXER_ALLOW_MENTION_ROLES
+    description: "Permit outbound Fluxer role mentions instead of neutralizing them"
+    prompt: "Allow role mentions?"
+    password: false
+  - name: FLUXER_ALLOW_MENTION_USERS
+    description: "Permit outbound user mentions"
+    prompt: "Allow user mentions?"
+    password: false
+  - name: FLUXER_ALLOW_MENTION_REPLIED_USER
+    description: "Permit reply notifications to the replied-to user when Fluxer supports allowed_mentions"
+    prompt: "Mention replied user?"
+    password: false
+  - name: FLUXER_DELIVERY_VERIFICATION
+    description: "Read back sent/edited messages to verify delivery when possible"
+    prompt: "Enable delivery verification?"
+    password: false
+  - name: FLUXER_REGISTER_NATIVE_COMMANDS
+    description: "Register Hermes slash commands with Fluxer on gateway connect"
+    prompt: "Register native Fluxer slash commands?"
+    password: false
+  - name: FLUXER_APPLICATION_ID
+    description: "Fluxer application ID for native command registration; defaults to token prefix"
+    prompt: "Fluxer application ID"
+    password: false
+  - name: FLUXER_NATIVE_COMMAND_GUILDS
+    description: "Comma-separated guild IDs for guild-scoped command registration; empty means global"
+    prompt: "Native command guild IDs"
     password: false

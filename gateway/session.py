@@ -597,6 +597,55 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _coerce_session_policy_bool(value: Any, default: bool) -> bool:
+    """Coerce YAML/env-style booleans for session policy overrides."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "y"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "n"}:
+            return False
+    return default
+
+
+def effective_session_policy(
+    config: GatewayConfig,
+    source: SessionSource,
+) -> tuple[bool, bool]:
+    """Return effective group/thread session isolation for a source.
+
+    Gateway-level ``group_sessions_per_user``/``thread_sessions_per_user`` are
+    defaults. A platform may override either value under
+    ``platforms.<platform>.extra``; this lets Discord-like adapters such as
+    Fluxer use shared channel sessions without changing Telegram/Matrix/etc.
+    """
+    group_sessions_per_user = getattr(config, "group_sessions_per_user", True)
+    thread_sessions_per_user = getattr(config, "thread_sessions_per_user", False)
+
+    try:
+        platform_cfg = (getattr(config, "platforms", {}) or {}).get(source.platform)
+        extra = getattr(platform_cfg, "extra", {}) if platform_cfg is not None else {}
+        if isinstance(extra, dict):
+            group_sessions_per_user = _coerce_session_policy_bool(
+                extra.get("group_sessions_per_user"),
+                group_sessions_per_user,
+            )
+            thread_sessions_per_user = _coerce_session_policy_bool(
+                extra.get("thread_sessions_per_user"),
+                thread_sessions_per_user,
+            )
+    except Exception:
+        pass
+
+    return bool(group_sessions_per_user), bool(thread_sessions_per_user)
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
@@ -743,10 +792,14 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        group_sessions_per_user, thread_sessions_per_user = effective_session_policy(
+            self.config,
+            source,
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
@@ -1380,14 +1433,18 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    group_sessions_per_user, thread_sessions_per_user = effective_session_policy(
+        config,
+        source,
+    )
     context = SessionContext(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         ),
     )
     

@@ -507,6 +507,36 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 
 See [the ntfy messaging guide](/user-guide/messaging/ntfy) — particularly the **identity model** section — before deploying with untrusted topics.
 
+### Fluxer
+
+Used by the bundled Fluxer platform plugin (`plugins/platforms/fluxer/`). See [Messaging Gateway → Fluxer](/user-guide/messaging/fluxer) for full setup.
+
+| Variable | Description |
+|----------|-------------|
+| `FLUXER_BOT_TOKEN` | Bot token, usually `<applicationId>.<secret>`. Required. |
+| `FLUXER_BASE_URL` | REST API base URL. Defaults to `https://api.fluxer.app/v1`; plain self-hosted origins are normalized to `/api`. |
+| `FLUXER_GATEWAY_URL` | Override Gateway WebSocket URL. Normally discovered from `/gateway/bot`. |
+| `FLUXER_HOME_CHANNEL` | Default Fluxer channel/DM for cron delivery and notifications. Also treated as a free-response channel. |
+| `FLUXER_HOME_CHANNEL_NAME` | Human label for the home channel. |
+| `FLUXER_ALLOWED_USERS` | Comma-separated Fluxer user IDs allowed to talk to the bot. |
+| `FLUXER_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any Fluxer user. Default: `false`. |
+| `FLUXER_ALLOWED_CHANNELS` | Comma-separated channel IDs where Hermes may respond. Empty means no channel whitelist. |
+| `FLUXER_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where Hermes responds without a mention. |
+| `FLUXER_REQUIRE_MENTION` | Require direct mention/address in non-home channels. Default: `true`. |
+| `FLUXER_STRICT_MENTION` | Require a fresh mention on every channel message instead of remembering mentioned threads. Default: `false`. |
+| `FLUXER_MENTION_PATTERNS` | Comma-separated regexes that count as direct bot addresses. |
+| `FLUXER_REGISTER_NATIVE_COMMANDS` | Register Hermes slash commands with Fluxer on gateway connect. Default: `false`. |
+| `FLUXER_APPLICATION_ID` | Fluxer application ID for native command registration; defaults to token prefix when possible. |
+| `FLUXER_NATIVE_COMMAND_GUILDS` | Comma-separated guild IDs for guild-scoped command registration; empty means global. |
+| `FLUXER_BACKLOG_RECOVERY` | Recover recent messages from known channels after startup/reconnect. Default: `true`. |
+| `FLUXER_BACKLOG_LIMIT` | Max recent messages to scan per known channel. Default: `25`, capped at `100`. |
+| `FLUXER_BACKLOG_BOOTSTRAP_SECONDS` | Startup lookback window when no previous disconnect time exists. Default: `120`, capped at `900`. |
+| `FLUXER_DELIVERY_VERIFICATION` | Read back sent/edited messages to verify visible delivery. Default: `true`. |
+| `FLUXER_ALLOW_MENTION_EVERYONE` | Permit outbound `@everyone` / `@here`; default `false` neutralizes them. |
+| `FLUXER_ALLOW_MENTION_ROLES` | Permit outbound role mentions; default `false` neutralizes them. |
+| `FLUXER_ALLOW_MENTION_USERS` | Permit outbound user mentions. Default: `true`. |
+| `FLUXER_ALLOW_MENTION_REPLIED_USER` | Permit reply notifications to the replied-to user when Fluxer supports `allowed_mentions`. Default: `true`. |
+
 ### Advanced Messaging Tuning
 
 Advanced per-platform knobs for throttling the outbound message batcher. Most users never need to touch these; defaults are set to respect each platform's rate limits without feeling sluggish.

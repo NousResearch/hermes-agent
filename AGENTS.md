@@ -68,6 +68,12 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
+### Fluxer platform plugin
+
+Fluxer lives under `plugins/platforms/fluxer/` and is intentionally runtime-faithful: prefer the shapes the Fluxer hosted/self-hosted runtime actually emits over forcing Discord assumptions. The adapter currently covers REST send/edit/delete/media, delivery readback, heartbeats/reconnect/backlog recovery, mention gating, pins, native component callbacks, opt-in native slash-command registration, thread creation, and `list_channels()` for the channel directory. Main tests are `tests/gateway/test_fluxer_plugin.py` and `tests/gateway/test_channel_directory.py`. Docs are in `website/docs/user-guide/messaging/fluxer.md` plus `website/docs/reference/environment-variables.md`.
+
+Useful opt-in envs for native command registration: `FLUXER_REGISTER_NATIVE_COMMANDS`, `FLUXER_APPLICATION_ID`, `FLUXER_NATIVE_COMMAND_GUILDS`. Keep registration disabled by default unless the deployment has proven application-command support.
+
 ## TypeScript Style
 
 Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.

@@ -49,6 +49,27 @@ class TestLoadDirectory:
 
 
 class TestBuildChannelDirectoryWrites:
+    def test_uses_adapter_channel_directory_hook_for_plugin_platforms(self, tmp_path):
+        class PluginPlatform:
+            value = "fluxer"
+
+        adapter = SimpleNamespace(
+            list_channels=AsyncMock(return_value=[
+                {"id": "chan-1", "name": "general", "guild": "Fluxer Guild", "type": "channel"},
+                {"id": "thread-1", "name": "Support thread", "guild": "Fluxer Guild", "type": "thread", "parent_id": "chan-1"},
+            ])
+        )
+        cache_file = tmp_path / "channel_directory.json"
+
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            directory = asyncio.run(build_channel_directory({PluginPlatform(): adapter}))
+
+        assert directory["platforms"]["fluxer"] == [
+            {"id": "chan-1", "name": "general", "guild": "Fluxer Guild", "type": "channel"},
+            {"id": "thread-1", "name": "Support thread", "guild": "Fluxer Guild", "type": "thread", "parent_id": "chan-1"},
+        ]
+        adapter.list_channels.assert_awaited_once()
+
     def test_failed_write_preserves_previous_cache(self, tmp_path, monkeypatch):
         cache_file = _write_directory(tmp_path, {
             "telegram": [{"id": "123", "name": "Alice", "type": "dm"}]

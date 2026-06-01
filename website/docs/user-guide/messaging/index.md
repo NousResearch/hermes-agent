@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Fluxer, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Fluxer, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
@@ -20,6 +20,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 |----------|:-----:|:------:|:-----:|:-------:|:---------:|:------:|:---------:|
 | Telegram | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fluxer | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Google Chat | — | ✅ | ✅ | ✅ | — | ✅ | — |
 | WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
@@ -51,6 +52,7 @@ flowchart TB
         subgraph Adapters["Platform adapters"]
             tg[Telegram]
             dc[Discord]
+            fx[Fluxer]
             wa[WhatsApp]
             sl[Slack]
             gc[Google Chat]
@@ -80,6 +82,7 @@ flowchart TB
 
     tg --> store
     dc --> store
+    fx --> store
     wa --> store
     sl --> store
     gc --> store
@@ -203,6 +206,7 @@ FEISHU_ALLOWED_USERS=ou_xxxxxxxx,ou_yyyyyyyy
 WECOM_ALLOWED_USERS=user-id-1,user-id-2
 WECOM_CALLBACK_ALLOWED_USERS=user-id-1,user-id-2
 TEAMS_ALLOWED_USERS=aad-object-id-1,aad-object-id-2
+FLUXER_ALLOWED_USERS=123456789012345678
 
 # Or allow
 GATEWAY_ALLOWED_USERS=123456789,987654321
@@ -554,6 +558,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 
 - [Telegram Setup](telegram.md)
 - [Discord Setup](discord.md)
+- [Fluxer Setup](fluxer.md)
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)

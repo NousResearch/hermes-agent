@@ -1128,6 +1128,7 @@ from gateway.session import (
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+    effective_session_policy,
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
@@ -2371,10 +2372,14 @@ class GatewayRunner:
             except Exception:
                 pass
         config = getattr(self, "config", None)
+        group_sessions_per_user, thread_sessions_per_user = effective_session_policy(
+            config,
+            source,
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
@@ -8473,8 +8478,10 @@ class GatewayRunner:
         """
         history = history or []
         message_text = event.text or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        _group_sessions_per_user, _thread_sessions_per_user = effective_session_policy(
+            self.config,
+            source,
+        )
         # Use the same helper every other call site uses so the write key here
         # matches the consume key at the run_conversation site — even if the
         # session store overrides build_session_key's default behavior.

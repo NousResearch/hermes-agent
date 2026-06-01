@@ -487,9 +487,12 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 ```yaml
 skills:
   guard_agent_created: true   # 默认：false
+  external_scanner_command: /path/to/scan-skill   # 默认：""
 ```
 
 开启后，任何被标记的 `skill_manage` 写入都会以审批提示的形式出现，并附带扫描器的理由。接受的写入落地；拒绝的写入向 agent 返回解释性错误。
+
+`skills.external_scanner_command` 会替换技能安装和已启用守卫的 `skill_manage` 写入中的内置关键字扫描器。Hermes 会把技能路径作为 `argv[1]` 传给该命令。该命令必须向 stdout 输出 JSON，支持原生格式（`{"verdict":"safe|caution|dangerous","findings":[]}`）或 SkillSpector 格式（`{"risk_assessment":{"severity":"LOW|MEDIUM|HIGH|CRITICAL"},"issues":[]}`）。空字符串会保留默认扫描器。
 
 ## 内存配置
 

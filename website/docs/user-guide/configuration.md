@@ -493,9 +493,12 @@ When the agent uses `skill_manage` to create, edit, patch, or delete a skill, He
 ```yaml
 skills:
   guard_agent_created: true   # default: false
+  external_scanner_command: /path/to/scan-skill   # default: ""
 ```
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
+
+`skills.external_scanner_command` replaces the built-in keyword scanner for skill installs and guarded `skill_manage` writes. Hermes calls the command with the skill path as `argv[1]`. The command must print JSON to stdout using either native shape (`{"verdict":"safe|caution|dangerous","findings":[]}`) or SkillSpector shape (`{"risk_assessment":{"severity":"LOW|MEDIUM|HIGH|CRITICAL"},"issues":[]}`). Empty string preserves the default scanner.
 
 ## Memory Configuration
 

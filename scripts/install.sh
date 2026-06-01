@@ -2390,6 +2390,18 @@ install_desktop() {
     fi
     log_success "Desktop app built: $app"
 
+    # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
+    # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
+    # later in-place rebuild (new cdhash) plus the inherited quarantine flag
+    # trips Gatekeeper's tamper check ("Hermes is damaged and can't be opened").
+    # Strip quarantine + re-apply a clean deep ad-hoc signature (no
+    # hardened-runtime flag, which an ad-hoc build can't satisfy). Skipped when a
+    # real signing identity is configured so a signed build isn't clobbered.
+    if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
+        xattr -cr "$app" 2>/dev/null || true
+        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+    fi
+
     # `npm install` + `npm run pack` rewrite lockfiles; restore them so the
     # checkout stays clean for the next `hermes update`.
     restore_dirty_lockfiles "$INSTALL_DIR"

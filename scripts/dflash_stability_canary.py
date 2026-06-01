@@ -76,8 +76,9 @@ DEFAULT_CASES: tuple[CanaryCase, ...] = (
         prompt=(
             "Run a Python check from the Hermes checkout at `{source_root}` that imports "
             "`looks_like_incomplete_final_fragment` from `agent.stall_retry` and "
-            "verifies it returns true for exactly this string: "
-            "`I see a lot of discord-res tasks (digest Discord content) and some`. "
+            "verifies `looks_like_incomplete_final_fragment("
+            "\"I see a lot of discord-res tasks (digest Discord content) and some\", "
+            "\"stop\", False, 400)` returns true. "
             "If the check passes, reply exactly CANARY_FRAGMENT_OK and nothing "
             "else. If it fails, do not use the marker; summarize the failure."
         ),

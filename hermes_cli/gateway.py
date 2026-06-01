@@ -2303,6 +2303,27 @@ def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+def _uses_workspace_gateway_wrapper(text: str) -> bool:
+    """Return True when a unit is intentionally launched via a workspace wrapper.
+
+    Hermes.Memory host Claw uses a hand-authored user unit whose ``ExecStart``
+    points at ``.hermes/workspace/scripts/shell/start-*-gateway*.sh``. That
+    wrapper exports the profile/runtime environment before delegating to
+    ``hermes_cli.main gateway run --replace``. Rewriting those units from the
+    generic generated template silently strips the wrapper and regresses runtime
+    placement back to the bare default environment.
+
+    Treat these wrapper-backed units as externally managed: restart/status may
+    operate on them, but refresh logic must not overwrite them.
+    """
+    normalized = _normalize_service_definition(text)
+    return (
+        "ExecStart=" in normalized
+        and "/workspace/scripts/shell/start-" in normalized
+        and "gateway" in normalized
+    )
+
+
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
     """Normalize launchd plist text for staleness checks.
 
@@ -2328,6 +2349,9 @@ def systemd_unit_is_current(system: bool = False) -> bool:
         return False
 
     installed = unit_path.read_text(encoding="utf-8")
+    if not system and _uses_workspace_gateway_wrapper(installed):
+        return True
+
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     return _normalize_service_definition(installed) == _normalize_service_definition(expected)

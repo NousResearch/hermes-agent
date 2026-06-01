@@ -61,6 +61,67 @@ class TestSystemdServiceRefresh:
             ["systemctl", "--user", "enable", gateway_cli.get_service_name()],
         ]
 
+    def test_systemd_unit_is_current_treats_workspace_wrapper_unit_as_managed(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text(
+            "[Service]\n"
+            "ExecStart=/bin/bash -lc 'exec /home/hunta/projects/hermes.memory/.hermes/workspace/scripts/shell/start-claw-gateway.sh'\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        generate_calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: generate_calls.append((system, run_as_user)) or "new unit\n",
+        )
+
+        assert gateway_cli.systemd_unit_is_current() is True
+        assert generate_calls == []
+
+    def test_systemd_restart_preserves_workspace_wrapper_unit(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        wrapper_unit = (
+            "[Service]\n"
+            "ExecStart=/bin/bash -lc 'exec /home/hunta/projects/hermes.memory/.hermes/workspace/scripts/shell/start-claw-gateway.sh'\n"
+        )
+        unit_path.write_text(wrapper_unit, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        generate_calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: generate_calls.append((system, run_as_user)) or "new unit\n",
+        )
+
+        calls = []
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+        )
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.systemd_restart()
+
+        assert unit_path.read_text(encoding="utf-8") == wrapper_unit
+        assert generate_calls == []
+        assert calls[:4] == [
+            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus,MainPID"],
+            ["systemctl", "--user", "reset-failed", gateway_cli.get_service_name()],
+            ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
+            ("wait", False, None),
+        ]
+
     def test_systemd_start_refreshes_outdated_unit(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")

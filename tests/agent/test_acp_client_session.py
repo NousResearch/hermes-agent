@@ -1108,3 +1108,94 @@ class TestMcpServersPlumbedIntoSessionNew:
         assert srv["args"] == ["mcp-server-filesystem", "/data"]
         assert srv["env"] == [{"name": "HOME", "value": "/root"}]
         assert "type" not in srv  # stdio: no type field
+
+
+# ---------------------------------------------------------------------------
+# Tests: setting_sources / _meta.claudeCode security isolation
+# ---------------------------------------------------------------------------
+
+
+class TestSettingSources:
+    """session/new _meta.claudeCode.options.settingSources injection.
+
+    The native ACP server (claude-agent-acp) hardcodes settingSources:
+    ["user","project","local"] and then spreads userProvidedOptions on top
+    (acp-agent.js:1524), so our value overrides it.  The default
+    ("project","local") prevents ~/.claude user-scope plugins from leaking
+    into the delegated agent.
+    """
+
+    def _make_session(self, **kwargs):
+        mock_client = MagicMock()
+        mock_client.initialize.return_value = {}
+        mock_client.request.return_value = {"sessionId": "sess-meta"}
+        mock_client.take_notification.return_value = None
+        mock_client.take_server_request.return_value = None
+        mock_client.stderr_tail.return_value = []
+        session = ACPClientSession(
+            command="fake-acp",
+            client_factory=lambda **kw: mock_client,
+            **kwargs,
+        )
+        return session, mock_client
+
+    def _session_new_params(self, mock_client):
+        """Extract the params dict sent to session/new."""
+        for c in mock_client.request.call_args_list:
+            if c[0][0] == "session/new":
+                return c[0][1]
+        raise AssertionError("session/new not called")
+
+    def test_default_includes_meta_with_project_local(self):
+        """Default setting_sources → _meta.claudeCode.options.settingSources
+        == ['project','local'] in session/new params."""
+        session, mock_client = self._make_session()
+        session.ensure_started(cwd="/tmp")
+
+        params = self._session_new_params(mock_client)
+        assert "_meta" in params
+        assert params["_meta"] == {
+            "claudeCode": {
+                "options": {
+                    "settingSources": ["project", "local"],
+                }
+            }
+        }
+
+    def test_custom_setting_sources_honored(self):
+        """Explicit setting_sources list is forwarded verbatim."""
+        session, mock_client = self._make_session(
+            setting_sources=("project", "local", "user")
+        )
+        session.ensure_started(cwd="/tmp")
+
+        params = self._session_new_params(mock_client)
+        sources = params["_meta"]["claudeCode"]["options"]["settingSources"]
+        assert sources == ["project", "local", "user"]
+
+    def test_setting_sources_none_omits_meta(self):
+        """setting_sources=None → no _meta key in session/new params."""
+        session, mock_client = self._make_session(setting_sources=None)
+        session.ensure_started(cwd="/tmp")
+
+        params = self._session_new_params(mock_client)
+        assert "_meta" not in params
+
+    def test_setting_sources_empty_list_omits_meta(self):
+        """setting_sources=[] → no _meta key (same as None)."""
+        session, mock_client = self._make_session(setting_sources=[])
+        session.ensure_started(cwd="/tmp")
+
+        params = self._session_new_params(mock_client)
+        assert "_meta" not in params
+
+    def test_cwd_and_mcp_servers_still_present_alongside_meta(self):
+        """_meta addition does not displace cwd or mcpServers."""
+        servers = [{"name": "s", "command": "cmd", "args": [], "env": []}]
+        session, mock_client = self._make_session(mcp_servers=servers)
+        session.ensure_started(cwd="/work")
+
+        params = self._session_new_params(mock_client)
+        assert params["cwd"] == "/work"
+        assert params["mcpServers"] == servers
+        assert "_meta" in params  # default present

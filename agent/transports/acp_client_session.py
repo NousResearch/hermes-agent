@@ -127,6 +127,7 @@ class ACPClientSession:
         env: Optional[dict[str, str]] = None,
         model: Optional[str] = None,
         mcp_servers: Optional[list[dict]] = None,
+        setting_sources: Optional[tuple] = ("project", "local"),
         on_delta: Optional[Callable[[str], None]] = None,
         client_factory: Optional[Callable[..., ACPClient]] = None,
     ) -> None:
@@ -146,6 +147,18 @@ class ACPClientSession:
                 Hermes' mcp_servers config.  Hermes does NOT open these
                 connections in-process -- the external ACP agent owns them.
                 None or [] → send an empty list (current default behaviour).
+            setting_sources: Claude Code setting scopes forwarded to the native
+                ACP server via _meta.claudeCode.options.settingSources in
+                session/new.  The native server (claude-agent-acp) hardcodes
+                settingSources:["user","project","local"] (dist/acp-agent.js:1522)
+                and then spreads userProvidedOptions on top (line 1524), so this
+                override takes effect.  Default ("project","local") mirrors
+                --setting-sources project,local used by the claude_daemon transport
+                and excludes the "user" scope, preventing ~/.claude plugins and
+                MCP servers (playwright, context7, slack-channels, etc.) from
+                leaking into the delegated agent.  Non-Claude ACP servers ignore
+                unknown _meta keys, so it is safe to always send.
+                Pass None or [] to omit _meta entirely (raw server defaults).
             on_delta: Optional callback invoked with each text delta during streaming.
                       Bridges to Hermes' ``_fire_stream_delta`` for live output.
             client_factory: Inject a custom ACPClient constructor for testing.
@@ -155,6 +168,9 @@ class ACPClientSession:
         self._env = env
         self._model = model
         self._mcp_servers: list[dict] = list(mcp_servers or [])
+        self._setting_sources: Optional[list[str]] = (
+            list(setting_sources) if setting_sources else None
+        )
         self._on_delta = on_delta
         self._client_factory = client_factory or ACPClient
 
@@ -180,14 +196,30 @@ class ACPClientSession:
             client_name="hermes",
             client_version=_get_hermes_version(),
         )
+        # Build session/new params.  _meta.claudeCode.options is a documented
+        # passthrough in the native ACP server (acp-agent.js:1500) spread AFTER
+        # its hardcoded settingSources (line 1524), so our value wins.
+        # Sending settingSources:["project","local"] (the default) prevents
+        # ~/.claude user-scope plugins and MCP servers (playwright, context7,
+        # slack-channels, etc.) from leaking into the delegated agent -- the
+        # same isolation the claude_daemon transport enforces via
+        # --setting-sources project,local.  Generic ACP servers ignore unknown
+        # _meta keys, so it is safe to always include when configured.
+        session_new_params: dict = {
+            "cwd": cwd or os.getcwd(),
+            "mcpServers": self._mcp_servers,
+        }
+        if self._setting_sources:
+            session_new_params["_meta"] = {
+                "claudeCode": {
+                    "options": {
+                        "settingSources": self._setting_sources,
+                    }
+                }
+            }
         result = self._client.request(
             _METHOD_SESSION_NEW,
-            # mcpServers: forward the translated list from Hermes' mcp_servers
-            # config so the ACP agent can connect to the user's MCP tools.
-            # Hermes does NOT open these connections in-process -- the external
-            # ACP agent owns the connections (no double-connect).
-            # Empty list when no servers are configured (original default).
-            {"cwd": cwd or os.getcwd(), "mcpServers": self._mcp_servers},
+            session_new_params,
             timeout=15,
         )
         session_id = result.get("sessionId") or result.get("session_id") or ""

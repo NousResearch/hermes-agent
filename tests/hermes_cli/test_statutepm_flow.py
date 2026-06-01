@@ -122,6 +122,10 @@ def _create_parent(root: Path, repo: Path) -> str:
 
 
 def _complete_child_with_result(child_id: str, child_root: Path | None, result: dict) -> None:
+    _finish_child_with_result(child_id, child_root, result, status="completed")
+
+
+def _finish_child_with_result(child_id: str, child_root: Path | None, result: dict, *, status: str) -> None:
     conn = cp.connect(root=child_root)
     try:
         cp.register_instance(conn, "statute-worker", instance_id="statute-worker:custom")
@@ -129,7 +133,7 @@ def _complete_child_with_result(child_id: str, child_root: Path | None, result: 
         assert ok and epoch is not None
         cp.advance_dispatch(conn, child_id, instance_id="statute-worker:custom", lease_epoch=epoch, status="running")
         cp.record_result(conn, dispatch_id=child_id, instance_id="statute-worker:custom", lease_epoch=epoch, result=result)
-        cp.advance_dispatch(conn, child_id, instance_id="statute-worker:custom", lease_epoch=epoch, status="completed")
+        cp.advance_dispatch(conn, child_id, instance_id="statute-worker:custom", lease_epoch=epoch, status=status)
     finally:
         conn.close()
 
@@ -162,6 +166,78 @@ def test_statutepm_child_completed_with_warnings_preserves_warning_status_on_par
         latest = cp.get_latest_dispatch_result(conn, parent)["result"]
         assert latest["status"] == "completed_with_warnings"
         assert latest["summary"] == "child done with warnings"
+    finally:
+        conn.close()
+
+
+def test_statutepm_preserves_child_action_required_result_when_child_dispatch_failed(tmp_path):
+    root = tmp_path / ".hermes"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = _create_parent(root, repo)
+    result = {
+        "schema": "control_result_v1",
+        "status": "action_required",
+        "summary": "child blocked on CodeRabbit",
+        "artifacts": [],
+        "tests": [],
+        "blockers": [{"kind": "review_gate", "message": "CodeRabbit retry required"}],
+    }
+
+    def spawn(child_id: str, payload: dict, child_root: Path | None, parent_id: str) -> int:
+        _finish_child_with_result(child_id, child_root, result, status="failed")
+        return 9
+
+    outcome = StatutePMFlow(root=root, pm_instance_id="statutepm:failed-child-action", spawn_child=spawn, poll_interval_s=0, child_timeout_s=2).run_dispatch(parent)
+    assert outcome["status"] == "failed"
+
+    conn = cp.connect(root=root)
+    try:
+        row = conn.execute("SELECT status, last_error FROM cp_dispatches WHERE dispatch_id=?", (parent,)).fetchone()
+        assert row["status"] == "failed"
+        assert "child dispatch" in row["last_error"]
+        latest_row = cp.get_latest_dispatch_result(conn, parent)
+        assert latest_row is not None
+        latest = latest_row["result"]
+        assert latest["status"] == "action_required"
+        assert latest["summary"] == "child blocked on CodeRabbit"
+        assert latest["blockers"][0]["message"] == "CodeRabbit retry required"
+        assert latest["blockers"][-1]["child_dispatch_status"] == "failed"
+    finally:
+        conn.close()
+
+
+def test_statutepm_preserves_child_failed_result_when_child_dispatch_failed(tmp_path):
+    root = tmp_path / ".hermes"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = _create_parent(root, repo)
+    result = {
+        "schema": "control_result_v1",
+        "status": "failed",
+        "summary": "child tests failed",
+        "artifacts": [],
+        "tests": [{"command": "pytest", "exit_code": 1}],
+        "blockers": [{"kind": "runtime_error", "message": "unit tests failed"}],
+    }
+
+    def spawn(child_id: str, payload: dict, child_root: Path | None, parent_id: str) -> int:
+        _finish_child_with_result(child_id, child_root, result, status="failed")
+        return 10
+
+    outcome = StatutePMFlow(root=root, pm_instance_id="statutepm:failed-child-failed", spawn_child=spawn, poll_interval_s=0, child_timeout_s=2).run_dispatch(parent)
+    assert outcome["status"] == "failed"
+
+    conn = cp.connect(root=root)
+    try:
+        latest_row = cp.get_latest_dispatch_result(conn, parent)
+        assert latest_row is not None
+        latest = latest_row["result"]
+        assert latest["status"] == "action_required"
+        assert latest["summary"] == "child tests failed"
+        assert latest["tests"][0]["exit_code"] == 1
+        assert latest["blockers"][0]["kind"] == "runtime_error"
+        assert latest["blockers"][-1]["child_dispatch_status"] == "failed"
     finally:
         conn.close()
 

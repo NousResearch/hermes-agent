@@ -17,6 +17,17 @@ from hermes_cli.control_contracts import validate_statute_dispatch_v1
 
 CONTROL_RESULT_STATUSES = {"completed", "completed_with_warnings", "failed", "action_required"}
 CONTROL_RESULT_SUCCESS_STATUSES = {"completed", "completed_with_warnings"}
+CONTROL_RESULT_STATUS_ALIASES = {
+    "blocked": "action_required",
+    "blocked_action_required": "action_required",
+    "blocked_galt": "action_required",
+    "gate_blocked": "action_required",
+    "needs_action": "action_required",
+    "needs_supervisor": "action_required",
+    "requires_action": "action_required",
+    "requires_human": "action_required",
+    "requires_supervisor": "action_required",
+}
 
 
 @dataclass
@@ -106,6 +117,8 @@ class ControlDispatchWorker:
         conn = self._connect()
         try:
             for artifact in artifacts:
+                if not artifact.get("path"):
+                    continue
                 cp.record_artifact(
                     conn,
                     dispatch_id=item.dispatch_id,
@@ -214,7 +227,10 @@ def build_agent_prompt(item: DispatchWorkItem) -> str:
         "You are a statute-worker Hermes agent running under the DB-centric control plane.\n"
         "Use only the dispatch payload below as operative scope. Do not use prior chat context.\n"
         "Do not push code, expose public network services, delete files, install packages, or perform other dangerous actions unless the Hermes approval system grants approval.\n"
-        "When done, print exactly one line beginning with CONTROL_RESULT_JSON: followed by JSON with schema=control_result_v1, status, summary, artifacts, tests, blockers.\n\n"
+        "When done, print exactly one line beginning with CONTROL_RESULT_JSON: followed by JSON with schema=control_result_v1, status, summary, artifacts, tests, blockers.\n"
+        "Allowed status values are exactly: completed, completed_with_warnings, failed, action_required.\n"
+        "Use action_required for CodeRabbit, auth, push, CI, user-decision, or supervisor gates; do not invent blocked/custom statuses.\n"
+        "artifacts must be an array of objects like {path, summary, metadata}; tests must be an array of objects like {command, exit_code, summary}; blockers must be an array of objects like {kind, message}.\n\n"
         "Dispatch payload JSON:\n"
         f"{json.dumps(payload, indent=2, sort_keys=True)}\n"
     )
@@ -238,9 +254,78 @@ def _parse_control_result(stdout: str) -> dict[str, Any]:
     return validate_control_result(result)
 
 
-def validate_control_result(result: dict[str, Any]) -> dict[str, Any]:
+def _coerce_artifact(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    text = str(value)
+    return {"path": "", "summary": text, "metadata": {"raw_artifact": text, "coerced": True}}
+
+
+def _coerce_test(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    text = str(value)
+    return {"command": text, "summary": text, "metadata": {"raw_test": text, "coerced": True}}
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _coerce_blocker(value: Any, *, default_kind: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        blocker = dict(value)
+        blocker.setdefault("kind", default_kind)
+        if not blocker.get("message"):
+            blocker["message"] = str(value)
+        return blocker
+    text = str(value)
+    return {"kind": default_kind, "message": text, "metadata": {"raw_blocker": text, "coerced": True}}
+
+
+def normalize_control_result(result: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError("control result must be object")
+    normalized = dict(result)
+    raw_status = str(normalized.get("status") or "").strip()
+    status = raw_status
+    normalized_status = False
+    raw_blockers = normalized.get("blockers")
+    has_blockers = bool(_as_list(raw_blockers))
+    if status not in CONTROL_RESULT_STATUSES:
+        alias = CONTROL_RESULT_STATUS_ALIASES.get(status)
+        if alias:
+            status = alias
+            normalized_status = True
+        elif has_blockers:
+            status = "action_required"
+            normalized_status = True
+        else:
+            normalized["status"] = raw_status
+            return normalized
+    normalized["status"] = status
+    normalized["artifacts"] = [_coerce_artifact(v) for v in _as_list(normalized.get("artifacts"))]
+    normalized["tests"] = [_coerce_test(v) for v in _as_list(normalized.get("tests"))]
+    default_blocker_kind = "runtime_error" if status == "failed" else "action_required"
+    normalized["blockers"] = [_coerce_blocker(v, default_kind=default_blocker_kind) for v in _as_list(normalized.get("blockers"))]
+    if normalized_status and raw_status != status:
+        normalized["blockers"].append(
+            {
+                "kind": "control_result_status_normalized",
+                "message": f"normalized non-contract control result status {raw_status!r} to {status!r}",
+                "raw_status": raw_status,
+                "normalized_status": status,
+            }
+        )
+    return normalized
+
+
+def validate_control_result(result: dict[str, Any]) -> dict[str, Any]:
+    result = normalize_control_result(result)
     if result.get("schema") != "control_result_v1":
         raise ValueError("control result schema must be control_result_v1")
     if result.get("status") not in CONTROL_RESULT_STATUSES:

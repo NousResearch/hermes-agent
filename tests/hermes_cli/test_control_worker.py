@@ -162,7 +162,87 @@ def test_validate_control_result_accepts_completed_with_warnings():
         "tests": [],
         "blockers": [],
     }
-    assert validate_control_result(result) is result
+    validated = validate_control_result(result)
+    assert validated["status"] == "completed_with_warnings"
+
+
+def test_validate_control_result_normalizes_known_blocked_alias_and_string_blockers():
+    result = {
+        "schema": "control_result_v1",
+        "status": "blocked_action_required",
+        "summary": "blocked on CodeRabbit",
+        "artifacts": [],
+        "tests": ["pytest tests/hermes_cli/test_control_worker.py"],
+        "blockers": ["CodeRabbit credits exhausted"],
+    }
+    validated = validate_control_result(result)
+    assert validated["status"] == "action_required"
+    assert validated["tests"][0]["command"] == "pytest tests/hermes_cli/test_control_worker.py"
+    assert validated["blockers"][0]["message"] == "CodeRabbit credits exhausted"
+    marker = validated["blockers"][-1]
+    assert marker["kind"] == "control_result_status_normalized"
+    assert marker["raw_status"] == "blocked_action_required"
+
+
+def test_validate_control_result_normalizes_unknown_status_with_blockers_to_action_required():
+    result = {
+        "schema": "control_result_v1",
+        "status": "paused_for_supervisor",
+        "summary": "cannot continue",
+        "artifacts": [],
+        "tests": [],
+        "blockers": [{"kind": "auth", "message": "CodeRabbit auth required"}],
+    }
+    validated = validate_control_result(result)
+    assert validated["status"] == "action_required"
+    assert validated["blockers"][0]["message"] == "CodeRabbit auth required"
+    assert validated["blockers"][-1]["raw_status"] == "paused_for_supervisor"
+
+
+def test_validate_control_result_rejects_unknown_status_without_blockers():
+    result = {
+        "schema": "control_result_v1",
+        "status": "paused_for_supervisor",
+        "summary": "cannot continue",
+        "artifacts": [],
+        "tests": [],
+        "blockers": [],
+    }
+    try:
+        validate_control_result(result)
+    except ValueError as exc:
+        assert "control result status invalid" in str(exc)
+    else:
+        raise AssertionError("unknown status without blockers should be rejected")
+
+
+def test_validate_control_result_normalizes_unknown_status_with_blockers_and_missing_arrays():
+    result = {
+        "schema": "control_result_v1",
+        "status": "waiting_for_gate",
+        "summary": "blocked",
+        "blockers": ["manual review required"],
+    }
+    validated = validate_control_result(result)
+    assert validated["status"] == "action_required"
+    assert validated["artifacts"] == []
+    assert validated["tests"] == []
+    assert validated["blockers"][0]["message"] == "manual review required"
+    assert validated["blockers"][-1]["raw_status"] == "waiting_for_gate"
+
+
+def test_validate_control_result_failed_string_blockers_use_runtime_error_kind():
+    result = {
+        "schema": "control_result_v1",
+        "status": "failed",
+        "summary": "hard failure",
+        "artifacts": [],
+        "tests": [],
+        "blockers": ["unit tests failed"],
+    }
+    validated = validate_control_result(result)
+    assert validated["status"] == "failed"
+    assert validated["blockers"][0]["kind"] == "runtime_error"
 
 
 def test_agent_worker_completed_with_warnings_marks_dispatch_completed_and_preserves_exact_result_status(tmp_path):
@@ -214,6 +294,42 @@ def test_agent_worker_action_required_records_failed_dispatch_but_preserves_acti
         latest = cp.get_latest_dispatch_result(conn, did)["result"]
         assert latest["status"] == "action_required"
         assert latest["blockers"][0]["kind"] == "decision"
+    finally:
+        conn.close()
+
+
+def test_agent_worker_unknown_blocked_status_records_action_required_with_raw_status_evidence(tmp_path):
+    root = tmp_path / ".hermes"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    did = _make_dispatch(root, repo)
+    result = {
+        "schema": "control_result_v1",
+        "status": "awaiting_supervisor_gate",
+        "summary": "needs supervisor gate",
+        "artifacts": ["non-file artifact note"],
+        "tests": [],
+        "blockers": [{"kind": "approval", "message": "approve CodeRabbit retry"}],
+    }
+
+    run_agent_dispatch(root=root, profile_id="statute-worker", instance_id="statute-worker:unknown-status", dispatch_id=did, runner=_runner_for_result(result), timeout_s=5)
+
+    conn = cp.connect(root=root)
+    try:
+        row = conn.execute("SELECT status FROM cp_dispatches WHERE dispatch_id=?", (did,)).fetchone()
+        assert row["status"] == "failed"
+        latest_row = cp.get_latest_dispatch_result(conn, did)
+        assert latest_row is not None
+        latest = latest_row["result"]
+        assert latest["status"] == "action_required"
+        assert latest["artifacts"][0]["summary"] == "non-file artifact note"
+        assert latest["artifacts"][0]["metadata"]["raw_artifact"] == "non-file artifact note"
+        assert latest["blockers"][0]["message"] == "approve CodeRabbit retry"
+        marker = latest["blockers"][-1]
+        assert marker["kind"] == "control_result_status_normalized"
+        assert marker["raw_status"] == "awaiting_supervisor_gate"
+        artifacts = cp.list_artifacts(conn, did)
+        assert all(artifact["path"] for artifact in artifacts)
     finally:
         conn.close()
 

@@ -199,6 +199,24 @@ class StatutePMFlow:
         try:
             child_status = child_row["status"] if child_row else "missing"
             if child_status != "completed" or not latest:
+                if latest:
+                    try:
+                        child_result = validate_control_result(latest["result"])
+                    except Exception:
+                        child_result = None
+                    if child_result and child_result.get("status") not in CONTROL_RESULT_SUCCESS_STATUSES:
+                        blocker = {"kind": "runtime_error", "message": f"child dispatch {child_id} status={child_status}", "child_dispatch_id": child_id, "child_dispatch_status": child_status}
+                        result = _result(
+                            "action_required",
+                            child_result.get("summary") or "child dispatch requires action",
+                            artifacts=child_result.get("artifacts", []),
+                            tests=child_result.get("tests", []),
+                            blockers=[*child_result.get("blockers", []), blocker],
+                        )
+                        cp.record_result(conn, dispatch_id=parent.dispatch_id, instance_id=self.pm_instance_id, lease_epoch=parent.lease_epoch, result=result)
+                        cp.create_message_from_instance(conn, sender_instance_id=self.pm_instance_id, receiver_profile=self.admin_profile, kind="action_required", body=json.dumps(result, sort_keys=True))
+                        cp.advance_dispatch(conn, parent.dispatch_id, instance_id=self.pm_instance_id, lease_epoch=parent.lease_epoch, status="failed", last_error=blocker["message"])
+                        return {"parent_dispatch_id": parent.dispatch_id, "child_dispatch_id": child_id, "status": "failed", "pid": pid}
                 blocker = {"kind": "runtime_error", "message": f"child dispatch {child_id} status={child_status}"}
                 result = _result("action_required", "child dispatch did not complete", blockers=[blocker])
                 cp.record_result(conn, dispatch_id=parent.dispatch_id, instance_id=self.pm_instance_id, lease_epoch=parent.lease_epoch, result=result)

@@ -20,7 +20,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 |----------|:-----:|:------:|:-----:|:-------:|:---------:|:------:|:---------:|
 | Telegram | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fluxer | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fluxer | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ |
 | Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Google Chat | — | ✅ | ✅ | ✅ | — | ✅ | — |
 | WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |

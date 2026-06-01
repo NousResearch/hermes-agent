@@ -23,11 +23,11 @@ Fluxer is a good fit when you want a self-hostable, chat-first surface for Herme
 | Message edits | ✅ | Used for progress/stream-style updates where Hermes edits a sent message |
 | Message deletes | ✅ | Gateway cleanup and deleted approval prompts are handled |
 | Reactions | ✅ | Still accepted as compatibility/fallback events |
-| Buttons/components | ✅ | Dangerous-command approvals and slash confirmations use Fluxer component payloads and `INTERACTION_CREATE` callbacks where the deployment emits them |
-| Native slash commands | ✅ | Optional registration via Fluxer application-command routes; interactions are routed back into normal Hermes slash-command handling |
+| Buttons/components | Deployment-dependent | Hermes has guarded adapter support for component payloads and `INTERACTION_CREATE` callbacks, but the current hosted Fluxer API schema does **not** accept/persist `components` on messages. Use text fallbacks (`/approve`, `/deny`) unless your deployment explicitly exposes native components. |
+| Native slash commands | Deployment-dependent | Hermes can translate Fluxer `APPLICATION_COMMAND` interactions if a deployment emits them, but the current hosted API spec does not expose application-command registration routes. Keep `FLUXER_REGISTER_NATIVE_COMMANDS=false` unless your deployment provides those routes. |
 | Message pins | ✅ | Uses Fluxer's `/channels/{id}/messages/pins` routes when the server enables pins |
-| Threads | ✅ | Create threads from messages or channels; active thread/channel enumeration is included in the channel directory when the deployment exposes the routes |
-| Channel directory | ✅ | Lists guild channels, forums, active threads, and session-discovered DMs/known channels |
+| Threads | — | Hosted Fluxer currently exposes reply references, but not Discord-style thread routes in the public API spec. Hermes keeps speculative helpers for deployments that add thread endpoints, but the platform-comparison table does not count this as end-to-end thread support. |
+| Channel directory | ✅ | Lists guild channels, forums when exposed, and session-discovered DMs/known channels |
 | Backlog recovery | ✅ | Recent messages in known channels are scanned after startup/reconnect |
 
 ## Prerequisites
@@ -147,21 +147,22 @@ Set `FLUXER_FREE_RESPONSE_CHANNELS` for additional channels where Hermes should 
 
 ## Native interactions
 
-Fluxer native interactions are handled in the shape emitted by the Fluxer gateway:
+Hermes keeps Fluxer native-interaction support guarded and deployment-aware:
 
-- outbound messages can include `components` action rows and buttons;
-- button clicks arrive as `INTERACTION_CREATE` with `type=3` / `MESSAGE_COMPONENT`;
-- slash commands arrive as `INTERACTION_CREATE` with `type=2` / `APPLICATION_COMMAND` and are translated into normal Hermes slash text such as `/model gpt-5.5`;
-- Hermes acknowledges slash-command interactions with a deferred ephemeral callback before handing the command to the gateway.
+- if a Fluxer deployment accepts `components`, Hermes can send action rows/buttons for dangerous-command approvals and slash confirmations;
+- if a deployment emits `INTERACTION_CREATE` with `type=3` / `MESSAGE_COMPONENT`, Hermes resolves the matching pending action;
+- if a deployment emits `INTERACTION_CREATE` with `type=2` / `APPLICATION_COMMAND`, Hermes translates it into normal slash text such as `/model gpt-5.5`.
 
-Native command registration is opt-in. To bulk-register Hermes commands globally:
+The current hosted Fluxer API spec does **not** list message `components`, interaction callback routes, or application-command registration routes. In that environment, native buttons and registered slash commands should be treated as unavailable and Hermes falls back to text commands.
+
+Native command registration is opt-in and should only be enabled for deployments that expose the required application-command routes:
 
 ```bash
 FLUXER_REGISTER_NATIVE_COMMANDS=true
 FLUXER_APPLICATION_ID=app_id   # optional when FLUXER_BOT_TOKEN is app_id.secret
 ```
 
-For fast guild-scoped registration during testing:
+For fast guild-scoped registration during testing on compatible deployments:
 
 ```bash
 FLUXER_REGISTER_NATIVE_COMMANDS=true
@@ -170,7 +171,7 @@ FLUXER_NATIVE_COMMAND_GUILDS=123456789012345678,234567890123456789
 
 ## Dangerous-command approvals
 
-Hermes uses native buttons for dangerous-command approvals when Fluxer emits component interactions:
+On deployments with component support, Hermes can show native dangerous-command approval buttons:
 
 | Button | Meaning |
 |---|---|
@@ -179,7 +180,7 @@ Hermes uses native buttons for dangerous-command approvals when Fluxer emits com
 | Always | always allow this command pattern |
 | Deny | deny |
 
-Text fallback still works:
+On the hosted Fluxer API today, use the text fallback instead:
 
 ```text
 /approve
@@ -190,13 +191,15 @@ Text fallback still works:
 
 If the approval prompt is deleted before it is resolved, Hermes fails closed and denies the pending approval.
 
-## Media and voice
+## Media, voice, and streaming
 
 Hermes can send images, videos, documents, audio files, and voice-message-shaped audio through Fluxer's multipart message API. Inbound attachments are cached and passed to the agent as media URLs/types.
 
 Voice/audio support depends on the Fluxer deployment exposing the relevant file and voice-message fields. If a deployment only supports plain files, audio may appear as a normal file instead of a voice bubble.
 
-## Pins, threads, and channel directory
+Hermes streaming on Fluxer is edit-based: the gateway sends or reuses a progress bubble, then updates it with `PATCH /channels/{channel_id}/messages/{message_id}`. The hosted API accepts message edits, so Fluxer counts as supporting Hermes-style streaming/progress updates even though it is not a token-by-token websocket stream to the client.
+
+## Pins, replies, and channel directory
 
 Hermes includes Fluxer pin helpers for deployments that expose pin routes:
 
@@ -208,15 +211,11 @@ DELETE /channels/{channel_id}/messages/pins/{message_id}
 
 The hosted Fluxer API has been verified to list pins with `GET /channels/{id}/messages/pins`.
 
-Hermes also exposes Fluxer thread routes when the deployment enables them:
+Fluxer hosted API supports Discord-like reply references via `message_reference`; Hermes uses those for reply context and referenced-message lookup.
 
-```text
-POST /channels/{channel_id}/messages/{message_id}/threads
-POST /channels/{channel_id}/threads
-GET  /guilds/{guild_id}/threads/active
-```
+The adapter also keeps guarded helpers for deployments that add Discord-style thread endpoints, but the current hosted public API spec does not expose those routes. Do not rely on thread creation or active-thread enumeration unless your Fluxer deployment documents the routes.
 
-`send_message(action="list")` includes Fluxer guild channels, forums, active threads, and known/session-discovered targets when the deployment exposes `/users/@me/guilds` and `/guilds/{guild_id}/channels`. Thread/channel gateway events update the adapter's known-channel set, so reconnect backlog recovery can include newly revealed threads.
+`send_message(action="list")` includes Fluxer guild channels, forums when exposed, and known/session-discovered DMs/channels when the deployment exposes `/users/@me/guilds` and `/guilds/{guild_id}/channels`. Channel gateway events update the adapter's known-channel set, so reconnect backlog recovery can include newly revealed channels.
 
 ## Backlog recovery
 

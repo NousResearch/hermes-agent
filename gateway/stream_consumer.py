@@ -165,6 +165,23 @@ class GatewayStreamConsumer:
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
 
+        # Streaming card support (e.g. Feishu CardKit v2).  When enabled,
+        # the first send creates a streaming card via
+        # ``adapter.send_streaming_card()`` instead of ``adapter.send()``.
+        # Subsequent edits and finalization still go through the normal
+        # ``edit_message()`` path, which the adapter routes to CardKit APIs.
+        self._uses_streaming_card: bool = (
+            getattr(adapter, "streaming_cards_enabled", False) is True
+        )
+
+        # Defer streaming card creation until after the first segment break.
+        # The first segment (usually "Let me think...") is sent as a regular
+        # message, so tool progress bubbles (🔍/⚙️) appear ABOVE the streaming
+        # card which is created for the final response segment.
+        # Reset to False after the first segment break so subsequent segments
+        # use the streaming card.
+        self._defer_streaming_card: bool = self._uses_streaming_card
+
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
@@ -261,6 +278,11 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # Re-enable streaming card for the new segment if the adapter
+        # supports it — a per-card creation failure in the previous segment
+        # should not prevent the next segment from trying again.
+        if getattr(self.adapter, "streaming_cards_enabled", False) is True:
+            self._uses_streaming_card = True
         # Native draft streaming: bump the draft_id so the next text segment
         # animates as a fresh preview below the tool-progress bubbles, not
         # over the prior segment's already-finalized draft.  This is how
@@ -546,9 +568,17 @@ class GatewayStreamConsumer:
                     # the next segment (tool progress, next chunk) creates a
                     # new message below it.  got_done has its own finalize
                     # path below so we don't finalize here for it.
+                    #
+                    # Exception: streaming cards (e.g. Feishu CardKit v2) span
+                    # the entire response — segment breaks just send a mid-
+                    # stream update without cursor; the card keeps accumulating
+                    # text and is only finalized on got_done.
+                    _finalize_segment = (
+                        got_segment_break and not self._uses_streaming_card
+                    )
                     current_update_visible = await self._send_or_edit(
                         display_text,
-                        finalize=(got_done or got_segment_break),
+                        finalize=(got_done or _finalize_segment),
                     )
                     self._last_edit_time = time.monotonic()
 
@@ -606,22 +636,33 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
-                    # If the segment-break edit failed to deliver the
-                    # accumulated content (flood control that has not yet
-                    # promoted to fallback mode, or fallback mode itself),
-                    # _accumulated still holds pre-boundary text the user
-                    # never saw. Flush that tail as a continuation message
-                    # before the reset below wipes _accumulated — otherwise
-                    # text generated before the tool boundary is silently
-                    # dropped (issue #8124).
-                    if (
+                    # Deferred streaming card: the first segment was sent as
+                    # a regular message.  Now that tool progress bubbles will
+                    # appear below it, reset and disable defer so the next
+                    # segment creates the actual streaming card.
+                    if self._defer_streaming_card:
+                        self._defer_streaming_card = False
+                        self._reset_segment_state(preserve_no_edit=True)
+                    # Streaming cards: keep the same card alive across
+                    # segments.  Tool progress messages from the gateway
+                    # appear as separate platform messages between card
+                    # updates.  The card's streaming_md content keeps
+                    # growing with the full accumulated text.
+                    elif self._uses_streaming_card and self._message_id:
+                        # Don't reset — _accumulated keeps growing,
+                        # _message_id stays so edits continue hitting
+                        # the same card.
+                        pass
+                    elif (
                         self._accumulated
                         and not current_update_visible
                         and self._message_id
                         and self._message_id != "__no_edit__"
                     ):
                         await self._flush_segment_tail_on_edit_failure()
-                    self._reset_segment_state(preserve_no_edit=True)
+                        self._reset_segment_state(preserve_no_edit=True)
+                    else:
+                        self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
@@ -1288,6 +1329,41 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
+                #
+                # When the adapter supports streaming cards (e.g. Feishu CardKit
+                # v2), try creating a streaming card first for typewriter-style
+                # rendering.  On failure, fall back to the regular send path.
+                #
+                # Optimization: defer streaming card to the second segment so
+                # tool progress bubbles (🔍/⚙️) appear ABOVE the card.  The
+                # first segment is sent as a regular message.
+                if self._uses_streaming_card and not self._defer_streaming_card:
+                    try:
+                        result = await self.adapter.send_streaming_card(
+                            chat_id=self.chat_id,
+                            content=text,
+                            reply_to=self._initial_reply_to_id,
+                        )
+                        if result.success:
+                            if result.message_id:
+                                self._message_id = result.message_id
+                                self._message_created_ts = time.monotonic()
+                            else:
+                                self._edit_supported = False
+                            self._already_sent = True
+                            self._last_sent_text = text
+                            self._notify_new_message()
+                            return True
+                        # Streaming card creation failed — fall back to regular send
+                        logger.debug(
+                            "Streaming card creation failed (%s), falling back to regular send",
+                            result.error,
+                        )
+                        self._uses_streaming_card = False  # disable for remainder of this run
+                    except Exception as e:
+                        logger.debug("Streaming card error: %s, falling back to regular send", e)
+                        self._uses_streaming_card = False
+
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,

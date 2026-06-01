@@ -264,6 +264,11 @@ async def test_scenario_b_barge_in_during_speech():
     rec = records[0]
     assert rec.ended_reason is TurnEndReason.BARGED_IN
     assert rec.interrupted is True
+    # The transient USER_SPEECH_STARTED-while-speaking fires the fast-reflex
+    # vad_trigger flush BEFORE the policy escalates to a barge_in interrupt
+    # (spec §5.3 flush-vs-interrupt order). This regresses if
+    # flush_outbound("vad_trigger") is removed from session._on_turn_event.
+    assert "vad_trigger" in driver.transport.flushes
     assert "barge_in" in driver.transport.flushes
     assert driver.tts._cancelled is True
     # heard is a strict prefix of full_text; abandoned is the remaining suffix.

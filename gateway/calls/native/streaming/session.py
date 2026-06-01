@@ -169,7 +169,9 @@ class StreamingCallSession:
             # Fast reflex: stamp speech start and flush queued audio immediately.
             # This does NOT cancel the brain (spec §5.3 flush-vs-interrupt order).
             self._speech_start_ms = self.clock.now_ms()
-            await self.transport.flush_outbound("vad_trigger")
+            result = await self.transport.flush_outbound("vad_trigger")
+            if self._active_ledger is not None and self._full_text:
+                self._active_ledger.note_flush(result, self._full_text)
 
         now = self.clock.now_ms()
         signal = InterruptionSignal(
@@ -203,7 +205,9 @@ class StreamingCallSession:
 
     async def _barge_in(self) -> None:
         """Real barge-in: flush, cancel TTS, cancel the scope (fires brain interrupt)."""
-        await self.transport.flush_outbound("barge_in")
+        result = await self.transport.flush_outbound("barge_in")
+        if self._active_ledger is not None and self._full_text:
+            self._active_ledger.note_flush(result, self._full_text)
         await self.tts.cancel()
         if self._active_scope is not None:
             self._active_scope.cancel("barge_in")

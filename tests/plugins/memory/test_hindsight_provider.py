@@ -1096,6 +1096,79 @@ class TestSessionSwitchBufferFlush:
 
 
 # ---------------------------------------------------------------------------
+# on_session_end — flush partial buffers at session teardown
+# ---------------------------------------------------------------------------
+
+
+class TestSessionEndBufferFlush:
+    def test_buffered_turns_flushed_on_session_end(self, provider_with_config):
+        """retain_every_n_turns > 1 must not silently drop partial buffers
+        when a session ends (CLI exit, idle timeout, /reset). Whatever's in
+        _session_turns at session-end time should be flushed to Hindsight."""
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+        old_doc = p._document_id
+
+        # Three turns buffered, no retain yet (boundary is at turn 5).
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p.sync_turn("turn3-user", "turn3-asst")
+        assert p._sync_thread is None  # writer not started yet
+        p._client.aretain_batch.assert_not_called()
+
+        # Session end — flush should fire under the current document_id.
+        p.on_session_end([{"role": "user", "content": "dummy"}])
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        item = kw["items"][0]
+        content = json.loads(item["content"])
+        flat = json.dumps(content)
+        assert "turn1-user" in flat
+        assert "turn2-user" in flat
+        assert "turn3-user" in flat
+        # Session id must appear in lineage tags / metadata.
+        assert "session:test-session" in item["tags"]
+        assert item["metadata"]["session_id"] == "test-session"
+
+    def test_no_flush_when_buffer_empty_on_session_end(self, provider):
+        """Session end with no buffered turns must not fire a spurious retain."""
+        provider.on_session_end([{"role": "user", "content": "dummy"}])
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_on_session_end_does_not_reset_state(self, provider_with_config):
+        """on_session_end should flush but NOT clear session state — the
+        session is ending, not rotating. Clearing would race with shutdown."""
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+        p.sync_turn("turn1-user", "turn1-asst")
+        old_session_id = p._session_id
+        old_counter = p._turn_counter
+
+        p.on_session_end([{"role": "user", "content": "dummy"}])
+        p._retain_queue.join()
+
+        # State should be preserved — on_session_end doesn't rotate.
+        assert p._session_id == old_session_id
+        assert p._turn_counter == old_counter
+
+    def test_on_session_end_skipped_during_shutdown(self, provider_with_config):
+        """If shutdown() has already fired, on_session_end must not enqueue
+        new work — the writer is draining/gone."""
+        p = provider_with_config(retain_every_n_turns=5, retain_async=False)
+        p.sync_turn("turn1-user", "turn1-asst")
+
+        # Simulate shutdown already happened.
+        p._shutting_down.set()
+
+        p.on_session_end([{"role": "user", "content": "dummy"}])
+        # Queue should be empty — nothing was enqueued.
+        assert p._retain_queue.empty()
+        p._client.aretain_batch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # update_mode='append' capability probe + retain dispatch
 # ---------------------------------------------------------------------------
 

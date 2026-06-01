@@ -23,6 +23,24 @@ class FakeSlackClient:
         return self.replies_response
 
 
+class FakeSlackApiError(Exception):
+    def __init__(self, response):
+        super().__init__("slack api error")
+        self.response = response
+
+
+class RaisingSlackClient:
+    async def conversations_list(self, **_kwargs):
+        raise FakeSlackApiError(
+            {
+                "ok": False,
+                "error": "missing_scope",
+                "needed": "groups:read",
+                "provided": "channels:read",
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_list_channels_reports_missing_scope_with_fix(monkeypatch):
     client = FakeSlackClient(
@@ -34,6 +52,18 @@ async def test_list_channels_reports_missing_scope_with_fix(monkeypatch):
         },
     )
     monkeypatch.setattr(slack_tool, "_get_slack_client", lambda: client)
+
+    result = await slack_tool.slack_list_channels()
+
+    assert result["ok"] is False
+    assert result["error"] == "missing_scope"
+    assert result["needed"] == "groups:read"
+    assert "reinstall" in result["fix"]
+
+
+@pytest.mark.asyncio
+async def test_list_channels_handles_slack_sdk_raised_missing_scope(monkeypatch):
+    monkeypatch.setattr(slack_tool, "_get_slack_client", lambda: RaisingSlackClient())
 
     result = await slack_tool.slack_list_channels()
 

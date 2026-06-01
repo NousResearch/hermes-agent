@@ -23,6 +23,29 @@ def _json(data: Dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def _response_dict(response: Any) -> Dict[str, Any]:
+    if isinstance(response, dict):
+        return response
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data
+    try:
+        return dict(response)
+    except Exception:
+        return {}
+
+
+async def _call_slack(client: Any, method_name: str, **kwargs: Any) -> Dict[str, Any]:
+    method = getattr(client, method_name)
+    try:
+        return _response_dict(await method(**kwargs))
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            return _response_dict(response)
+        return {"ok": False, "error": str(exc) or exc.__class__.__name__}
+
+
 def _get_slack_client() -> Optional[Any]:
     """Return an AsyncWebClient from the live gateway adapter or env token."""
     try:
@@ -54,14 +77,14 @@ def check_slack_tool_requirements() -> bool:
 
 
 def _slack_error(response: Any, *, fallback: str = "slack_api_error") -> Dict[str, Any]:
+    response_data = _response_dict(response)
     error = fallback
-    if isinstance(response, dict):
-        error = response.get("error") or fallback
+    if response_data:
+        error = response_data.get("error") or fallback
     detail: Dict[str, Any] = {"ok": False, "error": error}
-    if isinstance(response, dict):
-        for key in ("needed", "provided"):
-            if response.get(key):
-                detail[key] = response.get(key)
+    for key in ("needed", "provided"):
+        if response_data.get(key):
+            detail[key] = response_data.get(key)
     if error == "missing_scope":
         detail["fix"] = (
             "Add the missing Slack OAuth scope, reinstall the Hermes Slack app, "
@@ -110,7 +133,9 @@ async def _resolve_channel_id(client: Any, channel: str) -> Dict[str, Any]:
     if not channel.startswith("#"):
         return {"ok": True, "channel_id": channel}
 
-    response = await client.conversations_list(
+    response = await _call_slack(
+        client,
+        "conversations_list",
         limit=200,
         types="public_channel,private_channel",
         exclude_archived=True,
@@ -133,7 +158,9 @@ async def slack_list_channels(limit: int = 100, include_private: bool = True) ->
 
     limit = max(1, min(int(limit or 100), 200))
     channel_types = "public_channel,private_channel" if include_private else "public_channel"
-    response = await client.conversations_list(
+    response = await _call_slack(
+        client,
+        "conversations_list",
         limit=limit,
         types=channel_types,
         exclude_archived=True,
@@ -170,7 +197,9 @@ async def slack_get_messages(
 
     limit = max(1, min(int(limit or 30), 100))
     max_chars = max(80, min(int(max_chars_per_message or 500), 2000))
-    response = await client.conversations_history(
+    response = await _call_slack(
+        client,
+        "conversations_history",
         channel=resolved["channel_id"],
         limit=limit,
     )
@@ -208,7 +237,9 @@ async def slack_get_thread(
 
     limit = max(1, min(int(limit or 50), 100))
     max_chars = max(80, min(int(max_chars_per_message or 1000), 4000))
-    response = await client.conversations_replies(
+    response = await _call_slack(
+        client,
+        "conversations_replies",
         channel=resolved["channel_id"],
         ts=str(thread_ts).strip(),
         limit=limit,

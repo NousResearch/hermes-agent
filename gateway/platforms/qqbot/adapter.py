@@ -1086,7 +1086,11 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # Gateway sessions use the generic chat_type "dm" for direct/private
+        # messages.  QQ's INTERACTION_CREATE payload uses the platform scene
+        # name "c2c" for the same conversation.  Older QQ approval keyboards
+        # also embedded "c2c" directly, so accept both spellings here.
+        if chat_type in {"dm", "c2c"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

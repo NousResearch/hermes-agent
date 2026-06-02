@@ -550,6 +550,8 @@ def test_cancel_loopback_session_shuts_down_callback_server():
         def join(self, timeout=None):
             shutdown_calls["join"] += 1
 
+    # callback_result is the dict the worker's _xai_wait_for_callback polls.
+    callback_result = {"code": None, "error": None}
     session_id = "xai-loopback-cancel-shutdown-test"
     ws._oauth_sessions[session_id] = {
         "session_id": session_id,
@@ -559,6 +561,7 @@ def test_cancel_loopback_session_shuts_down_callback_server():
         "status": "pending",
         "server": _FakeServer(),
         "thread": _FakeThread(),
+        "callback_result": callback_result,
     }
 
     try:
@@ -568,6 +571,9 @@ def test_cancel_loopback_session_shuts_down_callback_server():
         assert resp.status_code == 200, resp.text
         assert resp.json()["ok"] is True
         assert shutdown_calls == {"shutdown": 1, "close": 1, "join": 1}
+        # The waiting worker must be signalled so it returns promptly instead
+        # of spinning until the timeout.
+        assert callback_result["error"] == "cancelled"
         assert session_id not in ws._oauth_sessions
     finally:
         ws._oauth_sessions.pop(session_id, None)

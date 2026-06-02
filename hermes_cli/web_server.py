@@ -4088,6 +4088,15 @@ async def cancel_oauth_session(session_id: str, request: Request):
     # _xai_wait_for_callback times out (up to 5 min). Free it immediately so
     # an orphaned listener can't block a subsequent sign-in attempt.
     if sess.get("flow") == "loopback":
+        # The worker is blocked in _xai_wait_for_callback, which polls
+        # callback_result rather than the server state. Flag the result as
+        # cancelled so that loop returns on its next tick instead of spinning
+        # until the timeout — otherwise repeated cancel/retry piles up daemon
+        # threads. (_cancelled() in the worker then short-circuits before any
+        # persist.)
+        result = sess.get("callback_result")
+        if isinstance(result, dict):
+            result["error"] = result.get("error") or "cancelled"
         server = sess.get("server")
         thread = sess.get("thread")
         try:
